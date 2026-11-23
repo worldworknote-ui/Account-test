@@ -1,0 +1,81 @@
+name: Prepare readable source
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/prepare-audit.yml']
+permissions:
+  contents: write
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare numbered source copies only
+        shell: python
+        run: |
+          import pathlib, subprocess, hashlib, json
+          root = pathlib.Path('source/SmartAccountant')
+          out = pathlib.Path('code-review')
+          if out.exists():
+              raise RuntimeError('Output directory already exists; refusing overwrite')
+          out.mkdir()
+          allowed = {'.java', '.kt', '.kts', '.gradle', '.properties', '.xml', '.sql', '.py', '.js', '.ts', '.json', '.sh', '.bat', '.ps1', '.md', '.txt', '.yml', '.yaml', '.pro', '.html', '.css', '.swift', '.m', '.h', '.c', '.cpp'}
+          forbidden = {'keystore.properties', 'local.properties', 'mapping.txt', 'google-services.json', 'credentials.json', 'package-lock.json'}
+          paths = subprocess.check_output(['git', 'ls-files', '-z', '--', str(root)]).decode().split('\0')
+          entries = []
+          for name in sorted(filter(None, paths)):
+              p = pathlib.Path(name)
+              if p.is_symlink():
+                  entries.append({'path': name, 'status': 'symlink skipped'})
+                  continue
+              data = p.read_bytes()
+              item = {'path': name, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+              entries.append(item)
+              if p.suffix.lower() not in allowed or p.name in forbidden or any(x in p.parts for x in ('node_modules', 'build', 'outputs', '.gradle')):
+                  item['status'] = 'inventory only'
+                  continue
+              try:
+                  text = data.decode('utf-8-sig')
+              except UnicodeDecodeError:
+                  item['status'] = 'non UTF-8; inventory only'
+                  continue
+              if '\0' in text:
+                  item['status'] = 'binary; inventory only'
+                  continue
+              lines = text.splitlines()
+              dest = out / p.relative_to(root)
+              dest.mkdir(parents=True)
+              parts, buf, size = [], [], 0
+              def flush():
+                  global buf, size
+                  if buf:
+                      fn = dest / ('part-%04d.txt' % (len(parts) + 1))
+                      fn.write_text(''.join(buf), encoding='utf-8')
+                      parts.append(str(fn))
+                      buf, size = [], 0
+              for number, line in enumerate(lines, 1):
+                  segments = [line[i:i+1500] for i in range(0, len(line), 1500)] or ['']
+                  for segment, value in enumerate(segments, 1):
+                      label = str(number) if len(segments) == 1 else '%d.fragment%d' % (number, segment)
+                      row = label + ': ' + value + '\n'
+                      if size + len(row.encode('utf-8')) > 10000:
+                          flush()
+                      buf.append(row)
+                      size += len(row.encode('utf-8'))
+              flush()
+              item.update(status='copied for reading', lines=len(lines), parts=parts)
+          manifest = {'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode().strip(), 'files': entries}
+          for i in range(0, len(entries), 25):
+              page = {'source_commit': manifest['source_commit'], 'files': entries[i:i+25]}
+              (out / ('index-%04d.json' % (i//25+1))).write_text(json.dumps(page, ensure_ascii=False, indent=2), encoding='utf-8')
+          (out / 'README.txt').write_text('Reading copies only. Original source is unchanged. Index files identify source paths, hashes, line counts, parts, and skipped files. Number.fragmentN denotes portions of a long original line. No application or tests executed. Source commit: ' + manifest['source_commit'] + '\n', encoding='utf-8')
+      - name: Save reading copies on separate branch
+        run: |
+          git checkout -b audit-readable
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -- code-review/
+          git commit -m "Prepare numbered source copies for review"
+          git push origin HEAD:refs/heads/audit-readable
