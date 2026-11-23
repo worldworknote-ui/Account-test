@@ -1,0 +1,2 @@
+package android.text.style;
+public class TypefaceSpan extends MetricAffectingSpan { final String f; public TypefaceSpan(String f) { this.f = f; } public TypefaceSpan(android.graphics.Typeface t) { this.f = t.familyName(); } public String getFamily() { return f; } }

@@ -1,0 +1,6 @@
+package android.view;
+public class HapticFeedbackConstants {
+    public static final int LONG_PRESS = 0, VIRTUAL_KEY = 1, KEYBOARD_TAP = 3, CLOCK_TICK = 4, CONTEXT_CLICK = 6, KEYBOARD_PRESS = 3, CONFIRM = 16, REJECT = 17,
+            GESTURE_START = 12, GESTURE_END = 13, TEXT_HANDLE_MOVE = 9, SEGMENT_TICK = 26, SEGMENT_FREQUENT_TICK = 27, TOGGLE_ON = 21, TOGGLE_OFF = 22,
+            FLAG_IGNORE_VIEW_SETTING = 1, FLAG_IGNORE_GLOBAL_SETTING = 2;
+}

@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- الإنترنت: لجلب أسعار الصرف، ولخدمة الذكاء الاصطناعي إن فعّلها المدير -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- البصمة / قفل الهاتف -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
+    <!-- النسخ الاحتياطي التلقائي وتذكيرات المكاتب: إعادة الجدولة بعد إعادة تشغيل الهاتف، والإشعارات -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- لا توجد صلاحية CAMERA عمدًا: التصوير يتم عبر تطبيق الكاميرا نفسه. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+
+    <application
+        android:name="com.smart.hawala.SmartApp"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:largeHeap="true"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme"
+        android:usesCleartextTraffic="false">
+
+        <activity
+            android:name="com.smart.hawala.MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|uiMode|density|fontScale|layoutDirection|locale"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <!-- «مشاركة» رسالة أو عدة رسائل من واتساب إلى التطبيق: تُفتح في نموذج التسجيل ولا تُسجَّل إلا بتأكيد المحاسب -->
+            <intent-filter android:label="@string/share_label">
+                <action android:name="android.intent.action.SEND"/>
+                <action android:name="android.intent.action.SEND_MULTIPLE"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
+            <!-- 11.5: رمز QR للترخيص من البائع: مسحه بالكاميرا يفتح التطبيق ويفعّل (لا يُفعَّل إلا بعد فتح القفل والدخول) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="smartacc" android:host="activate"/>
+            </intent-filter>
+            <!-- اختصارات الضغطة المطولة على أيقونة التطبيق: حركة جديدة، لصق رسالة، المكاتب، البحث -->
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts"/>
+        </activity>
+
+        <!-- اسم المزوّد مبني على رقم الحزمة حتى لا يتعارض مع النسخة القديمة المثبتة -->
+        <provider
+            android:name="com.smart.hawala.EvidenceProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true"/>
+
+        <!-- النسخ الاحتياطي التلقائي المجدول -->
+        <service
+            android:name="com.smart.hawala.AutoBackupJob"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="false"/>
+
+        <!-- 9.0: تذكيرات المكاتب (مكتب بلا حركات منذ يوم، مطابقة لم تُرسل) -->
+        <service
+            android:name="com.smart.hawala.ReminderJob"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="false"/>
+        <service
+            android:name="com.smart.hawala.SyncJob"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="false"/>
+    </application>
+</manifest>

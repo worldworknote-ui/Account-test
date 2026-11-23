@@ -1,0 +1,135 @@
+plugins {
+    id 'com.android.application'
+}
+
+// 8.0: توقيع النسخة النهائية إلزامي بالمفتاح الجديد.
+// ضع keystore.properties ومجلد signing (يُرسلان منفصلين، لا داخل المشروع) في مجلد المشروع الرئيسي.
+// بدونهما تُبنى نسخة التجربة (debug) فقط، ويتوقف بناء release برسالة واضحة بدل توقيعه بمفتاح التجربة.
+def keystorePropsFile = rootProject.file('keystore.properties')
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
+android {
+    namespace 'com.smart.hawala'
+    compileSdk 35
+
+    defaultConfig {
+        // 8.0 حزمة جديدة بمفتاح جديد: تُثبَّت بجانب 7.x، وتنتقل البيانات بنسخة احتياطية و«استبدال الكل».
+        applicationId 'com.smart.hawala.v8'
+        minSdk 28
+        targetSdk 35
+        versionCode 77
+        versionName '12.7.1'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    signingConfigs {
+        if (keystorePropsFile.exists()) {
+            release {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+            all {
+                maxHeapSize = '3g'
+                systemProperty 'robolectric.graphicsMode', 'NATIVE'
+                systemProperty 'shots.dir', System.getProperty('shots.dir', '/tmp/shots')
+                testLogging { events 'passed', 'failed', 'standardOut', 'standardError'; showStandardStreams = true }
+            }
+        }
+    }
+
+    lint {
+        // أخطاء جديدة توقف النسخة النهائية؛ القديمة محفوظة في lint-baseline.xml (يُنشأ في أول بناء)
+        checkReleaseBuilds true
+        abortOnError true
+        baseline = file('lint-baseline.xml')
+    }
+
+    buildTypes {
+        release {
+            // R8: تصغير وتمويه (أصعب تعديلًا وأصغر حجمًا). احفظ build/outputs/mapping/release/mapping.txt مع كل إصدار.
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (keystorePropsFile.exists()) signingConfig signingConfigs.release
+        }
+    }
+}
+
+// لا نسخة نهائية بمفتاح التجربة أبدًا: التحديثات لا تُثبَّت فوقها، والترخيص يرفضها (بصمة الشهادة مضمّنة في التطبيق).
+// 10.11: -PunsignedRelease يبني النسخة النهائية (R8 وبوابة الاختبارات) بلا توقيع أبدًا، ليوقّعها صاحب المفتاح على جهازه بـ apksigner
+// (انظر release/sign-android.sh). لا توقيع بمفتاح التجربة في أي حال.
+gradle.taskGraph.whenReady { graph ->
+    def wantsRelease = graph.allTasks.any { it.project == project && it.name.toLowerCase().contains('release') }
+    if (wantsRelease && !keystorePropsFile.exists() && !project.hasProperty('unsignedRelease')) {
+        throw new GradleException("لا يوجد keystore.properties: النسخة النهائية تُوقَّع بمفتاح 8.0 فقط. " +
+                "ضع keystore.properties ومجلد signing في مجلد المشروع (انظر keystore.properties.example)، أو ابنِ نسخة debug للتجربة.")
+    }
+}
+
+// ===================================================================================
+// بوابة الاختبارات: النسخة النهائية لا تُبنى إذا فشل اختبار حسابي واحد.
+// للتجاوز عند الضرورة فقط: ./gradlew assembleRelease -PskipTests
+// ===================================================================================
+configurations {
+    pureTestLibs
+}
+dependencies {
+    implementation 'com.google.android.gms:play-services-auth:21.2.0'
+    // 12.6: تشفير ملف قاعدة البيانات كاملًا (SQLCipher 4، AES-256؛ رخصة BSD من Zetetic)، ومعه واجهات androidx.sqlite
+    implementation 'net.zetetic:sqlcipher-android:4.17.0'
+    implementation 'androidx.sqlite:sqlite:2.6.2'
+    // 11.6: قراءة رمز QR الترخيص من صورة (مكتبة ZXing الأساسية، جافا خالصة بلا أذونات)
+    // (الملف نفسه من Maven Central، SHA-1 ca1349214a356cd7958651b2d5a0e1f3811a9c4b)
+    implementation files('libs/zxing-core-3.5.3.jar')
+    pureTestLibs 'org.json:json:20240303'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.14.1'
+}
+
+def pureClasses = ['Clock', 'Amounts', 'Auth', 'BackupFormat', 'ExportStyle', 'Ledger', 'MessageParser', 'NumberWords', 'AiExtract', 'Model', 'Pin',
+                   'Reconcile', 'Report', 'Reports', 'SecureStreams', 'XlsxWriter', 'WaText', 'FieldCipher', 'MergePlan',
+                   'LicenseToken', 'Entitlements', 'QuotaState', 'BackupPolicy', 'BuildInfo', 'OwnerReports', 'AuditChain', 'Sanity', 'DayClose',
+                   'ReportBuilder', 'CashBox', 'WaQuota', 'OfficeOrder', 'AboutText', 'ClientBook', 'Hlc', 'SyncCrypto', 'NavPrefs', 'WaWords', 'WaCuts', 'Metals']
+
+def compilePureTests = tasks.register('compilePureTests', JavaCompile) {
+    source = files(pureClasses.collect { "src/main/java/com/smart/hawala/${it}.java" }.findAll { file(it).exists() }) +
+            fileTree(rootProject.file('tests')) { include '*.java' }
+    classpath = configurations.pureTestLibs
+    destinationDirectory = layout.buildDirectory.dir('pure-tests/classes')
+    options.encoding = 'UTF-8'
+    sourceCompatibility = '11'
+    targetCompatibility = '11'
+}
+
+tasks.register('pureTests', JavaExec) {
+    group = 'verification'
+    description = 'اختبارات الحسابات والنسخ والترخيص (بلا هاتف)'
+    dependsOn compilePureTests
+    classpath = files(layout.buildDirectory.dir('pure-tests/classes')) + configurations.pureTestLibs
+    mainClass = 'RunAll'
+    jvmArgs '-Dfile.encoding=UTF-8', '-Dstdout.encoding=UTF-8'
+    args layout.buildDirectory.dir('pure-tests/out').get().asFile.absolutePath
+    def data = rootProject.file('tests/data')
+    if (data.exists()) args data.absolutePath
+}
+
+afterEvaluate {
+    tasks.matching { it.name == 'preReleaseBuild' }.configureEach { t ->
+        if (!project.hasProperty('skipTests')) t.dependsOn('pureTests')
+    }
+}

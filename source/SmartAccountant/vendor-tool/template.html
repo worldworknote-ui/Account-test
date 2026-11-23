@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; form-action 'none'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<title>أداة البائع — المحاسب الذكي 8</title>
+<style>{{STYLE}}</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="mark vendor" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3"/><path d="m16 7 3 3"/><path d="m18 5 2 2"/></svg></div>
+    <div>
+      <h1>أداة البائع — تراخيص «المحاسب الذكي» 8</h1>
+      <p>تعمل على هذا الجهاز بلا إنترنت. تفحص طلب التفعيل، وتُصدر رمز الترخيص بمفتاحك الخاص، وتحفظ سجل المبيعات والنقل.</p>
+    </div>
+    <span id="keyPill" class="pill off">لا يوجد مفتاح</span>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="sale" class="on">تفعيل جديد</button>
+    <button role="tab" data-tab="amend">تعديل رخصة</button>
+    <button role="tab" data-tab="move">نقل رخصة</button>
+    <button role="tab" data-tab="ledger">سجل المبيعات</button>
+    <button role="tab" data-tab="keys">المفاتيح والإعدادات</button>
+  </nav>
+
+  <!-- ===================== تفعيل جديد ===================== -->
+  <section class="tab" id="tab-sale">
+    <div class="card">
+      <h2><span class="n">1</span>طلب التفعيل من العميل</h2>
+      <p class="lead">يُنشئه العميل في التطبيق: المزيد ← الترخيص ← «إنشاء طلب التفعيل» برقم الطلب الذي أعطيته إياه. الصق الرسالة كاملة كما وصلتك.</p>
+      <textarea id="reqText" rows="5" class="ltr" placeholder="SA8-REQ:…"></textarea>
+      <div class="row" style="margin-top:8px"><button class="btn" id="reqCheck">فحص الطلب</button><label class="btn sec">فتح ملف الطلب (.sareq)<input type="file" id="reqFile" accept=".sareq,.txt" hidden></label></div>
+      <div id="reqOut"></div>
+    </div>
+
+    <div class="card off" id="saleForm">
+      <h2><span class="n">2</span>بيانات البيع والرخصة</h2>
+      <div class="grid">
+        <label class="f">رقم الرخصة<input type="text" id="sLid" class="ltr" readonly></label>
+        <label class="f">العميل<input type="text" id="sCustomer" placeholder="اسم المكتب أو صاحبه"></label>
+        <label class="f">هاتف العميل<input type="text" id="sPhone" class="ltr"></label>
+        <label class="f">السعر<input type="text" id="sPrice" placeholder="مثال: 150 USD"></label>
+        <label class="f">التحديثات حتى <small>الإصدارات بعد هذا التاريخ تعمل بالمجاني حتى التجديد</small><input type="date" id="sUu"></label>
+        <label class="f">ملاحظة<input type="text" id="sNote"></label>
+      </div>
+      <h3>محتوى الرخصة <small>(اختر قالبًا ثم عدّل ما تشاء لهذا الزبون)</small></h3>
+      <div id="sContent"></div>
+      <label class="check hidden" id="overrideBox"><input type="checkbox" id="sOverride"> أعرف أن الفحص وجد أخطاء، وأريد الإصدار رغمها (لا يُنصح).</label>
+      <div class="row" style="margin-top:10px"><button class="btn" id="issue" disabled>إصدار رمز الترخيص</button></div>
+      <div id="issueOut"></div>
+    </div>
+  </section>
+
+  <!-- ===================== تعديل رخصة (12.6) ===================== -->
+  <section class="tab hidden" id="tab-amend">
+    <div class="card">
+      <h2><span class="n">1</span>اختر الرخصة</h2>
+      <p class="lead">زبون يريد مستخدمًا إضافيًا أو مكاتب أكثر أو تجديد اشتراكه: عدّل بنود رخصته وأصدر رمزًا جديدًا لهاتفه نفسه. يلصقه في «الترخيص ← تحديث الرخصة» بلا طلب تفعيل جديد.</p>
+      <div class="row"><input type="text" id="aFind" placeholder="ابحث برقم الرخصة أو اسم العميل" class="search"></div>
+      <div id="aList"></div>
+    </div>
+    <div class="card off" id="aForm">
+      <h2><span class="n">2</span>البنود الجديدة</h2>
+      <div id="aInfo"></div>
+      <div class="grid">
+        <label class="f">التحديثات حتى<input type="date" id="aUu"></label>
+        <label class="f">ملاحظة التعديل<input type="text" id="aNote" placeholder="مثال: مستخدم ثالث"></label>
+      </div>
+      <div id="aContent"></div>
+      <div class="row" style="margin-top:10px"><button class="btn" id="aIssue" disabled>إصدار الرمز المعدَّل</button></div>
+      <div id="aIssueOut"></div>
+    </div>
+  </section>
+
+  <!-- ===================== نقل رخصة ===================== -->
+  <section class="tab hidden" id="tab-move">
+    <div class="card">
+      <h2><span class="n">1</span>اختر الرخصة</h2>
+      <div class="row"><input type="text" id="mFind" placeholder="ابحث برقم الرخصة أو اسم العميل أو رقم الطلب" class="search"></div>
+      <div id="mList"></div>
+      <div id="mInfo"></div>
+    </div>
+    <div class="card off" id="mOld">
+      <h2><span class="n">2</span>الهاتف القديم</h2>
+      <p class="lead">الأفضل: يضغط العميل في هاتفه القديم «إلغاء التفعيل على هذا الهاتف» ويرسل لك «إيصال التحرير». إن فُقد الهاتف سجّل ذلك؛ يُسمح بالنقل بعد 7 أيام.</p>
+      <textarea id="relText" rows="3" class="ltr" placeholder="SA8-REL:…"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="btn" id="relCheck">التحقق من الإيصال</button>
+        <button class="btn sec" id="lost">الهاتف مفقود (بلا إيصال)</button>
+      </div>
+      <div id="relOut"></div>
+    </div>
+    <div class="card off" id="mNew">
+      <h2><span class="n">3</span>طلب التفعيل من الهاتف الجديد</h2>
+      <textarea id="mReqText" rows="4" class="ltr" placeholder="SA8-REQ:…"></textarea>
+      <div class="row" style="margin-top:8px"><button class="btn" id="mReqCheck">فحص الطلب</button><label class="btn sec">فتح ملف الطلب (.sareq)<input type="file" id="mReqFile" accept=".sareq,.txt" hidden></label></div>
+      <div id="mReqOut"></div>
+      <label class="check hidden" id="mOverrideBox"><input type="checkbox" id="mOverride"> أعرف أن الفحص وجد أخطاء، وأريد الإصدار رغمها.</label>
+      <div class="row" style="margin-top:10px"><button class="btn" id="mIssue" disabled>إصدار الرخصة للهاتف الجديد</button></div>
+      <div id="mIssueOut"></div>
+    </div>
+  </section>
+
+  <!-- ===================== السجل ===================== -->
+  <section class="tab hidden" id="tab-ledger">
+    <div class="card">
+      <h2>سجل المبيعات</h2>
+      <div class="stats" id="lStats"></div>
+      <div class="row">
+        <input type="text" id="lFind" placeholder="بحث" class="search">
+        <button class="btn sec" id="lCsv">تنزيل Excel ‏(CSV)</button>
+        <button class="btn sec" id="lBackup">نسخة احتياطية من السجل</button>
+        <label class="btn sec">استيراد نسخة<input type="file" id="lImport" accept=".json" hidden></label>
+      </div>
+      <div class="tablebox" style="margin-top:10px"><table id="lTable"></table></div>
+      <p class="hint">السجل محفوظ في هذا المتصفح على هذا الجهاز فقط. نزّل نسخة احتياطية منه بعد كل بيع واحفظها مع مفتاحك.</p>
+    </div>
+    <div class="card">
+      <h2>خادم الترخيص (اختياري)</h2>
+      <p class="lead">إن جهّزت الخادم المرجعي: ارفع إليه «سجل الخادم» بعد كل بيع أو نقل. التطبيق يسأله كل 7 أيام عن الرخص الملغاة (الهواتف المفقودة).</p>
+      <div class="row">
+        <button class="btn sec" id="lServer">تنزيل سجل الخادم (licenses.json)</button>
+        <button class="btn sec" id="lRevoked">تنزيل قائمة الإلغاء (revoked.json)</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== المفاتيح ===================== -->
+  <section class="tab hidden" id="tab-keys">
+    <div class="card">
+      <h2>مفتاح التوقيع الخاص</h2>
+      <p class="lead">ملف ‎vendor-k1-private.pem (أو k2 الاحتياطي) الذي استلمته منفصلًا. لا ترسله لأحد ولا ترفعه إلى أي موقع: من يملكه يستطيع إصدار رخص.</p>
+      <div id="keyState"></div>
+      <div class="row">
+        <label class="btn">تحميل ملف المفتاح (.pem)<input type="file" id="keyFile" accept=".pem,.key,.txt" hidden></label>
+        <button class="btn sec" id="keyForget">إزالة المفتاح من هذه الصفحة</button>
+      </div>
+      <h3>حفظه في هذا المتصفح مشفّرًا</h3>
+      <div class="grid">
+        <label class="f">عبارة مرور <small>10 أحرف على الأقل</small><input type="password" id="kp1" autocomplete="new-password"></label>
+        <label class="f">تأكيدها<input type="password" id="kp2" autocomplete="new-password"></label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn sec" id="keySeal">حفظ مشفّرًا</button>
+        <button class="btn sec" id="keyOpen">فتح المفتاح المحفوظ</button>
+        <button class="btn sec" id="keyDrop">حذف المفتاح المحفوظ</button>
+      </div>
+      <div id="keyMsg"></div>
+    </div>
+    <div class="card">
+      <h2>التحقق من سلاسل التصديق</h2>
+      <p class="lead">جذرا Google (RSA و EC P-384) مضمّنان. اختياريًا: نزّل من جهاز متصل ملف حالة الإلغاء https://android.googleapis.com/attestation/status وحمّله هنا لترفض الأداة الهواتف ذات المفاتيح المسرّبة.</p>
+      <div id="statusState"></div>
+      <div class="row"><label class="btn sec">تحميل ملف حالة الإلغاء (status.json)<input type="file" id="statusFile" accept=".json" hidden></label></div>
+    </div>
+  </section>
+
+  <footer>أداة البائع 1.0 — المحاسب الذكي لمكاتب الحوالات 8. لا تتصل بالإنترنت؛ كل شيء يبقى على هذا الجهاز.</footer>
+</div>
+<script>{{CORE}}</script>
+<script>{{UI}}</script>
+</body>
+</html>

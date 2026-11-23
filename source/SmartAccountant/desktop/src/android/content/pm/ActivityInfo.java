@@ -1,0 +1,2 @@
+package android.content.pm;
+public class ActivityInfo { public static final int SCREEN_ORIENTATION_PORTRAIT = 1, SCREEN_ORIENTATION_UNSPECIFIED = -1; public String packageName, name; }
