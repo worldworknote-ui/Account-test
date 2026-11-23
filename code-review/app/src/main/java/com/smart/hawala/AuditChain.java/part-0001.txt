@@ -1,0 +1,95 @@
+1: package com.smart.hawala;
+2: 
+3: import java.nio.charset.StandardCharsets;
+4: import java.security.MessageDigest;
+5: import java.util.List;
+6: 
+7: /**
+8:  * سجل العمليات المتسلسل (منطق بحت): بصمة كل سطر تشمل بصمة السطر الذي قبله، فحذف سطر أو تعديله أو تغيير ترتيبه
+9:  * يكسر السلسلة من موضعه ويظهر في «فحص سجل العمليات». البصمة على النصوص الأصلية (لا المشفّرة)
+10:  * فتبقى صحيحة بعد النسخ الاحتياطي والاستعادة على هاتف آخر.
+11:  * الأسطر الأقدم من 8.0 بلا بصمة: تُعدّ «قبل التسلسل» ولا تُحسب خللًا.
+12:  */
+13: public final class AuditChain {
+14:     private AuditChain() {}
+15: 
+16:     public static final class Row {
+17:         public long id, entityId, createdAt;
+18:         public String action, entity, user, reason, prev, hash;
+19:     }
+20: 
+21:     /** SHA-256 لحقول مسبوقة بأطوالها (لا لبس بين «أ|ب» و«أ» + «|ب»). */
+22:     public static String hash(String prev, String action, String entity, long entityId, String user, String reason, long createdAt) {
+23:         try {
+24:             MessageDigest md = MessageDigest.getInstance("SHA-256");
+25:             StringBuilder b = new StringBuilder("SA-AUDIT-1");
+26:             for (String s : new String[]{prev, action, entity, Long.toString(entityId), user, reason, Long.toString(createdAt)}) {
+27:                 String v = s == null ? "" : s;
+28:                 b.append('|').append(v.length()).append(':').append(v);
+29:             }
+30:             return BackupFormat.hex(md.digest(b.toString().getBytes(StandardCharsets.UTF_8)));
+31:         } catch (Exception e) {
+32:             throw new IllegalStateException(e);
+33:         }
+34:     }
+35: 
+36:     public static String hash(Row r) { return hash(r.prev, r.action, r.entity, r.entityId, r.user, r.reason, r.createdAt); }
+37: 
+38:     public static final class Result {
+39:         /** أسطر قبل بدء التسلسل (من إصدارات أقدم). */
+40:         public int legacy;
+41:         /** أسطر متسلسلة سليمة. */
+42:         public int ok;
+43:         /** أول سطر انكسرت عنده السلسلة، أو -1. */
+44:         public long brokenAt = -1;
+45:         public String problem = "";
+46: 
+47:         public boolean intact() { return brokenAt < 0 && problem.isEmpty(); }
+48:     }
+49: 
+50:     /**
+51:      * يتحقق من الأسطر بترتيب رقمها. head = آخر بصمة يحفظها الهاتف (فارغ = غير معروف، مثلًا بعد نقل البيانات):
+52:      * إن اختلفت عن بصمة آخر سطر فقد حُذفت أسطر من آخر السجل.
+53:      */
+54:     public static Result verify(List<Row> rows, String head) { return verify(rows, head, null); }
+55: 
+56:     /**
+57:      * 12.7: يكمل التحقق من نقطة تحقّق سابقة (startPrev = بصمة آخر سطر فُحص وسَلِم): الفحص اليومي يقرأ الأسطر الجديدة فقط.
+58:      * null = من أول السجل.
+59:      */
+60:     public static Result verify(List<Row> rows, String head, String startPrev) {
+61:         Result res = new Result();
+62:         String last = startPrev;
+63:         boolean started = startPrev != null;
+64:         for (Row r : rows) {
+65:             if (r.hash == null || r.hash.isEmpty()) {
+66:                 if (!started) {
+67:                     res.legacy++;
+68:                     continue;
+69:                 }
+70:                 res.brokenAt = r.id;
+71:                 res.problem = "سطر بلا بصمة بعد بدء التسلسل (أُضيف من خارج التطبيق)";
+72:                 return res;
+73:             }
+74:             // أول سطر متسلسل يبدأ من فراغ؛ وكل سطر بعده يحمل بصمة الذي قبله
+75:             String expectPrev = started ? last : "";
+76:             if (!expectPrev.equals(r.prev == null ? "" : r.prev)) {
+77:                 res.brokenAt = r.id;
+78:                 res.problem = started ? "سطر محذوف أو مُعاد ترتيبه قبل هذا السطر" : "أسطر محذوفة من بداية السجل المتسلسل";
+79:                 return res;
+80:             }
+81:             if (!hash(r).equals(r.hash)) {
+82:                 res.brokenAt = r.id;
+83:                 res.problem = "محتوى السطر عُدّل بعد كتابته";
+84:                 return res;
+85:             }
+86:             started = true;
+87:             last = r.hash;
+88:             res.ok++;
+89:         }
+90:         if (head != null && !head.isEmpty() && last != null && !head.equals(last)) {
+91:             res.problem = "آخر السجل لا يطابق ما حفظه الهاتف: حُذفت أسطر من نهايته أو استُبدل السجل";
+92:         }
+93:         return res;
+94:     }
+95: }

@@ -1,0 +1,156 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.io.File;
+6: import java.util.List;
+7: import javax.swing.*;
+8: import org.json.JSONObject;
+9: 
+10: /**
+11:  * 10.0: «المزامنة بين الأجهزة» على الماك والويندوز (المحرك نفسه في SyncEngine): اختيار المجلد المشترك (داخل Google Drive أو
+12:  * OneDrive أو Dropbox أو Syncthing)، وإنشاء الخزنة أو الانضمام إليها، والحالة والأجهزة والتعارضات. المزامنة التلقائية كل دقيقة.
+13:  */
+14: final class SyncView extends View {
+15:     SyncView(App app) { super(app, "المزامنة بين الأجهزة"); }
+16: 
+17:     /** 10.2: الناقل المختار: «drive» أو «server» أو «folder». */
+18:     static String transport(Db db) { return db.setting("sync_transport", "folder"); }
+19: 
+20:     static SyncFolder folder(Db db) { return folder(db, transport(db)); }
+21: 
+22:     static SyncFolder folder(Db db, String kind) {
+23:         if ("drive".equals(kind)) return new DriveSyncFolder(new DeskDriveAuth(db));
+24:         if ("server".equals(kind)) {
+25:             String url = db.setting("sync_server", "");
+26:             if (url.isEmpty()) return null;
+27:             String v = db.setting("sync_server_vault", "");
+28:             if (v.isEmpty()) v = SyncEngine.status(db).vaultId;
+29:             return new HttpSyncFolder(url, v, db.setting("sync_server_key", ""));
+30:         }
+31:         String d = db.setting("sync_dir", "");
+32:         return d.isEmpty() ? null : new FileSyncFolder(new File(d));
+33:     }
+34: 
+35:     static String kindName(String k) {
+36:         switch (k) {
+37:             case "drive": return "Google Drive مباشرة";
+38:             case "server": return "خادم المزامنة الخاص بك";
+39:             default: return "مجلد مشترك";
+40:         }
+41:     }
+42: 
+43:     @Override void refresh() {
+44:         clear();
+45:         subtitle.setText("بياناتك واحدة على الهاتف والماك والويندوز — مشفّرة بالكامل (النسخة المدفوعة)");
+46:         SyncEngine.Status st = SyncEngine.status(db);
+47:         int w = textWidth();
+48:         if (!License.current.sync()) {
+49:             Ui.Card c = Ui.card();
+50:             c.add(Ui.heading("ميزة في النسخة المدفوعة"));
+51:             c.add(Ui.para("المزامنة تجعل بياناتك واحدة على كل أجهزتك. كل جهاز يسجّل ويعدّل، وتصل التغييرات للبقية مشفّرة عبر مجلد سحابي تختاره. "
+52:                     + "بياناتك على هذا الجهاز تعمل كما هي دون مزامنة.", 14, Ui.ink, w));
+53:             add(c);
+54:             action(Ui.primary("الترخيص", e -> app.go("license")));
+55:             if (!st.enabled) {
+56:                 done();
+57:                 return;
+58:             }
+59:         }
+60:         if (!st.enabled) intro(st, w);
+61:         else status(st, w);
+62:         done();
+63:     }
+64: 
+65:     void intro(SyncEngine.Status st, int w) {
+66:         if (!st.leftReason.isEmpty()) add(Ui.para("المزامنة متوقفة على هذا الجهاز: " + st.leftReason + ". انضم من جديد للمتابعة.", 14, Ui.red, w));
+67:         Ui.Card c = Ui.card();
+68:         c.add(Ui.heading("كيف تعمل؟"));
+69:         c.add(Ui.para("• بياناتك تبقى على كل جهاز وتعمل دون إنترنت.\n• كل جهاز يرسل تغييراته كملفات مشفّرة ويستلم تغييرات الأجهزة الأخرى. تنتقل الحركات الجديدة فقط.\n"
+70:                 + "• الناقل (Google أو خادمك أو المجلد) لا يرى شيئًا: لا أسماء ولا مبالغ.\n"
+71:                 + "• الإلغاء نفسه من جهازين يُحسب مرة واحدة، وتعديل الحركة نفسها من جهازين يُبقي الأسبق ويعرض الآخر للمراجعة.", 14, Ui.ink, w));
+72:         add(c);
+73:         space(10);
+74:         if (!app.can(Auth.Perm.SYNC)) {
+75:             add(Ui.para("إعداد المزامنة لمن يملك صلاحية «إدارة المزامنة».", 13.5f, Ui.muted, w));
+76:             return;
+77:         }
+78:         add(Ui.row(Ui.ghost("شرح مفصّل لكل طريقة…", e -> help(transport(db))), Box.createHorizontalGlue()));
+79:         space(6);
+80:         add(Ui.heading("اختر طريقة المزامنة (الطريقة نفسها على كل الأجهزة)"));
+81:         String kind = transport(db);
+82:         ButtonGroup bg = new ButtonGroup();
+83:         String[][] opts = {{"drive", "Google Drive مباشرة — الأسهل: تسجّل بحساب Google نفسه على كل جهاز، وتصل التغييرات خلال ثوانٍ."},
+84:                 {"server", "خادم المزامنة الخاص بك — الأسرع: خادم تملكه (مرفق مع التطبيق)."},
+85:                 {"folder", "مجلد مشترك — داخل Google Drive أو OneDrive أو Dropbox أو Syncthing على هذا الجهاز."}};
+86:         for (String[] o : opts) {
+87:             JRadioButton rb = new JRadioButton(o[1], o[0].equals(kind));
+88:             rb.setOpaque(false);
+89:             rb.setFont(Ui.font(14, o[0].equals(kind)));
+90:             rb.addActionListener(e -> {
+91:                 db.setSettingQuiet("sync_transport", o[0]);
+92:                 refresh();
+93:             });
+94:             bg.add(rb);
+95:             add(Ui.row(rb, Box.createHorizontalGlue()));
+96:         }
+97:         space(10);
+98:         if (!License.current.sync()) return;
+99:         if ("drive".equals(kind)) {
+100:             String[] cl = DeskDriveAuth.client(db);
+101:             if (cl == null) {
+102:                 add(Ui.para("لربط Google Drive على الكمبيوتر يلزم «معرّف عميل Google للكمبيوتر» مرة واحدة (من مشروع Google Cloud الخاص بالتطبيق — انظر دليل الإصدار).", 13.5f, Ui.goldInk, w));
+103:                 add(Ui.row(Ui.ghost("لصق معرّف العميل…", e -> clientDialog()), Box.createHorizontalGlue()));
+104:                 return;
+105:             }
+106:             boolean ok = DeskDriveAuth.connected();
+107:             String acct = db.setting("drive_account", "");
+108:             add(Ui.row(Ui.primary(ok ? "✓ متصل" + (acct.isEmpty() ? "" : " بـ " + acct) + " — تغيير الحساب…" : "1) اختيار حساب Google وتسجيل الدخول…", e -> driveLogin(this::refresh)), Ui.ghost("تعديل معرّف العميل…", e -> clientDialog()), Box.createHorizontalGlue()));
+109:             if (!ok) return;
+110:         } else if ("server".equals(kind)) {
+111:             String cur = db.setting("sync_server", ""), v0 = db.setting("sync_server_vault", "");
+112:             Ui.Field url = Ui.field("عنوان الخادم أو رابط الانضمام");
+113:             url.setText(cur.isEmpty() ? "" : v0.isEmpty() ? cur : HttpSyncFolder.link(cur, v0));
+114:             url.setComponentOrientation(ComponentOrientation.LEFT_TO_RIGHT);
+115:             JPasswordField key = Ui.password();
+116:             key.setText(db.setting("sync_server_key", ""));
+117:             add(Ui.labeled("عنوان الخادم (على الجهاز الرئيسي) أو رابط الانضمام (على بقية الأجهزة)", url));
+118:             add(Ui.labeled("رمز الخادم (إن طلبه خادمك)", key));
+119:             space(6);
+120:             add(Ui.row(Ui.primary("1) حفظ وفحص الاتصال", e -> {
+121:                 String[] pv = HttpSyncFolder.parseLink(url.val());
+122:                 String k = new String(key.getPassword()).trim();
+123:                 try {
+124:                     HttpSyncFolder.checkUrl(pv[0]);
+125:                 } catch (Exception ex) {
+126:                     Ui.error(this, ex);
+127:                     return;
+128:                 }
+129:                 Ui.busy(this, "جارٍ فحص الخادم…", p -> new HttpSyncFolder(pv[0], pv[1], k).ping(), msg -> {
+130:                     db.setSettingQuiet("sync_server", pv[0]);
+131:                     db.setSettingQuiet("sync_server_vault", pv[1] == null ? "" : pv[1]);
+132:                     db.setSettingQuiet("sync_server_key", k);
+133:                     Ui.toast(msg);
+134:                     refresh();
+135:                 });
+136:             }), Box.createHorizontalGlue()));
+137:             if (cur.isEmpty()) return;
+138:         } else {
+139:             String dir = db.setting("sync_dir", "");
+140:             add(Ui.row(Ui.primary("1) اختيار مجلد المزامنة…", e -> pick()), Box.createHorizontalGlue()));
+141:             if (dir.isEmpty()) return;
+142:             space(6);
+143:             add(Ui.label("المجلد: " + dir, 13, Ui.muted, false));
+144:         }
+145:         space(10);
+146:         boolean exists;
+147:         try {
+148:             exists = new SyncEngine(db, folder(db)).vaultExists();
+149:         } catch (Exception e) {
+150:             add(Ui.para("تعذر الاتصال: " + Ui.friendly(e), 14, Ui.red, w));
+151:             return;
+152:         }
+153:         if (exists) {
+154:             add(Ui.para("وُجدت خزنة مزامنة: انضم إليها بكلمة سرها (تُستبدل بيانات هذا الجهاز ببيانات المزامنة؛ احفظ نسخة احتياطية أولًا إن كان فيه ما تحتاجه).", 14, Ui.ink, w));
+155:             add(Ui.row(Ui.primary("2) الانضمام إلى المزامنة…", e -> join()), Box.createHorizontalGlue()));
+156:         } else {

@@ -1,0 +1,141 @@
+638:                     x[2]++;
+639:                     BigDecimal rate = rajeRate(t, dec(in, cur));
+640:                     if (rate != null) {
+641:                         x[3] += t.amount;
+642:                         x[4] += BigDecimal.valueOf(t.amount).multiply(BigDecimal.valueOf(100)).divide(rate, 0, java.math.RoundingMode.HALF_UP).longValue();
+643:                     }
+644:                 }
+645:             }
+646:             if (cur == null) continue;
+647:             add(f.perOffice, t.officeId + "|" + cur, got, paid);
+648:             add(f.perCurrency, cur, got, paid);
+649:             add(f.perMonth.computeIfAbsent(monthKey(t.createdAt), k -> new TreeMap<>()), cur, got, paid);
+650:         }
+651:         return f;
+652:     }
+653: 
+654:     static void add(Map<String, long[]> m, String k, long got, long paid) {
+655:         long[] x = m.computeIfAbsent(k, z -> new long[2]);
+656:         x[0] += got;
+657:         x[1] += paid;
+658:     }
+659: 
+660:     static void feesSection(Report r, Input in) {
+661:         Fees f = fees(in, in.now - 365 * DAY);
+662:         Report.Section s = r.section("الأجور لنا وعلينا — آخر 12 شهرًا", "الأجور");
+663:         for (Map.Entry<String, long[]> e : f.perCurrency.entrySet()) {
+664:             long[] x = e.getValue();
+665:             s.kv("بـ" + e.getKey(), "قبضت " + fmt(in, e.getKey(), x[0]) + "، ودفعت " + fmt(in, e.getKey(), x[1]) + " — الصافي " + (x[0] >= x[1] ? "ربح " : "خسارة ")
+666:                     + fmt(in, e.getKey(), Math.abs(x[0] - x[1])), x[0] < x[1]);
+667:         }
+668:         if (f.fromDescription > 0) s.kv("منها حركات أجور مستقلة", f.fromDescription + " حركة — سجّل الأجرة في خانتها مع الحوالة لتعرف ربح كل حوالة", false);
+669:         s.col("المكتب", 1.8f, Report.TEXT).col("العملة", 0.6f, Report.TEXT).col("أجور لنا", 1f, Report.MONEY).col("أجور علينا", 1f, Report.MONEY).col("الصافي", 1f, Report.BAL);
+670:         List<Map.Entry<String, long[]>> l = new ArrayList<>(f.perOffice.entrySet());
+671:         Collections.sort(l, (a, b) -> Long.compare(a.getValue()[0] - a.getValue()[1], b.getValue()[0] - b.getValue()[1]));
+672:         for (Map.Entry<String, long[]> e : l) {
+673:             String[] k = e.getKey().split("\\|", 2);
+674:             long[] x = e.getValue();
+675:             s.row(x[0] < x[1] ? Report.BOLD : Report.NORMAL, name(in, Long.parseLong(k[0])), k[1], money(in, k[1], x[0]), money(in, k[1], x[1]), new Report.Bal(x[0] - x[1], dec(in, k[1])));
+676:         }
+677:         s.note = "المكاتب التي تدفع لها أجورًا أكثر مما تأخذ أولًا: راجع تسعيرها أو غيّر الطريق.";
+678: 
+679:         // شهريًا
+680:         Report.Section m = r.section("صافي الأجور شهريًا", "الأجور شهريًا");
+681:         List<String> curs = new ArrayList<>(f.perCurrency.keySet());
+682:         m.col("الشهر", 1f, Report.TEXT);
+683:         for (String c : curs) m.col("صافي " + c, 1.2f, Report.BAL);
+684:         List<Integer> months = new ArrayList<>(f.perMonth.keySet());
+685:         Collections.reverse(months);
+686:         for (int mk : months) {
+687:             Object[] cells = new Object[1 + curs.size()];
+688:             cells[0] = monthLabel(mk);
+689:             for (int i = 0; i < curs.size(); i++) {
+690:                 long[] x = f.perMonth.get(mk).get(curs.get(i));
+691:                 cells[1 + i] = new Report.Bal(x == null ? 0 : x[0] - x[1], dec(in, curs.get(i)));
+692:             }
+693:             m.row(Report.NORMAL, cells);
+694:         }
+695: 
+696:         // 11.6: لا قسم منفصلًا لـ«الراجع»: أجوره داخل «الأجور لنا وعلينا» أعلاه
+697: 
+698:         // فرق العملة
+699:         Map<String, List<Model.Tx>> pairs = new LinkedHashMap<>();
+700:         for (Model.Tx t : in.txs) if (active(t) && t.isFx() && t.createdAt >= in.now - 365 * DAY) pairs.computeIfAbsent(t.pairUuid, k -> new ArrayList<>()).add(t);
+701:         if (!pairs.isEmpty()) {
+702:             Report.Section x = r.section("تبديل العملات — آخر 12 شهرًا", "تبديل العملات");
+703:             x.col("التاريخ", 1f, Report.DATE).col("المكتب", 1.6f, Report.TEXT).col("لنا", 1.2f, Report.TEXT).col("علينا", 1.2f, Report.TEXT).col("السعر", 0.8f, Report.TEXT)
+704:                     .col("الفرق بالدولار بسعر اليوم", 1.2f, Report.TEXT);
+705:             BigDecimal total = BigDecimal.ZERO;
+706:             int priced = 0;
+707:             for (List<Model.Tx> legs : pairs.values()) {
+708:                 Model.Tx us = null, them = null;
+709:                 for (Model.Tx t : legs) {
+710:                     if (Model.TYPE_DEBIT.equals(t.type)) us = t;
+711:                     else them = t;
+712:                 }
+713:                 if (us == null || them == null) continue;
+714:                 BigDecimal ru = in.usdRates.get(us.currency), rt = in.usdRates.get(them.currency);
+715:                 String diff = "—";
+716:                 if (ru != null && rt != null) {
+717:                     BigDecimal d = BigDecimal.valueOf(us.amount, dec(in, us.currency)).multiply(ru)
+718:                             .subtract(BigDecimal.valueOf(them.amount, dec(in, them.currency)).multiply(rt)).setScale(2, java.math.RoundingMode.HALF_UP);
+719:                     total = total.add(d);
+720:                     priced++;
+721:                     diff = d.toPlainString();
+722:                 }
+723:                 x.row(Report.NORMAL, new Report.DateV(us.createdAt), name(in, us.officeId), fmt(in, us.currency, us.amount), fmt(in, them.currency, them.amount), us.fxRate, diff);
+724:             }
+725:             x.kv("عمليات التبديل", pairs.size() + "", false);
+726:             if (priced > 0) x.kv("فرق العملة التقديري", (total.signum() >= 0 ? "ربح " : "خسارة ") + total.abs().toPlainString() + " USD بأسعار اليوم المحفوظة", true);
+727:             x.note = "تقدير: يُقوَّم المبلغان بسعر الصرف المحفوظ في التطبيق الآن، لا بسعر يوم التبديل.";
+728:         }
+729:     }
+730: 
+731:     /** الأجرة ÷ المبلغ (كلاهما بالوحدات الصغرى) نسبةً مئوية بثلاثة منازل على الأكثر. */
+732:     static String rateText(long fee, long base) {
+733:         if (base <= 0) return "—";
+734:         return BigDecimal.valueOf(fee).multiply(BigDecimal.valueOf(100)).divide(BigDecimal.valueOf(base), 3, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString() + "%";
+735:     }
+736: 
+737:     // ===================================================================================
+738:     // 7) المرتجعات والتصحيحات
+739:     // ===================================================================================
+740: 
+741:     /** المكتب ← {راجعة، تعديلات، إلغاءات} منذ from. */
+742:     public static Map<Long, long[]> returns(Input in, long from) {
+743:         Set<Long> replaced = new HashSet<>();
+744:         for (Model.Tx t : in.txs) if (t.replacesId != null) replaced.add(t.replacesId);
+745:         Map<Long, long[]> m = new HashMap<>();
+746:         for (Model.Tx t : in.txs) {
+747:             if (t.createdAt < from) continue;
+748:             long[] x = m.computeIfAbsent(t.officeId, k -> new long[3]);
+749:             if (active(t) && returnRow(t)) x[0]++;
+750:             if (active(t) && t.replacesId != null) x[1]++;
+751:             if ("CANCELLED".equals(t.status) && !replaced.contains(t.id)) x[2]++;
+752:         }
+753:         return m;
+754:     }
+755: 
+756:     static void returnsSection(Report r, Input in) {
+757:         Map<Long, long[]> m = returns(in, in.now - 365 * DAY);
+758:         long ret = 0;
+759:         for (long[] x : m.values()) ret += x[0];
+760:         List<Map.Entry<Long, long[]>> l = new ArrayList<>(m.entrySet());
+761:         l.removeIf(e -> e.getValue()[0] + e.getValue()[1] + e.getValue()[2] == 0);
+762:         Collections.sort(l, (a, b) -> Long.compare(b.getValue()[0] + b.getValue()[1] + b.getValue()[2], a.getValue()[0] + a.getValue()[1] + a.getValue()[2]));
+763:         Report.Section s = r.section("المرتجعات والتصحيحات — آخر 12 شهرًا", "المرتجعات");
+764:         s.kv("حوالات أُعيدت (البيان يذكر «مرتجع» أو «رجعت» أو «رجوع»)", ret + " عملية", ret > 0);
+765:         if (!l.isEmpty()) s.kv("أكثرها مع", "«" + name(in, l.get(0).getKey()) + "»", false);
+766:         s.col("المكتب", 1.8f, Report.TEXT).col("مُعادة", 0.8f, Report.INT).col("تعديلات", 0.8f, Report.INT).col("إلغاءات", 0.8f, Report.INT);
+767:         for (Map.Entry<Long, long[]> e : l) s.row(Report.NORMAL, name(in, e.getKey()), e.getValue()[0], e.getValue()[1], e.getValue()[2]);
+768:         s.note = "كل حوالة مُعادة وقت وأجور ضائعة: اسأل عن سببها، وكثرة التعديل مع مكتب تعني اتفاقًا غير واضح. («راجع» أجرة وليست إرجاعًا: هي ضمن «الأجور لنا وعلينا».)";
+769:     }
+770: 
+771:     // ===================================================================================
+772:     // 8) الخدمات والوجهات
+773:     // ===================================================================================
+774: 
+775:     static void servicesSection(Report r, Input in) {
+776:         long from = in.now - 365 * DAY;
+777:         Map<String, Map<String, Long>> sv = new TreeMap<>(), dv = new TreeMap<>();
+778:         Map<String, Long> sc = new HashMap<>(), dc = new HashMap<>();

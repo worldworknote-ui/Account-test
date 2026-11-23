@@ -1,0 +1,163 @@
+1: #!/usr/bin/env python3
+2: """أداة البائع في متصفح حقيقي (Chromium): المفتاح، الفحص، الإصدار، السجل، النقل بإيصال، وحماية العرض من النصوص الضارة.
+3: الاستخدام: python3 e2e_vendor.py <أداة-البائع.html> <requests.json من make-requests.js> <مجلد مفاتيح البائع> <مجلد الإخراج>"""
+4: import json
+5: import os
+6: import sys
+7: from playwright.sync_api import sync_playwright
+8: 
+9: HTML, REQS, KEYS, OUT = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+10: os.makedirs(OUT, exist_ok=True)
+11: R = json.load(open(REQS, encoding="utf-8"))
+12: fails = 0
+13: 
+14: 
+15: def check(name, ok, extra=None):
+16:     global fails
+17:     print(("  PASS " if ok else "  FAIL ") + name + ("" if ok or extra is None else " — " + str(extra)[:400]))
+18:     if not ok:
+19:         fails += 1
+20: 
+21: 
+22: def text(page, sel):
+23:     return page.inner_text(sel)
+24: 
+25: 
+26: with sync_playwright() as p:
+27:     b = p.chromium.launch()
+28:     ctx = b.new_context(viewport={"width": 1100, "height": 900}, accept_downloads=True, locale="ar")
+29:     page = ctx.new_page()
+30:     errors = []
+31:     page.on("pageerror", lambda e: errors.append(str(e)))
+32:     page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+33:     requests = []
+34:     page.on("request", lambda r: requests.append(r.url) if not r.url.startswith(("file:", "data:", "blob:")) else None)
+35:     page.goto("file://" + os.path.abspath(HTML))
+36:     page.wait_for_timeout(300)
+37:     check("تفتح بلا أخطاء", not errors, errors)
+38:     check("بلا مفتاح في البداية", "لا يوجد مفتاح" in text(page, "#keyPill"))
+39: 
+40:     # ---------------------------------------------------------------- المفتاح
+41:     page.click("[data-tab=keys]")
+42:     page.set_input_files("#keyFile", os.path.join(KEYS, "vendor-k1-private.pem"))
+43:     page.wait_for_selector("#keyPill.on", timeout=10000)
+44:     check("تحميل المفتاح k1", "k1" in text(page, "#keyPill"))
+45:     page.fill("#kp1", "عبارة مرور طويلة للاختبار")
+46:     page.fill("#kp2", "عبارة مرور طويلة للاختبار")
+47:     page.click("#keySeal")
+48:     page.wait_for_selector("#keyMsg .msg.ok", timeout=20000)
+49:     stored = page.evaluate("localStorage.getItem('sa8v.key')")
+50:     pem = open(os.path.join(KEYS, "vendor-k1-private.pem")).read()
+51:     body = "".join(pem.strip().splitlines()[1:-1])
+52:     check("المفتاح محفوظ مشفّرًا (لا يظهر نصه)", stored and body[20:60] not in stored)
+53:     page.reload()
+54:     page.wait_for_timeout(300)
+55:     check("بعد إعادة الفتح: لا مفتاح حتى تُكتب العبارة", "لا يوجد مفتاح" in text(page, "#keyPill"))
+56:     page.click("[data-tab=keys]")
+57:     page.fill("#kp1", "خطأ خطأ خطأ خطأ")
+58:     page.click("#keyOpen")
+59:     page.wait_for_selector("#keyMsg .msg.err", timeout=20000)
+60:     check("عبارة خاطئة تُرفض", "غير صحيحة" in text(page, "#keyMsg"))
+61:     page.fill("#kp1", "عبارة مرور طويلة للاختبار")
+62:     page.click("#keyOpen")
+63:     page.wait_for_selector("#keyPill.on", timeout=20000)
+64:     check("فتح المفتاح المحفوظ", "k1" in text(page, "#keyPill"))
+65: 
+66:     # ---------------------------------------------------------------- تفعيل جديد
+67:     page.click("[data-tab=sale]")
+68:     check("زر الإصدار معطّل قبل الفحص", page.is_disabled("#issue"))
+69:     page.fill("#reqText", R["good"])
+70:     page.click("#reqCheck")
+71:     page.wait_for_selector("#reqOut .facts", timeout=10000)
+72:     out = text(page, "#reqOut")
+73:     check("الطلب يُقرأ من وسط الرسالة", "2026-0153" in out and "Samsung" in out, out)
+74:     check("تحذير: بلا سلسلة تصديق", "سلسلة تصديق" in out, out)
+75:     check("زر الإصدار مفعّل", not page.is_enabled("#issue") is False)
+76:     check("رقم الرخصة التالي", page.input_value("#sLid") == R["lid"], page.input_value("#sLid"))
+77:     page.fill("#sCustomer", "مكتب الأمل للصرافة")
+78:     page.fill("#sPhone", "+90 555 000 0000")
+79:     page.fill("#sPrice", "150 USD")
+80:     page.click("#issue")
+81:     page.wait_for_selector("#issueOut textarea.token", timeout=10000)
+82:     token = page.input_value("#issueOut textarea.token")
+83:     check("صدر الرمز", token.count(".") == 1 and len(token) > 100, token[:80])
+84:     fields = page.evaluate("async ([t, pub]) => await VT.verifyToken(t, VT.b64ToBytes(pub))", [token, R["pub1"]])
+85:     check("الرمز يتحقق بالمفاتيح المضمّنة في التطبيق", fields and fields.get("lid") == R["lid"] and fields.get("ft") == "all" and fields.get("kid") == "k1", fields)
+86:     with open(os.path.join(OUT, "e2e-token.json"), "w", encoding="utf-8") as f:
+87:         json.dump({"devicePub": R["pub1"], "token": token, "lid": R["lid"]}, f)
+88:     check("زر الإصدار يتعطل بعد الإصدار (لا تكرار)", page.is_disabled("#issue"))
+89: 
+90:     # طلب بسلسلة حقيقية لتطبيق آخر
+91:     page.fill("#reqText", R["other"])
+92:     page.click("#reqCheck")
+93:     page.wait_for_selector("#reqOut .msg.err", timeout=20000)
+94:     out = text(page, "#reqOut")
+95:     check("سلسلة Google لتطبيق آخر: أخطاء واضحة", "التحدي" in out and "تطبيق آخر" in out, out)
+96:     check("الإصدار معطّل مع الأخطاء", page.is_disabled("#issue"))
+97:     page.check("#sOverride")
+98:     check("التجاوز الصريح يفعّل الزر", page.is_enabled("#issue"))
+99:     page.uncheck("#sOverride")
+100: 
+101:     # نص ضار في الطلب يُعرض نصًا
+102:     page.fill("#reqText", R["xss"])
+103:     page.click("#reqCheck")
+104:     page.wait_for_selector("#reqOut .facts", timeout=10000)
+105:     check("نص HTML في الطلب لا يُنفَّذ", page.evaluate("!window.__xss && !document.querySelector('#reqOut img')") and "<img" in text(page, "#reqOut .facts"))
+106: 
+107:     # ---------------------------------------------------------------- السجل
+108:     page.click("[data-tab=ledger]")
+109:     page.wait_for_timeout(200)
+110:     t = text(page, "#lTable")
+111:     check("السجل يعرض البيع", R["lid"] in t and "مكتب الأمل" in t, t)
+112:     with page.expect_download() as d:
+113:         page.click("#lCsv")
+114:     csv = open(d.value.path(), encoding="utf-8-sig").read()
+115:     check("تصدير CSV", R["lid"] in csv and "مكتب الأمل للصرافة" in csv)
+116:     with page.expect_download() as d:
+117:         page.click("#lBackup")
+118:     bk = json.load(open(d.value.path(), encoding="utf-8"))
+119:     check("نسخة السجل الاحتياطية", bk["licenses"][0]["lid"] == R["lid"] and bk["licenses"][0]["pub"] == R["pub1"])
+120: 
+121:     # ---------------------------------------------------------------- النقل بإيصال
+122:     page.click("[data-tab=move]")
+123:     page.wait_for_selector("#mList .pick", timeout=5000)
+124:     page.click("#mList .pick")
+125:     page.wait_for_selector("#mInfo .msg", timeout=5000)
+126:     check("بلا إيصال: النقل غير مسموح بعد", "مفقود" in text(page, "#mInfo"), text(page, "#mInfo"))
+127:     page.fill("#relText", R["receipt"])
+128:     page.click("#relCheck")
+129:     page.wait_for_selector("#relOut .msg", timeout=10000)
+130:     check("إيصال التحرير يتحقق", "إيصال صحيح" in text(page, "#relOut"), text(page, "#relOut"))
+131:     check("النقل مسموح برقم -T1", R["lid"] + "-T1" in text(page, "#mInfo"), text(page, "#mInfo"))
+132:     page.fill("#mReqText", R["second"])
+133:     page.click("#mReqCheck")
+134:     page.wait_for_selector("#mReqOut .facts", timeout=10000)
+135:     page.click("#mIssue")
+136:     page.wait_for_selector("#mIssueOut textarea.token", timeout=10000)
+137:     tok2 = page.input_value("#mIssueOut textarea.token")
+138:     f2 = page.evaluate("async ([t, pub]) => await VT.verifyToken(t, VT.b64ToBytes(pub))", [tok2, R["pub2"]])
+139:     check("رخصة الهاتف الجديد", f2 and f2.get("lid") == R["lid"] + "-T1", f2)
+140:     led = page.evaluate("JSON.parse(localStorage.getItem('sa8v.ledger'))")
+141:     old = [l for l in led["licenses"] if l["lid"] == R["lid"]][0]
+142:     check("القديمة «منقولة» ومضافة لقائمة الإلغاء", old["status"] == "moved" and R["lid"] in led["revoked"], old["status"])
+143:     check("رقم البيع التالي لم يتغير بالنقل", led["next"] == 2, led["next"])
+144: 
+145:     # ---------------------------------------------------------------- الهاتف
+146:     m = ctx.new_page()
+147:     m.set_viewport_size({"width": 390, "height": 840})
+148:     m.goto("file://" + os.path.abspath(HTML))
+149:     m.wait_for_timeout(300)
+150:     for tab in ["sale", "move", "ledger", "keys"]:
+151:         m.click("[data-tab=%s]" % tab)
+152:         m.wait_for_timeout(100)
+153:         w = m.evaluate("document.scrollingElement.scrollWidth - window.innerWidth")
+154:         check("عرض الهاتف 390px بلا تمرير أفقي (" + tab + ")", w <= 0, w)
+155:     page.screenshot(path=os.path.join(OUT, "vendor-desktop.png"), full_page=True)
+156:     m.click("[data-tab=sale]")
+157:     m.screenshot(path=os.path.join(OUT, "vendor-mobile.png"), full_page=True)
+158:     check("لا اتصال بالشبكة", not requests, requests)
+159:     check("بلا أخطاء في الصفحة", not errors, errors)
+160:     b.close()
+161: 
+162: print("ALL PASSED" if fails == 0 else "%d FAILED" % fails)
+163: sys.exit(1 if fails else 0)

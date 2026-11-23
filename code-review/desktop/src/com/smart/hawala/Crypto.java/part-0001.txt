@@ -1,0 +1,193 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.Context;
+4: import java.util.Base64;
+5: import java.util.LinkedHashMap;
+6: import java.util.Map;
+7: import javax.crypto.Cipher;
+8: import javax.crypto.SecretKey;
+9: import javax.crypto.spec.GCMParameterSpec;
+10: 
+11: /**
+12:  * نسخة الماك من Crypto (الواجهة نفسها التي تستدعيها Db): مفتاح البيانات AES-256 في سلسلة مفاتيح الماك،
+13:  * والحقول الحساسة بصيغة FieldCipher v2 نفسها التي في الهاتف. المفتاح لا يدخل النسخة الاحتياطية:
+14:  * النسخة تحمل الحقول مفكوكة داخل ملف مشفّر بكلمة مرور، وتُشفَّر من جديد بمفتاح الجهاز عند الاستعادة (هاتفًا كان أو ماكًا).
+15:  */
+16: public final class Crypto {
+17:     /** اسم ملف المفتاح في أندرويد (لا يُستعمل على الكمبيوتر: المفتاح في سلسلة المفاتيح). */
+18:     static final String DEK_PREFS = "field_key";
+19:     public static final String PLACEHOLDER = "[بيانات مشفرة غير قابلة للقراءة]";
+20:     static final String DEK_NAME = "dek_v2", CANARY = "canary";
+21: 
+22:     private static final int CACHE_MAX = 20000;
+23:     private static final Map<String, String> CACHE = new LinkedHashMap<String, String>(1024, 0.75f, true) {
+24:         @Override protected boolean removeEldestEntry(Map.Entry<String, String> e) { return size() > CACHE_MAX; }
+25:     };
+26: 
+27:     private static volatile SecretKey dek;
+28:     /** آخر سبب لعدم توفر المفتاح (للعرض). */
+29:     public static volatile String problem = "";
+30: 
+31:     private Crypto() {}
+32: 
+33:     /**
+34:      * يُستدعى مرة عند التشغيل قبل فتح القاعدة. إن كانت القاعدة موجودة والمفتاح مفقودًا لا يُولَّد مفتاح جديد
+35:      * (وإلا كُتبت نسخ احتياطية بحقول بديلة)؛ تظهر شاشة «مفتاح التشفير غير متاح» وتبقى الاستعادة من نسخة ممكنة.
+36:      */
+37:     public static synchronized void init(Context ctx) {
+38:         if (dek != null) return;
+39:         problem = "";
+40:         boolean dbExists = ctx.getDatabasePath(Db.NAME).exists();
+41:         try {
+42:             String s = SecretStore.get(DEK_NAME);
+43:             if (s != null) {
+44:                 dek = FieldCipher.key(Base64.getDecoder().decode(s));
+45:                 return;
+46:             }
+47:             if (dbExists) {
+48:                 problem = "قاعدة البيانات موجودة لكن مفتاحها غير موجود في سلسلة المفاتيح لهذا المستخدم.";
+49:                 return;
+50:             }
+51:             SecretKey k = FieldCipher.newKey();
+52:             String w = Base64.getEncoder().encodeToString(k.getEncoded());
+53:             SecretStore.put(DEK_NAME, w);
+54:             String back = SecretStore.get(DEK_NAME);
+55:             if (!w.equals(back)) {
+56:                 problem = "تعذر التحقق من حفظ المفتاح في سلسلة المفاتيح.";
+57:                 return;
+58:             }
+59:             dek = k;
+60:         } catch (Throwable t) {
+61:             problem = "تعذر الوصول إلى سلسلة المفاتيح: " + t.getMessage();
+62:             dek = null;
+63:         }
+64:     }
+65: 
+66:     public static boolean fast() { return dek != null; }
+67: 
+68:     /** 12.6: مفتاح قاعدة البيانات (SQLCipher) المشتق من مفتاح البيانات، أو null إن لم يتوفر. */
+69:     public static String dbKey() { return FieldCipher.dbKey(dek); }
+70: 
+71:     /** لا توجد في الماك حقول بالطريقة القديمة. */
+72:     public static boolean isLegacy(String s) {
+73:         if (s == null || s.isEmpty()) return false;
+74:         try {
+75:             byte[] in = Base64.getDecoder().decode(s);
+76:             return in.length > 0 && !FieldCipher.isV2(in);
+77:         } catch (IllegalArgumentException e) {
+78:             return false;
+79:         }
+80:     }
+81: 
+82:     private static SecretKey key() {
+83:         SecretKey k = dek;
+84:         if (k == null) throw new IllegalStateException("مفتاح البيانات غير متاح على هذا الجهاز" + (problem.isEmpty() ? "" : ": " + problem));
+85:         return k;
+86:     }
+87: 
+88:     public static String enc(String s) {
+89:         if (s == null) return null;
+90:         try {
+91:             String r = FieldCipher.encrypt(key(), s);
+92:             synchronized (CACHE) { CACHE.put(r, s); }
+93:             return r;
+94:         } catch (IllegalStateException e) {
+95:             throw e;
+96:         } catch (Exception e) {
+97:             throw new IllegalStateException("تعذر تشفير البيانات على هذا الجهاز", e);
+98:         }
+99:     }
+100: 
+101:     public static String decStrict(String s) throws Exception {
+102:         if (s == null) return null;
+103:         if (s.isEmpty()) return "";
+104:         synchronized (CACHE) {
+105:             String hit = CACHE.get(s);
+106:             if (hit != null) return hit;
+107:         }
+108:         byte[] in = Base64.getDecoder().decode(s);
+109:         if (!FieldCipher.isV2(in)) throw new IllegalStateException("حقل بصيغة لا تخص هذا الجهاز");
+110:         String out = FieldCipher.decrypt(key(), in);
+111:         synchronized (CACHE) { CACHE.put(s, out); }
+112:         return out;
+113:     }
+114: 
+115:     public static String dec(String s) {
+116:         if (s == null) return null;
+117:         try {
+118:             return decStrict(s);
+119:         } catch (Exception e) {
+120:             return PLACEHOLDER;
+121:         }
+122:     }
+123: 
+124:     public static byte[] encBytes(byte[] raw) {
+125:         try {
+126:             Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+127:             c.init(Cipher.ENCRYPT_MODE, key());
+128:             byte[] b = c.doFinal(raw);
+129:             byte[] iv = c.getIV();
+130:             byte[] o = new byte[1 + iv.length + b.length];
+131:             o[0] = (byte) iv.length;
+132:             System.arraycopy(iv, 0, o, 1, iv.length);
+133:             System.arraycopy(b, 0, o, 1 + iv.length, b.length);
+134:             return o;
+135:         } catch (Exception e) {
+136:             throw new IllegalStateException("تعذر تشفير الصورة على هذا الجهاز", e);
+137:         }
+138:     }
+139: 
+140:     public static byte[] decBytes(byte[] in) {
+141:         try {
+142:             int n = in[0] & 255;
+143:             byte[] iv = new byte[n];
+144:             System.arraycopy(in, 1, iv, 0, n);
+145:             Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+146:             c.init(Cipher.DECRYPT_MODE, key(), new GCMParameterSpec(128, iv));
+147:             return c.doFinal(in, 1 + n, in.length - 1 - n);
+148:         } catch (Exception e) {
+149:             throw new IllegalStateException("تعذر فك تشفير الصورة", e);
+150:         }
+151:     }
+152: 
+153:     /** فحص ذاتي: نص معروف شُفّر أول مرة يُفك الآن. */
+154:     public static boolean healthy(Context ctx) {
+155:         try {
+156:             String canary = SecretStore.get(CANARY);
+157:             if (canary == null) {
+158:                 String c = enc("ok");
+159:                 if (!"ok".equals(decStrict(c))) return false;
+160:                 SecretStore.put(CANARY, c);
+161:                 return true;
+162:             }
+163:             synchronized (CACHE) { CACHE.remove(canary); }
+164:             return "ok".equals(decStrict(canary));
+165:         } catch (Throwable e) {
+166:             return false;
+167:         }
+168:     }
+169: 
+170:     /** بعد ضياع المفتاح فقط، وبطلب صريح قبل استعادة نسخة: مفتاح جديد (الحقول القديمة غير مقروءة أصلًا). */
+171:     public static synchronized void resetForRestore(Context ctx) {
+172:         try {
+173:             SecretStore.delete(DEK_NAME);
+174:             SecretStore.delete(CANARY);
+175:         } catch (Exception ignored) {
+176:             // يُكتب فوقه
+177:         }
+178:         dek = null;
+179:         clearCache();
+180:         problem = "";
+181:         try {
+182:             SecretKey k = FieldCipher.newKey();
+183:             SecretStore.put(DEK_NAME, Base64.getEncoder().encodeToString(k.getEncoded()));
+184:             dek = k;
+185:         } catch (Throwable t) {
+186:             problem = "تعذر إنشاء مفتاح جديد: " + t.getMessage();
+187:         }
+188:     }
+189: 
+190:     public static void clearCache() {
+191:         synchronized (CACHE) { CACHE.clear(); }
+192:     }
+193: }

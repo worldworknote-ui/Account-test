@@ -1,0 +1,64 @@
+1: package android.graphics;
+2: 
+3: import java.awt.image.BufferedImage;
+4: import java.io.*;
+5: 
+6: public class BitmapFactory {
+7:     public static class Options {
+8:         public boolean inJustDecodeBounds, inMutable, inScaled = true;
+9:         public int inSampleSize = 1, outWidth, outHeight, inDensity, inTargetDensity;
+10:         public String outMimeType;
+11:         public Bitmap.Config inPreferredConfig = Bitmap.Config.ARGB_8888;
+12:     }
+13: 
+14:     public static Bitmap decodeByteArray(byte[] b, int off, int len) { return decodeByteArray(b, off, len, null); }
+15:     public static Bitmap decodeByteArray(byte[] b, int off, int len, Options o) {
+16:         return decodeStream(new ByteArrayInputStream(b, off, len), null, o);
+17:     }
+18:     public static Bitmap decodeFile(String path) { return decodeFile(path, null); }
+19:     public static Bitmap decodeFile(String path, Options o) {
+20:         try (InputStream in = new FileInputStream(path)) { return decodeStream(in, null, o); } catch (IOException e) { return null; }
+21:     }
+22:     public static Bitmap decodeStream(InputStream in) { return decodeStream(in, null, null); }
+23:     public static Bitmap decodeStream(InputStream in, Rect pad, Options o) {
+24:         try {
+25:             byte[] data = in.readAllBytes();
+26:             BufferedImage im = javax.imageio.ImageIO.read(new ByteArrayInputStream(data));
+27:             if (im == null) return null;
+28:             if (o != null) {
+29:                 o.outWidth = im.getWidth();
+30:                 o.outHeight = im.getHeight();
+31:                 o.outMimeType = data.length > 3 && (data[0] & 0xFF) == 0xFF ? "image/jpeg" : "image/png";
+32:                 if (o.inJustDecodeBounds) return null;
+33:                 if (o.inSampleSize > 1) {
+34:                     Bitmap b = new Bitmap(argb(im));
+35:                     return Bitmap.createScaledBitmap(b, Math.max(1, im.getWidth() / o.inSampleSize), Math.max(1, im.getHeight() / o.inSampleSize), true);
+36:                 }
+37:             }
+38:             return new Bitmap(argb(im));
+39:         } catch (Exception e) {
+40:             return null;
+41:         }
+42:     }
+43:     public static Bitmap decodeFileDescriptor(FileDescriptor fd, Rect pad, Options o) {
+44:         try (InputStream in = new FileInputStream(fd)) { return decodeStream(in, pad, o); } catch (IOException e) { return null; }
+45:     }
+46:     public static Bitmap decodeResource(android.content.res.Resources r, int id) {
+47:         android.graphics.drawable.Drawable d = r.getDrawable(id, null);
+48:         if (d == null) return null;
+49:         int w = Math.max(1, d.getIntrinsicWidth()), h = Math.max(1, d.getIntrinsicHeight());
+50:         Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+51:         d.setBounds(0, 0, w, h);
+52:         d.draw(new Canvas(b));
+53:         return b;
+54:     }
+55: 
+56:     static BufferedImage argb(BufferedImage im) {
+57:         if (im.getType() == BufferedImage.TYPE_INT_ARGB) return im;
+58:         BufferedImage o = new BufferedImage(im.getWidth(), im.getHeight(), BufferedImage.TYPE_INT_ARGB);
+59:         java.awt.Graphics2D g = o.createGraphics();
+60:         g.drawImage(im, 0, 0, null);
+61:         g.dispose();
+62:         return o;
+63:     }
+64: }

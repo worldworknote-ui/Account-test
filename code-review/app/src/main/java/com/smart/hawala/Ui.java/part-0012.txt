@@ -1,0 +1,164 @@
+1944:                     b.setTextColor(i == idx ? onColor(c) : colors == null ? muted : readable(c));
+1945:                 }
+1946:             }
+1947:             if (!scroll) {
+1948:                 if (view != null) {
+1949:                     final boolean anim = fire;
+1950:                     view.post(() -> place(anim));
+1951:                     place(fire);
+1952:                 }
+1953:             }
+1954:             if (fire && listener != null && idx >= 0) listener.picked(idx);
+1955:         }
+1956: 
+1957:         boolean none() { return selected < 0 || buttons.isEmpty(); }
+1958: 
+1959:         String label() { return none() ? null : buttons.get(selected).getText().toString(); }
+1960: 
+1961:         /** إطار أحمر حول الأزرار عند نسيان الاختيار. */
+1962:         void flagMissing(boolean missing) {
+1963:             if (missing) {
+1964:                 GradientDrawable g = round(debitBg, red, 16);
+1965:                 g.setStroke(dp(2), red, dp(6), dp(4));
+1966:                 view.setBackground(g);
+1967:                 if (scroll) view.setPadding(dp(3), dp(3), dp(3), dp(3));
+1968:             } else {
+1969:                 view.setBackground(track);
+1970:                 if (scroll) view.setPadding(0, 0, 0, 0);
+1971:             }
+1972:         }
+1973:     }
+1974: 
+1975:     Seg seg(String[] labels, int initial, OnPick l) {
+1976:         Seg s = new Seg(labels, null, initial, false);
+1977:         s.listener = l;
+1978:         body.addView(s.view, lp(-1, -2, 2));
+1979:         return s;
+1980:     }
+1981: 
+1982:     // ===================================================================================
+1983:     // العمل في الخلفية والأخطاء
+1984:     // ===================================================================================
+1985: 
+1986:     void busy(String msg, final Work w, final Done done) {
+1987:         if (busyRunning) {
+1988:             toast("هناك عملية جارية، انتظر حتى تنتهي.");
+1989:             return;
+1990:         }
+1991:         busyRunning = true;
+1992:         LinearLayout l = new LinearLayout(this);
+1993:         l.setOrientation(LinearLayout.HORIZONTAL);
+1994:         l.setGravity(Gravity.CENTER_VERTICAL);
+1995:         l.setPadding(dp(20), dp(20), dp(20), dp(20));
+1996:         l.addView(new ProgressBar(this));
+1997:         final TextView tv = text(msg, 16, dark, false);
+1998:         l.addView(tv, new LinearLayout.LayoutParams(0, -2, 1));
+1999:         final AlertDialog dlg = new AlertDialog.Builder(this).setView(l).setCancelable(false).create();
+2000:         dlg.show();
+2001:         final BackupManager.Progress progress = m -> runOnUiThread(() -> tv.setText(m));
+2002:         new Thread(() -> {
+2003:             Object res = null;
+2004:             Throwable err = null;
+2005:             try {
+2006:                 res = w.run(progress);
+2007:             } catch (Throwable t) {
+2008:                 err = t;
+2009:             }
+2010:             final Object fr = res;
+2011:             final Throwable fe = err;
+2012:             runOnUiThread(() -> {
+2013:                 busyRunning = false;
+2014:                 if (isFinishing() || isDestroyed()) return;
+2015:                 try {
+2016:                     dlg.dismiss();
+2017:                 } catch (Throwable ignored) {
+2018:                     // تجاهل
+2019:                 }
+2020:                 if (fe != null) {
+2021:                     try {
+2022:                         db.audit("OPERATION_FAILED", "busy", 0, fe.getClass().getSimpleName());
+2023:                     } catch (Throwable ignored) {
+2024:                         // تجاهل
+2025:                     }
+2026:                     error(fe);
+2027:                 } else {
+2028:                     try {
+2029:                         done.ok(fr);
+2030:                     } catch (Throwable t) {
+2031:                         error(t);
+2032:                     }
+2033:                 }
+2034:             });
+2035:         }, "smart-work").start();
+2036:     }
+2037: 
+2038:     void error(Throwable e) {
+2039:         if (isFinishing() || isDestroyed()) return;
+2040:         if (e instanceof Entitlements.LimitReached) {
+2041:             new AlertDialog.Builder(this).setTitle("حدود النسخة المجانية").setMessage(e.getMessage())
+2042:                     .setPositiveButton("الترخيص", (d, w) -> openLicense()).setNegativeButton("حسنًا", null).show();
+2043:             return;
+2044:         }
+2045:         new AlertDialog.Builder(this).setTitle("تعذر إكمال العملية").setMessage(friendly(e)).setPositiveButton("حسنًا", null).show();
+2046:     }
+2047: 
+2048:     /** شاشة الترخيص (تُفتح من رسالة بلوغ حدود المجاني). */
+2049:     void openLicense() {}
+2050: 
+2051:     static String friendly(Throwable e) {
+2052:         if (e instanceof BackupManager.BackupException) return ((BackupManager.BackupException) e).userMessage();
+2053:         if (e instanceof NumberFormatException) return "قيمة رقمية غير صحيحة. اكتب الأرقام فقط، مثال: 1500 أو 1500.50";
+2054:         if (e instanceof ArithmeticException) return "الرقم غير مقبول: عدد المنازل العشرية أكبر من المسموح لهذه العملة أو الرقم كبير جدًا.";
+2055:         if (e instanceof OutOfMemoryError) return "الذاكرة لا تكفي لهذه العملية. جرّب عددًا أقل من الحركات أو الصور.";
+2056:         if (e instanceof android.database.sqlite.SQLiteConstraintException) return "تعذر الحفظ لأن البيانات مرتبطة ببيانات أخرى أو مكررة.";
+2057:         for (Throwable c = e; c != null; c = c.getCause()) {
+2058:             if (c instanceof java.net.UnknownHostException) return netFriendly("unknownhost \"" + c.getMessage() + "\"");
+2059:             if (c instanceof java.net.ConnectException || c instanceof java.net.NoRouteToHostException) return netFriendly("failed to connect " + c.getMessage());
+2060:             if (c instanceof java.net.SocketTimeoutException) return netFriendly("timed out");
+2061:             if (c instanceof javax.net.ssl.SSLException) return netFriendly("handshake " + c.getMessage());
+2062:         }
+2063:         String m = e.getMessage();
+2064:         return m == null ? e.toString() : netFriendly(m);
+2065:     }
+2066: 
+2067:     /**
+2068:      * 11.2: أخطاء الشبكة بالعربية بدل رسائل النظام الإنجليزية (مثل «Unable to resolve host … No address associated with hostname»).
+2069:      * أي رسالة أخرى تعود كما هي.
+2070:      */
+2071:     static String netFriendly(String m) {
+2072:         if (m == null) return "";
+2073:         String l = m.toLowerCase(java.util.Locale.ROOT);
+2074:         String host = "";
+2075:         java.util.regex.Matcher h = java.util.regex.Pattern.compile("\"([a-z0-9.-]+\\.[a-z]{2,})\"").matcher(l);
+2076:         if (h.find()) host = h.group(1);
+2077:         else {
+2078:             java.util.regex.Matcher h2 = java.util.regex.Pattern.compile("([a-z0-9-]+(?:\\.[a-z0-9-]+)+\\.[a-z]{2,})").matcher(l);
+2079:             if (h2.find()) host = h2.group(1);
+2080:         }
+2081:         String where = host.isEmpty() ? "الخادم" : "الخادم (" + host + ")";
+2082:         if (l.contains("unable to resolve host") || l.contains("no address associated") || l.contains("nodename nor servname") || l.contains("name or service not known")
+2083:                 || l.contains("unknownhost"))
+2084:             return "لا يوجد اتصال بالإنترنت، أو تعذّر الوصول إلى " + where + ". تحقّق من الشبكة (أو أوقف VPN/المتصفح الآمن إن وُجد) ثم أعد المحاولة. لم يُفقد شيء: ما لم يُرسل يُرسل في المرة القادمة.";
+2085:         if (l.contains("network is unreachable") || l.contains("failed to connect") || l.contains("connection refused") || l.contains("connect timed out"))
+2086:             return "تعذّر الاتصال بـ" + where + ". تحقّق من الإنترنت ثم أعد المحاولة. لم يُفقد شيء.";
+2087:         if (l.contains("handshake") || l.contains("ssl") || l.contains("certificate") || l.contains("pkix"))
+2088:             return "انقطع الاتصال الآمن مع " + where + " قبل اكتماله. غالبًا الشبكة تحجب الاتصال أو تحتاج VPN/وكيلًا: "
+2089:                     + "جرّب شبكة أخرى، أو شغّل VPN ثم أعد المحاولة. لم يُفقد شيء.";
+2090:         if (l.contains("timeout") || l.contains("timed out"))
+2091:             return "الاتصال بطيء جدًا وانتهت المهلة. أعد المحاولة بعد قليل. لم يُفقد شيء.";
+2092:         return m;
+2093:     }
+2094: 
+2095:     void confirm(String title, String msg, String yes, final Runnable onYes) {
+2096:         new AlertDialog.Builder(this).setTitle(title).setMessage(msg).setPositiveButton(yes, (d, w) -> onYes.run()).setNegativeButton("إلغاء", null).show();
+2097:     }
+2098: 
+2099:     /** 10.5 (§11): يرسم سطور تأكيد الحركة: المكتب بالأحمر مع كلمة «المكتب:»، والرصيد بعد الحركة بخط عريض. */
+2100:     void fillConfirm(LinearLayout box, TxConfirm.View v) {
+2101:         box.removeAllViews();
+2102:         for (TxConfirm.Row r : v.rows) {
+2103:             TextView t;
+2104:             if (r.kind == TxConfirm.OFFICE) {
+2105:                 android.text.SpannableStringBuilder sb = new android.text.SpannableStringBuilder(r.label + ": ");
+2106:                 int s0 = sb.length();
+2107:                 sb.append(r.value);

@@ -1,0 +1,191 @@
+1: package com.smart.hawala;
+2: 
+3: import java.math.BigDecimal;
+4: import java.util.ArrayList;
+5: import java.util.Arrays;
+6: import java.util.HashMap;
+7: import java.util.HashSet;
+8: import java.util.List;
+9: import java.util.Map;
+10: import java.util.Set;
+11: 
+12: /**
+13:  * المبالغ المكتوبة بالحروف: العربية (الفصحى والشامية) والإنجليزية والتركية والرومانية والفرنسية والألمانية والإسبانية والروسية.
+14:  * أمثلة: «خمسمية» ← 500، «ألفين ونص» ← 2500، «five hundred» ← 500، «beş yüz» و«beşyüz» ← 500، «cinci sute» ← 500،
+15:  * «deux mille cinq cents» ← 2500، «fünfhundertzwanzig» ← 520، «dos mil quinientos» ← 2500، «пятьсот» ← 500.
+16:  * منطق بحت بلا أندرويد. الكلمات تُقارن بعد MessageParser.norm (بلا علامات وبحروف صغيرة).
+17:  */
+18: public final class NumberWords {
+19:     private NumberWords() {}
+20: 
+21:     static final int SMALL = 0, HUNDRED = 1, BIG = 2, HALF = 3, QUARTER = 4, ARTICLE = 5;
+22: 
+23:     /** كلمة رقمية: نوعها وقيمتها واللغات التي تنتمي إليها (حتى لا تُخلط لغتان في مبلغ واحد). */
+24:     static final class W {
+25:         final int kind;
+26:         final long value;
+27:         /** للمثنى العربي «ألفين» و«مليونين»: العدد المضمَّن (2). */
+28:         final int count;
+29:         final Set<String> langs;
+30: 
+31:         W(int kind, long value, int count, Set<String> langs) {
+32:             this.kind = kind;
+33:             this.value = value;
+34:             this.count = count;
+35:             this.langs = langs;
+36:         }
+37:     }
+38: 
+39:     private static final Map<String, W> DICT = new HashMap<>();
+40:     private static final Map<String, Set<String>> CONNECTORS = new HashMap<>();
+41:     /** كلمات رقمية تشبه كلمات عادية أو أسماء («bin» في Ahmad bin Ali، «on» الإنجليزية، «ست» بمعنى سيدة…): لا تكفي وحدها. */
+42:     private static final Set<String> WEAK = new HashSet<>();
+43: 
+44:     private static void put(String lang, int kind, long value, int count, String... words) {
+45:         for (String w : words) {
+46:             String k = MessageParser.norm(w);
+47:             W old = DICT.get(k);
+48:             if (old != null && old.kind == kind && old.value == value && old.count == count) {
+49:                 old.langs.add(lang);
+50:                 continue;
+51:             }
+52:             if (old != null) continue;   // أول تعريف هو المعتمد
+53:             DICT.put(k, new W(kind, value, count, new HashSet<>(Arrays.asList(lang))));
+54:         }
+55:     }
+56: 
+57:     private static void small(String lang, long v, String... w) { put(lang, SMALL, v, 0, w); }
+58: 
+59:     private static void conn(String lang, String... w) {
+60:         for (String x : w) {
+61:             String k = MessageParser.norm(x);
+62:             Set<String> s = CONNECTORS.get(k);
+63:             if (s == null) CONNECTORS.put(k, s = new HashSet<>());
+64:             s.add(lang);
+65:         }
+66:     }
+67: 
+68:     static {
+69:         // ---------------------------------------------------------------- العربية (فصحى وشامية)
+70:         String ar = "ar";
+71:         small(ar, 1, "واحد", "واحدة", "احد", "إحدى", "احدى");
+72:         small(ar, 2, "اثنان", "اثنين", "اتنين", "تنين", "ثنتين", "اثنا", "اثني");
+73:         small(ar, 3, "ثلاث", "ثلاثة", "تلات", "تلاتة", "تلاث");
+74:         small(ar, 4, "أربع", "أربعة", "اربع", "اربعة");
+75:         small(ar, 5, "خمس", "خمسة");
+76:         small(ar, 6, "ست", "ستة");
+77:         small(ar, 7, "سبع", "سبعة");
+78:         small(ar, 8, "ثمان", "ثماني", "ثمانية", "تمن", "تمنة", "تمانة", "تمانية");
+79:         small(ar, 9, "تسع", "تسعة");
+80:         small(ar, 10, "عشر", "عشرة");
+81:         small(ar, 11, "حدعش", "احدعش", "إحدعش");
+82:         small(ar, 12, "اتنعش", "تنعش", "اثنعش");
+83:         small(ar, 13, "تلتعش", "تلطعش", "ثلطعش");
+84:         small(ar, 14, "اربعتعش", "اربطعش", "أربعتعش");
+85:         small(ar, 15, "خمستعش", "خمسطعش");
+86:         small(ar, 16, "ستعش", "سطعش", "ستطعش");
+87:         small(ar, 17, "سبعتعش", "سبعطعش");
+88:         small(ar, 18, "تمنتعش", "تمنطعش", "ثمنطعش");
+89:         small(ar, 19, "تسعتعش", "تسعطعش");
+90:         small(ar, 20, "عشرين", "عشرون");
+91:         small(ar, 30, "ثلاثين", "ثلاثون", "تلاتين", "تلتين");
+92:         small(ar, 40, "أربعين", "اربعين", "أربعون", "اربعون");
+93:         small(ar, 50, "خمسين", "خمسون");
+94:         small(ar, 60, "ستين", "ستون");
+95:         small(ar, 70, "سبعين", "سبعون");
+96:         small(ar, 80, "ثمانين", "ثمانون", "تمانين", "تمنين");
+97:         small(ar, 90, "تسعين", "تسعون");
+98:         small(ar, 200, "مئتين", "مئتان", "مائتين", "مائتان", "ميتين", "ميتان", "متين");
+99:         String[][] stems = {{"ثلاث", "3"}, {"ثلث", "3"}, {"تلت", "3"}, {"تلات", "3"}, {"أربع", "4"}, {"اربع", "4"}, {"خمس", "5"}, {"ست", "6"},
+100:                 {"سبع", "7"}, {"ثمان", "8"}, {"ثمن", "8"}, {"تمن", "8"}, {"تمان", "8"}, {"تسع", "9"}};
+101:         for (String[] s : stems) for (String h : new String[]{"مئة", "مائة", "مية", "ميه", "مئه"}) small(ar, Long.parseLong(s[1]) * 100, s[0] + h);
+102:         put(ar, HUNDRED, 100, 0, "مئة", "مائة", "مية", "ميه", "مئه", "مائه");
+103:         put(ar, BIG, 1000, 0, "ألف", "الف", "آلاف", "الاف", "ألوف", "الوف", "ألفا", "الفا");
+104:         put(ar, BIG, 1000, 2, "ألفين", "الفين", "ألفان", "الفان");
+105:         put(ar, BIG, 1000000, 0, "مليون", "ملايين", "مليونا");
+106:         put(ar, BIG, 1000000, 2, "مليونين", "مليونان");
+107:         put(ar, BIG, 1000000000, 0, "مليار", "مليارات");
+108:         put(ar, BIG, 1000000000, 2, "مليارين", "ملياري");
+109:         put(ar, HALF, 0, 0, "نص", "نصف");
+110:         put(ar, QUARTER, 0, 0, "ربع");
+111:         conn(ar, "و");
+112: 
+113:         // ---------------------------------------------------------------- English
+114:         String en = "en";
+115:         small(en, 1, "one");
+116:         small(en, 2, "two");
+117:         small(en, 3, "three");
+118:         small(en, 4, "four");
+119:         small(en, 5, "five");
+120:         small(en, 6, "six");
+121:         small(en, 7, "seven");
+122:         small(en, 8, "eight");
+123:         small(en, 9, "nine");
+124:         small(en, 10, "ten");
+125:         small(en, 11, "eleven");
+126:         small(en, 12, "twelve");
+127:         small(en, 13, "thirteen");
+128:         small(en, 14, "fourteen");
+129:         small(en, 15, "fifteen");
+130:         small(en, 16, "sixteen");
+131:         small(en, 17, "seventeen");
+132:         small(en, 18, "eighteen");
+133:         small(en, 19, "nineteen");
+134:         small(en, 20, "twenty");
+135:         small(en, 30, "thirty");
+136:         small(en, 40, "forty", "fourty");
+137:         small(en, 50, "fifty");
+138:         small(en, 60, "sixty");
+139:         small(en, 70, "seventy");
+140:         small(en, 80, "eighty");
+141:         small(en, 90, "ninety");
+142:         put(en, HUNDRED, 100, 0, "hundred", "hundreds");
+143:         put(en, BIG, 1000, 0, "thousand", "thousands", "grand");
+144:         put(en, BIG, 1000000, 0, "million", "millions");
+145:         put(en, BIG, 1000000000, 0, "billion", "billions");
+146:         put(en, HALF, 0, 0, "half");
+147:         put(en, ARTICLE, 1, 0, "a", "an");
+148:         conn(en, "and");
+149: 
+150:         // ---------------------------------------------------------------- Türkçe
+151:         String tr = "tr";
+152:         small(tr, 1, "bir");
+153:         small(tr, 2, "iki");
+154:         small(tr, 3, "üç");
+155:         small(tr, 4, "dört");
+156:         small(tr, 5, "beş");
+157:         small(tr, 6, "altı");
+158:         small(tr, 7, "yedi");
+159:         small(tr, 8, "sekiz");
+160:         small(tr, 9, "dokuz");
+161:         small(tr, 10, "on");
+162:         small(tr, 20, "yirmi");
+163:         small(tr, 30, "otuz");
+164:         small(tr, 40, "kırk");
+165:         small(tr, 50, "elli");
+166:         small(tr, 60, "altmış");
+167:         small(tr, 70, "yetmiş");
+168:         small(tr, 80, "seksen");
+169:         small(tr, 90, "doksan");
+170:         put(tr, HUNDRED, 100, 0, "yüz");
+171:         put(tr, BIG, 1000, 0, "bin");
+172:         put(tr, BIG, 1000000, 0, "milyon");
+173:         put(tr, BIG, 1000000000, 0, "milyar");
+174:         put(tr, HALF, 0, 0, "buçuk");
+175: 
+176:         // ---------------------------------------------------------------- Română
+177:         String ro = "ro";
+178:         small(ro, 1, "unu", "una", "un");
+179:         small(ro, 2, "doi", "două", "doua");
+180:         small(ro, 3, "trei");
+181:         small(ro, 4, "patru");
+182:         small(ro, 5, "cinci");
+183:         small(ro, 6, "șase", "şase");
+184:         small(ro, 7, "șapte", "şapte");
+185:         small(ro, 8, "opt");
+186:         small(ro, 9, "nouă");
+187:         small(ro, 10, "zece");
+188:         small(ro, 11, "unsprezece");
+189:         small(ro, 12, "doisprezece", "douăsprezece");
+190:         small(ro, 13, "treisprezece");
+191:         small(ro, 14, "paisprezece", "patrusprezece");

@@ -1,0 +1,155 @@
+343:                     files.addAll(ReportPdf.png(r, o, dir, base));
+344:                 } else {
+345:                     if (reports.size() == 1) p.update("جارٍ كتابة ملف Excel…");
+346:                     File f = new File(dir, base + ".xlsx");
+347:                     try (OutputStream os = new FileOutputStream(f)) {
+348:                         XlsxWriter.write(r, os, Ui.argb(o.accent), Model.zone());
+349:                     }
+350:                     files.add(f);
+351:                 }
+352:             }
+353:             if (files.isEmpty()) throw new Exception("لا توجد بيانات للتصدير في هذا النطاق.");
+354:             for (File f : files) if (!f.exists() || f.length() == 0) throw new Exception("تعذر إنشاء الملف. أعد المحاولة.");
+355:             return files;
+356:         }, res -> {
+357:             @SuppressWarnings("unchecked") List<File> files = (List<File>) res;
+358:             String mime = format == PDF ? "application/pdf" : format == PNG ? "image/png" : XLSX_MIME;
+359:             a.db.audit("EXPORT", format == PDF ? "pdf" : format == PNG ? "png" : "xlsx", 0, subject);
+360:             if (how == SAVE) save(files, mime);
+361:             else a.shareFiles(files, mime, subject);
+362:         });
+363:     }
+364: 
+365:     // ===================================================================================
+366:     // الحفظ في الهاتف
+367:     // ===================================================================================
+368: 
+369:     private void save(List<File> files, String mime) {
+370:         if (files.size() > 1) {
+371:             new AlertDialog.Builder(a).setTitle("عدة ملفات")
+372:                     .setMessage("التصدير أنتج " + files.size() + " ملفات. لحفظها كلها اختر «مشاركة» ثم «حفظ» أو Google Drive، أو صدّر في ملف واحد.")
+373:                     .setPositiveButton("مشاركة", (d, w) -> a.shareFiles(files, mime, "كشف")).setNegativeButton("إلغاء", null).show();
+374:             return;
+375:         }
+376:         pendingSave = files.get(0);
+377:         a.db.setSettingQuiet("pending_export_file", pendingSave.getAbsolutePath());
+378:         Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+379:         i.addCategory(Intent.CATEGORY_OPENABLE);
+380:         i.setType(mime);
+381:         i.putExtra(Intent.EXTRA_TITLE, pendingSave.getName());
+382:         a.startForResult(i, MainActivity.SAVE_EXPORT);
+383:     }
+384: 
+385:     void onSaveResult(int c, Intent data) {
+386:         String path = a.db.setting("pending_export_file", "");
+387:         final File src = pendingSave != null ? pendingSave : path.isEmpty() ? null : new File(path);
+388:         pendingSave = null;
+389:         a.db.deleteSetting("pending_export_file");
+390:         if (c != Activity.RESULT_OK || data == null || data.getData() == null) return;
+391:         if (src == null || !src.exists()) {
+392:             a.error(new Exception("انتهت صلاحية الملف المؤقت. أعد التصدير."));
+393:             return;
+394:         }
+395:         final Uri target = data.getData();
+396:         a.busy("جارٍ الحفظ…", p -> {
+397:             try (OutputStream os = a.getContentResolver().openOutputStream(target, "w")) {
+398:                 if (os == null) throw new Exception("تعذر الكتابة في المكان المختار.");
+399:                 os.write(Db.readAll(src));
+400:             }
+401:             return BackupManager.displayName(a, target);
+402:         }, res -> a.toast("تم الحفظ: " + res));
+403:     }
+404: 
+405:     // ===================================================================================
+406:     // خيارات تصميم الكشوفات المصدّرة
+407:     // ===================================================================================
+408: 
+409:     void showStyle(final Runnable back) {
+410:         if (!a.require(Auth.Perm.DESIGN)) return;
+411:         final ExportStyle st = style();
+412:         a.here(() -> showStyle(back));
+413:         a.tabbedScreen("تصميم الكشوفات المصدّرة", back == null ? a.moreScreen::show : back, "more");
+414:         a.hint("تنطبق على PDF والصور، وأعمدة Excel. المعاينة أدناه لكشف تجريبي.");
+415: 
+416:         final ImageView preview = new ImageView(a);
+417:         preview.setAdjustViewBounds(true);
+418:         preview.setBackground(a.round(Color.WHITE, Color.rgb(210, 205, 194), 8));
+419:         final int pw = Math.min(a.getResources().getDisplayMetrics().widthPixels - a.dp(24), 1100);
+420:         final Runnable[] refresh = new Runnable[1];
+421: 
+422:         a.title("العنوان والترويسة");
+423:         final EditText title = a.input("عنوان الكشف (مثل: كشف حساب)");
+424:         title.setText(st.title);
+425:         final EditText info = a.input("سطر تحت اسم مكتبك: العنوان، الهاتف… (اختياري)");
+426:         info.setSingleLine(false);
+427:         info.setMinLines(2);
+428:         info.setLayoutParams(a.lp(-1, -2, 4));
+429:         info.setPadding(a.dp(14), a.dp(8), a.dp(14), a.dp(8));
+430:         info.setText(st.issuerInfo);
+431:         final CheckBox logo = check("إظهار صورة/شعار المكتب في رأس الكشف", st.logo, refresh);
+432: 
+433:         a.title("اللون");
+434:         final LinearLayout colorRow = a.row();
+435:         a.body.addView(colorRow, a.lp(-1, -2, 4));
+436:         final Runnable drawColor = new Runnable() {
+437:             @Override public void run() {
+438:                 colorRow.removeAllViews();
+439:                 int c = Ui.parseColor(st.color, a.primary);
+440:                 colorRow.addView(a.swatch(c, 36), new LinearLayout.LayoutParams(a.dp(36), a.dp(36)));
+441:                 colorRow.addView(a.text(st.color.isEmpty() ? "نفس لون التطبيق" : st.color, 14, a.dark, false), new LinearLayout.LayoutParams(0, -2, 1));
+442:                 colorRow.addView(a.smallButton("تغيير اللون", a.accent, v -> a.designScreen.paletteDialog("لون الكشوفات", DesignScreen.PALETTE, true, st.color, hex -> {
+443:                     st.color = hex;
+444:                     run();
+445:                     refresh[0].run();
+446:                 })), new LinearLayout.LayoutParams(-2, a.dp(42)));
+447:             }
+448:         };
+449:         drawColor.run();
+450: 
+451:         a.title("ألوان العملات");
+452:         a.hint("كل عملة بلون مختلف: رأس جدولها، وخلفية خفيفة لصفوفها، وأرقامها بلونها، حتى لا تختلط العملات على القارئ.");
+453:         final CheckBox curColors = check("لون مختلف لكل عملة", st.curColors, refresh);
+454:         final LinearLayout curBox = new LinearLayout(a);
+455:         curBox.setOrientation(LinearLayout.VERTICAL);
+456:         a.body.addView(curBox);
+457:         final Runnable drawCurs = new Runnable() {
+458:             @Override public void run() {
+459:                 curBox.removeAllViews();
+460:                 curBox.setVisibility(curColors.isChecked() ? View.VISIBLE : View.GONE);
+461:                 Ui.Flow fl = a.flow();
+462:                 for (final Model.Currency c : a.db.currencies(false)) {
+463:                     LinearLayout chip = a.row();
+464:                     chip.setPadding(a.dp(10), a.dp(6), a.dp(8), a.dp(6));
+465:                     chip.setBackground(a.ripple(a.round(a.surface, a.line, 50), 50));
+466:                     chip.addView(a.text(c.code, 14, a.ink, true));
+467:                     chip.addView(a.swatch(st.colorFor(c.code), 24), new LinearLayout.LayoutParams(a.dp(24), a.dp(24)));
+468:                     chip.setOnClickListener(v -> a.designScreen.paletteDialog("لون " + c.code + " — " + c.name, DesignScreen.PALETTE, true, st.colorHexFor(c.code), hex -> {
+469:                         Map<String, String> m = st.colorMap();
+470:                         if (hex.isEmpty()) m.remove(c.code);
+471:                         else m.put(c.code, hex);
+472:                         st.curColorMap = ExportStyle.joinMap(m);
+473:                         run();
+474:                         refresh[0].run();
+475:                     }));
+476:                     fl.addView(chip);
+477:                 }
+478:                 curBox.addView(fl, a.lp(-1, -2, 4));
+479:                 curBox.addView(a.text("اضغط على عملة لتغيير لونها. «الافتراضي» في منتقي اللون يعيد لونها الأصلي.", 12, a.muted, false));
+480:             }
+481:         };
+482:         drawCurs.run();
+483:         curColors.setOnCheckedChangeListener((b, x) -> {
+484:             drawCurs.run();
+485:             if (refresh[0] != null) refresh[0].run();
+486:         });
+487: 
+488:         a.title("الأعمدة والمحتوى");
+489:         final CheckBox person = check("اسم الشخص (المرسل/المستلم)", st.showPerson, refresh);
+490:         final CheckBox desc = check("البيان", st.showDesc, refresh);
+491:         final CheckBox ref = check("رقم المرجع", st.showRef, refresh);
+492:         final CheckBox notes = check("الملاحظات", st.showNotes, refresh);
+493:         final CheckBox running = check("عمود الرصيد التراكمي", st.showRunning, refresh);
+494:         final CheckBox summary = check("مربع الملخص (الرصيد السابق، لنا، علينا، الأجور، الرصيد)", st.showSummary, refresh);
+495:         final CheckBox hideCancelled = check("إخفاء الحركات الملغاة من الكشف", st.hideCancelled, refresh);
+496:         final CheckBox newest = check("الأحدث أولًا (بدل الأقدم أولًا)", st.newestFirst, refresh);
+497: 

@@ -1,0 +1,151 @@
+630:                 BigDecimal avg = BigDecimal.valueOf(v[1], d2).divide(BigDecimal.valueOf(v[0], d1), 6, RoundingMode.HALF_EVEN).stripTrailingZeros();
+631:                 f.row(Report.NORMAL, k[0], k[1], new Report.Money(v[0], d1), Model.fmt(v[1], d2) + " " + k[2], avg.toPlainString() + " " + k[2], v[2]);
+632:             }
+633:             f.note = "«بيع»: خرجت العملة من الصندوق ودخل مقابلها؛ «شراء»: دخلت وخرج مقابلها. متوسط السعر = مجموع المقابل ÷ مجموع الكمية.";
+634:         }
+635: 
+636:         // المصاريف حسب البند
+637:         Map<String, Map<String, Long>> cats = new TreeMap<>();
+638:         for (Summary m : sums.values())
+639:             for (Map.Entry<String, Long> e : m.byCategory.entrySet()) {
+640:                 Map<String, Long> per = cats.get(e.getKey());
+641:                 if (per == null) {
+642:                     per = new TreeMap<>();
+643:                     cats.put(e.getKey(), per);
+644:                 }
+645:                 per.put(m.currency, e.getValue());
+646:             }
+647:         if (!cats.isEmpty()) {
+648:             Report.Section ex = r.section("المصاريف حسب البند", "المصاريف");
+649:             ex.col("البند", 1.6f, Report.TEXT).col("العملة", 0.6f, Report.TEXT).col("المبلغ", 1f, Report.MONEY).col("النسبة من مصاريف العملة", 1f, Report.TEXT);
+650:             for (Map.Entry<String, Map<String, Long>> e : cats.entrySet())
+651:                 for (Map.Entry<String, Long> c : e.getValue().entrySet()) {
+652:                     long tot = sums.get(c.getKey()).expenses;
+653:                     ex.row(Report.NORMAL, e.getKey(), c.getKey(), new Report.Money(c.getValue(), dec(decimals, c.getKey())), pct(c.getValue(), tot));
+654:                 }
+655:             for (Summary m : sums.values()) if (m.expenses > 0) ex.row(Report.TOTAL, "مجموع المصاريف", m.currency, new Report.Money(m.expenses, dec(decimals, m.currency)), "100%");
+656:         }
+657: 
+658:         // الحركة مع المكاتب
+659:         if (sp.byOffice) {
+660:             Map<String, long[]> per = new TreeMap<>();
+661:             for (Move x : moves) {
+662:                 if (x.officeId == null || !x.counts() || x.createdAt < sp.from || (sp.to > 0 && x.createdAt >= sp.to)) continue;
+663:                 if (!sp.currencies.isEmpty() && !sp.currencies.contains(x.currency)) continue;
+664:                 String n = offices.get(x.officeId);
+665:                 String key = (n == null ? "مكتب #" + x.officeId : n) + "|" + x.currency;
+666:                 long[] v = per.get(key);
+667:                 if (v == null) {
+668:                     v = new long[4];
+669:                     per.put(key, v);
+670:                 }
+671:                 if (x.dir > 0) {
+672:                     v[0] += x.amount;
+673:                     v[2]++;
+674:                 } else {
+675:                     v[1] += x.amount;
+676:                     v[3]++;
+677:                 }
+678:             }
+679:             if (!per.isEmpty()) {
+680:                 Report.Section o = r.section("الصندوق مع المكاتب", "مع المكاتب");
+681:                 o.col("المكتب", 1.5f, Report.TEXT).col("العملة", 0.6f, Report.TEXT).col("استُلم لحسابه", 1f, Report.MONEY).col("سُلّم لحسابه", 1f, Report.MONEY)
+682:                         .col("الصافي على الصندوق", 1f, Report.TEXT).col("العمليات", 0.6f, Report.INT);
+683:                 for (Map.Entry<String, long[]> e : per.entrySet()) {
+684:                     String[] k = e.getKey().split("\\|", 2);
+685:                     long[] v = e.getValue();
+686:                     int dc = dec(decimals, k[1]);
+687:                     long net = v[0] - v[1];
+688:                     o.row(Report.NORMAL, k[0], k[1], new Report.Money(v[0], dc), new Report.Money(v[1], dc),
+689:                             net == 0 ? "—" : (net > 0 ? "داخل " : "خارج ") + Model.fmt(Math.abs(net), dc), v[2] + v[3]);
+690:                 }
+691:                 o.note = "كل حركة هنا مسجّلة أيضًا على المكتب نفسه في كشفه (حركة الصندوق مرتبطة بها). الاستلام لحساب مكتب = «علينا» للمكتب، والتسليم لحسابه = «لنا».";
+692:             }
+693:         }
+694: 
+695:         // اليومية
+696:         if (sp.byDay) {
+697:             Map<String, long[]> days = new TreeMap<>();
+698:             for (Move x : moves) {
+699:                 if (!x.counts() || x.createdAt < sp.from || (sp.to > 0 && x.createdAt >= sp.to)) continue;
+700:                 if (!sp.currencies.isEmpty() && !sp.currencies.contains(x.currency)) continue;
+701:                 String key = Model.day(x.createdAt) + "|" + x.currency;
+702:                 long[] v = days.get(key);
+703:                 if (v == null) {
+704:                     v = new long[3];
+705:                     days.put(key, v);
+706:                 }
+707:                 long e = x.effect();
+708:                 if (e > 0) v[0] += e;
+709:                 else v[1] -= e;
+710:                 v[2]++;
+711:             }
+712:             if (!days.isEmpty()) {
+713:                 Report.Section d = r.section("حركة كل يوم", "اليومية");
+714:                 d.col("اليوم", 1f, Report.TEXT).col("العملة", 0.6f, Report.TEXT).col("داخل", 1f, Report.MONEY).col("خارج", 1f, Report.MONEY)
+715:                         .col("الصافي", 1f, Report.TEXT).col("العمليات", 0.6f, Report.INT);
+716:                 for (Map.Entry<String, long[]> e : days.entrySet()) {
+717:                     String[] k = e.getKey().split("\\|", 2);
+718:                     long[] v = e.getValue();
+719:                     int dc = dec(decimals, k[1]);
+720:                     long net = v[0] - v[1];
+721:                     d.row(Report.NORMAL, k[0], k[1], new Report.Money(v[0], dc), new Report.Money(v[1], dc), (net >= 0 ? "+" : "−") + Model.fmt(Math.abs(net), dc), v[2]);
+722:                 }
+723:             }
+724:         }
+725: 
+726:         // الكشف التفصيلي برصيد متراكم لكل عملة
+727:         if (sp.details) {
+728:             Set<String> curs = new TreeSet<>();
+729:             for (Move x : moves) if (sp.currencies.isEmpty() || sp.currencies.contains(x.currency)) curs.add(x.currency);
+730:             for (String c : curs) {
+731:                 int dc = dec(decimals, c);
+732:                 long bal = 0;
+733:                 for (Move x : moves) if (c.equals(x.currency) && x.createdAt < sp.from) bal += x.effect();
+734:                 Report.Section t = r.section("كشف الصندوق — " + c, "كشف " + c);
+735:                 t.col("التاريخ", 0.9f, Report.DATE).col("الحركة", 1.6f, Report.TEXT).col("الشخص / البيان", 1.6f, Report.TEXT).col("داخل", 0.9f, Report.MONEY)
+736:                         .col("خارج", 0.9f, Report.MONEY).col("أجور نقدًا", 0.8f, Report.TEXT).col("الرصيد", 1f, Report.MONEY).col("الحالة", 0.7f, Report.TEXT);
+737:                 t.row(Report.SHADED, new Report.DateV(sp.from > 0 ? sp.from : (moves.isEmpty() ? 0 : moves.get(0).createdAt)), "الرصيد قبل الفترة", "", "", "", "",
+738:                         new Report.Money(bal, dc), "");
+739:                 int n = 0;
+740:                 for (Move x : moves) {
+741:                     if (!c.equals(x.currency) || x.createdAt < sp.from || (sp.to > 0 && x.createdAt >= sp.to)) continue;
+742:                     bal += x.effect();
+743:                     long fc = x.feeCash();
+744:                     String who = Model.nz(x.party);
+745:                     if (!Model.nz(x.description).isEmpty()) who = who.isEmpty() ? x.description : who + " — " + x.description;
+746:                     t.row(x.counts() ? Report.NORMAL : Report.MUTED, new Report.DateV(x.createdAt), moveText(x, offices), who,
+747:                             x.dir > 0 ? new Report.Money(x.amount, dc) : "", x.dir < 0 ? new Report.Money(x.amount, dc) : "",
+748:                             fc == 0 ? "" : (fc > 0 ? "لنا " : "علينا ") + Model.fmt(Math.abs(fc), dc), new Report.Money(bal, dc), x.stateText());
+749:                     n++;
+750:                 }
+751:                 t.row(Report.TOTAL, new Report.DateV(sp.to > 0 ? sp.to - 1 : Clock.now()), "الرصيد آخر الفترة", n + " حركة", "", "", "", new Report.Money(bal, dc), "");
+752:             }
+753:         }
+754:         return r;
+755:     }
+756: 
+757:     static String pct(long part, long total) {
+758:         if (total <= 0) return "—";
+759:         return BigDecimal.valueOf(part * 100L).divide(BigDecimal.valueOf(total), 1, RoundingMode.HALF_EVEN).stripTrailingZeros().toPlainString() + "%";
+760:     }
+761: 
+762:     /** بداية اليوم المحلي. */
+763:     public static long startOfDay(long t) {
+764:         Calendar c = Model.cal();
+765:         c.setTimeInMillis(t);
+766:         c.set(Calendar.HOUR_OF_DAY, 0);
+767:         c.set(Calendar.MINUTE, 0);
+768:         c.set(Calendar.SECOND, 0);
+769:         c.set(Calendar.MILLISECOND, 0);
+770:         return c.getTimeInMillis();
+771:     }
+772: 
+773:     /** نص رصيد الصندوق لعملة: «12,500.00 USD» (الصندوق لا يكون «علينا»: السالب عجز ظاهر). */
+774:     public static String balText(long v, int dec, String code) {
+775:         return (v < 0 ? "عجز " : "") + Model.fmt(Math.abs(v), dec) + " " + code;
+776:     }
+777: 
+778:     /** كل الحركات التي تخص يومًا (للجرد اليومي ولشاشة اليوم). */
+779:     public static List<Move> ofDay(List<Move> moves, long dayStart) {
+780:         List<Move> out = new ArrayList<>();

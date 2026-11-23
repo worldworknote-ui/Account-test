@@ -1,0 +1,145 @@
+2158:                     log(d, txt, "");
+2159:                 }
+2160:             }
+2161:             // 12.7: خزنة أقدم من 12.7: الجهاز الرئيسي يُنشئ «هوية المكتب» فتصل لكل الأجهزة
+2162:             if (SyncStore.founder(d) && LicenseGuard.currentUid(db).isEmpty()) LicenseGuard.officeUid(db);
+2163:             if (SyncStore.founder(d) && !"1".equals(SyncStore.meta(d, "secrets_sent"))) {
+2164:                 // مرة واحدة: سرّ الرموز وسرّ بصمة اليوم من الجهاز الرئيسي إلى الأجهزة المنضمة (ولو أُنشئا بعد اللقطة)
+2165:                 for (String k : Db.ENCRYPTED_SETTINGS) d.execSQL("INSERT INTO sync_chg(tbl,rid,op) SELECT 'settings',k,'U' FROM settings WHERE k=?", new Object[]{k});
+2166:                 SyncStore.setMeta(d, "secrets_sent", "1");
+2167:             }
+2168:             if (sealPending() > 0) { /* حزمة جديدة */ }
+2169:             res.sent += upload();
+2170:             pull(res);
+2171:             if (sealPending() > 0) res.sent += upload();
+2172:             long mySeq = lng(SyncStore.meta(d, "my_seq")), snapSeq = lng(SyncStore.meta(d, "snap_seq"));
+2173:             // 10.4: لقطة بالصيغة الجديدة عند أول جولة بعد التحديث (بلا صور، وتسمح بحذف القديم)
+2174:             // وكذلك كلما استلم الجهاز 150 حزمة من غيره: لقطة كل جهاز تتقدم فلا تمنع حذف حزم الآخرين
+2175:             // 12.7: بقيت القاعدة كما هي (كل 150 حزمة): حذف الحزم القديمة يحتاج لقطة حديثة من كل جهاز، وتقليلها كان يكبّر الخزنة.
+2176:             // ما تغيّر: اللقطة تُبنى من نسخة من الملف خارج المعاملة، فلا تنتظر الشاشة ولا الحركات الجديدة.
+2177:             if (mySeq - snapSeq >= SNAPSHOT_EVERY || progress(d) - lng(SyncStore.meta(d, "snap_sum")) >= SNAPSHOT_EVERY
+2178:                     || !String.valueOf(FORMAT).equals(SyncStore.meta(d, "snap_fmt"))) writeSnapshot();
+2179:             writeMember();
+2180:             try {
+2181:                 String gc = clean(false);
+2182:                 if (!gc.isEmpty()) res.cleaned = gc;
+2183:             } catch (Exception e) {
+2184:                 res.cleaned = "تعذر التنظيف: " + (e.getMessage() == null ? e.toString() : e.getMessage());
+2185:             }
+2186:             res.digestAlert = compareDigests();
+2187:             SyncStore.setMeta(d, "digest_alert", res.digestAlert.isEmpty() ? null : res.digestAlert);
+2188:             SyncStore.setMeta(d, "last_sync", "" + Clock.now());
+2189:             SyncStore.setMeta(d, "last_error", res.errors.isEmpty() ? null : res.errors.get(0));
+2190:             if (!res.errors.isEmpty()) {
+2191:                 SyncStore.setMeta(d, "last_error_at", "" + Clock.now());
+2192:                 SyncStore.setMeta(d, "last_error_with", res.firstErrWith.isEmpty() ? "هذا الجهاز" : res.firstErrWith);
+2193:             }
+2194:             // 11.5: سجل كل جهاز: ما وصل منه وأخطاؤه، وجولة هذا الجهاز
+2195:             java.util.Set<String> touched = new java.util.LinkedHashSet<>(res.gotFrom.keySet());
+2196:             touched.addAll(res.errFrom.keySet());
+2197:             for (String dv : touched) {
+2198:                 Integer n = res.gotFrom.get(dv);
+2199:                 devLog(d, dv, n == null ? "لم يصل شيء منه" : "وصلت منه " + n + " حزمة", res.errFrom.get(dv));
+2200:             }
+2201:             if (res.sent > 0 || res.received > 0 || !res.errors.isEmpty())
+2202:                 devLog(d, SyncStore.meta(d, "device"), "أرسل " + res.sent + " حزمة واستلم " + res.received, res.errFrom.isEmpty() && !res.errors.isEmpty() ? res.errors.get(0) : "");
+2203:             res.note = folder.note();
+2204:             SyncStore.setMeta(d, "peers", res.peers.toString());
+2205:             SyncStore.setMeta(d, "folder_note", res.note.isEmpty() ? null : res.note);
+2206:             log(d, res.summary() + (res.note.isEmpty() ? "" : " • " + res.note), res.errors.isEmpty() ? "" : res.errors.get(0));
+2207:             db.reloadClock();   // 10.18: توقيت المكتب قد يصل من جهاز آخر
+2208:             res.news.addAll(cacheMembers());
+2209:             if (res.received > 0 || res.sent > 0) db.audit("SYNC", "sync", 0, res.summary());
+2210:             for (String n : res.news) db.audit("SYNC_DEVICE", "sync", 0, n);
+2211:         } catch (Exception e) {
+2212:             String m = e.getMessage() == null ? e.toString() : e.getMessage();
+2213:             SyncStore.setMeta(d, "last_error", m);
+2214:             SyncStore.setMeta(d, "last_error_at", "" + Clock.now());
+2215:             SyncStore.setMeta(d, "last_error_with", placeName(folder) + " — من هذا الجهاز");
+2216:             log(d, "فشلت الجولة", m);
+2217:             devLog(d, SyncStore.meta(d, "device"), "فشلت الجولة", m);
+2218:             throw e;
+2219:         } finally {
+2220:             roundMembers = null;
+2221:         }
+2222:         return res;
+2223:     }
+2224: 
+2225:     // ===================================================================================
+2226:     // 10.4: التنظيف التلقائي، وإزالة جهاز، وحجم المكان
+2227:     // ===================================================================================
+2228: 
+2229:     /** أقل وقت بين تنظيفين تلقائيين. */
+2230:     static final long CLEAN_EVERY_MS = 6L * 3600 * 1000;
+2231:     /** أكثر عدد ملفات يُحذف في جولة واحدة (الباقي في الجولات التالية). */
+2232:     static final int CLEAN_MAX = 3000;
+2233: 
+2234:     /**
+2235:      * يحذف هذا الجهاز من ملفاته فقط ما لم يعد يحتاجه أحد:
+2236:      * <ul>
+2237:      *   <li>حزمه التي استلمتها كل الأجهزة النشطة وتشملها لقطة كل جهاز (فلا يحتاجها جهاز ينضم من أي لقطة).</li>
+2238:      *   <li>لقطاته القديمة (تبقى آخر اثنتين).</li>
+2239:      *   <li>الجهاز الرئيسي وحده: الصور التي لا تشير إليها أي حركة ولا أي لقطة منذ أسبوع على الأقل.</li>
+2240:      * </ul>
+2241:      * جهاز غائب يمنع حذف ما لم يستلمه: يظهر تنبيه عنه بعد 30 يومًا، ويستطيع المدير إزالته.
+2242:      * يرجع وصفًا لما حُذف، أو فارغًا.
+2243:      */
+2244:     public String clean(boolean force) throws Exception {
+2245:         VAULT.lock();
+2246:         try {
+2247:             return cleanLocked(force);
+2248:         } finally {
+2249:             VAULT.unlock();
+2250:         }
+2251:     }
+2252: 
+2253:     private String cleanLocked(boolean force) throws Exception {
+2254:         if (!folder.canDelete()) return "";
+2255:         SQLiteDatabase d = db.getWritableDatabase();
+2256:         long now = Clock.now();
+2257:         if (!force && now - lng(SyncStore.meta(d, "gc_at")) < CLEAN_EVERY_MS) return "";
+2258:         SyncCrypto.Keys keys = keys();
+2259:         String me = SyncStore.meta(d, "device");
+2260:         Map<String, JSONObject> members = readMembers(keys);
+2261:         // 10.18: لا حذف من الخزنة وبطاقات الأجهزة غير مكتملة، ولا وجهاز معروف غائبة بطاقته: قد يُحذف ما لم يستلمه بعد
+2262:         boolean missing = membersIncomplete;
+2263:         try {
+2264:             JSONArray pa = new JSONArray(nz(SyncStore.meta(d, "members_cache")).isEmpty() ? "[]" : SyncStore.meta(d, "members_cache"));
+2265:             Map<String, JSONObject> gone = removedMap();
+2266:             for (int i = 0; i < pa.length(); i++) {
+2267:                 String dv = pa.getJSONObject(i).optString("dev");
+2268:                 if (!dv.isEmpty() && !dv.equals(me) && !members.containsKey(dv) && !gone.containsKey(dv)) missing = true;
+2269:             }
+2270:         } catch (Exception ignored) {
+2271:             // بلا قائمة سابقة
+2272:         }
+2273:         if (missing) {
+2274:             SyncStore.setMeta(d, "gc_note", Model.date(now) + ": أُجّل الحذف — بطاقة أحد الأجهزة لم تُقرأ في هذه الجولة");
+2275:             return "";
+2276:         }
+2277:         int packets = 0, snaps = 0, blobs = 0;
+2278:         // 1) الحزم: الحد = أقل ما استلمته الأجهزة النشطة منها، وأقل ما تشمله لقطاتها، ولقطتي أنا
+2279:         long limit = lng(SyncStore.meta(d, "snap_seq"));
+2280:         String why = "";
+2281:         for (JSONObject m : members.values()) {
+2282:             if (m.optString("dev").equals(me)) continue;
+2283:             JSONObject c = m.optJSONObject("cursors");
+2284:             long got = c == null ? 0 : c.optLong(me, 0);
+2285:             if (got < limit) {
+2286:                 limit = got;
+2287:                 why = m.optString("name");
+2288:             }
+2289:             JSONObject sp = m.optJSONObject("snap");
+2290:             if (sp != null) {
+2291:                 JSONObject cur = sp.optJSONObject("cur");
+2292:                 long inSnap = cur == null ? 0 : cur.optLong(me, 0);
+2293:                 if (inSnap < limit) {
+2294:                     limit = inSnap;
+2295:                     why = m.optString("name");
+2296:                 }
+2297:             }
+2298:         }
+2299:         long from = lng(SyncStore.meta(d, "gc_seq"));
+2300:         long upTo = Math.min(limit, from + CLEAN_MAX);
+2301:         try {
+2302:             for (long q = from + 1; q <= upTo; q++) {

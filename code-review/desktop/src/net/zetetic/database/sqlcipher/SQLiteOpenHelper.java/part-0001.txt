@@ -1,0 +1,78 @@
+1: package net.zetetic.database.sqlcipher;
+2: 
+3: import android.database.sqlite.SQLiteException;
+4: 
+5: import android.content.Context;
+6: 
+7: /**
+8:  * كما في أندرويد: يفتح القاعدة مرة واحدة، ثم onConfigure ← (onCreate | onUpgrade | onDowngrade) داخل معاملة ← onOpen.
+9:  */
+10: public abstract class SQLiteOpenHelper {
+11:     private final Context ctx;
+12:     private final String name;
+13:     private final int version;
+14:     private SQLiteDatabase db;
+15: 
+16:     private final String password;
+17: 
+18:     protected SQLiteOpenHelper(Context ctx, String name, Object factory, int version) {
+19:         this(ctx, name, "", factory, version, 0, null, null, false);
+20:     }
+21: 
+22:     /** 12.6: كمكتبة SQLCipher لأندرويد: كلمة السر (فارغة = ملف عادي). */
+23:     protected SQLiteOpenHelper(Context ctx, String name, String password, Object factory, int version, int minimumSupportedVersion,
+24:                                Object errorHandler, Object hook, boolean wal) {
+25:         this.ctx = ctx;
+26:         this.name = name;
+27:         this.version = version;
+28:         this.password = password == null ? "" : password;
+29:     }
+30: 
+31:     public String getDatabaseName() { return name; }
+32: 
+33:     public synchronized SQLiteDatabase getWritableDatabase() {
+34:         if (db != null && db.isOpen()) return db;
+35:         SQLiteDatabase d = SQLiteDatabase.openOrCreateDatabase(ctx.getDatabasePath(name).getAbsolutePath(), password);
+36:         try {
+37:             onConfigure(d);
+38:             int v = d.getVersion();
+39:             if (v != version) {
+40:                 d.beginTransaction();
+41:                 try {
+42:                     if (v == 0) onCreate(d);
+43:                     else if (v < version) onUpgrade(d, v, version);
+44:                     else onDowngrade(d, v, version);
+45:                     d.setVersion(version);
+46:                     d.setTransactionSuccessful();
+47:                 } finally {
+48:                     d.endTransaction();
+49:                 }
+50:             }
+51:             onOpen(d);
+52:         } catch (RuntimeException e) {
+53:             d.close();
+54:             throw e;
+55:         }
+56:         db = d;
+57:         return d;
+58:     }
+59: 
+60:     public SQLiteDatabase getReadableDatabase() { return getWritableDatabase(); }
+61: 
+62:     public synchronized void close() {
+63:         if (db != null) db.close();
+64:         db = null;
+65:     }
+66: 
+67:     public void onConfigure(SQLiteDatabase d) {}
+68: 
+69:     public abstract void onCreate(SQLiteDatabase d);
+70: 
+71:     public abstract void onUpgrade(SQLiteDatabase d, int oldVersion, int newVersion);
+72: 
+73:     public void onDowngrade(SQLiteDatabase d, int oldVersion, int newVersion) {
+74:         throw new SQLiteException("Can't downgrade database from version " + oldVersion + " to " + newVersion);
+75:     }
+76: 
+77:     public void onOpen(SQLiteDatabase d) {}
+78: }

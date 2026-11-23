@@ -1,0 +1,204 @@
+208:     if (!rv.errors.length && rv.req) msg(box, "info", rv.warnings.length ? "يمكن الإصدار بعد قراءة التحذيرات." : "الطلب سليم ومصدَّق.");
+209:   }
+210: 
+211:   function attestLabel(rv) {
+212:     if (rv.mac) return "ماك (سلسلة المفاتيح)";
+213:     if (!rv.attest) return "بلا تصديق";
+214:     if (!rv.attest.rootTrusted) return "تصديق غير معتمد";
+215:     return VT.LEVELS[rv.level] || "مصدَّق";
+216:   }
+217: 
+218:   // ------------------------------------------------------------------ تفعيل جديد
+219:   $("sUu").value = dateInput(VT.defaultUu(Date.now()));
+220: 
+221:   // ------------------------------------------------------------------ 12.6: محتوى الرخصة (قوالب قابلة للتعديل وحدود بالأرقام)
+222:   function clone(o) { return JSON.parse(JSON.stringify(o)); }
+223:   S.templates = load(LS_TPL, null) || clone(VT.DEFAULT_TEMPLATES);
+224:   function saveTemplates() { if (!save(LS_TPL, S.templates)) alert("تعذر حفظ القوالب في المتصفح."); }
+225: 
+226:   /** لوحة البنود: قالب، كل حد بخانة رقم (فارغ = بلا حد)، الميزات، النسخ، والاشتراك. */
+227:   function contentPanel(box, onChange) {
+228:     box.innerHTML = "";
+229:     var top = el("div", "row");
+230:     var sel = el("select", "search");
+231:     var bSave = el("button", "btn sec", "حفظ كقالب"), bDel = el("button", "btn sec", "حذف القالب"), bReset = el("button", "btn sec", "القوالب الافتراضية");
+232:     top.appendChild(sel);
+233:     top.appendChild(bSave);
+234:     top.appendChild(bDel);
+235:     top.appendChild(bReset);
+236:     box.appendChild(top);
+237:     var grid = el("div", "grid"), rows = {};
+238:     VT.LIMITS.forEach(function (L) {
+239:       var w = el("div", "f");
+240:       var lab = el("label", "check");
+241:       var cb = el("input");
+242:       cb.type = "checkbox";
+243:       lab.appendChild(cb);
+244:       lab.appendChild(document.createTextNode(" " + L.label));
+245:       var num = el("input", "ltr");
+246:       num.type = "number";
+247:       num.min = "1";
+248:       num.placeholder = "فارغ = بلا حد";
+249:       var note = el("small", null, "غير محدد ← حد المجانية (" + L.free + ")");
+250:       w.appendChild(lab);
+251:       w.appendChild(num);
+252:       w.appendChild(note);
+253:       grid.appendChild(w);
+254:       rows[L.k] = { cb: cb, num: num };
+255:       cb.addEventListener("change", function () { num.disabled = !cb.checked; changed(); });
+256:       num.addEventListener("input", changed);
+257:     });
+258:     box.appendChild(grid);
+259:     var g2 = el("div", "grid"), sws = {};
+260:     VT.SWITCHES.forEach(function (w) {
+261:       var lab = el("label", "check");
+262:       var cb = el("input");
+263:       cb.type = "checkbox";
+264:       lab.appendChild(cb);
+265:       lab.appendChild(document.createTextNode(" " + w.label));
+266:       g2.appendChild(lab);
+267:       sws[w.k] = cb;
+268:       cb.addEventListener("change", changed);
+269:     });
+270:     box.appendChild(g2);
+271:     var g3 = el("div", "grid");
+272:     function numField(label, ph) {
+273:       var l = el("label", "f", label);
+274:       var i = el("input", "ltr");
+275:       i.type = "number";
+276:       i.min = "1";
+277:       i.placeholder = ph;
+278:       l.appendChild(i);
+279:       g3.appendChild(l);
+280:       i.addEventListener("input", changed);
+281:       return i;
+282:     }
+283:     var bh = numField("النسخ التلقائي كل كم ساعة (1–24)", "فارغ = الافتراضي"), bn = numField("نسخة بعد كل كم حركة", "فارغ = الافتراضي");
+284:     // 12.7: تأكيد الوقت من الإنترنت (بلا خادم) وعدد أجهزة المكتب
+285:     var tc = numField("تأكيد الوقت من الإنترنت كل كم يوم", "فارغ = لا يلزم"), tg = numField("المهلة بعدها قبل حدود المجانية (أيام)", "فارغ = بلا مهلة"),
+286:       md = numField("عدد أجهزة المكتب (لنفس هوية المكتب)", "فارغ = بلا حد");
+287:     var exL = el("label", "check"), exCb = el("input");
+288:     exCb.type = "checkbox";
+289:     exL.appendChild(exCb);
+290:     exL.appendChild(document.createTextNode(" اشتراك بتاريخ انتهاء (بعده يعمل بالمجانية دون قفل البيانات)"));
+291:     var exD = el("input");
+292:     exD.type = "date";
+293:     var exW = el("div", "f");
+294:     exW.appendChild(exL);
+295:     exW.appendChild(exD);
+296:     g3.appendChild(exW);
+297:     exCb.addEventListener("change", function () { exD.disabled = !exCb.checked; changed(); });
+298:     exD.addEventListener("input", changed);
+299:     box.appendChild(g3);
+300:     var sum = el("div", "facts");
+301:     box.appendChild(sum);
+302: 
+303:     function fillSel(pick) {
+304:       sel.innerHTML = "";
+305:       S.templates.forEach(function (t, i) {
+306:         var o = el("option", null, t.name);
+307:         o.value = String(i);
+308:         sel.appendChild(o);
+309:       });
+310:       var o2 = el("option", null, "— مخصص —");
+311:       o2.value = "-1";
+312:       sel.appendChild(o2);
+313:       sel.value = String(pick == null ? 0 : pick);
+314:     }
+315:     function set(t) {
+316:       VT.LIMITS.forEach(function (L) {
+317:         var v = (t.lim || {})[L.k] || { on: false, n: "" };
+318:         rows[L.k].cb.checked = !!v.on;
+319:         rows[L.k].num.value = v.n == null ? "" : v.n;
+320:         rows[L.k].num.disabled = !v.on;
+321:       });
+322:       VT.SWITCHES.forEach(function (w) { sws[w.k].checked = !!(t.sw || {})[w.k]; });
+323:       bh.value = t.bh || "";
+324:       bn.value = t.bn || "";
+325:       tc.value = t.tc || "";
+326:       tg.value = t.tg || "";
+327:       md.value = t.md || "";
+328:       exCb.checked = !!t.ex;
+329:       exD.disabled = !t.ex;
+330:       if (t.ex) exD.value = dateInput(t.ex);
+331:       changed(true);
+332:     }
+333:     function get() {
+334:       var t = { name: sel.value === "-1" ? "مخصصة" : (S.templates[Number(sel.value)] || {}).name || "مخصصة", lim: {}, sw: {} };
+335:       VT.LIMITS.forEach(function (L) { t.lim[L.k] = { on: rows[L.k].cb.checked, n: rows[L.k].num.value.trim() }; });
+336:       VT.SWITCHES.forEach(function (w) { t.sw[w.k] = sws[w.k].checked; });
+337:       t.bh = bh.value.trim();
+338:       t.bn = bn.value.trim();
+339:       t.tc = tc.value.trim();
+340:       t.tg = tg.value.trim();
+341:       t.md = md.value.trim();
+342:       if (exCb.checked) {
+343:         if (!exD.value) throw new Error("اختر تاريخ انتهاء الاشتراك");
+344:         t.ex = fromDateInput(exD.value);
+345:       }
+346:       return t;
+347:     }
+348:     function changed(quiet) {
+349:       sum.textContent = "";
+350:       try {
+351:         sum.textContent = "الرخصة: " + VT.describe(VT.fieldsOf(get())).join(" • ");
+352:       } catch (e) {
+353:         sum.textContent = "⚠ " + e.message;
+354:       }
+355:       if (!quiet && onChange) onChange();
+356:     }
+357:     sel.addEventListener("change", function () { if (sel.value !== "-1") set(S.templates[Number(sel.value)]); });
+358:     bSave.addEventListener("click", function () {
+359:       var name = prompt("اسم القالب (يظهر للزبون اسمًا للإصدار):", sel.value === "-1" ? "" : (S.templates[Number(sel.value)] || {}).name || "");
+360:       if (!name || !name.trim()) return;
+361:       var t;
+362:       try {
+363:         t = get();
+364:       } catch (e) {
+365:         return alert(e.message);
+366:       }
+367:       t.name = name.trim();
+368:       delete t.ex;   // تاريخ الانتهاء يخص كل زبون، لا القالب
+369:       var i = S.templates.findIndex(function (x) { return x.name === t.name; });
+370:       if (i >= 0) S.templates[i] = t;
+371:       else S.templates.push(t);
+372:       saveTemplates();
+373:       fillSel(i >= 0 ? i : S.templates.length - 1);
+374:       changed(true);
+375:     });
+376:     bDel.addEventListener("click", function () {
+377:       var i = Number(sel.value);
+378:       if (i < 0 || !S.templates[i]) return;
+379:       if (!confirm("حذف القالب «" + S.templates[i].name + "»؟ الرخص الصادرة لا تتأثر.")) return;
+380:       S.templates.splice(i, 1);
+381:       saveTemplates();
+382:       fillSel(0);
+383:       if (S.templates[0]) set(S.templates[0]);
+384:     });
+385:     bReset.addEventListener("click", function () {
+386:       if (!confirm("استعادة القوالب الثلاثة الافتراضية؟ قوالبك المحفوظة الأخرى تبقى.")) return;
+387:       VT.DEFAULT_TEMPLATES.forEach(function (d) {
+388:         var i = S.templates.findIndex(function (x) { return x.name === d.name; });
+389:         if (i >= 0) S.templates[i] = clone(d);
+390:         else S.templates.push(clone(d));
+391:       });
+392:       saveTemplates();
+393:       fillSel(0);
+394:       set(S.templates[0]);
+395:     });
+396:     fillSel(0);
+397:     if (S.templates[0]) set(S.templates[0]);
+398:     return {
+399:       get: get, set: function (t, custom) {
+400:         if (custom) sel.value = "-1";
+401:         set(t);
+402:       }
+403:     };
+404:   }
+405: 
+406:   /** بنود رخصة صادرة ← قالب في اللوحة (للتعديل). */
+407:   function templateOf(l) {
+408:     var ft = "," + (l.ft || "") + ",", all = ft.indexOf(",all,") >= 0, lim = l.lim || {};
+409:     var t = { name: l.ed || "مخصصة", lim: {}, sw: {}, bh: lim.bh || "", bn: lim.bn || "", ex: lim.ex || "", tc: lim.tc || "", tg: lim.tg || "", md: lim.md || "" };
+410:     VT.LIMITS.forEach(function (L) {
+411:       var n = lim[L.key], flagOn = !!L.flag && (all || ft.indexOf("," + L.flag + ",") >= 0), on;

@@ -1,0 +1,157 @@
+481:             s.row(a.over90() > 0 ? Report.BOLD : Report.NORMAL, name(in, a.office), a.currency, money(in, a.currency, a.balance), a.sinceDays,
+482:                     money(in, a.currency, a.buckets[0]), money(in, a.currency, a.buckets[1]), money(in, a.currency, a.buckets[2]), money(in, a.currency, a.buckets[3]));
+483:         }
+484:         s.note = (receivable ? "«غير مسدَّد منذ»: آخر مرة كان الحساب صفرًا أو لصالح المكتب. والأعمدة تنسب الرصيد إلى أحدث الحركات التي صنعته (الأقدم يُسدَّد أولًا)، "
+485:                 + "فتعرف كم منه قديم فعلًا. ابدأ المطالبة بالأقدم، أو خفّض سقف المكتب."
+486:                 : "ما بقي عليك قديمًا قد يكون حسابًا انتقل إلى اسم آخر دون قيد تحويل: راجعه أو ادمج الاسمين.");
+487:     }
+488: 
+489:     // ===================================================================================
+490:     // 4) الحسابات الخاملة التي عليها رصيد
+491:     // ===================================================================================
+492: 
+493:     public static final class Dormant {
+494:         public long office, days;
+495:         public final Map<String, Long> balances = new TreeMap<>();
+496:     }
+497: 
+498:     /**
+499:      * رصيد متوقف: رصيد بعملة لم تتحرك (بتلك العملة) منذ أكثر من minDays يومًا، ولو كان المكتب نشطًا بعملة أخرى.
+500:      * days = أيام أقدم رصيد متوقف في المكتب.
+501:      */
+502:     public static List<Dormant> dormant(Input in, int minDays) {
+503:         Map<String, Long> last = new HashMap<>();
+504:         List<Object[]> fx = new ArrayList<>();
+505:         for (Model.Tx t : in.txs) {
+506:             if (!active(t)) continue;
+507:             fx.clear();
+508:             effects(t, fx);
+509:             for (Object[] e : fx) last.merge(t.officeId + "|" + e[0], t.createdAt, Math::max);
+510:         }
+511:         for (Opening o : in.openings) last.merge(o.office + "|" + o.currency, o.when, Math::max);
+512:         List<Dormant> out = new ArrayList<>();
+513:         for (Map.Entry<Long, Map<String, Long>> e : balances(in).entrySet()) {
+514:             Dormant d = new Dormant();
+515:             d.office = e.getKey();
+516:             for (Map.Entry<String, Long> b : e.getValue().entrySet()) {
+517:                 Long l = last.get(e.getKey() + "|" + b.getKey());
+518:                 if (b.getValue() == 0 || l == null) continue;
+519:                 long days = (in.now - l) / DAY;
+520:                 if (days <= minDays) continue;
+521:                 d.balances.put(b.getKey(), b.getValue());
+522:                 d.days = Math.max(d.days, days);
+523:             }
+524:             if (!d.balances.isEmpty()) out.add(d);
+525:         }
+526:         Collections.sort(out, (a, b) -> Long.compare(b.days, a.days));
+527:         return out;
+528:     }
+529: 
+530:     static void dormantSection(Report r, Input in) {
+531:         List<Dormant> l = dormant(in, 90);
+532:         int n = 0;
+533:         for (Dormant d : l) n += d.balances.size();
+534:         Report.Section s = r.section("حسابات متوقفة عليها رصيد", "خاملة");
+535:         s.kv("أرصدة لم تتحرك بعملتها منذ أكثر من 90 يومًا", count(n, "رصيد", "رصيدان", "أرصدة", "رصيدًا") + " على " + count(l.size(), "حساب", "حسابين", "حسابات", "حسابًا"), n > 0);
+536:         s.col("المكتب", 1.8f, Report.TEXT).col("أقدمها بلا حركة منذ (يوم)", 0.9f, Report.INT).col("الأرصدة المتوقفة", 2.6f, Report.TEXT);
+537:         for (Dormant d : l) {
+538:             List<String> b = new ArrayList<>();
+539:             for (Map.Entry<String, Long> e : d.balances.entrySet()) b.add((e.getValue() > 0 ? "لنا " : "علينا ") + fmt(in, e.getKey(), Math.abs(e.getValue())));
+540:             s.row(Report.NORMAL, name(in, d.office), d.days, Model.join(b, " • "));
+541:         }
+542:         s.note = "مال منسي، أو حساب مؤقت لم يُقفَل، أو اسم مكرر لمكتب واحد (ادمجهما من صفحة المكتب).";
+543:     }
+544: 
+545:     // ===================================================================================
+546:     // 5) المكاتب الصاعدة والمتراجعة والجديدة (آخر 90 يومًا مقابل الـ90 قبلها)
+547:     // ===================================================================================
+548: 
+549:     public static final class Trend {
+550:         public long office, last, prev;
+551:         /** rising، declining، new، stopped، back. */
+552:         public String kind;
+553:     }
+554: 
+555:     public static List<Trend> trends(Input in, int window) {
+556:         long w = window * DAY;
+557:         Map<Long, long[]> m = new HashMap<>();   // {آخر، قبلها، أول حركة}
+558:         for (Model.Tx t : in.txs) {
+559:             if (!active(t)) continue;
+560:             long[] x = m.computeIfAbsent(t.officeId, k -> new long[]{0, 0, Long.MAX_VALUE});
+561:             long age = in.now - t.createdAt;
+562:             if (age >= 0 && age < w) x[0]++;
+563:             else if (age >= w && age < 2 * w) x[1]++;
+564:             x[2] = Math.min(x[2], t.createdAt);
+565:         }
+566:         List<Trend> out = new ArrayList<>();
+567:         for (Map.Entry<Long, long[]> e : m.entrySet()) {
+568:             long[] x = e.getValue();
+569:             Trend t = new Trend();
+570:             t.office = e.getKey();
+571:             t.last = x[0];
+572:             t.prev = x[1];
+573:             if (x[1] == 0 && x[0] > 0) t.kind = in.now - x[2] < w ? "new" : "back";
+574:             else if (x[1] > 0 && x[0] == 0) t.kind = "stopped";
+575:             else if (x[1] > 0 && x[0] * 3 >= x[1] * 4) t.kind = "rising";
+576:             else if (x[1] > 0 && x[0] * 3 <= x[1] * 2) t.kind = "declining";
+577:             else continue;
+578:             out.add(t);
+579:         }
+580:         Collections.sort(out, (a, b) -> Long.compare(Math.abs(b.last - b.prev), Math.abs(a.last - a.prev)));
+581:         return out;
+582:     }
+583: 
+584:     static final String[][] TREND_LABELS = {{"declining", "متراجع (نقص أكثر من الثلث)"}, {"stopped", "توقف"}, {"rising", "صاعد (زاد الثلث فأكثر)"},
+585:             {"new", "جديد"}, {"back", "عاد بعد انقطاع"}};
+586: 
+587:     static void trendSection(Report r, Input in) {
+588:         List<Trend> l = trends(in, 90);
+589:         Report.Section s = r.section("المكاتب الصاعدة والمتراجعة والجديدة", "الاتجاهات");
+590:         Map<String, Integer> cnt = new HashMap<>();
+591:         for (Trend t : l) cnt.merge(t.kind, 1, Integer::sum);
+592:         for (String[] k : TREND_LABELS) if (cnt.containsKey(k[0])) s.kv(k[1], offices(cnt.get(k[0])), "declining".equals(k[0]));
+593:         s.col("المكتب", 1.8f, Report.TEXT).col("الحال", 1.4f, Report.TEXT).col("آخر 90 يومًا", 0.9f, Report.INT).col("الـ90 قبلها", 0.9f, Report.INT).col("التغير", 0.8f, Report.TEXT);
+594:         for (String[] k : TREND_LABELS) {
+595:             for (Trend t : l) {
+596:                 if (!k[0].equals(t.kind)) continue;
+597:                 String ch = t.prev == 0 ? "—" : (t.last >= t.prev ? "+" : "") + ((t.last - t.prev) * 100 / t.prev) + "%";
+598:                 s.row("declining".equals(t.kind) || "stopped".equals(t.kind) ? Report.BOLD : Report.NORMAL, name(in, t.office), k[1], t.last, t.prev, ch);
+599:             }
+600:         }
+601:         s.note = "اتصل بالمتراجع واسأله عن السبب قبل أن تخسره، وأعطِ الجديد سقفًا صغيرًا يكبر مع التزامه.";
+602:     }
+603: 
+604:     // ===================================================================================
+605:     // 6) ربح الأجور وفرق العملة
+606:     // ===================================================================================
+607: 
+608:     public static final class Fees {
+609:         /** المكتب|العملة ← {قبضت، دفعت}. */
+610:         public final Map<String, long[]> perOffice = new TreeMap<>();
+611:         public final Map<String, long[]> perCurrency = new TreeMap<>();
+612:         public final Map<Integer, Map<String, long[]>> perMonth = new TreeMap<>();
+613:         public long fromDescription, fromRaje;
+614:         /** «راجع»: المكتب|العملة ← {قبضت، دفعت، عدد، أجرة ما ذُكر مبلغه، المبلغ المذكور (بوحدات العملة الصغرى)}. */
+615:         public final Map<String, long[]> raje = new TreeMap<>();
+616:     }
+617: 
+618:     public static Fees fees(Input in, long from) {
+619:         Fees f = new Fees();
+620:         for (Model.Tx t : in.txs) {
+621:             if (!active(t) || t.createdAt < from) continue;
+622:             String cur = null;
+623:             long got = 0, paid = 0;
+624:             if (t.hasFee()) {
+625:                 cur = t.feeCurrency;
+626:                 if (Model.FEE_US.equals(t.feeType)) got = t.fee;
+627:                 else paid = t.fee;
+628:             } else if (feeRow(t)) {
+629:                 f.fromDescription++;
+630:                 cur = t.currency;
+631:                 if (Model.TYPE_DEBIT.equals(t.type)) got = t.amount;
+632:                 else paid = t.amount;
+633:                 if (rajeRow(t)) {
+634:                     f.fromRaje++;
+635:                     long[] x = f.raje.computeIfAbsent(t.officeId + "|" + cur, z -> new long[5]);
+636:                     x[0] += got;
+637:                     x[1] += paid;

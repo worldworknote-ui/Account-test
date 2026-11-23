@@ -1,0 +1,129 @@
+665:             int on = 0;
+666:             for (Auth.Perm p : ps) if (cur.contains(p.name())) on++;
+667:             final LinearLayout box = new LinearLayout(a);
+668:             box.setOrientation(LinearLayout.VERTICAL);
+669:             box.setPadding(a.dp(4), 0, a.dp(4), a.dp(6));
+670:             LinearLayout head = a.row();
+671:             head.setGravity(Gravity.CENTER_VERTICAL);
+672:             head.setPadding(a.dp(12), a.dp(10), a.dp(12), a.dp(10));
+673:             head.setBackground(a.ripple(a.round(a.surface, a.cardStroke, 14), 14));
+674:             boolean open = si == 0;
+675:             final TextView arrow = a.text(open ? "▾" : "◂", 16, a.primaryInk, true);
+676:             head.addView(arrow, new LinearLayout.LayoutParams(a.dp(22), -2));
+677:             head.addView(a.text((String) sec[0], 15, a.primaryInk, true), new LinearLayout.LayoutParams(0, -2, 1));
+678:             final TextView count = a.text(on + " من " + ps.length, 13, on > 0 ? a.green : a.muted, true);
+679:             head.addView(count, new LinearLayout.LayoutParams(-2, -2));
+680:             head.setContentDescription((String) sec[0]);
+681:             LinearLayout.LayoutParams hp = a.lp(-1, -2, 4);
+682:             permBox.addView(head, hp);
+683:             permBox.addView(box);
+684:             box.setVisibility(open ? android.view.View.VISIBLE : android.view.View.GONE);
+685:             head.setOnClickListener(v -> {
+686:                 boolean o = box.getVisibility() != android.view.View.VISIBLE;
+687:                 box.setVisibility(o ? android.view.View.VISIBLE : android.view.View.GONE);
+688:                 arrow.setText(o ? "▾" : "◂");
+689:             });
+690:             final List<CheckBox> mine = new ArrayList<>();
+691:             final Runnable recount = () -> {
+692:                 int n = 0;
+693:                 for (CheckBox x : mine) if (x.isChecked()) n++;
+694:                 count.setText(n + " من " + mine.size());
+695:                 count.setTextColor(n > 0 ? a.green : a.muted);
+696:             };
+697:             LinearLayout allRow = a.row();
+698:             allRow.addView(a.smallButton("الكل", a.accent, v -> { for (CheckBox x : mine) x.setChecked(true); }), a.weight(34, 1, 2));
+699:             allRow.addView(a.smallButton("لا شيء", Color.rgb(130, 130, 130), v -> { for (CheckBox x : mine) x.setChecked(false); }), a.weight(34, 1, 2));
+700:             box.addView(allRow);
+701:             for (Auth.Perm p : ps) {
+702:                 CheckBox cb = new CheckBox(a);
+703:                 cb.setText(Auth.title(p));
+704:                 cb.setChecked(cur.contains(p.name()));
+705:                 cb.setOnCheckedChangeListener((bb, x) -> recount.run());
+706:                 mine.add(cb);
+707:                 box.addView(cb);
+708:                 String h = Auth.hint(p);
+709:                 if (!h.isEmpty()) {
+710:                     TextView ht = a.text(h, 11, a.muted, false);
+711:                     ht.setPadding(a.dp(32), 0, 0, a.dp(2));
+712:                     box.addView(ht);
+713:                 }
+714:                 boxes.put(p, cb);
+715:                 if (p == Auth.Perm.TX_ADD) {
+716:                     // 10.3: الاعتماد لكل مستخدم: كل حركاته (أي مبلغ) تنتظر اعتماد من يملك «الاعتماد»
+717:                     review.setText("حركاته تحتاج اعتمادًا قبل أن تدخل الأرصدة (أيًا كان المبلغ)");
+718:                     review.setChecked(cur.contains(Auth.REVIEW));
+719:                     review.setPadding(a.dp(24), 0, 0, 0);
+720:                     box.addView(review);
+721:                     TextView rh = a.text("يعتمدها أو يصححها أو يرفضها المدير أو من يملك «اعتماد الحركات»، ويصله إشعار.", 11, a.muted, false);
+722:                     rh.setPadding(a.dp(56), 0, 0, a.dp(2));
+723:                     box.addView(rh);
+724:                 }
+725:             }
+726:         }
+727:         l.addView(permBox);
+728:         permBox.setVisibility(admin.isChecked() ? android.view.View.GONE : android.view.View.VISIBLE);
+729:         admin.setOnCheckedChangeListener((b, x) -> permBox.setVisibility(x ? android.view.View.GONE : android.view.View.VISIBLE));
+730:         final EditText p1 = pinField(firstAdmin ? "رمز المدير (6 إلى 8 أرقام)" : "الرمز السري (4 إلى 8 أرقام، والمدير 6)");
+731:         final EditText p2 = pinField("أعد كتابة الرمز");
+732:         final CheckBox active = new CheckBox(a);
+733:         if (old == null) {
+734:             l.addView(p1);
+735:             l.addView(p2);
+736:         } else {
+737:             active.setText("الحساب نشط");
+738:             active.setChecked(old.active);
+739:             l.addView(active);
+740:             l.addView(a.text("لتغيير رمز هذا المستخدم استخدم زر «تغيير الرمز».", 12, a.muted, false));
+741:         }
+742:         if (firstAdmin) l.addView(a.text("بعد الحفظ يظهر «رمز استرداد المدير» مرة واحدة: اكتبه على ورقة. هو الطريقة الوحيدة لاستعادة الدخول إن نُسي رمز المدير.", 12, a.muted, false));
+743:         android.widget.ScrollView sv = new android.widget.ScrollView(a);
+744:         sv.addView(l);
+745:         final AlertDialog dlg = new AlertDialog.Builder(a).setView(sv)
+746:                 .setPositiveButton("حفظ", null).setNegativeButton("إلغاء", null).create();
+747:         dlg.setOnShowListener(d -> dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+748:             try {
+749:                 String n = name.getText().toString().trim();
+750:                 if (n.isEmpty()) throw new Exception("اكتب اسم المستخدم");
+751:                 for (Model.User u : a.db.users(false)) {
+752:                     if ((old == null || u.id != old.id) && u.name.trim().equalsIgnoreCase(n)) throw new Exception("يوجد مستخدم بنفس الاسم");
+753:                 }
+754:                 String r = admin.isChecked() ? Auth.ADMIN : Auth.CUSTOM;
+755:                 java.util.Set<String> chosen = new java.util.LinkedHashSet<>();
+756:                 for (java.util.Map.Entry<Auth.Perm, CheckBox> e : boxes.entrySet()) if (e.getValue().isChecked()) chosen.add(e.getKey().name());
+757:                 if (review.isChecked() && boxes.get(Auth.Perm.TX_ADD).isChecked()) chosen.add(Auth.REVIEW);
+758:                 if (!admin.isChecked() && chosen.isEmpty()) throw new Exception("اختر صلاحية واحدة على الأقل");
+759:                 chosen.add(Auth.DETAILED);   // 12.0: اختيرت تفصيليًا
+760:                 chosen.add(Auth.DETAILED126);
+761:                 String perms = Auth.csv(chosen);
+762:                 if (old == null) {
+763:                     String pin = p1.getText().toString();
+764:                     if (!pinOk(r, pin)) throw new Exception(pinRule(r));
+765:                     if (!pin.equals(p2.getText().toString())) throw new Exception("الرمزان غير متطابقين");
+766:                     long id = a.db.addUser(n, r, perms, pin);
+767:                     if (!nick.getText().toString().trim().isEmpty()) a.db.setNick(id, nick.getText().toString());
+768:                     dlg.dismiss();
+769:                     if (firstAdmin) {
+770:                         Model.User u = a.db.user(id);
+771:                         SmartApp.currentUser = u;
+772:                         Db.currentUserName = n;
+773:                         a.lastAuthAt = SystemClock.elapsedRealtime();
+774:                         reauthAt = SystemClock.elapsedRealtime();
+775:                         resetFails();
+776:                         if (a.db.settingLong("lock_timeout", -1) < 0) a.db.setSetting("lock_timeout", "5");
+777:                         String code = a.db.newRecoveryCode();
+778:                         // 12.7: مسار واضح بعد التفعيل: رمز الاسترداد، ثم رسالة «ادخل باسمك»، ثم شاشة الدخول واسمك مكتوب فيها
+779:                         a.db.setSettingQuiet("last_login_name", n);
+780:                         showRecoveryCode(code, "تم تفعيل المستخدمين ✓. هذا رمز استرداد المدير:", () -> new AlertDialog.Builder(a).setTitle("تم تفعيل نظام المستخدمين ✓")
+781:                                 .setMessage("من الآن يدخل كل شخص باسمه ورمزه، وتُسجَّل كل حركة باسم من سجّلها.\n\n"
+782:                                         + "الخطوة التالية: ادخل الآن باسمك «" + n + "» ورمزك الذي اخترته، ثم أضف حسابات الموظفين من «المزيد ← المستخدمون والصلاحيات». "
+783:                                         + (SyncEngine.enabled(a.db) ? "تصل الحسابات إلى الأجهزة المتزامنة، ويدخل كل شخص بحسابه من جهازه. " : "")
+784:                                         + "يُطلب الدخول من جديد بعد 5 دقائق خارج التطبيق (يمكن تغييرها من الإعدادات ← الأمان).")
+785:                                 .setCancelable(false)
+786:                                 .setPositiveButton("الدخول باسمي", (dd, w) -> {
+787:                                     a.sessionEnd();
+788:                                     SmartApp.currentUser = null;
+789:                                     Db.currentUserName = "المستخدم المحلي";
+790:                                     showLogin();
+791:                                 }).show());
+792:                         return;
+793:                     }

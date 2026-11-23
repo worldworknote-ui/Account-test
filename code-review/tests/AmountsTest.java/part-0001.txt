@@ -1,0 +1,88 @@
+1: import com.smart.hawala.Amounts;
+2: import com.smart.hawala.MessageParser;
+3: import java.math.BigDecimal;
+4: 
+5: /**
+6:  * 8.0: قراءة واحدة للمبالغ. قبلها كان «1,500» يُقرأ 1.5 في النموذج و1500 في محلل واتساب.
+7:  * كل حالة: النص، منازل العملة، المتوقع بالوحدة الصغرى (أو null = يجب أن يُرفض).
+8:  */
+9: public class AmountsTest {
+10:     static int fails = 0;
+11: 
+12:     static void check(boolean c, String m) {
+13:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+14:         if (!c) fails++;
+15:     }
+16: 
+17:     static void minor(String text, int dec, Long want) {
+18:         Long got;
+19:         try {
+20:             got = Amounts.minor(text, dec);
+21:         } catch (RuntimeException e) {
+22:             got = null;
+23:         }
+24:         check(want == null ? got == null : want.equals(got), "«" + text + "» dec=" + dec + " → " + (want == null ? "مرفوض" : want) + " (got " + got + ")");
+25:     }
+26: 
+27:     public static void main(String[] a) {
+28:         System.out.println("== thousands vs decimals");
+29:         minor("1,500", 2, 150000L);          // الخطأ القديم: 1.5
+30:         minor("1.500", 2, 150000L);
+31:         minor("1,500", 0, 1500L);
+32:         minor("1,250,000", 0, 1250000L);
+33:         minor("1.250.000", 0, 1250000L);
+34:         minor("1,250.50", 2, 125050L);
+35:         minor("1.250,50", 2, 125050L);
+36:         minor("12,5", 2, 1250L);
+37:         minor("12.50", 2, 1250L);
+38:         minor("0,500", 2, 50L);             // 0.500 = 0.50 بلا تقريب
+39:         minor("0,505", 2, null);            // كسر زائد يحتاج تقريبًا: يُرفض لا يُقرَّب
+40:         minor("0,50", 2, 50L);
+41:         minor(".5", 2, 50L);
+42:         minor("12.", 2, 1200L);
+43:         minor("100", 2, 10000L);
+44:         minor("100", 0, 100L);
+45:         System.out.println("== Arabic and Persian digits and separators");
+46:         minor("١٬٥٠٠", 2, 150000L);          // ٬ فاصل آلاف عربي يُحذف
+47:         minor("١٥٠٠", 2, 150000L);
+48:         minor("١٢٫٥", 2, 1250L);              // ٫ عشرية عربية
+49:         minor("١،٥٠٠", 2, 150000L);          // ، فاصلة عربية = فاصل آلاف هنا
+50:         minor("۱۲۵۰", 2, 125000L);
+51:         minor("2 500", 2, 250000L);
+52:         minor("2 500,75", 2, 250075L);
+53:         System.out.println("== irregular grouping is rejected, not guessed");
+54:         minor("1,50,000", 2, null);
+55:         minor("12,34,567", 2, null);
+56:         minor("1,2,3", 2, null);
+57:         minor("1.250,5,0", 2, null);
+58:         minor("1,250.50.5", 2, null);
+59:         minor("abc", 2, null);
+60:         minor("12a", 2, null);
+61:         minor("", 2, null);
+62:         minor(",", 2, null);
+63:         System.out.println("== three-decimal currencies (KWD, JOD)");
+64:         minor("1,500", 3, null);             // ملتبس: يُرفض بدل التخمين
+65:         minor("1.500", 3, null);
+66:         minor("1500", 3, 1500000L);
+67:         minor("1.5", 3, 1500L);
+68:         minor("1,250.500", 3, 1250500L);
+69:         minor("12.3456", 3, null);           // كسر أكثر من المنازل
+70:         System.out.println("== signs and extremes");
+71:         minor("-1,500", 2, -150000L);
+72:         minor("+75", 2, 7500L);
+73:         minor("999999999999999999", 2, null); // يتجاوز long بعد الضرب
+74:         minor("0", 2, 0L);
+75: 
+76:         System.out.println("== the form and the WhatsApp parser give the same value");
+77:         String[] same = {"1,500", "1.500", "1,250.50", "1.250,50", "12,5", "2.5", "1,250,000", "5000", "750"};
+78:         for (String s : same) {
+79:             BigDecimal p = MessageParser.numberForTest(s);
+80:             BigDecimal f = new BigDecimal(Amounts.normalize(s, 2));
+81:             check(p != null && p.compareTo(f) == 0, "«" + s + "»: الرسالة " + p + " = النموذج " + f);
+82:         }
+83:         check(MessageParser.numberForTest("+963944") == null, "phone with + is not an amount");
+84: 
+85:         System.out.println(fails == 0 ? "ALL AMOUNT TESTS PASSED" : fails + " FAILED");
+86:         System.exit(fails == 0 ? 0 : 1);
+87:     }
+88: }

@@ -1,0 +1,74 @@
+182:         try { SmartApp.db.setSettingQuiet("desk_wizard", "done"); } catch (Throwable ignored) { /* يظهر مرة أخرى فقط */ }
+183:         if (dlg != null) dlg.dispose();
+184:         dlg = null;
+185:         Window w = current();
+186:         if (w != null) w.toFront();
+187:     }
+188: 
+189:     // ------------------------------------------------------------------ عناصر
+190:     interface Pick { void picked(int i); }
+191: 
+192:     private static void add(JComponent c) {
+193:         c.setAlignmentX(Component.RIGHT_ALIGNMENT);
+194:         body.add(c);
+195:     }
+196: 
+197:     private static JLabel head(String s) {
+198:         JLabel l = new JLabel(s);
+199:         l.setFont(Ui.font(15f, true));
+200:         l.setForeground(Ui.ink);
+201:         l.setBorder(new EmptyBorder(16, 0, 6, 0));
+202:         return l;
+203:     }
+204: 
+205:     private static JComponent note(String s) {
+206:         JTextArea a = new JTextArea(s);
+207:         a.setLineWrap(true);
+208:         a.setWrapStyleWord(true);
+209:         a.setEditable(false);
+210:         a.setFocusable(false);
+211:         a.setOpaque(false);
+212:         a.setFont(Ui.font(12.5f, false));
+213:         a.setForeground(Ui.muted);
+214:         a.setBorder(new EmptyBorder(4, 0, 0, 0));
+215:         a.setColumns(30);
+216:         a.setMaximumSize(new Dimension(Integer.MAX_VALUE, Integer.MAX_VALUE));
+217:         return a;
+218:     }
+219: 
+220:     /** أزرار اختيار متجاورة (واحد فقط مختار)، كالأزرار المقسّمة في الهاتف. */
+221:     private static JComponent choices(String[] labels, int sel, Pick p) {
+222:         JPanel r = new JPanel(new GridLayout(labels.length > 2 ? 2 : 1, labels.length > 2 ? 2 : labels.length, 8, 8));
+223:         r.setOpaque(false);
+224:         ButtonGroup g = new ButtonGroup();
+225:         for (int i = 0; i < labels.length; i++) {
+226:             final int k = i;
+227:             JToggleButton b = new JToggleButton(labels[i], i == sel);
+228:             b.setFont(Ui.font(13.5f, i == sel));
+229:             b.putClientProperty("JButton.buttonType", "roundRect");
+230:             b.setFocusable(false);
+231:             b.setPreferredSize(new Dimension(150, 40));
+232:             style(b);
+233:             b.addItemListener(e -> {
+234:                 b.setFont(Ui.font(13.5f, b.isSelected()));
+235:                 style(b);
+236:             });
+237:             b.addActionListener(e -> p.picked(k));
+238:             g.add(b);
+239:             r.add(b);
+240:         }
+241:         r.setMaximumSize(new Dimension(Integer.MAX_VALUE, r.getPreferredSize().height));
+242:         return r;
+243:     }
+244: 
+245:     private static void style(JToggleButton b) {
+246:         if (b.isSelected()) {
+247:             b.setBackground(Ui.primary);
+248:             b.setForeground(Ui.onColor(Ui.primary));
+249:             b.putClientProperty("JToggleButton.selectedBackground", Ui.primary);
+250:         } else {
+251:             b.setBackground(Ui.mix(Ui.surface, Ui.line, 0.5f));
+252:             b.setForeground(Ui.ink);
+253:         }
+254:     }
+255: }

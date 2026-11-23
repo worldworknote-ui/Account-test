@@ -1,0 +1,165 @@
+199:         p.setGravity(Gravity.CENTER);
+200:         p.setTextSize(22);
+201:         return p;
+202:     }
+203: 
+204:     private LinearLayout padded(android.view.View... views) {
+205:         LinearLayout l = new LinearLayout(a);
+206:         l.setOrientation(LinearLayout.VERTICAL);
+207:         l.setPadding(a.dp(22), a.dp(8), a.dp(22), a.dp(4));
+208:         for (android.view.View v : views) l.addView(v, new LinearLayout.LayoutParams(-1, -2));
+209:         return l;
+210:     }
+211: 
+212:     private void pinDialog(final Model.User u) {
+213:         if (!canTry()) return;
+214:         final EditText p = pinField("الرمز السري");
+215:         final AlertDialog dlg = new AlertDialog.Builder(a).setTitle(u.name).setView(padded(p))
+216:                 .setPositiveButton("دخول", null).setNegativeButton("إلغاء", null).create();
+217:         dlg.setOnShowListener(d -> dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+218:             String pin = p.getText().toString();
+219:             p.setText("");
+220:             if (lockRemaining() > 0) {
+221:                 dlg.dismiss();
+222:                 canTry();
+223:                 return;
+224:             }
+225:             if (a.db.verifyPin(u.id, pin)) {
+226:                 dlg.dismiss();
+227:                 login(u);
+228:             } else {
+229:                 int f = recordFail(u.name, u.id);
+230:                 if (Pin.lockoutMillis(f) > 0) dlg.dismiss();
+231:                 failMessage(p, f);
+232:             }
+233:         }));
+234:         dlg.show();
+235:     }
+236: 
+237:     private void login(Model.User u) {
+238:         Db.recoveryGrant = false;
+239:         resetFails();
+240:         SmartApp.currentUser = u;
+241:         Db.currentUserName = u.name;
+242:         a.lastAuthAt = SystemClock.elapsedRealtime();
+243:         reauthAt = SystemClock.elapsedRealtime();
+244:         a.db.audit("LOGIN", "user", u.id, "");
+245:         a.db.setSettingQuiet("notif_last_user", "" + u.id);
+246:         a.showHome();
+247:     }
+248: 
+249:     // ===================================================================================
+250:     // نسيان الرمز: رمز الاسترداد فقط (لا بصمة الهاتف)
+251:     // ===================================================================================
+252: 
+253:     private void forgotDialog() {
+254:         String msg = "• الموظف: اطلب من المدير تغيير رمزك من «الإعدادات ← المستخدمون».\n\n"
+255:                 + "• المدير: أدخل رمز الاسترداد الذي حفظته عند تفعيل المستخدمين (مثل ABCD-EFGH-JKMN-PQRS).\n\n"
+256:                 + "بصمة الهاتف وقفله لا تُستخدم للدخول كمدير، حتى لا يستطيع حامل الهاتف السيطرة على الحسابات.";
+257:         AlertDialog.Builder b = new AlertDialog.Builder(a).setTitle("نسيت الرمز").setMessage(msg).setNegativeButton("إغلاق", null);
+258:         if (a.db.hasRecoveryCode()) b.setPositiveButton("عندي رمز الاسترداد", (d, w) -> recoveryDialog());
+259:         else b.setMessage(msg + "\n\n⚠ لم يُنشأ رمز استرداد لهذه البيانات. يستطيع مدير آخر (إن وُجد) تغيير رمزك.");
+260:         b.show();
+261:     }
+262: 
+263:     private void recoveryDialog() {
+264:         if (!canTry()) return;
+265:         final EditText code = new EditText(a);
+266:         code.setHint("رمز الاسترداد");
+267:         code.setSingleLine(true);
+268:         code.setGravity(Gravity.CENTER);
+269:         code.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+270:         code.setTypeface(Typeface.MONOSPACE);
+271:         final AlertDialog dlg = new AlertDialog.Builder(a).setTitle("رمز استرداد المدير").setView(padded(code))
+272:                 .setPositiveButton("تحقق", null).setNegativeButton("إلغاء", null).create();
+273:         dlg.setOnShowListener(d -> dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+274:             if (lockRemaining() > 0) {
+275:                 dlg.dismiss();
+276:                 canTry();
+277:                 return;
+278:             }
+279:             if (!a.db.verifyRecoveryCode(code.getText().toString())) {
+280:                 int f = recordFail("استرداد المدير", 0);
+281:                 if (Pin.lockoutMillis(f) > 0) dlg.dismiss();
+282:                 failMessage(code, f);
+283:                 return;
+284:             }
+285:             dlg.dismiss();
+286:             resetFails();
+287:             a.db.audit("RECOVERY_USED", "user", 0, "");
+288:             List<Model.User> admins = new ArrayList<>();
+289:             for (Model.User u : a.db.users(true)) if (Auth.ADMIN.equals(u.role)) admins.add(u);
+290:             if (admins.isEmpty()) {
+291:                 a.error(new Exception("لا يوجد مدير نشط."));
+292:                 return;
+293:             }
+294:             if (admins.size() == 1) recoverAdmin(admins.get(0));
+295:             else {
+296:                 String[] names = new String[admins.size()];
+297:                 for (int i = 0; i < names.length; i++) names[i] = admins.get(i).name;
+298:                 new AlertDialog.Builder(a).setTitle("أي مدير؟").setCancelable(false)
+299:                         .setItems(names, (x, i) -> recoverAdmin(admins.get(i))).show();
+300:             }
+301:         }));
+302:         dlg.show();
+303:     }
+304: 
+305:     /** بعد رمز استرداد صحيح: رمز جديد للمدير، ثم رمز استرداد جديد (القديم صار مستخدمًا). */
+306:     private void recoverAdmin(final Model.User admin) {
+307:         Db.recoveryGrant = true;   // رمز استرداد صحيح: يُسمح بتغيير رمز المدير مرة واحدة قبل الدخول
+308:         newPinDialog(admin, "رمز جديد للمدير: " + admin.name, false, () -> {
+309:             // 10.5: يدخل المدير أولًا ثم يُنشأ رمز الاسترداد الجديد بصلاحيته (لا بإذن الاسترداد الذي يُغلق مع النافذة)
+310:             SmartApp.currentUser = admin;
+311:             Db.currentUserName = admin.name;
+312:             String fresh = a.db.newRecoveryCode();
+313:             Db.recoveryGrant = false;
+314:             a.lastAuthAt = SystemClock.elapsedRealtime();
+315:             reauthAt = SystemClock.elapsedRealtime();
+316:             showRecoveryCode(fresh, "استُخدم رمز الاسترداد القديم ولم يعد صالحًا. هذا رمز الاسترداد الجديد:", a::showHome);
+317:         });
+318:     }
+319: 
+320:     /** يعرض رمز الاسترداد مرة واحدة، ولا يُغلق قبل تأكيد حفظه. */
+321:     void showRecoveryCode(final String code, String intro, final Runnable after) {
+322:         LinearLayout l = new LinearLayout(a);
+323:         l.setOrientation(LinearLayout.VERTICAL);
+324:         l.setPadding(a.dp(20), a.dp(8), a.dp(20), a.dp(4));
+325:         l.addView(a.text(intro, 14, a.dark, false));
+326:         TextView c = a.text(code, 22, a.primary, true);
+327:         c.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+328:         c.setGravity(Gravity.CENTER);
+329:         c.setTextIsSelectable(true);
+330:         c.setLayoutDirection(android.view.View.LAYOUT_DIRECTION_LTR);
+331:         c.setTextDirection(android.view.View.TEXT_DIRECTION_LTR);
+332:         c.setPadding(a.dp(6), a.dp(14), a.dp(6), a.dp(14));
+333:         c.setBackground(a.round(Color.rgb(240, 247, 243), a.primary, 10));
+334:         l.addView(c, new LinearLayout.LayoutParams(-1, -2));
+335:         l.addView(a.text("اكتبه على ورقة واحفظه في مكان آمن بعيدًا عن الهاتف. هو الطريقة الوحيدة لاستعادة دخول المدير إن نُسي الرمز، ولن يظهر مرة أخرى.", 13, a.red, true));
+336:         Button copy = a.smallButton("نسخ الرمز", a.accent, v -> {
+337:             ClipboardManager cm = (ClipboardManager) a.getSystemService(Context.CLIPBOARD_SERVICE);
+338:             if (cm != null) {
+339:                 // 8.0: يُعلَّم حساسًا (تُخفى معاينته من Android 13) ويُمسح من الحافظة بعد دقيقة
+340:                 ClipData clip = ClipData.newPlainText("رمز الاسترداد", code);
+341:                 android.os.PersistableBundle extras = new android.os.PersistableBundle();
+342:                 extras.putBoolean("android.content.extra.IS_SENSITIVE", true);
+343:                 clip.getDescription().setExtras(extras);
+344:                 cm.setPrimaryClip(clip);
+345:                 new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+346:                     try {
+347:                         cm.clearPrimaryClip();
+348:                     } catch (Throwable ignored) {
+349:                         // غير مهم
+350:                     }
+351:                 }, 60000);
+352:             }
+353:             a.toast("نُسخ الرمز لدقيقة واحدة. الصقه في مكان آمن الآن.");
+354:         });
+355:         l.addView(copy, a.lp(-1, 42, 4));
+356:         final CheckBox saved = new CheckBox(a);
+357:         saved.setText("كتبت الرمز وحفظته");
+358:         l.addView(saved);
+359:         final AlertDialog dlg = new AlertDialog.Builder(a).setTitle("رمز استرداد المدير").setView(l).setCancelable(false)
+360:                 .setPositiveButton("تم", null).create();
+361:         dlg.setOnShowListener(d -> {
+362:             final Button ok = dlg.getButton(AlertDialog.BUTTON_POSITIVE);
+363:             ok.setEnabled(false);

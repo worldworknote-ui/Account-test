@@ -1,0 +1,130 @@
+609:     // ===================================================================================
+610: 
+611:     private static final String[] FEE_KINDS = {Model.FEE_NONE, Model.FEE_US, Model.FEE_THEM};
+612: 
+613:     void transfer(final Model.Office from0) { transfer(from0, from0); }
+614: 
+615:     /**
+616:      * 10.7 (الاتجاه الصحيح): المكتب طالب الحركة يطلب منا تسليم مبلغ عن طريق مكتب آخر، فيصير «لنا» عليه؛
+617:      * والمكتب المنفّذ يسلّم المبلغ نيابة عنا، فيصير «علينا» له — بالمبلغ والعملة نفسيهما، في عملية واحدة (Db.addTransfer).
+618:      * الأجرة: أجرتنا على الطالب («لنا») وأجرة المنفّذ («علينا»)؛ الفرق ربحنا. لا حركة صندوق. المكتب نفسه في الطرفين مرفوض.
+619:      * from0: فُتحت من صفحة هذا المكتب (الرجوع إليها). start: المكتب طالب الحركة المقترح.
+620:      */
+621:     void transfer(final Model.Office from0, final Model.Office start) {
+622:         if (!a.require(Auth.Perm.TX_ADD) || !a.require(Auth.Perm.XFER)) return;   // 12.0
+623:         int active = 0;
+624:         for (Model.Office x : a.db.offices()) if (x.active) active++;
+625:         if (active < 2) {
+626:             a.toast("يلزم مكتبان نشطان على الأقل");
+627:             return;
+628:         }
+629:         a.base("تسجيل حركة", from0 == null ? null : () -> a.officeHub.showOffice(from0));
+630:         final Model.Office[] from = {null}, to = {null};
+631:         // 10.7: نوع الحركة فوق المكتب
+632:         a.recordKinds(RecordMenu.XFER, () -> from[0]);
+633:         a.hint("مكتب يطلب منا تسليم مبلغ، وينفّذه مكتب آخر نيابة عنا: طالب الحركة يصير «لنا» عليه، والمنفّذ يصير «علينا» له بالمبلغ نفسه. لا يتحرك النقد في الصندوق. تُسجَّل الساقان وتُعتمدان وتُلغيان معًا.");
+634:         final List<String> common = new java.util.ArrayList<>();
+635:         final Ui.Seg[] cur = {null};
+636: 
+637:         LinearLayout fc = sideCard("المكتب طالب الحركة", "طلب منا التسليم ← يصير «لنا» عليه", a.green, a.creditBg);
+638:         final Button fromBtn = a.makeButton("اختر المكتب طالب الحركة", a.accent, null);
+639:         fc.addView(fromBtn, a.lp(-1, 52, 4));
+640:         final TextView fromBal = a.text("", 13, a.muted, false);
+641:         fc.addView(fromBal);
+642:         final Button swap = swapButton("⇅ تبديل الطرفين", null);
+643:         LinearLayout tc = sideCard("المكتب المنفّذ", "سلّم المبلغ عنا ← يصير «علينا» له", a.red, a.debitBg);
+644:         splitMark = tc;
+645:         final Button toBtn = a.makeButton("اختر المكتب المنفّذ", a.accent, null);
+646:         tc.addView(toBtn, a.lp(-1, 52, 4));
+647:         final TextView toBal = a.text("", 13, a.muted, false);
+648:         tc.addView(toBal);
+649: 
+650:         a.add(a.label("المبلغ"));
+651:         final EditText amt = a.amountInput("0");
+652:         amt.setTextSize(22);
+653:         Ui.bold(amt);
+654:         a.add(a.label("العملة (المشتركة بين المكتبين)"));
+655:         final LinearLayout curHolder = new LinearLayout(a);
+656:         a.body.addView(curHolder, a.lp(-1, -2, 0));
+657:         final EditText person = a.input("اسم المستفيد (اختياري)");
+658:         final EditText desc = a.input("البيان (اختياري)");
+659: 
+660:         a.add(a.label("الأجرة"));
+661:         final Ui.Seg feeMode = a.new Seg(new String[]{"بدون أجرة", "مع أجرة"}, null, 0, false);
+662:         a.body.addView(feeMode.view, a.lp(-1, -2, 2));
+663:         final LinearLayout feeBox = new LinearLayout(a);
+664:         feeBox.setOrientation(LinearLayout.VERTICAL);
+665:         feeBox.setPadding(a.dp(8), a.dp(6), a.dp(8), a.dp(6));
+666:         feeBox.setBackground(a.round(android.graphics.Color.rgb(250, 248, 242), android.graphics.Color.rgb(225, 220, 205), 12));
+667:         int gray = android.graphics.Color.rgb(120, 120, 120);
+668:         feeBox.addView(a.text("أجرتنا على طالب الحركة (عادةً «الأجرة لنا»)", 13, a.dark, true));
+669:         final Ui.Seg fromFee = a.new Seg(FEE_KINDS, new int[]{gray, a.green, a.red}, 0, false);
+670:         feeBox.addView(fromFee.view);
+671:         final EditText fromFeeAmt = a.field("مبلغ أجرة الطالب");
+672:         Ui.numeric(fromFeeAmt);
+673:         feeBox.addView(fromFeeAmt, a.lp(-1, 50, 4));
+674:         feeBox.addView(a.text("أجرة المنفّذ (عادةً «الأجرة علينا»)", 13, a.dark, true));
+675:         final Ui.Seg toFee = a.new Seg(FEE_KINDS, new int[]{gray, a.green, a.red}, 0, false);
+676:         feeBox.addView(toFee.view);
+677:         final EditText toFeeAmt = a.field("مبلغ أجرة المنفّذ");
+678:         Ui.numeric(toFeeAmt);
+679:         feeBox.addView(toFeeAmt, a.lp(-1, 50, 4));
+680:         feeBox.addView(a.text("الأجرة بعملة الحركة نفسها. الفرق بين أجرتنا على الطالب وأجرة المنفّذ هو ربحنا من الحركة.", 12, a.muted, false));
+681:         feeBox.setVisibility(android.view.View.GONE);
+682:         a.body.addView(feeBox, a.lp(-1, -2, 4));
+683: 
+684:         final java.util.function.Supplier<Db.TransferInput> input = () -> {
+685:             Db.TransferInput in = new Db.TransferInput();
+686:             if (from[0] == null || to[0] == null) throw new IllegalArgumentException("اختر المكتبين");
+687:             in.from = from[0].id;
+688:             in.to = to[0].id;
+689:             if (cur[0] == null || cur[0].none()) throw new IllegalArgumentException(common.isEmpty() ? "لا عملة مشتركة مفعّلة للمكتبين" : "اختر العملة");
+690:             in.currency = cur[0].label();
+691:             int d = a.db.decimals(in.currency);
+692:             in.amount = Db.minor(amt.getText().toString(), d);
+693:             in.person = person.getText().toString().trim();
+694:             in.description = desc.getText().toString().trim();
+695:             in.when = Clock.now();
+696:             boolean fees = feeMode.selected == 1;
+697:             in.fromFeeType = fees ? FEE_KINDS[Math.max(0, fromFee.selected)] : Model.FEE_NONE;
+698:             in.toFeeType = fees ? FEE_KINDS[Math.max(0, toFee.selected)] : Model.FEE_NONE;
+699:             if (!Model.FEE_NONE.equals(in.fromFeeType)) in.fromFee = Db.minor(fromFeeAmt.getText().toString(), d);
+700:             if (!Model.FEE_NONE.equals(in.toFeeType)) in.toFee = Db.minor(toFeeAmt.getText().toString(), d);
+701:             return in;
+702:         };
+703:         final Object[] sf = summaryAndFooter("تسجيل الحركة", null);
+704:         final LinearLayout summary = (LinearLayout) sf[0];
+705:         final TextView footer = (TextView) sf[1];
+706:         final Button save = (Button) sf[2];
+707:         final Runnable update = () -> {
+708:             boolean fees = feeMode.selected == 1;
+709:             feeBox.setVisibility(fees ? android.view.View.VISIBLE : android.view.View.GONE);
+710:             fromFeeAmt.setVisibility(fromFee.selected > 0 ? android.view.View.VISIBLE : android.view.View.GONE);
+711:             toFeeAmt.setVisibility(toFee.selected > 0 ? android.view.View.VISIBLE : android.view.View.GONE);
+712:             String c = cur[0] == null || cur[0].none() ? null : cur[0].label();
+713:             String at = c == null ? null : amountText(amt, c);
+714:             List<String> l = new java.util.ArrayList<>();
+715:             l.add("راجع قبل التسجيل:");
+716:             l.add(from[0] == null ? "✗ طالب الحركة: لم يُختر" : "طالب الحركة: " + from[0].name + " — «لنا» عليه");
+717:             l.add(to[0] == null ? "✗ المنفّذ: لم يُختر" : "المنفّذ: " + to[0].name + " — «علينا» له");
+718:             if (from[0] != null && to[0] != null && from[0].id == to[0].id) l.add("✗ المكتبان: اختر مكتبين مختلفين");
+719:             if (from[0] != null && to[0] != null && common.isEmpty()) l.add("✗ العملة: لا عملة مشتركة مفعّلة للمكتبين");
+720:             else if (c == null) l.add("✗ العملة: لم تُختر");
+721:             l.add(amt.getText().toString().trim().isEmpty() ? "✗ المبلغ: لم يُكتب" : at == null ? "✗ المبلغ غير صحيح: اكتب أرقامًا فقط" : "المبلغ: " + at);
+722:             if (fees) {
+723:                 for (int k = 0; k < 2; k++) {
+724:                     Ui.Seg s = k == 0 ? fromFee : toFee;
+725:                     EditText e = k == 0 ? fromFeeAmt : toFeeAmt;
+726:                     String who = k == 0 ? "أجرة الطالب" : "أجرة المنفّذ";
+727:                     if (s.selected <= 0) l.add(who + ": بدون");
+728:                     else {
+729:                         String fa = c == null ? null : amountText(e, c);
+730:                         l.add(fa == null ? "✗ " + who + ": اكتب المبلغ" : who + ": " + FEE_KINDS[s.selected].replace("الأجرة ", "") + " " + fa);
+731:                     }
+732:                 }
+733:                 // ربحنا = ما لنا من أجرة ناقص ما علينا منها (بعملة الحركة)
+734:                 try {
+735:                     long net = 0;
+736:                     int d = a.db.decimals(c);
+737:                     for (int k = 0; k < 2; k++) {
+738:                         Ui.Seg s = k == 0 ? fromFee : toFee;

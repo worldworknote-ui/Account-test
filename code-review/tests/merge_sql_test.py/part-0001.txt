@@ -1,0 +1,87 @@
+1: #!/usr/bin/env python3
+2: """7.2: يطبّق خطة «الإضافة إلى البيانات الحالية» (من MergePlanTest) في SQLite بمخطط التطبيق وبجمل SQL المأخوذة حرفيًا
+3: من Db.mergeMigration، ثم يتحقق بالاستعلامات نفسها التي يحسب بها التطبيق الأرصدة."""
+4: import json, re, sqlite3, sys
+5: DB_JAVA, DIR = sys.argv[1], sys.argv[2]
+6: src = open(DB_JAVA, encoding="utf-8").read()
+7: merge_src = src[src.index("public int mergeMigration("):src.index("// الاستعادة", src.index("public int mergeMigration("))]
+8: fails = 0
+9: def check(name, ok, extra=None):
+10:     global fails
+11:     print(("  PASS " if ok else "  FAIL ") + name + ("" if ok or extra is None else " — " + str(extra)))
+12:     if not ok: fails += 1
+13: def frag(s, where=None):
+14:     w = where or src
+15:     if s not in w:
+16:         check("SQL fragment present in Db.java: " + s[:70], False)
+17:     return s
+18: ddl_block = src[src.index("private static final String[] DDL"):src.index("};", src.index("private static final String[] DDL"))]
+19: db = sqlite3.connect(":memory:")
+20: db.execute("PRAGMA foreign_keys=ON")
+21: for d in re.findall(r'"(CREATE TABLE[^"]+)"', re.sub(r'"\s*\+\s*"', '', ddl_block)): db.execute(d)   # 12.7.1: جمل مقسومة بـ +
+22: DEBIT, CREDIT, FUS, FTHEM, FNONE = "مدين / لنا", "دائن / علينا", "الأجرة لنا", "الأجرة علينا", "بدون أجرة"
+23: for c, n, d in (("USD", "دولار", 2), ("EUR", "يورو", 2), ("TRY", "ليرة تركية", 2), ("SYP", "ليرة سورية", 0)):
+24:     db.execute("INSERT INTO currencies(code,name,decimals,active) VALUES(?,?,?,1)", (c, n, d))
+25: def post(tx, kind, office, cur, od, oc, t):
+26:     # مثل Db.postEntry
+27:     eid = db.execute("INSERT INTO journal_entries(tx_id,kind,created_at) VALUES(?,?,?)", (tx, kind, t)).lastrowid
+28:     db.execute("INSERT INTO journal_lines(entry_id,account,office_id,currency,debit_minor,credit_minor) VALUES(?,?,?,?,?,?)", (eid, "OFFICE", office, cur, od, oc))
+29:     contra = ("FEE_REVENUE" if od > 0 else "FEE_EXPENSE") if kind == "FEE" else ("OPENING" if kind == "OPENING" else "SETTLEMENT")
+30:     db.execute("INSERT INTO journal_lines(entry_id,account,office_id,currency,debit_minor,credit_minor) VALUES(?,?,NULL,?,?,?)", (eid, contra, cur, oc, od))
+31:     return eid
+32: plan = json.load(open(DIR + "/merge-plan.json", encoding="utf-8"))
+33: # البيانات الحالية (كما في MergePlanTest)
+34: for oid, name in plan["existingOffices"].items():
+35:     db.execute("INSERT INTO offices(id,name,active,pinned) VALUES(?,?,1,0)", (int(oid), name))
+36: for k, v in plan["existingBalances"].items():
+37:     o, c = k.split("|")
+38:     db.execute("INSERT OR IGNORE INTO office_currencies(office_id,code) VALUES(?,?)", (int(o), c))
+39:     post(None, "OPENING", int(o), c, v if v > 0 else 0, -v if v < 0 else 0, 1700000000000)
+40: q_bal = frag("SELECT COALESCE(SUM(debit_minor-credit_minor),0) FROM journal_lines WHERE account='OFFICE' AND office_id=? AND currency=?")
+41: ins_oc = frag("INSERT OR IGNORE INTO office_currencies(office_id,code) VALUES(?,?)", merge_src)
+42: act = frag("UPDATE currencies SET active=1 WHERE code=?", merge_src)
+43: unbal = frag("SELECT entry_id,currency,SUM(debit_minor-credit_minor) s FROM journal_lines GROUP BY entry_id,currency HAVING s<>0 LIMIT 1", merge_src)
+44: # التطبيق بالترتيب نفسه في Db.mergeMigration
+45: target = {}
+46: for o in plan["offices"]:
+47:     if o["target"] is None:
+48:         tid = db.execute("INSERT INTO offices(name,active,pinned) VALUES(?,1,0)", (o["name"],)).lastrowid
+49:     else:
+50:         tid = o["target"]
+51:     target[o["fileId"]] = tid
+52:     for c in o["codes"]:
+53:         db.execute(ins_oc, (tid, c))
+54:         db.execute(act, (c,))
+55: want = {}
+56: for k, v in plan["expected"].items():
+57:     fo, c = k.split("|")
+58:     key = (target[int(fo)], c)
+59:     if key not in want: want[key] = db.execute(q_bal, (str(key[0]), c)).fetchone()[0]
+60:     want[key] += v
+61: for op in plan["openings"]:
+62:     oid = target[op["office"]]; amt = abs(op["signed"])
+63:     eid = post(None, "OPENING", oid, op["code"], amt if op["signed"] > 0 else 0, amt if op["signed"] < 0 else 0, op["when"])
+64:     db.execute("INSERT INTO opening_balances(office_id,currency,type,amount_minor,entry_id) VALUES(?,?,?,?,?)", (oid, op["code"], "لنا" if op["signed"] > 0 else "علينا", amt, eid))
+65: for x in plan["txs"]:
+66:     oid = target[x["office"]]; fee = x["feeType"] != FNONE
+67:     tid = db.execute("INSERT INTO tx(uuid,office_id,type,person,amount_minor,currency,fee_type,fee_minor,fee_currency,description,notes,created_at,user_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+68:                      (x["uuid"], oid, x["type"], "", x["amount"], x["currency"], x["feeType"], x["fee"] if fee else 0, x["feeCurrency"] if fee else x["currency"], "", "", x["when"], "")).lastrowid
+69:     post(tid, "PRINCIPAL", oid, x["currency"], x["amount"] if x["type"] == DEBIT else 0, x["amount"] if x["type"] == CREDIT else 0, x["when"])
+70:     if fee: post(tid, "FEE", oid, x["feeCurrency"], x["fee"] if x["feeType"] == FUS else 0, x["fee"] if x["feeType"] == FTHEM else 0, x["when"])
+71: for (oid, c), v in want.items():
+72:     got = db.execute(q_bal, (str(oid), c)).fetchone()[0]
+73:     check("verification balance office %s %s = %s" % (oid, c, v), got == v, got)
+74: check("no unbalanced entry", db.execute(unbal).fetchone() is None)
+75: # أرصدة التطبيق باستعلامه نفسه تساوي «بعد الإضافة» في المعاينة
+76: q_office_balances = re.search(r'"(SELECT office_id,currency,SUM\(debit_minor-credit_minor\) FROM journal_lines[^"]+)"', src).group(1)
+77: names = dict(db.execute("SELECT id,name FROM offices"))
+78: bal = {(names[o], c): v for o, c, v in db.execute(q_office_balances)}
+79: for r in plan["rows"]:
+80:     check("officeBalances %s %s = preview after %s" % (r["office"], r["code"], r["after"]), bal.get((r["office"], r["code"])) == r["after"], bal.get((r["office"], r["code"])))
+81: check("untouched office keeps its balance (مكتب آخر USD −777.00)", bal.get(("مكتب آخر", "USD")) == -77700, bal.get(("مكتب آخر", "USD")))
+82: check("existing office not duplicated", db.execute("SELECT COUNT(*) FROM offices WHERE name='الخال'").fetchone()[0] == 1)
+83: check("one new office (النور)", db.execute("SELECT COUNT(*) FROM offices").fetchone()[0] == 4)
+84: check("tx uuids unique (re-import would fail)", db.execute("SELECT COUNT(*),COUNT(DISTINCT uuid) FROM tx").fetchone()[0] == len(plan["txs"]))
+85: check("foreign keys consistent", not db.execute("PRAGMA foreign_key_check").fetchall())
+86: print("ALL MERGE SQL TESTS PASSED" if fails == 0 else str(fails) + " FAILED")
+87: sys.exit(1 if fails else 0)

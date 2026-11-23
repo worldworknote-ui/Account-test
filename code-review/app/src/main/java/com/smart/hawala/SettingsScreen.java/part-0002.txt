@@ -1,0 +1,55 @@
+157:         a.here(this::showAudit);
+158:         a.tabbedScreen("سجل العمليات", a.moreScreen::show, "more");
+159:         a.hint(SyncEngine.enabled(a.db) ? "آخر 300 عملية على كل أجهزة المزامنة: من فعل ماذا ومتى وعلى أي جهاز. للقراءة فقط."
+160:                 : "آخر 300 عملية: من فعل ماذا ومتى. للقراءة فقط.");
+161:         final boolean usageOk = UsageScreen.allowed(a);
+162:         if (usageOk) a.body.addView(a.smallButton("سجل الاستخدام: متى وكم استخدم كل مستخدم التطبيق", a.accent, v -> a.usageScreen.show()), a.lp(-1, 42, 3));
+163:         List<String[]> rows = a.db.auditLogAll(300);
+164:         if (rows.isEmpty()) a.hint("لا يوجد.");
+165:         for (String[] r : rows) {
+166:             StringBuilder sb = new StringBuilder();
+167:             if (UsageScreen.ACTION.equals(r[1])) {
+168:                 if (!usageOk) continue;   // 11.6: جلسات الاستخدام للمدير وحده
+169:                 sb.append(r[0]).append("  •  جلسة استخدام");
+170:                 if (!r[4].isEmpty()) sb.append("\nالمستخدم: ").append(r[4]);
+171:                 if (!r[6].isEmpty()) sb.append(r[4].isEmpty() ? "\n" : "  •  ").append("الجهاز: ").append(r[6]);
+172:                 if (!r[5].isEmpty()) sb.append("\n").append(r[5]);
+173:                 TextView ut = a.add(a.text(sb.toString(), 12, a.muted, false));
+174:                 ut.setBackground(a.round(a.surface, a.line, 10));
+175:                 continue;
+176:             }
+177:             sb.append(r[0]).append("  •  ").append(actionName(r[1]));
+178:             if (!r[3].isEmpty() && !"0".equals(r[3])) sb.append(" #").append(r[3]);
+179:             if (!r[4].isEmpty()) sb.append("\nالمستخدم: ").append(r[4]);
+180:             if (!r[6].isEmpty()) sb.append(r[4].isEmpty() ? "\n" : "  •  ").append("الجهاز: ").append(r[6]);
+181:             if (!r[5].isEmpty()) sb.append("\n").append(r[5]);
+182:             TextView t = a.add(a.text(sb.toString(), 13, r[1].contains("FAIL") || r[1].startsWith("CANCEL") ? a.red : a.dark, false));
+183:             t.setBackground(a.round(a.surface, a.line, 10));
+184:             LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
+185:             p.setMargins(0, a.dp(2), 0, a.dp(2));
+186:             t.setLayoutParams(p);
+187:         }
+188:     }
+189: 
+190:     // ===================================================================================
+191:     // فحص صحة البيانات
+192:     // ===================================================================================
+193: 
+194:     void showHealth() {
+195:         a.busy("جارٍ فحص البيانات…", p -> a.db.healthCheck(), res -> {
+196:             @SuppressWarnings("unchecked") List<Db.Check> checks = (List<Db.Check>) res;
+197:             a.here(this::showHealth);
+198:             a.tabbedScreen("فحص صحة البيانات", a.moreScreen::show, "more");
+199:             a.hint("هذا الفحص للقراءة فقط ولا يغيّر أي بيانات.");
+200:             int bad = 0;
+201:             for (Db.Check c : checks) {
+202:                 if (!c.ok) bad++;
+203:                 LinearLayout x = a.card();
+204:                 x.addView(a.text((c.ok ? "✓ " : "✗ ") + c.title, 16, c.ok ? a.primary : a.red, true));
+205:                 if (!c.detail.isEmpty()) x.addView(a.text(c.detail, 13, a.dark, false));
+206:             }
+207:             TextView sum = a.text(bad == 0 ? "النتيجة: البيانات سليمة ✓" : "النتيجة: توجد " + bad + " ملاحظة. احتفظ بنسخة احتياطية وأرسل لقطة من هذه الشاشة للمطوّر.", 16, bad == 0 ? a.primary : a.red, true);
+208:             a.body.addView(sum, 1);
+209:         });
+210:     }
+211: }

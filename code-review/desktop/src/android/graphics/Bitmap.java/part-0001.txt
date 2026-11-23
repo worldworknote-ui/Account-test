@@ -1,0 +1,105 @@
+1: package android.graphics;
+2: 
+3: import java.awt.image.BufferedImage;
+4: import java.io.OutputStream;
+5: 
+6: public final class Bitmap {
+7:     public enum Config { ALPHA_8, RGB_565, ARGB_4444, ARGB_8888, HARDWARE, RGBA_F16 }
+8:     public enum CompressFormat { JPEG, PNG, WEBP, WEBP_LOSSY, WEBP_LOSSLESS }
+9: 
+10:     public BufferedImage img;
+11:     private boolean recycled;
+12:     private int density = 160;
+13: 
+14:     public Bitmap(BufferedImage img) { this.img = img; }
+15: 
+16:     public static Bitmap createBitmap(int w, int h, Config c) {
+17:         return new Bitmap(new BufferedImage(Math.max(1, w), Math.max(1, h), BufferedImage.TYPE_INT_ARGB));
+18:     }
+19:     public static Bitmap createBitmap(Bitmap src) { return createBitmap(src, 0, 0, src.getWidth(), src.getHeight()); }
+20:     public static Bitmap createBitmap(Bitmap src, int x, int y, int w, int h) {
+21:         BufferedImage out = new BufferedImage(Math.max(1, w), Math.max(1, h), BufferedImage.TYPE_INT_ARGB);
+22:         java.awt.Graphics2D g = out.createGraphics();
+23:         g.drawImage(src.img, -x, -y, null);
+24:         g.dispose();
+25:         return new Bitmap(out);
+26:     }
+27:     public static Bitmap createBitmap(Bitmap src, int x, int y, int w, int h, Matrix m, boolean filter) {
+28:         if (m == null || m.isIdentity()) return createBitmap(src, x, y, w, h);
+29:         RectF r = new RectF(0, 0, w, h);
+30:         Matrix mm = new Matrix(m);
+31:         mm.mapRect(r);
+32:         int ow = Math.max(1, Math.round(r.width())), oh = Math.max(1, Math.round(r.height()));
+33:         BufferedImage out = new BufferedImage(ow, oh, BufferedImage.TYPE_INT_ARGB);
+34:         java.awt.Graphics2D g = out.createGraphics();
+35:         g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+36:         java.awt.geom.AffineTransform at = new java.awt.geom.AffineTransform();
+37:         at.translate(-r.left, -r.top);
+38:         at.concatenate(m.t);
+39:         at.translate(-x, -y);
+40:         g.drawImage(src.img, at, null);
+41:         g.dispose();
+42:         return new Bitmap(out);
+43:     }
+44:     public static Bitmap createScaledBitmap(Bitmap src, int w, int h, boolean filter) {
+45:         w = Math.max(1, w); h = Math.max(1, h);
+46:         BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+47:         java.awt.Graphics2D g = out.createGraphics();
+48:         g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+49:         g.setRenderingHint(java.awt.RenderingHints.KEY_RENDERING, java.awt.RenderingHints.VALUE_RENDER_QUALITY);
+50:         g.drawImage(src.img, 0, 0, w, h, null);
+51:         g.dispose();
+52:         return new Bitmap(out);
+53:     }
+54: 
+55:     public int getWidth() { return img.getWidth(); }
+56:     public int getHeight() { return img.getHeight(); }
+57:     public int getByteCount() { return getWidth() * getHeight() * 4; }
+58:     public int getAllocationByteCount() { return getByteCount(); }
+59:     public Config getConfig() { return Config.ARGB_8888; }
+60:     public boolean hasAlpha() { return img.getColorModel().hasAlpha(); }
+61:     public void setHasAlpha(boolean b) {}
+62:     public boolean isRecycled() { return recycled; }
+63:     public void recycle() { recycled = true; }
+64:     public boolean isMutable() { return true; }
+65:     public Bitmap copy(Config c, boolean mutable) { return createBitmap(this); }
+66:     public void setDensity(int d) { density = d; }
+67:     public int getDensity() { return density; }
+68:     public int getPixel(int x, int y) { return img.getRGB(x, y); }
+69:     public void setPixel(int x, int y, int c) { img.setRGB(x, y, c); }
+70:     public void getPixels(int[] px, int off, int stride, int x, int y, int w, int h) { img.getRGB(x, y, w, h, px, off, stride); }
+71:     public void setPixels(int[] px, int off, int stride, int x, int y, int w, int h) { img.setRGB(x, y, w, h, px, off, stride); }
+72:     public void eraseColor(int c) {
+73:         java.awt.Graphics2D g = img.createGraphics();
+74:         g.setComposite(java.awt.AlphaComposite.Src);
+75:         g.setColor(new java.awt.Color(c, true));
+76:         g.fillRect(0, 0, getWidth(), getHeight());
+77:         g.dispose();
+78:     }
+79: 
+80:     public boolean compress(CompressFormat f, int quality, OutputStream out) {
+81:         try {
+82:             if (f == CompressFormat.JPEG || f == CompressFormat.WEBP_LOSSY || (f == CompressFormat.WEBP && quality < 100)) {
+83:                 BufferedImage rgb = new BufferedImage(getWidth(), getHeight(), BufferedImage.TYPE_INT_RGB);
+84:                 java.awt.Graphics2D g = rgb.createGraphics();
+85:                 g.setColor(java.awt.Color.WHITE);
+86:                 g.fillRect(0, 0, getWidth(), getHeight());
+87:                 g.drawImage(img, 0, 0, null);
+88:                 g.dispose();
+89:                 javax.imageio.ImageWriter w = javax.imageio.ImageIO.getImageWritersByFormatName("jpeg").next();
+90:                 javax.imageio.ImageWriteParam p = w.getDefaultWriteParam();
+91:                 p.setCompressionMode(javax.imageio.ImageWriteParam.MODE_EXPLICIT);
+92:                 p.setCompressionQuality(Math.max(0.05f, Math.min(1f, quality / 100f)));
+93:                 try (javax.imageio.stream.ImageOutputStream ios = javax.imageio.ImageIO.createImageOutputStream(out)) {
+94:                     w.setOutput(ios);
+95:                     w.write(null, new javax.imageio.IIOImage(rgb, null, null), p);
+96:                 }
+97:                 w.dispose();
+98:                 return true;
+99:             }
+100:             return javax.imageio.ImageIO.write(img, "png", out);
+101:         } catch (Exception e) {
+102:             return false;
+103:         }
+104:     }
+105: }

@@ -1,0 +1,120 @@
+353:         c.add(Ui.heading("أسعار الصرف مقابل الدولار"));
+354:         int n = 0;
+355:         for (Map.Entry<String, Db.Rate> e : rates.entrySet()) {
+356:             if ("USD".equals(e.getKey())) continue;
+357:             Db.Rate r = e.getValue();
+358:             if (r.usd == null || r.usd.signum() <= 0) continue;
+359:             java.math.BigDecimal u = java.math.BigDecimal.ONE.divide(r.usd, 6, java.math.RoundingMode.HALF_EVEN).stripTrailingZeros();
+360:             c.add(Ui.label("1 USD = " + (u.scale() < 0 ? u.setScale(0).toPlainString() : u.toPlainString()) + " " + e.getKey() + "   —   " + r.source
+361:                     + (r.at > 0 ? " • " + Model.date(r.at) : ""), 13.5f, Ui.ink, false));
+362:             n++;
+363:         }
+364:         if (n == 0) c.add(Ui.label("لا توجد أسعار بعد. حدّثها من «الإعدادات ← مصدر أسعار الصرف».", 13.5f, Ui.muted, false));
+365:         add(c);
+366:         space(16);
+367:     }
+368: 
+369:     void recentTx(Map<String, Integer> dec) {
+370:         // آخر الحركات
+371:         add(Ui.heading("آخر الحركات"));
+372:         space(8);
+373:         Map<Long, String> names = db.officeNames();
+374:         DefaultTableModel m = new DefaultTableModel(new Object[]{"التاريخ", "المكتب", "لنا", "علينا", "العملة", "المستفيد / البيان"}, 0) {
+375:             @Override public boolean isCellEditable(int r, int c) { return false; }
+376:         };
+377:         List<Model.Tx> recent = db.recentTx(12);
+378:         for (Model.Tx t : recent) {
+379:             int d = dec.getOrDefault(t.currency, 2);
+380:             boolean us = Model.TYPE_DEBIT.equals(t.type);
+381:             m.addRow(new Object[]{Model.date(t.createdAt), names.getOrDefault(t.officeId, ""), us ? new Ui.Money(t.amount, d, false) : "",
+382:                     us ? "" : new Ui.Money(t.amount, d, false), t.currency, Ui.cut(Model.nz(t.person).isEmpty() ? t.description : t.person, 60)});
+383:         }
+384:         JTable table = Ui.table(m);
+385:         Ui.widths(table, 130, 160, 110, 110, 60, 360);
+386:         JScrollPane sp = Ui.tableBox(table);
+387:         sp.setPreferredSize(new Dimension(800, Math.min(12, Math.max(3, recent.size())) * 32 + 36));
+388:         sp.setMaximumSize(new Dimension(Integer.MAX_VALUE, sp.getPreferredSize().height));
+389:         table.addMouseListener(new java.awt.event.MouseAdapter() {
+390:             @Override public void mouseClicked(java.awt.event.MouseEvent e) {
+391:                 if (e.getClickCount() == 2 && table.getSelectedRow() >= 0) {
+392:                     int r = table.convertRowIndexToModel(table.getSelectedRow());
+393:                     LogView.details(HomeView.this, app, recent.get(r).id);
+394:                 }
+395:             }
+396:         });
+397:         add(sp);
+398:         space(16);
+399: 
+400:     }
+401: 
+402:     void pinned(Map<String, Integer> dec) {
+403:         // المكاتب المثبتة
+404:         List<Model.OfficeTotals> pinned = new ArrayList<>();
+405:         for (Model.OfficeTotals o : db.officeTotals(null)) if (o.pinned && o.active) pinned.add(o);
+406:         if (!pinned.isEmpty()) {
+407:             add(Ui.heading("المكاتب المثبتة"));
+408:             space(8);
+409:             JPanel g = new JPanel(new GridLayout(0, 3, 12, 12));
+410:             g.setOpaque(false);
+411:             g.setAlignmentX(Component.RIGHT_ALIGNMENT);
+412:             for (Model.OfficeTotals o : pinned) g.add(OfficesView.officeCard(app, o, dec));
+413:             add(g);
+414:         }
+415:     }
+416: 
+417:     void notices(int w) {
+418:         List<Component> n = new ArrayList<>();
+419:         // 10.17: رسائل المدير غير المقروءة
+420:         for (final Db.AdminMsg am : db.unreadAdminMsgs()) n.add(notice(Ui.warnBg, Ui.warnInk, "رسالة من المدير" + (am.from.isEmpty() ? "" : " (" + db.shown(am.from) + ")")
+421:                 + " — " + Model.date(am.at) + ": " + Ui.cut(am.body.replace('\n', ' '), 400), "قرأتها", () -> {
+422:             db.markAdminMsgRead(am.uuid);
+423:             refresh();
+424:         }));
+425:         // 10.16: تعارضات المزامنة وتعثرها تظهر هنا (كانت لا تُرى إلا داخل شاشة المزامنة)
+426:         for (String[] al : SyncEngine.homeAlerts(db)) n.add("1".equals(al[1]) ? notice(Ui.debitBg, Ui.red, Ui.cut(al[0], 220), "المزامنة", () -> app.go("sync"))
+427:                 : notice(Ui.warnBg, Ui.warnInk, Ui.cut(al[0], 220), "المزامنة", () -> app.go("sync")));
+428:         if (SyncEngine.enabled(db) && (can(Auth.Perm.TX_CANCEL) || can(Auth.Perm.APPROVE))) {
+429:             int dups = SyncEngine.duplicates(db).size();
+430:             if (dups > 0) n.add(notice(Ui.debitBg, Ui.red, dups + " زوج حركات قد يكون مكررًا (سُجّل من جهازين)", "مراجعة", () -> app.go("sync", "dups")));
+431:         }
+432:         long pend = can(Auth.Perm.APPROVE) ? db.pendingCount() : 0;
+433:         if (pend > 0) n.add(notice(Ui.warnBg, Ui.warnInk, pend + " حركة بانتظار اعتمادك", "مراجعة", () -> app.go("log", "pending")));
+434:         String hs = db.setting("health_status", "");
+435:         if (!hs.isEmpty() && !"ok".equals(hs)) n.add(notice(Ui.debitBg, Ui.red, "فحص البيانات وجد ملاحظات: " + Ui.cut(hs, 120), "الاعتمادية", () -> app.go("health")));
+436:         String abErr = db.setting("auto_backup_error", "");
+437:         if (!abErr.isEmpty()) n.add(notice(Ui.debitBg, Ui.red, "تعذّر النسخ التلقائي: " + Ui.cut(abErr.replace('\n', ' '), 140), "النسخ الاحتياطي", () -> app.go("backup")));
+438:         long last = db.settingLong("last_backup", 0);
+439:         long days = last == 0 ? -1 : (Clock.now() - last) / 86400000L;
+440:         if (db.txCount() > 0 && (last == 0 || days >= 3) && can(Auth.Perm.BACKUP))
+441:             n.add(notice(Ui.warnBg, Ui.warnInk, last == 0 ? "لم تُنشأ نسخة احتياطية على هذا الجهاز بعد." : "آخر نسخة احتياطية قبل " + days + " يوم.", "نسخة الآن", () -> {
+442:                 app.go("backup");
+443:                 View v = app.views.get("backup");
+444:                 if (v instanceof BackupView) ((BackupView) v).create();
+445:             }));
+446:         if (db.usersEnabled() && !db.hasRecoveryCode() && can(Auth.Perm.USERS))
+447:             n.add(notice(Ui.debitBg, Ui.red, "لا يوجد رمز استرداد للمدير.", "المستخدمون", () -> app.go("users")));
+448:         Entitlements e = License.current;
+449:         if (!e.pro) {
+450:             QuotaState q = db.quotaNow();
+451:             long left = QuotaState.remaining(q.offices, e.maxOffices());
+452:             if (left <= 2) n.add(notice(Ui.goldSoft, Ui.goldInk, "النسخة المجانية: بقي " + left + " من " + e.maxOffices() + " مكاتب. البيانات كلها تبقى متاحة.", "الترخيص", () -> app.go("license")));
+453:         }
+454:         if (e.note != null && !e.note.isEmpty()) n.add(notice(Ui.warnBg, Ui.warnInk, e.note, "الترخيص", () -> app.go("license")));
+455:         for (Component c : n) {
+456:             add((JComponent) c);
+457:             space(8);
+458:         }
+459:         if (!n.isEmpty()) space(8);
+460:     }
+461: 
+462:     Ui.Card notice(Color bg, Color ink, String text, String btn, Runnable r) {
+463:         Ui.Card c = Ui.tinted(bg, null);
+464:         c.setLayout(new BorderLayout(10, 0));
+465:         c.setBorder(new javax.swing.border.EmptyBorder(10, 16, 10, 12));
+466:         JLabel l = Ui.label(text, 14, ink, true);
+467:         c.add(l, BorderLayout.CENTER);
+468:         Ui.Btn b = Ui.ghost(btn, e -> r.run());
+469:         c.add(b, BorderLayout.LINE_END);
+470:         return c;
+471:     }
+472: }

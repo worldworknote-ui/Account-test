@@ -1,0 +1,148 @@
+555:     var pub = await subtle.importKey("jwk", { kty: "EC", crv: "P-256", x: jwk.x, y: jwk.y, ext: true }, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]);
+556:     var spki = bytesToB64(new Uint8Array(await subtle.exportKey("spki", pub)));
+557:     var kid = null;
+558:     Object.keys(TRUSTED).forEach(function (k) { if (TRUSTED[k] === spki) kid = k; });
+559:     return { key: key, pkcs8: new Uint8Array(pkcs8), spki: spki, kid: kid };
+560:   }
+561: 
+562:   function clean(v, what) {
+563:     v = String(v == null ? "" : v).trim();
+564:     if (/[;=\s]/.test(v)) throw new Error(what + " لا يجوز أن يحوي «;» أو «=» أو مسافات");
+565:     return v;
+566:   }
+567: 
+568:   /** حقول الرمز كما يقرؤها التطبيق (LicenseToken + Entitlements). */
+569:   function payloadOf(f, kid) {
+570:     if (!/^\d{8}$/.test(String(f.uu))) throw new Error("تاريخ انتهاء التحديثات يجب أن يكون بصيغة yyyymmdd");
+571:     if (!/^[A-Za-z0-9_-]{43}$/.test(f.dk || "")) throw new Error("بصمة الهاتف غير صالحة");
+572:     var p = ["v=1", "lid=" + clean(f.lid, "رقم الرخصة"), "ed=" + clean(f.ed || "pro", "الإصدار"), "ft=" + clean(f.ft || "all", "الميزات"),
+573:       "uu=" + f.uu, "dk=" + f.dk, "kid=" + clean(kid, "معرّف المفتاح")];
+574:     if (!f.lid) throw new Error("رقم الرخصة مطلوب");
+575:     // 12.6: كل حد رقمي يكتبه البائع لهذا الزبون (فارغ = لا يُكتب)
+576:     NUM_KEYS.forEach(function (k) {
+577:       if (f[k] === undefined || f[k] === null || String(f[k]).trim() === "") return;
+578:       var n = parseInt(f[k], 10);
+579:       if (!(n > 0) || n > 100000000) throw new Error("الحد «" + k + "» يجب أن يكون رقمًا أكبر من صفر");
+580:       p.push(k + "=" + n);
+581:     });
+582:     if (f.ex) {
+583:       if (!/^\d{8}$/.test(String(f.ex))) throw new Error("تاريخ انتهاء الاشتراك يجب أن يكون بصيغة yyyymmdd");
+584:       p.push("ex=" + f.ex);
+585:     }
+586:     // 12.7: هوية المكتب (من طلب الجهاز): الرمز يعمل على بيانات هذا المكتب وحده
+587:     if (f.of) {
+588:       if (!/^OF-[0-9A-F]{18}$/.test(String(f.of))) throw new Error("هوية المكتب في الطلب غير صالحة");
+589:       p.push("of=" + f.of);
+590:     }
+591:     return p.join(";");
+592:   }
+593: 
+594:   /** 12.6: الحدود الرقمية في الرمز: المكاتب، الحركات، المستخدمون، الصناديق، العملاء، رسائل واتساب يوميًا، ساعات النسخ، النسخ كل كم حركة. */
+595:   var NUM_KEYS = ["mo", "mt", "mu", "mb", "mc", "mw", "bh", "bn", "tc", "tg", "md"];
+596: 
+597:   /**
+598:    * 12.6: بنود الرخصة كما يراها البائع. on=false ← حد المجانية؛ on=true ورقم ← الرقم؛ on=true بلا رقم ← بلا حد.
+599:    * free: حد المجانية في التطبيق (يُكتب صراحة للبنود التي تكون مفتوحة لكل رخصة مدفوعة إن لم يُكتب رقم).
+600:    */
+601:   var LIMITS = [
+602:     { k: "offices", key: "mo", flag: "offices", free: 15, explicitFree: false, label: "المكاتب" },
+603:     { k: "tx", key: "mt", flag: "tx", free: 1500, explicitFree: false, label: "الحركات لكل مكتب" },
+604:     { k: "users", key: "mu", flag: "users", free: 1, explicitFree: false, label: "المستخدمون" },
+605:     { k: "boxes", key: "mb", flag: "boxes", free: 1, explicitFree: true, label: "الصناديق" },
+606:     { k: "clients", key: "mc", flag: "clients", free: 25, explicitFree: true, label: "حسابات العملاء" },
+607:     { k: "wa", key: "mw", flag: null, free: 20, explicitFree: true, label: "استخراج رسائل واتساب يوميًا (ومعه الالتقاط والتجميع والقص)" }
+608:   ];
+609:   var SWITCHES = [
+610:     { k: "export", label: "تصدير بلا علامة «نسخة مجانية»" },
+611:     { k: "backup", label: "نسخ تلقائي أكثر (افتراضيًا كل 6 ساعات أو 25 حركة)" },
+612:     { k: "ai", label: "القراءة الذكية السحابية المدفوعة الخاصة (ذكاء اصطناعي عبر الإنترنت)" },
+613:     { k: "sync", label: "المزامنة بين الأجهزة" }
+614:   ];
+615: 
+616:   /** 12.6: ثلاثة قوالب افتراضية يعدّلها البائع أو يحفظ غيرها. */
+617:   var DEFAULT_TEMPLATES = [
+618:     { name: "أساسية", lim: { offices: { on: true, n: 30 }, tx: { on: true, n: "" }, users: { on: true, n: 2 }, boxes: { on: true, n: 1 }, clients: { on: true, n: 100 }, wa: { on: true, n: "" } },
+619:       sw: { export: true, backup: true, ai: false, sync: false }, bh: "", bn: "", tc: 14, tg: 14, md: "" },
+620:     { name: "احترافية", lim: { offices: { on: true, n: "" }, tx: { on: true, n: "" }, users: { on: true, n: 5 }, boxes: { on: true, n: 3 }, clients: { on: true, n: "" }, wa: { on: true, n: "" } },
+621:       sw: { export: true, backup: true, ai: true, sync: true }, bh: "", bn: "", tc: 14, tg: 14, md: "" },
+622:     { name: "كاملة", lim: { offices: { on: true, n: "" }, tx: { on: true, n: "" }, users: { on: true, n: "" }, boxes: { on: true, n: "" }, clients: { on: true, n: "" }, wa: { on: true, n: "" } },
+623:       sw: { export: true, backup: true, ai: true, sync: true }, bh: "", bn: "", tc: 14, tg: 14, md: "" }
+624:   ];
+625: 
+626:   /** 12.6: من القالب (أو بنود رخصة) إلى حقول الرمز: ft و ed والحدود. */
+627:   function fieldsOf(t) {
+628:     var ft = [], f = { ed: String(t.name || "custom").trim().replace(/[;=\s]+/g, "_") || "custom" };
+629:     LIMITS.forEach(function (L) {
+630:       var v = (t.lim || {})[L.k] || { on: false, n: "" };
+631:       var n = String(v.n == null ? "" : v.n).trim();
+632:       if (v.on) {
+633:         if (L.flag) ft.push(L.flag);
+634:         if (n) {
+635:           if (!(parseInt(n, 10) > 0)) throw new Error("حد «" + L.label + "» يجب أن يكون رقمًا أكبر من صفر أو فارغًا (بلا حد)");
+636:           f[L.key] = parseInt(n, 10);
+637:         }
+638:       } else if (L.explicitFree) f[L.key] = L.free;
+639:     });
+640:     SWITCHES.forEach(function (w) { if ((t.sw || {})[w.k]) ft.push(w.k); });
+641:     if (!ft.length) throw new Error("اختر بندًا واحدًا على الأقل");
+642:     if (t.bh) f.bh = parseInt(t.bh, 10);
+643:     if (t.bn) f.bn = parseInt(t.bn, 10);
+644:     // 12.7: تأكيد الوقت من الإنترنت كل tc يوم (ومهلة tg)، وعدد أجهزة المكتب md
+645:     ["tc", "tg", "md"].forEach(function (k) {
+646:       var v = String(t[k] == null ? "" : t[k]).trim();
+647:       if (!v) return;
+648:       if (!(parseInt(v, 10) > 0)) throw new Error("الحقل «" + k + "» يجب أن يكون رقمًا أكبر من صفر أو فارغًا");
+649:       f[k] = parseInt(v, 10);
+650:     });
+651:     if (t.ex) f.ex = t.ex;
+652:     f.ft = ft.join(",");
+653:     return f;
+654:   }
+655: 
+656:   /** 12.6: وصف مختصر لبنود رخصة للسجل والرسالة. */
+657:   function describe(f) {
+658:     var out = [];
+659:     LIMITS.forEach(function (L) {
+660:       var n = f[L.key];
+661:       var on = L.flag ? ("," + (f.ft || "") + ",").indexOf("," + L.flag + ",") >= 0 || ("," + (f.ft || "") + ",").indexOf(",all,") >= 0 : !n || n !== L.free;
+662:       if (n) out.push(L.label + ": " + n);
+663:       else if (on) out.push(L.label + ": بلا حد");
+664:     });
+665:     SWITCHES.forEach(function (w) { if (("," + (f.ft || "") + ",").indexOf("," + w.k + ",") >= 0 || f.ft === "all") out.push(w.label); });
+666:     if (f.ex) out.push("الاشتراك حتى " + String(f.ex).replace(/^(\d{4})(\d{2})(\d{2})$/, "$1/$2/$3"));
+667:     if (f.tc) out.push("تأكيد الوقت من الإنترنت كل " + f.tc + " يوم" + (f.tg ? " (ومهلة " + f.tg + " يوم)" : ""));
+668:     if (f.md) out.push("أجهزة المكتب: " + f.md);
+669:     return out;
+670:   }
+671: 
+672:   async function issueToken(signer, f) {
+673:     if (!signer || !signer.kid) throw new Error("حمّل مفتاح البائع (k1 أو k2) أولًا");
+674:     var payload = utf8(payloadOf(f, signer.kid));
+675:     var raw = new Uint8Array(await subtle.sign({ name: "ECDSA", hash: "SHA-256" }, signer.key, payload));
+676:     return b64url(payload) + "." + b64url(rawToDer(raw));
+677:   }
+678: 
+679:   function parseFields(s) {
+680:     var m = {};
+681:     s.split(";").forEach(function (kv) {
+682:       var i = kv.indexOf("=");
+683:       if (i > 0) {
+684:         if (Object.prototype.hasOwnProperty.call(m, kv.substring(0, i))) throw new Error("حقل مكرر");
+685:         m[kv.substring(0, i)] = kv.substring(i + 1);
+686:       }
+687:     });
+688:     return m;
+689:   }
+690: 
+691:   /** تحقق مطابق لما يفعله التطبيق (للعرض والاختبار). يرجع الحقول أو null. */
+692:   async function verifyToken(token, deviceSpki, trusted) {
+693:     try {
+694:       trusted = trusted || TRUSTED;
+695:       var t = String(token).replace(/\s+/g, "");
+696:       var dot = t.indexOf(".");
+697:       if (dot < 1 || dot !== t.lastIndexOf(".") || dot === t.length - 1) return null;
+698:       var payload = b64ToBytes(t.substring(0, dot)), sig = b64ToBytes(t.substring(dot + 1));
+699:       var f = parseFields(fromUtf8(payload));
+700:       if (f.v !== "1" || !trusted[f.kid] || !f.lid) return null;
+701:       var pk = await subtle.importKey("spki", b64ToBytes(trusted[f.kid]), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+702:       if (!(await subtle.verify({ name: "ECDSA", hash: "SHA-256" }, pk, derToRaw(sig, 32), payload))) return null;

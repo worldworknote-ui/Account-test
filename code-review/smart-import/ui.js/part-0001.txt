@@ -1,0 +1,144 @@
+1: /* الاستيراد الذكي — الواجهة. الفهم والبناء في engine.js، والقيود وملف النسخة في core.js (من أداة النقل، دون تعديل). */
+2: "use strict";
+3: (function () {
+4:   var $ = function (id) { return document.getElementById(id); };
+5:   var C = Core, X = Smart;
+6:   var S = { names: [], books: [], a: null, cfg: null, fchecks: [], result: null, need: {}, accFrom: {}, busy: false, q: "" };
+7: 
+8:   var ROLE_ORDER = ["date", "account", "currency", "amount", "direction", "debit", "credit", "fee", "description", "ref", "balance", "phone"];
+9:   var ROLE_LABEL = { date: "التاريخ", account: "الحساب / المكتب", currency: "العملة", amount: "المبلغ", direction: "الاتجاه (لنا/علينا)", debit: "لنا (مدين)",
+10:     credit: "علينا (دائن)", fee: "الأجرة / العمولة", description: "البيان", ref: "رقم القيد", balance: "الرصيد", phone: "الهاتف" };
+11:   var KIND = {
+12:     journal: ["سجل حركات", ""], derived: ["نسخة مفلترة — للتحقق فقط", "derived"], balances: ["جدول أرصدة", ""],
+13:     summary: ["ملخص أرصدة محسوب — للتحقق فقط", "derived"], lookup: ["قوائم إدخال", "list"], "journal-noaccount": ["حركات بلا اسم حساب", "off"], other: ["لم أجد فيه مبالغ", "off"]
+14:   };
+15:   var WHY = {
+16:     noAccount: "لا يوجد اسم حساب، فلا يُعرف لأي مكتب تعود. معادلات ملفك التي تجمع حسب الحساب لا تحسبها أيضًا.",
+17:     noDir: "لا يوجد «لنا/علينا»، فلا يُعرف هل تزيد الرصيد أم تنقصه. معادلات ملفك (SUMIFS بشرط الاتجاه) لا تحسبها أيضًا.",
+18:     noCurrency: "بلا عملة: لا يُعرف رصيدُ أي عملة تغيّر. معادلات ملفك (بشرط العملة) لا تحسبها أيضًا.",
+19:     noAmount: "فيها حساب أو عملة أو اتجاه لكن بلا مبلغ، فلا تغيّر أي رصيد.",
+20:     badCurrency: "عملة لم تُطابَق بعد — طابقها في الخطوة 3 لتُنقل.",
+21:     badDir: "اتجاه لم يُطابَق بعد — طابقه في الخطوة 3 لتُنقل.",
+22:     excludedCur: "استبعدتَ هذه العملة في الخطوة 3.",
+23:     excludedDir: "استبعدتَ هذا الاتجاه في الخطوة 3.",
+24:     badAmount: "خلية المبلغ ليست رقمًا مفهومًا (أو فيها أكثر من رقم) — صحّحها في الملف ثم اختره مجددًا.",
+25:     decimals: "في المبلغ منازل عشرية أكثر مما حددته للعملة — زِد المنازل في الخطوة 3 (لا يُقرَّب أي مبلغ).",
+26:     future: "تاريخها بعد اليوم — صحّح التاريخ في الملف ثم اختره مجددًا.",
+27:     filledDate: "نُقلت وتدخل في الرصيد كما في ملفك، لكن خانة التاريخ فارغة أو غير صالحة فأُخذ تاريخ الصف الذي قبلها.",
+28:     badFee: "خلية الأجرة ليست رقمًا مفهومًا — صحّحها في الملف، أو اختر «لا تُحسب» للأجرة في الخطوة 3."
+29:   };
+30: 
+31:   function esc(s) {
+32:     return String(s === null || s === undefined ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; });
+33:   }
+34:   function n(x) { return Number(x).toLocaleString("en-US"); }
+35:   function stat(v, label, err) { return '<div class="stat' + (err ? " err" : "") + '"><b>' + v + "</b><span>" + label + "</span></div>"; }
+36:   function decOf(code) { return X.curDef(S.cfg, code).dec; }
+37:   function bw(m, dec) { return m === 0n ? "0" : (m > 0n ? "لنا " : "علينا ") + C.fmtMinor(m > 0n ? m : -m, dec); }
+38:   function balCell(m, dec) {
+39:     if (m === 0n) return '<span class="hint">0</span>';
+40:     return '<span class="chip ' + (m > 0n ? "us" : "them") + '">' + (m > 0n ? "لنا" : "علينا") + '</span> <span class="ltr ' + (m > 0n ? "us" : "them") + '">' + C.fmtMinor(m > 0n ? m : -m, dec) + "</span>";
+41:   }
+42:   function codeOptions(sel, extra) {
+43:     var codes = Object.keys(C.KNOWN);
+44:     Object.keys(S.cfg.currencies).forEach(function (c) { if (codes.indexOf(c) < 0) codes.push(c); });
+45:     return (extra || "") + codes.map(function (c) {
+46:       var d = S.cfg.currencies[c] || C.KNOWN[c];
+47:       return '<option value="' + c + '"' + (sel === c ? " selected" : "") + ">" + c + " — " + esc(d ? d.name : c) + "</option>";
+48:     }).join("") + '<option value="__new">رمز آخر…</option>';
+49:   }
+50:   function seg(name, opts, val) {
+51:     return '<div class="seg">' + opts.map(function (o) {
+52:       return '<label><input type="radio" name="' + name + '" value="' + o[0] + '"' + (o[0] === val ? " checked" : "") + ">" + esc(o[1]) + "</label>";
+53:     }).join("") + "</div>";
+54:   }
+55:   function colLabel(t, c) { return X.colName(c) + " — " + (t.names[c - t.c0] || ""); }
+56:   function tableById(id) { return S.a.tables.filter(function (t) { return t.id === id; })[0]; }
+57:   function serialToDate(v) {
+58:     var p = XLSX.SSF.parse_date_code(v);
+59:     return p ? { y: p.y, m: p.m, d: p.d, H: p.H, M: p.M, S: p.S } : null;
+60:   }
+61:   function rand(k) { return crypto.getRandomValues(new Uint8Array(k)); }
+62:   function wait(ms) { return new Promise(function (res) { setTimeout(res, ms || 30); }); }
+63: 
+64:   // ===================================================================================
+65:   // 1. قراءة الملفات
+66:   // ===================================================================================
+67: 
+68:   function decodeText(buf) {
+69:     try { return new TextDecoder("utf-8", { fatal: true }).decode(buf); } catch (e) { return new TextDecoder("windows-1256").decode(buf); }
+70:   }
+71: 
+72:   function readBook(file) {
+73:     return file.arrayBuffer().then(function (ab) {
+74:       var buf = new Uint8Array(ab);
+75:       var lower = file.name.toLowerCase();
+76:       var wb;
+77:       try {
+78:         if (/\.(csv|txt|tsv)$/.test(lower)) {
+79:           var txt = decodeText(buf).replace(/^﻿/, "");
+80:           var first = txt.split("\n")[0];
+81:           var semi = (first.match(/;/g) || []).length > (first.match(/,/g) || []).length;
+82:           var tab = lower.endsWith(".tsv") || (first.match(/\t/g) || []).length > (first.match(/,/g) || []).length;
+83:           wb = XLSX.read(txt, { type: "string", raw: true, FS: tab ? "\t" : (semi ? ";" : undefined) });
+84:         } else {
+85:           wb = XLSX.read(buf, { type: "array", cellNF: true, cellDates: false, cellFormula: true, bookFiles: true });
+86:         }
+87:       } catch (e) {
+88:         var msg = String(e && e.message || e);
+89:         if (/password|encrypt/i.test(msg)) throw new Error("«" + file.name + "» محمي بكلمة سر. افتحه في Excel واحفظه بدون كلمة سر ثم اختره مجددًا.");
+90:         throw new Error("تعذر فتح «" + file.name + "»: " + msg);
+91:       }
+92:       return { name: file.name, wb: wb, sheets: wb.SheetNames.map(function (nm) { return { name: nm, rows: X.sheetRows(wb.Sheets[nm], XLSX) }; }) };
+93:     });
+94:   }
+95: 
+96:   function readFiles(list) {
+97:     var files = Array.prototype.slice.call(list || []);
+98:     if (!files.length) return;
+99:     var info = $("fileInfo");
+100:     info.className = "";
+101:     info.innerHTML = '<div class="msg info" id="readMsg">جارٍ قراءة ' + (files.length > 1 ? files.length + " ملفات" : "«" + esc(files[0].name) + "»") +
+102:       "… الملف الكبير يحتاج بضع ثوانٍ.</div><div class=\"progress\"><i></i></div>";
+103:     reset();
+104:     var books;
+105:     Promise.all(files.map(readBook)).then(function (b) {
+106:       books = b;
+107:       $("readMsg").textContent = "أفهم الأوراق والجداول ودور كل عمود…";
+108:       return wait();
+109:     }).then(function () {
+110:       S.names = files.map(function (f) { return f.name; });
+111:       S.books = books;
+112:       S.a = X.analyze(books);
+113:       initCfg();
+114:       $("readMsg").textContent = "أعيد حساب معادلات ملفك للتحقق…";
+115:       return wait();
+116:     }).then(function () {
+117:       S.fchecks = X.formulaChecks(S.books, S.a);
+118:       X.detectSummaries(S.a, S.cfg, serialToDate);
+119:       X.detectFeeDirs(S.a, S.cfg, serialToDate);
+120:       refreshValues();
+121:       $("readMsg").textContent = "أبني المكاتب والحركات…";
+122:       return wait();
+123:     }).then(function () {
+124:       run();
+125:       renderAll(true);
+126:     }).catch(function (e) {
+127:       info.innerHTML = '<div class="msg err">' + esc(e.message || e) + "</div>";
+128:     });
+129:   }
+130: 
+131:   function reset() {
+132:     S.a = null; S.result = null; S.accFrom = {}; S.q = "";
+133:     ["understand", "values", "attention", "review", "makeMsg"].forEach(function (id) { $(id).innerHTML = ""; });
+134:     ["step2", "step3", "step4", "step5", "step6"].forEach(function (id) { $(id).classList.add("off"); $(id).classList.remove("done"); });
+135:     $("confirmed").checked = false;
+136:     updateMake();
+137:   }
+138: 
+139:   function initCfg() {
+140:     S.cfg = { now: Date.now(), dirMap: {}, curMap: {}, currencies: {}, rename: {}, positiveIs: {}, balanceSign: {}, fixedCurrency: {},
+141:       defaultCurrency: "USD", listedAccounts: true, inferOpening: true, openingDate: null, fixedCurrencyUser: {} };
+142:     S.a.tables.forEach(function (t) { if (t.sheetCurrency) S.cfg.fixedCurrency[t.id] = t.sheetCurrency; });
+143:   }
+144: 

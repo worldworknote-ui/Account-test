@@ -1,0 +1,142 @@
+556:         }, "الجهاز الرئيسي"), "لا يُزال الجهاز الرئيسي");
+557: 
+558:         // رمز استرداد جديد، وتغيير كلمة السر ثم الإصلاح (يُبقي الجديدة)
+559:         String rc2 = eP.newRecoveryCode(pw.toCharArray());
+560:         Db S = dev("syncS");
+561:         check(throwsMsg(() -> {
+562:             try {
+563:                 new SyncEngine(S, new FileSyncFolder(f)).join(rc.toCharArray(), true, "س");
+564:             } catch (Exception e) {
+565:                 throw new RuntimeException(e);
+566:             }
+567:         }, "رمز الاسترداد غير صحيح"), "رمز الاسترداد القديم توقف بعد إصدار الجديد");
+568:         new SyncEngine(S, new FileSyncFolder(f)).join(rc2.toCharArray(), true, "س");
+569:         check(SyncEngine.enabled(S) && bal(S).equals(bal(P)), "الانضمام برمز الاسترداد الجديد");
+570:         String pw2 = "كلمة-سر-جديدة-بعد-14";
+571:         eP.changePassword(pw.toCharArray(), pw2.toCharArray());
+572:         new File(f, SyncEngine.HEADER).delete();
+573:         eP.repair(null);
+574:         Db T = dev("syncT");
+575:         new SyncEngine(T, new FileSyncFolder(f)).join(pw2.toCharArray(), false, "ت");
+576:         check(SyncEngine.enabled(T), "بعد تغيير كلمة السر ثم «إصلاح»: الكلمة الجديدة هي التي تعمل (لا تعود القديمة)");
+577: 
+578:         // تغيير اسم الجهاز، وحجم المكان
+579:         eQ.rename("الفرع");
+580:         eP.sync();
+581:         boolean renamed = false;
+582:         for (org.json.JSONObject m : SyncEngine.status(P).members) if (m.optString("name").equals("الفرع")) renamed = true;
+583:         check(renamed, "اسم الجهاز الجديد ظهر عند الأجهزة الأخرى");
+584:         SyncEngine.Usage u = eP.usage();
+585:         check(u.images == 2 && u.bytes > 0 && u.packets == kinds(f).get('p'), "حجم المكان: " + u.total() + " ملفًا، " + SyncEngine.size(u.bytes) + "، صور " + u.images);
+586:         healthy(P, "الرئيسي بعد 10.4");
+587:         healthy(Q, "الثاني بعد 10.4");
+588: 
+589:         System.out.println("== 15) 10.4: إعادة تعيين البرنامج على جهاز في المزامنة");
+590:         File homeW = Files.createTempDirectory("sa-reset-W").toFile();
+591:         android.content.Context cw = new android.content.Context(homeW);
+592:         Db W = new Db(cw);
+593:         SyncEngine eW = new SyncEngine(W, new FileSyncFolder(f));
+594:         eW.join(pw2.toCharArray(), false, "سيُعاد تعيينه");
+595:         long wt = W.addTx(tx(off, true, 4242, "USD", "من جهاز سيُعاد تعيينه"), null);
+596:         Files.write(new File(cw.getFilesDir(), "license.txt").toPath(), "رمز-ترخيص".getBytes("UTF-8"));
+597:         String before15 = bal(P);
+598:         eW.retire();
+599:         AppReset.wipe(cw, W, true);
+600:         Db W2 = new Db(cw);
+601:         check(W2.officeNames().isEmpty() && W2.recentTx(5).isEmpty() && !SyncEngine.enabled(W2), "بعد إعادة التعيين: لا بيانات ولا مزامنة على الجهاز");
+602:         check(new File(cw.getFilesDir(), "license.txt").isFile(), "«حذف البيانات وإبقاء الرخصة»: ملف الرخصة باقٍ");
+603:         eP.sync();
+604:         boolean wSeen = false;
+605:         for (org.json.JSONObject m : SyncEngine.status(P).members) if (m.optString("name").equals("سيُعاد تعيينه")) wSeen = true;
+606:         check(!wSeen && P.tx(wt) != null && !bal(P).equals(before15), "حركته وصلت قبل خروجه، ولم يعد في قائمة الأجهزة، ولم يُحذف شيء عند الآخرين");
+607:         healthy(P, "الرئيسي بعد خروج جهاز أُعيد تعيينه");
+608:         int mBefore = kinds(f).get('m');
+609:         syncAll(eQ, new SyncEngine(S, new FileSyncFolder(f)), new SyncEngine(T, new FileSyncFolder(f)), eP);
+610:         eP.clean(true);
+611:         check(kinds(f).get('m') == mBefore - 1, "بعد أن وصلت حزمه للجميع حذف الجهاز الرئيسي ملفاته (" + mBefore + " ← " + kinds(f).get('m') + " بطاقة)");
+612:         AppReset.wipe(cw, W2, false);
+613:         check(!new File(cw.getFilesDir(), "license.txt").exists(), "«حذف كل شيء»: حُذفت الرخصة أيضًا");
+614:     }
+615: 
+616:     static long cursorOf(Db db, String dev) {
+617:         try (android.database.Cursor c = db.getReadableDatabase().rawQuery("SELECT seq FROM sync_cursor WHERE dev=?", new String[]{dev})) {
+618:             return c.moveToFirst() ? c.getLong(0) : -1;
+619:         }
+620:     }
+621: 
+622:     static void copyDir(File from, File to) throws Exception {
+623:         to.mkdirs();
+624:         for (File x : from.listFiles()) if (x.isFile()) Files.copy(x.toPath(), new File(to, x.getName()).toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+625:     }
+626: 
+627:     static long countRows(Db db, String table) {
+628:         try (android.database.Cursor c = db.getReadableDatabase().rawQuery("SELECT COUNT(*) FROM " + table, null)) {
+629:             return c.moveToFirst() ? c.getLong(0) : 0;
+630:         }
+631:     }
+632: 
+633:     static String errOf(Callable0 r) {
+634:         try {
+635:             r.run();
+636:             return "";
+637:         } catch (Exception e) {
+638:             String all = "";
+639:             for (Throwable t = e; t != null; t = t.getCause()) all += t.getMessage() + " | ";
+640:             return all;
+641:         }
+642:     }
+643: 
+644:     interface Callable0 { void run() throws Exception; }
+645: 
+646:     /**
+647:      * 10.5 (AUDIT-001/002/030): ثلاثة أجهزة منطقية وجهاز رابع: جهاز متأخر، إزالة جهاز أرسل ما لم يصل للمتأخر، حزمة أرسلها المُزال
+648:      * بعد إزالته (سباق)، التنظيف، انضمام جديد بعده، انقطاع واستئناف، تغييرات متزامنة، مقارنة البصمات، نقل دور الجهاز الرئيسي
+649:      * واستلامه برمز الاسترداد، والتراجع إلى نسخة أمان على جهاز في المزامنة. بعد كل مرحلة: الأرصدة نفسها وفحص الصحة سليم.
+650:      */
+651:     static void section16() throws Exception {
+652:         System.out.println("== 16) 10.5: جهاز متأخر، إزالة، تنظيف، انضمام، انقطاع، دور الجهاز الرئيسي، والتراجع");
+653:         File f = Files.createTempDirectory("sa-sync-16").toFile();
+654:         String pw = "كلمة-سر-القسم-16";
+655:         List<String> ue = Arrays.asList("USD", "EUR");
+656:         Db X = dev("16X");
+657:         long off = X.addOffice("مكتب الاختبار 16", "", "", "", "", "", null, null, ue, new HashMap<>(), Arrays.asList(new Db.Opening("USD", "لنا", 100000)));
+658:         SyncEngine eX = new SyncEngine(X, new FileSyncFolder(f));
+659:         String rc = eX.create(pw.toCharArray(), "الرئيسي-16");
+660:         Db Y = dev("16Y"), Z = dev("16Z");
+661:         SyncEngine eY = new SyncEngine(Y, new FileSyncFolder(f)), eZ = new SyncEngine(Z, new FileSyncFolder(f));
+662:         eY.join(pw.toCharArray(), false, "سيُزال");
+663:         eZ.join(pw.toCharArray(), false, "المتأخر");
+664:         syncAll(eX, eY, eZ);
+665:         String yDev = SyncEngine.status(Y).device, zDev = SyncEngine.status(Z).device;
+666: 
+667:         // أ) Y يرسل 5 حركات؛ Z متأخر لا يزامن؛ X يزيل Y
+668:         List<Long> yTx = new ArrayList<>();
+669:         for (int i = 0; i < 5; i++) {
+670:             yTx.add(Y.addTx(tx(off, i % 2 == 0, 1000 + i, "USD", "من Y " + i), null));
+671:             eY.sync();
+672:         }
+673:         long yAnn = SyncEngine.status(Y).mySeq;
+674:         eX.sync();
+675:         File stale = Files.createTempDirectory("sa-sync-16-stale").toFile();
+676:         copyDir(f, stale);   // نسخة قديمة من المكان يراها Y (لم يصله خبر إزالته بعد)
+677:         long upTo = eX.removeDevice(yDev);
+678:         check(upTo == yAnn, "سُجّلت آخر حزمة للمُزال = ما أرسله (" + upTo + ")");
+679:         check(cursorOf(X, yDev) == upTo, "مؤشر المُزال لم يُحذف عند من أزاله (" + cursorOf(X, yDev) + ")");
+680: 
+681:         // ب) سباق: Y يرسل حزمة بعد إزالته (من نسخته القديمة) فتصل إلى المكان
+682:         long late = Y.addTx(tx(off, true, 77777, "USD", "بعد الإزالة"), null);
+683:         new SyncEngine(Y, new FileSyncFolder(stale)).sync();
+684:         Set<String> there = new HashSet<>(Arrays.asList(f.list()));
+685:         int smuggled = 0;
+686:         for (File x : stale.listFiles()) if (x.getName().startsWith("p-") && !there.contains(x.getName())) {
+687:             Files.copy(x.toPath(), new File(f, x.getName()).toPath());
+688:             smuggled++;
+689:         }
+690:         check(smuggled >= 1, "حزمة المُزال المتأخرة وصلت إلى المكان (" + smuggled + ")");
+691: 
+692:         // ج) المتأخر Z يزامن: يستلم الحركات الخمس كلها، ولا يقبل حزمة ما بعد الإزالة
+693:         syncAll(eZ, eX);
+694:         boolean allFive = true;
+695:         for (long id : yTx) if (Z.tx(id) == null) allFive = false;
+696:         check(allFive, "الجهاز المتأخر استلم كل ما أرسله المُزال قبل إزالته (AUDIT-001)");
+697:         check(Z.tx(late) == null && X.tx(late) == null, "ما أرسله المُزال بعد إزالته لم يُقبل على أي جهاز");

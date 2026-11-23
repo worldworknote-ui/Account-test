@@ -1,0 +1,121 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.Context;
+4: import android.graphics.Canvas;
+5: import android.graphics.Color;
+6: import android.graphics.LinearGradient;
+7: import android.graphics.Paint;
+8: import android.graphics.RectF;
+9: import android.graphics.Shader;
+10: import android.view.MotionEvent;
+11: import android.view.View;
+12: 
+13: /**
+14:  * منتقي ألوان متدرّج: مربع للتشبع والإضاءة فوق شريط ألوان الطيف.
+15:  * يحرّك المستخدم إصبعه ليختار أي لون دون كتابة رمزه.
+16:  */
+17: final class ColorPicker extends View {
+18:     interface OnColor { void changed(int color); }
+19: 
+20:     private final float dp;
+21:     private final float[] hsv = {150f, 0.9f, 0.42f};
+22:     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+23:     private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
+24:     private final RectF sv = new RectF(), hue = new RectF();
+25:     private int dragging; // 0 لا شيء، 1 المربع، 2 الشريط
+26:     OnColor listener;
+27: 
+28:     private static final int[] SPECTRUM = {0xFFFF0000, 0xFFFFFF00, 0xFF00FF00, 0xFF00FFFF, 0xFF0000FF, 0xFFFF00FF, 0xFFFF0000};
+29: 
+30:     ColorPicker(Context c, int initial) {
+31:         super(c);
+32:         dp = c.getResources().getDisplayMetrics().density;
+33:         ring.setStyle(Paint.Style.STROKE);
+34:         setColor(initial);
+35:         setLayoutDirection(LAYOUT_DIRECTION_LTR);
+36:     }
+37: 
+38:     void setColor(int color) {
+39:         Color.colorToHSV(color, hsv);
+40:         invalidate();
+41:     }
+42: 
+43:     int color() { return Color.HSVToColor(hsv); }
+44: 
+45:     @Override protected void onMeasure(int w, int h) {
+46:         int width = MeasureSpec.getSize(w);
+47:         setMeasuredDimension(width, (int) (dp * (190 + 16 + 30 + 12)));
+48:     }
+49: 
+50:     @Override protected void onSizeChanged(int w, int h, int ow, int oh) {
+51:         float pad = dp * 6;
+52:         sv.set(pad, pad, w - pad, pad + dp * 190);
+53:         hue.set(pad, sv.bottom + dp * 16, w - pad, sv.bottom + dp * 46);
+54:     }
+55: 
+56:     @Override protected void onDraw(Canvas c) {
+57:         float r = dp * 12;
+58:         int pure = Color.HSVToColor(new float[]{hsv[0], 1f, 1f});
+59:         fill.setShader(new LinearGradient(sv.left, 0, sv.right, 0, Color.WHITE, pure, Shader.TileMode.CLAMP));
+60:         c.drawRoundRect(sv, r, r, fill);
+61:         fill.setShader(new LinearGradient(0, sv.top, 0, sv.bottom, Color.TRANSPARENT, Color.BLACK, Shader.TileMode.CLAMP));
+62:         c.drawRoundRect(sv, r, r, fill);
+63:         fill.setShader(new LinearGradient(hue.left, 0, hue.right, 0, SPECTRUM, null, Shader.TileMode.CLAMP));
+64:         c.drawRoundRect(hue, hue.height() / 2, hue.height() / 2, fill);
+65:         fill.setShader(null);
+66:         // علامة الاختيار في المربع
+67:         float x = sv.left + hsv[1] * sv.width(), y = sv.top + (1 - hsv[2]) * sv.height();
+68:         fill.setColor(color());
+69:         c.drawCircle(x, y, dp * 11, fill);
+70:         ring.setStrokeWidth(dp * 3);
+71:         ring.setColor(Color.WHITE);
+72:         c.drawCircle(x, y, dp * 12, ring);
+73:         ring.setStrokeWidth(dp * 1);
+74:         ring.setColor(Color.argb(120, 0, 0, 0));
+75:         c.drawCircle(x, y, dp * 13.5f, ring);
+76:         // علامة الشريط
+77:         float hx = hue.left + hsv[0] / 360f * hue.width();
+78:         fill.setColor(pure);
+79:         c.drawCircle(hx, hue.centerY(), hue.height() / 2 + dp, fill);
+80:         ring.setStrokeWidth(dp * 3);
+81:         ring.setColor(Color.WHITE);
+82:         c.drawCircle(hx, hue.centerY(), hue.height() / 2 + dp * 2, ring);
+83:         ring.setStrokeWidth(dp * 1);
+84:         ring.setColor(Color.argb(120, 0, 0, 0));
+85:         c.drawCircle(hx, hue.centerY(), hue.height() / 2 + dp * 3.5f, ring);
+86:     }
+87: 
+88:     @Override public boolean onTouchEvent(MotionEvent e) {
+89:         float x = e.getX(), y = e.getY();
+90:         switch (e.getActionMasked()) {
+91:             case MotionEvent.ACTION_DOWN:
+92:                 dragging = y <= sv.bottom + dp * 8 ? 1 : 2;
+93:                 if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
+94:                 apply(x, y);
+95:                 return true;
+96:             case MotionEvent.ACTION_MOVE:
+97:                 apply(x, y);
+98:                 return true;
+99:             case MotionEvent.ACTION_UP:
+100:             case MotionEvent.ACTION_CANCEL:
+101:                 dragging = 0;
+102:                 if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(false);
+103:                 return true;
+104:             default:
+105:                 return super.onTouchEvent(e);
+106:         }
+107:     }
+108: 
+109:     private void apply(float x, float y) {
+110:         if (dragging == 1) {
+111:             hsv[1] = clamp((x - sv.left) / sv.width());
+112:             hsv[2] = 1 - clamp((y - sv.top) / sv.height());
+113:         } else if (dragging == 2) {
+114:             hsv[0] = clamp((x - hue.left) / hue.width()) * 359.9f;
+115:         }
+116:         invalidate();
+117:         if (listener != null) listener.changed(color());
+118:     }
+119: 
+120:     private static float clamp(float v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+121: }

@@ -1,0 +1,175 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.content.ClipData;
+5: import android.content.ClipboardManager;
+6: import android.content.Context;
+7: import android.graphics.Color;
+8: import android.view.Gravity;
+9: import android.widget.EditText;
+10: import android.widget.LinearLayout;
+11: import android.widget.TextView;
+12: import java.util.List;
+13: import java.util.Map;
+14: 
+15: /**
+16:  * 10.5 (§7): «مكاتبي والتحقق» على الهاتف — المكاتب المخصصة للمحاسب بأرصدتها وعلامة آخر رسالة واتساب نُقلت لكل منها،
+17:  * و«بانتظار تحققي»: حركات نافذة أدخلها غيره ولم يتحقق منها. «تم التحقق» لا يُنشئ أي قيد. (مثل شاشة الكمبيوتر نفسها)
+18:  */
+19: final class MineScreen {
+20:     private final MainActivity a;
+21: 
+22:     MineScreen(MainActivity a) { this.a = a; }
+23: 
+24:     /** يظهر لمن خُصصت له مكاتب أو له صلاحية التحقق، وللمدير ومدير المستخدمين (حالات كل المكاتب) — مع نظام المستخدمين. */
+25:     boolean available() {
+26:         return a.db.usersEnabled() && (a.can(Auth.Perm.VERIFY) || a.can(Auth.Perm.USERS) || !a.db.myOffices().isEmpty() || !a.db.myCheckOffices().isEmpty());
+27:     }
+28: 
+29:     // 10.13: صفحات «مكاتبي» من الأعلى
+30:     static final String P_REC = "rec", P_CHK = "chk", P_RECON = "recon", P_TX = "tx", P_ALL = "all";
+31:     static final String SORT_STATUS = "status", SORT_NAME = "name", SORT_MINE = "mine";
+32:     /** تصفية الحالة الحالية (null = الكل). */
+33:     private String filter;
+34: 
+35:     /** الصفحات المتاحة لهذا المستخدم: [المفتاح، الاسم]. */
+36:     List<String[]> pages() {
+37:         List<String[]> p = new java.util.ArrayList<>();
+38:         if (!a.db.myOffices().isEmpty()) p.add(new String[]{P_REC, "مكاتب للتسجيل"});
+39:         if (!a.db.myCheckOffices().isEmpty()) p.add(new String[]{P_CHK, "مكاتب للتحقق"});
+40:         if (a.can(Auth.Perm.VERIFY)) {
+41:             p.add(new String[]{P_RECON, "مطابقات للتحقق"});
+42:             p.add(new String[]{P_TX, "تسجيلات المحاسبين"});
+43:         }
+44:         if (a.can(Auth.Perm.USERS)) p.add(new String[]{P_ALL, "كل المكاتب"});
+45:         return p;
+46:     }
+47: 
+48:     void show() {
+49:         a.here(this::show);
+50:         a.tabbedScreen("مكاتبي", a::showHome, a.tabKeys().contains("mine") ? "mine" : "more");
+51:         final List<String[]> pages = pages();
+52:         if (pages.isEmpty()) {
+53:             a.hint("لم يخصص لك المدير مكاتب بعد (المستخدمون ← فرز المكاتب).");
+54:             return;
+55:         }
+56:         String cur = a.db.setting("mine_page", pages.get(0)[0]);
+57:         int sel = 0;
+58:         String[] labels = new String[pages.size()];
+59:         for (int i = 0; i < pages.size(); i++) {
+60:             labels[i] = pages.get(i)[1];
+61:             if (pages.get(i)[0].equals(cur)) sel = i;
+62:         }
+63:         final String page = pages.get(sel)[0];
+64:         Ui.Seg seg = a.new Seg(labels, null, sel, true);
+65:         seg.listener = i -> {
+66:             a.db.setSettingQuiet("mine_page", pages.get(i)[0]);
+67:             filter = null;
+68:             show();
+69:         };
+70:         a.body.addView(seg.view, a.lp(-1, -2, 2));
+71:         switch (page) {
+72:             case P_REC: offices(a.db.myOffices(), P_REC); break;
+73:             case P_CHK: offices(a.db.myCheckOffices(), P_CHK); break;
+74:             case P_RECON: recons(); break;
+75:             case P_TX: txs(); break;
+76:             default: {
+77:                 List<Model.Office> all = new java.util.ArrayList<>();
+78:                 for (Model.Office o : a.db.offices()) if (o.active) all.add(o);
+79:                 offices(all, P_ALL);
+80:             }
+81:         }
+82:     }
+83: 
+84:     /** لون كل حالة. */
+85:     int workColor(String s) {
+86:         if (Db.W_DOING.equals(s)) return a.night ? Color.rgb(251, 191, 36) : Color.rgb(196, 118, 6);
+87:         if (Db.W_DONE.equals(s)) return a.green;
+88:         if (Db.W_RECON.equals(s)) return a.night ? Color.rgb(96, 165, 250) : Color.rgb(37, 99, 235);
+89:         return a.muted;
+90:     }
+91: 
+92:     /** صفحة مكاتب (للتسجيل، للتحقق، أو كلها للمدير): تصفية بالحالة، وترتيب بالحالة أو الاسم أو ترتيبي بالسحب. */
+93:     private void offices(List<Model.Office> list, final String page) {
+94:         final Map<Long, Db.Work> work = a.db.officeWork();
+95:         final java.util.Map<Long, Db.Team> teams = new java.util.HashMap<>();
+96:         for (Db.Team t : a.db.teams()) teams.put(t.office.id, t);
+97:         Map<Long, Integer> waitMine = new java.util.HashMap<>();
+98:         if (P_CHK.equals(page)) for (Model.Tx t : a.db.awaitingMyCheck(60, 2000)) waitMine.merge(t.officeId, 1, Integer::sum);
+99:         // التصفية بالحالة مع عدد كل حالة
+100:         Map<String, Integer> counts = new java.util.HashMap<>();
+101:         for (Model.Office o : list) {
+102:             Db.Work w = work.get(o.id);
+103:             counts.merge(w == null ? Db.W_NONE : w.status, 1, Integer::sum);
+104:         }
+105:         LinearLayout pills = a.row();
+106:         pills.addView(a.pill("الكل " + list.size(), filter == null, v -> {
+107:             filter = null;
+108:             show();
+109:         }), a.gap(-2, -2, 3));
+110:         for (final String k : Db.WORK_KEYS) {
+111:             Integer n = counts.get(k);
+112:             pills.addView(a.pill(Db.workLabel(k) + " " + (n == null ? 0 : n), k.equals(filter), v -> {
+113:                 filter = k.equals(filter) ? null : k;
+114:                 show();
+115:             }), a.gap(-2, -2, 3));
+116:         }
+117:         a.body.addView(a.strip(pills), a.lp(-1, -2, 2));
+118:         // الترتيب
+119:         final String sort = a.db.setting("mine_sort", SORT_STATUS);
+120:         LinearLayout sr = a.row();
+121:         sr.setGravity(Gravity.CENTER_VERTICAL);
+122:         sr.addView(a.text("الترتيب:", 13, a.muted, false), new LinearLayout.LayoutParams(-2, -2));
+123:         String[][] sorts = {{SORT_STATUS, "بالحالة"}, {SORT_NAME, "بالاسم"}, {SORT_MINE, "ترتيبي"}};
+124:         for (final String[] so : sorts)
+125:             sr.addView(a.pill(so[1], so[0].equals(sort), v -> {
+126:                 a.db.setSettingQuiet("mine_sort", so[0]);
+127:                 show();
+128:             }), a.gap(-2, -2, 3));
+129:         a.body.addView(sr, a.lp(-1, -2, 2));
+130:         if (SORT_MINE.equals(sort)) a.hint("اسحب «≡» لترتيب المكاتب كما تحب. الترتيب لك وحدك.");
+131: 
+132:         List<Model.Office> shown = new java.util.ArrayList<>();
+133:         for (Model.Office o : list) {
+134:             Db.Work w = work.get(o.id);
+135:             if (filter == null || filter.equals(w == null ? Db.W_NONE : w.status)) shown.add(o);
+136:         }
+137:         final java.text.Collator col = java.text.Collator.getInstance(new java.util.Locale("ar"));
+138:         if (SORT_NAME.equals(sort)) shown.sort((x, y) -> col.compare(x.name, y.name));
+139:         else if (SORT_MINE.equals(sort)) {
+140:             final List<String> order = java.util.Arrays.asList(a.db.setting("mine_order", "").split(","));
+141:             shown.sort((x, y) -> {
+142:                 int ix = order.indexOf(String.valueOf(x.id)), iy = order.indexOf(String.valueOf(y.id));
+143:                 if (ix < 0) ix = Integer.MAX_VALUE;
+144:                 if (iy < 0) iy = Integer.MAX_VALUE;
+145:                 return ix != iy ? Integer.compare(ix, iy) : col.compare(x.name, y.name);
+146:             });
+147:         } else {
+148:             shown.sort((x, y) -> {
+149:                 Db.Work wx = work.get(x.id), wy = work.get(y.id);
+150:                 int rx = Db.workRank(wx == null ? Db.W_NONE : wx.status), ry = Db.workRank(wy == null ? Db.W_NONE : wy.status);
+151:                 return rx != ry ? Integer.compare(rx, ry) : col.compare(x.name, y.name);
+152:             });
+153:         }
+154:         if (shown.isEmpty()) a.hint(list.isEmpty() ? "لا مكاتب في هذه الصفحة." : "لا مكاتب بهذه الحالة.");
+155:         final LinearLayout box = new LinearLayout(a);
+156:         box.setOrientation(LinearLayout.VERTICAL);
+157:         box.setClipChildren(false);
+158:         a.body.addView(box, a.lp(-1, -2, 0));
+159:         final Ui.DragSort drag = SORT_MINE.equals(sort) ? a.new DragSort(box, keys -> {
+160:             List<String> ids = new java.util.ArrayList<>();
+161:             for (Object k : keys) ids.add(String.valueOf(k));
+162:             // ما لم يظهر (مُصفّى) يبقى بعدها بترتيبه
+163:             for (String old : a.db.setting("mine_order", "").split(",")) if (!old.isEmpty() && !ids.contains(old)) ids.add(old);
+164:             a.db.setSettingQuiet("mine_order", Model.join(ids, ","));
+165:         }) : null;
+166:         Map<String, Integer> dec = a.db.decimalsMap();
+167:         for (final Model.Office o : shown) {
+168:             final Db.Work w = work.get(o.id) != null ? work.get(o.id) : new Db.Work();
+169:             LinearLayout c = new LinearLayout(a);
+170:             c.setOrientation(LinearLayout.VERTICAL);
+171:             c.setPadding(a.dp(12), a.dp(8), a.dp(12), a.dp(8));
+172:             c.setBackground(a.round(a.surface, a.cardStroke, 16));
+173:             LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-1, -2);
+174:             cp.setMargins(0, a.dp(4), 0, a.dp(4));
+175:             box.addView(c, cp);

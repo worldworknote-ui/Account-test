@@ -1,0 +1,168 @@
+189:     static String hex(Color c) { return String.format(Locale.ROOT, "#%02X%02X%02X", c.getRed(), c.getGreen(), c.getBlue()); }
+190: 
+191:     /** 10.12: بصمة المظهر المطبّق — لكل مستخدم مظهره، فيُعاد التطبيق عند دخول مستخدم مختلف المظهر. */
+192:     static String appliedSig = "";
+193: 
+194:     static String lookSig(Db db) {
+195:         if (db == null) return "";
+196:         return db.setting("desk_theme", "light") + "|" + db.setting("primary_color", "") + "|" + db.setting("accent_color", "") + "|" + db.setting("bg_color", "")
+197:                 + "|" + db.setting("hold_confirm", "off") + "|" + db.setting("page_motion", "stagger")
+198:                 + "|" + db.setting("desk_font", "plex") + "|" + db.setting("desk_side_color", "") + "|" + db.setting("desk_btn_size", "normal") + "|" + db.setting("desk_borders", "on");
+199:     }
+200: 
+201:     /** 10.13: قاعدة البيانات لقراءة تفضيلات المستخدم الحالي (الضغط المطوّل، حركة الصفحات). */
+202:     static Db store;
+203: 
+204:     /** حركة الصفحات: «none» بلا حركة، وغيرها الحركة المعتادة. */
+205:     static boolean motion() { return store == null || !"none".equals(store.setting("page_motion", "stagger")); }
+206: 
+207:     // ---- 10.16: خيارات المظهر التي كانت على الهاتف وحده: الخط، لون الشريط، حجم الأزرار، إطارات البطاقات ----
+208:     static String fontKey = "plex";
+209:     static float btnScale = 1f;
+210:     static boolean cardBorders = true;
+211:     static final String[][] FONTS = {{"plex", "IBM Plex Arabic (الافتراضي)"}, {"cairo", "Cairo"}, {"kufi", "Noto Kufi"}, {"system", "خط النظام"}};
+212: 
+213:     static boolean hasFont(String k) { return "system".equals(k) || Ui.class.getResource("/res/" + k + "_regular.ttf") != null; }
+214: 
+215:     static void pickFont(Db db) {
+216:         String k = db == null ? "plex" : db.setting("desk_font", "plex");
+217:         if (k.equals(fontKey) || !hasFont(k)) return;
+218:         try {
+219:             if ("system".equals(k)) {
+220:                 base = new Font(Font.DIALOG, Font.PLAIN, 13);
+221:                 baseBold = new Font(Font.DIALOG, Font.BOLD, 13);
+222:             } else {
+223:                 Font r = load("/res/" + k + "_regular.ttf"), b = load("/res/" + k + "_bold.ttf");
+224:                 base = r;
+225:                 baseBold = b;
+226:             }
+227:             fontKey = k;
+228:         } catch (Exception ignored) {
+229:             // يبقى الخط الحالي
+230:         }
+231:     }
+232: 
+233:     static void applyColors(Db db) {
+234:         pickFont(db);
+235:         btnScale = db != null && "big".equals(db.setting("desk_btn_size", "normal")) ? 1.18f : 1f;
+236:         cardBorders = db == null || !"off".equals(db.setting("desk_borders", "on"));
+237:         store = db;
+238:         appliedSig = lookSig(db);
+239:         dark = db != null && "dark".equals(db.setting("desk_theme", "light"));
+240:         Color brand = parse(db == null ? "" : db.setting("primary_color", "#0B6B53"), new Color(11, 107, 83));
+241:         accent = parse(db == null ? "" : db.setting("accent_color", "#C7922F"), new Color(199, 146, 47));
+242:         if (!dark) {
+243:             primary = brand;
+244:             String b = db == null ? "" : db.setting("bg_color", "").trim();
+245:             // الخلفية الحديثة الافتراضية أفتح وأبرد؛ لون اختاره المستخدم بنفسه يبقى
+246:             bg = b.isEmpty() || b.equalsIgnoreCase("#F7F4ED") ? new Color(243, 245, 244) : parse(b, new Color(243, 245, 244));
+247:             surface = Color.WHITE;
+248:             line = new Color(225, 231, 228);
+249:             ink = new Color(23, 36, 31);
+250:             muted = new Color(99, 113, 107);
+251:             red = new Color(176, 42, 52);
+252:             green = new Color(22, 118, 70);
+253:             creditBg = new Color(228, 242, 234);
+254:             debitBg = new Color(251, 231, 232);
+255:             warnBg = new Color(255, 243, 214);
+256:             warnInk = new Color(110, 67, 0);
+257:             primarySoft = mix(Color.WHITE, primary, 0.09f);
+258:             primaryInk = darker(primary, 0.76f);
+259:             goldSoft = mix(Color.WHITE, accent, 0.16f);
+260:             goldInk = darker(accent, 0.58f);
+261:             stripe = new Color(249, 250, 250);
+262:             tableHead = new Color(246, 248, 247);
+263:             shadow = new Color(16, 40, 30, 14);
+264:         } else {
+265:             // 10.10: الوضع الليلي العصري (مثل الهاتف): أخضر داكن جدًا ونعناعي للأخضر و«لنا»
+266:             boolean defBrand = brand.equals(new Color(11, 107, 83));
+267:             primary = defBrand ? new Color(61, 220, 151) : mix(brand, Color.WHITE, 0.12f);
+268:             bg = new Color(11, 20, 17);
+269:             surface = new Color(19, 32, 27);
+270:             line = new Color(36, 55, 47);
+271:             ink = new Color(236, 243, 239);
+272:             muted = new Color(141, 163, 154);
+273:             red = new Color(255, 120, 120);
+274:             green = new Color(61, 220, 151);
+275:             creditBg = new Color(20, 52, 40);
+276:             debitBg = new Color(58, 28, 31);
+277:             warnBg = new Color(59, 46, 18);
+278:             warnInk = new Color(243, 208, 138);
+279:             primarySoft = mix(surface, primary, 0.16f);
+280:             primaryInk = defBrand ? new Color(61, 220, 151) : mix(brand, Color.WHITE, 0.58f);
+281:             goldSoft = mix(surface, accent, 0.22f);
+282:             goldInk = mix(accent, Color.WHITE, 0.35f);
+283:             stripe = new Color(23, 37, 31);
+284:             tableHead = new Color(24, 39, 33);
+285:             shadow = new Color(0, 0, 0, 0);
+286:         }
+287:         segTrack = mix(surface, line, dark ? 0.55f : 0.6f);
+288:         sidebar = dark ? new Color(8, 15, 12) : mix(darker(brand, 0.42f), Color.BLACK, 0.12f);
+289:         String sc = db == null ? "" : db.setting("desk_side_color", "").trim();
+290:         if (!sc.isEmpty()) sidebar = parse(sc, sidebar);
+291:         sidebarInk = new Color(234, 243, 239);
+292:         sidebarMuted = new Color(150, 176, 166);
+293:         sidebarHover = new Color(255, 255, 255, 16);
+294:         sidebarActive = new Color(255, 255, 255, 30);
+295:     }
+296: 
+297:     static <T extends Component> T rtl(T c) {
+298:         c.applyComponentOrientation(RTL);
+299:         return c;
+300:     }
+301: 
+302:     // ===================================================================================
+303:     // النصوص
+304:     // ===================================================================================
+305: 
+306:     static JLabel label(String s, float size, Color c, boolean bold) {
+307:         JLabel l = new JLabel(s);
+308:         l.setFont(font(size, bold));
+309:         l.setForeground(c);
+310:         l.setHorizontalAlignment(SwingConstants.RIGHT);
+311:         l.setAlignmentX(Component.RIGHT_ALIGNMENT);
+312:         return l;
+313:     }
+314: 
+315:     static JLabel title(String s) { return label(s, 22, ink, true); }
+316: 
+317:     static JLabel heading(String s) { return label(s, 16, primaryInk, true); }
+318: 
+319:     /** عرض CSS في HTML سوينغ يُكبَّر نحو 1.33؛ هذا يحوّل البكسل الحقيقي إلى قيمة CSS. */
+320:     static int css(int px) { return Math.max(120, (int) (px * 0.74)); }
+321: 
+322:     static String esc(String s) {
+323:         return s == null ? "" : s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>");
+324:     }
+325: 
+326:     /** نص متعدد الأسطر يلتف بعرض ثابت. */
+327:     static JLabel para(String s, float size, Color c, int width) {
+328:         JLabel l = new JLabel("<html><div style='width:" + css(width) + "px;text-align:right'>" + esc(s) + "</div></html>");
+329:         l.setFont(font(size, false));
+330:         l.setForeground(c);
+331:         l.setHorizontalAlignment(SwingConstants.RIGHT);
+332:         l.setAlignmentX(Component.RIGHT_ALIGNMENT);
+333:         return l;
+334:     }
+335: 
+336:     // ===================================================================================
+337:     // الأزرار
+338:     // ===================================================================================
+339: 
+340:     /** زر مسطح بزوايا مستديرة (يرسم نفسه، فيبدو كما هو على الماك وغيره). */
+341:     static final boolean MAC = System.getProperty("os.name", "").toLowerCase().contains("mac");
+342:     static final boolean WIN = System.getProperty("os.name", "").toLowerCase().contains("win");
+343: 
+344:     /** «للماك» أو «للويندوز» حسب النظام الذي يعمل عليه البرنامج. */
+345:     static String forOs() { return MAC ? "للماك" : WIN ? "للويندوز" : "للكمبيوتر"; }
+346: 
+347:     // ===================================================================================
+348:     // 10.10: الحركة — نابض بسيط لكل زر، وزر «اضغط مطوّلًا» يفتح التأكيد نفسه، ودخول الشاشات
+349:     // ===================================================================================
+350: 
+351:     /** حركة زمنية بسيطة على خيط الواجهة: f(تقدم 0..1 بعد التخفيف)، ثم done. */
+352:     static Timer tween(int ms, java.util.function.DoubleConsumer f, Runnable done) {
+353:         long t0 = com.smart.hawala.Clock.now();
+354:         Timer t = new Timer(15, null);
+355:         t.addActionListener(e -> {
+356:             double x = Math.min(1, (com.smart.hawala.Clock.now() - t0) / (double) ms);

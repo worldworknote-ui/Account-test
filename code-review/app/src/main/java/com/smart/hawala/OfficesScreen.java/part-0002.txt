@@ -1,0 +1,146 @@
+167:         StringBuilder sb = new StringBuilder();
+168:         for (Map.Entry<String, Long> e : a.db.balances(o.id).entrySet()) {
+169:             if (e.getValue() == 0) continue;
+170:             if (sb.length() > 0) sb.append("\n");
+171:             sb.append("• ").append(e.getKey()).append(": ").append(Model.bal(e.getValue(), a.db.decimals(e.getKey())));
+172:         }
+173:         return sb.toString();
+174:     }
+175: 
+176:     void stopDialog(final Model.Office o, final Runnable after) {
+177:         if (!a.require(Auth.Perm.OFFICES)) return;
+178:         String bal = balanceText(o);
+179:         new AlertDialog.Builder(a).setTitle("إيقاف المكتب «" + o.name + "»")
+180:                 .setMessage("لن يظهر المكتب عند تسجيل الحركات ولن تُقبل عليه حركات جديدة. كشفه وحركاته ورصيده تبقى محفوظة، ويمكنك تفعيله في أي وقت."
+181:                         + (bal.isEmpty() ? "" : "\n\n⚠ رصيده الحالي ليس صفرًا:\n" + bal))
+182:                 .setPositiveButton("إيقاف", (d, w) -> {
+183:                     a.db.setOfficeActive(o.id, false);
+184:                     a.toast("تم إيقاف المكتب «" + o.name + "»");
+185:                     if (after != null) after.run();
+186:                 }).setNegativeButton("إلغاء", null).show();
+187:     }
+188: 
+189:     void deleteDialog(final Model.Office o) {
+190:         if (!a.require(Auth.Perm.OFFICES)) return;
+191:         final long n = a.db.officeTxCount(o.id);
+192:         if (n == 0) {
+193:             new AlertDialog.Builder(a).setTitle("حذف المكتب «" + o.name + "»")
+194:                     .setMessage("لا توجد حركات على هذا المكتب. سيُحذف نهائيًا مع أي رصيد سابق أُدخل عند إنشائه.")
+195:                     .setPositiveButton("حذف", (d, w) -> {
+196:                         try {
+197:                             a.db.deleteOffice(o.id, false);
+198:                             a.toast("تم حذف المكتب");
+199:                             showManager();
+200:                         } catch (Exception e) {
+201:                             a.error(e);
+202:                         }
+203:                     }).setNegativeButton("إلغاء", null).show();
+204:             return;
+205:         }
+206:         String bal = balanceText(o);
+207:         new AlertDialog.Builder(a).setTitle("حذف المكتب «" + o.name + "»")
+208:                 .setMessage("على هذا المكتب " + n + " حركة" + (bal.isEmpty() ? "." : "، ورصيده:\n" + bal)
+209:                         + "\n\nالحذف النهائي يمسح المكتب وكل حركاته وصورها من الكشوفات والأرصدة والتقارير."
+210:                         + "\n\nالأنسب غالبًا: إيقاف المكتب، فيختفي من تسجيل الحركات ويبقى سجله.")
+211:                 .setPositiveButton("إيقاف بدلًا من الحذف", (d, w) -> stopDialog(o, this::showManager))
+212:                 .setNeutralButton("حذف نهائي…", (d, w) -> confirmHardDelete(o, n))
+213:                 .setNegativeButton("إلغاء", null).show();
+214:     }
+215: 
+216:     private void confirmHardDelete(final Model.Office o, final long n) {
+217:         if (!a.can(Auth.Perm.DELETE)) {
+218:             a.error(new Exception("حذف مكتب له حركات متاح للمدير فقط."));
+219:             return;
+220:         }
+221:         LinearLayout l = new LinearLayout(a);
+222:         l.setOrientation(LinearLayout.VERTICAL);
+223:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), a.dp(4));
+224:         l.addView(a.text("للتأكيد اكتب اسم المكتب كما هو:\n" + o.name, 14, a.dark, true));
+225:         final EditText name = new EditText(a);
+226:         name.setSingleLine(true);
+227:         l.addView(name);
+228:         l.addView(a.text("قبل الحذف تُحفظ نسخة أمان على الهاتف، ويمكنك التراجع من «النسخ الاحتياطي ← التراجع عن حذف المكتب» (تُحفظ نسخ أمان آخر ثلاث عمليات كبيرة).", 12, a.muted, false));
+229:         final AlertDialog dlg = new AlertDialog.Builder(a).setTitle("حذف نهائي: " + n + " حركة").setView(l)
+230:                 .setPositiveButton("حذف نهائي", null).setNegativeButton("إلغاء", null).create();
+231:         dlg.setOnShowListener(d -> dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+232:             if (!name.getText().toString().trim().equals(Model.nz(o.name).trim())) {
+233:                 name.setError("الاسم غير مطابق");
+234:                 return;
+235:             }
+236:             dlg.dismiss();
+237:             final String label = "حذف المكتب «" + o.name + "»";
+238:             a.busy("جارٍ حفظ نسخة أمان ثم الحذف…", p -> {
+239:                 Snapshot.take(a, a.db, label);
+240:                 a.db.deleteOffice(o.id, true);
+241:                 return null;
+242:             }, res -> {
+243:                 showManager();
+244:                 new AlertDialog.Builder(a).setTitle("تم حذف المكتب")
+245:                         .setMessage("حُذف المكتب «" + o.name + "» و" + n + " حركة. إن كان الحذف خطأً يمكنك التراجع الآن أو لاحقًا من شاشة النسخ الاحتياطي.")
+246:                         .setPositiveButton("حسنًا", null)
+247:                         .setNeutralButton("تراجع الآن", (x, y) -> a.backupScreen.revertDialog()).show();
+248:             });
+249:         }));
+250:         dlg.show();
+251:     }
+252: 
+253:     private void openingDialog(final List<Db.Opening> ops, final TextView list) {
+254:         LinearLayout l = new LinearLayout(a);
+255:         l.setOrientation(LinearLayout.VERTICAL);
+256:         l.setPadding(a.dp(16), a.dp(8), a.dp(16), a.dp(8));
+257:         List<String> codes = new ArrayList<>();
+258:         for (Model.Currency c : a.db.currencies(false)) codes.add(c.code);
+259:         final Spinner c = new Spinner(a);
+260:         a.setItems(c, codes);
+261:         final Spinner t = a.spinner(new String[]{"لنا", "علينا"});
+262:         final EditText am = new EditText(a);
+263:         am.setHint("المبلغ");
+264:         Ui.numeric(am);
+265:         l.addView(c);
+266:         l.addView(t);
+267:         l.addView(am);
+268:         new AlertDialog.Builder(a).setTitle("رصيد سابق").setMessage("فعّل العملة نفسها في قائمة عملات المكتب قبل الحفظ.").setView(l)
+269:                 .setPositiveButton("إضافة", (d, w) -> {
+270:                     try {
+271:                         String code = String.valueOf(c.getSelectedItem());
+272:                         long amount = Db.minor(am.getText().toString(), a.db.decimals(code));
+273:                         if (amount <= 0) throw new Exception("المبلغ يجب أن يكون أكبر من صفر");
+274:                         ops.add(new Db.Opening(code, String.valueOf(t.getSelectedItem()), amount));
+275:                         StringBuilder sb = new StringBuilder();
+276:                         for (Db.Opening o : ops) sb.append("• ").append(o.code).append(": ").append(o.type).append(' ').append(Db.fmt(o.amount, a.db.decimals(o.code))).append('\n');
+277:                         list.setText(sb.toString().trim());
+278:                         list.setTextColor(a.dark);
+279:                     } catch (Exception e) {
+280:                         a.error(e);
+281:                     }
+282:                 }).setNegativeButton("إلغاء", null).show();
+283:     }
+284: 
+285:     // ===================================================================================
+286:     // تنبيهات الحدود
+287:     // ===================================================================================
+288: 
+289:     List<String> limitAlerts(Model.Office o) {
+290:         List<String> out = new ArrayList<>();
+291:         if (o == null) return out;
+292:         Map<String, Long> b = a.db.balances(o.id);
+293:         Map<String, Db.Limit> limits = a.db.officeLimits(o.id);
+294:         for (Map.Entry<String, Long> e : b.entrySet()) {
+295:             Db.Limit l = limits.get(e.getKey());
+296:             if (l == null) continue;
+297:             Ledger.LimitBreach br = Ledger.check(e.getKey(), e.getValue(), l.receivable, l.payable);
+298:             if (br != null) {
+299:                 int dec = a.db.decimals(e.getKey());
+300:                 out.add("• " + o.name + " — " + e.getKey() + ": " + (br.receivable ? "لنا " : "علينا ") + Db.fmt(br.amount, dec) + " (الحد " + Db.fmt(br.limit, dec) + ")");
+301:             }
+302:         }
+303:         if (o.usdLimit != null || o.usdOweLimit != null) {
+304:             Ledger.Valuation v = Ledger.valueOffice(b, a.db.usdRates(), a.db.decimalsMap());
+305:             long us = v.receivableUsd.movePointRight(2).setScale(0, RoundingMode.HALF_UP).longValue();
+306:             long them = v.payableUsd.movePointRight(2).setScale(0, RoundingMode.HALF_UP).longValue();
+307:             if (o.usdLimit != null && o.usdLimit > 0 && us > o.usdLimit) {
+308:                 out.add("• " + o.name + " — مجموع «لنا» مقوّمًا ≈ " + Db.fmt(us, 2) + " USD (الحد " + Db.fmt(o.usdLimit, 2) + ")");
+309:             }
+310:             if (o.usdOweLimit != null && o.usdOweLimit > 0 && them > o.usdOweLimit) {
+311:                 out.add("• " + o.name + " — مجموع «علينا» مقوّمًا ≈ " + Db.fmt(them, 2) + " USD (الحد " + Db.fmt(o.usdOweLimit, 2) + ")");
+312:             }

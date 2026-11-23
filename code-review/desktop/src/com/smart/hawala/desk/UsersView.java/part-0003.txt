@@ -1,0 +1,158 @@
+290:                 for (Model.User u : db.users(false)) if ((old == null || u.id != old.id) && u.name.trim().equalsIgnoreCase(n)) throw new IllegalArgumentException("يوجد مستخدم بنفس الاسم");
+291:                 String r = admin.isSelected() ? Auth.ADMIN : Auth.CUSTOM;
+292:                 java.util.Set<String> chosen = new java.util.LinkedHashSet<>();
+293:                 for (java.util.Map.Entry<Auth.Perm, JCheckBox> e : boxes.entrySet()) if (e.getValue().isSelected()) chosen.add(e.getKey().name());
+294:                 if (review.isSelected() && boxes.get(Auth.Perm.TX_ADD).isSelected()) chosen.add(Auth.REVIEW);
+295:                 if (!admin.isSelected() && chosen.isEmpty()) throw new IllegalArgumentException("اختر صلاحية واحدة على الأقل");
+296:                 String perms = Auth.csv(chosen);
+297:                 if (old == null) {
+298:                     String pin = new String(p1.getPassword());
+299:                     if (!pinOk(r, pin)) throw new IllegalArgumentException(pinRule(r));
+300:                     if (!pin.equals(new String(p2.getPassword()))) throw new IllegalArgumentException("الرمزان غير متطابقين");
+301:                     long id = db.addUser(n, r, perms, pin);
+302:                     if (!nick.val().isEmpty()) db.setNick(id, nick.val());
+303:                     if (firstAdmin) {
+304:                         Model.User me = null;
+305:                         for (Model.User u : db.users(true)) if (u.id == id) me = u;
+306:                         if (me != null) {
+307:                             SmartApp.currentUser = me;
+308:                             Db.currentUserName = me.name;
+309:                             reauthAt = Clock.now();
+310:                         }
+311:                         showRecoveryCode(this, db.newRecoveryCode(), "تم التفعيل. هذا «رمز استرداد المدير»:");
+312:                     }
+313:                 } else {
+314:                     db.updateUser(old.id, n, r, perms, active.isSelected());
+315:                     if (!nick.val().equals(Model.nz(old.nick).trim())) db.setNick(old.id, nick.val());
+316:                     Model.User me = SmartApp.currentUser;
+317:                     if (me != null && me.id == old.id) SmartApp.currentUser = db.user(old.id);
+318:                 }
+319:                 app.updateFoot();
+320:                 refresh();
+321:                 return;
+322:             } catch (Exception e) {
+323:                 Ui.error(this, e);
+324:             }
+325:         }
+326:     }
+327: 
+328:     void newPin(Model.User u) {
+329:         String p1 = LoginView.askPin(this, "رمز جديد لـ " + u.name, pinRule(u.role));
+330:         if (p1 == null) return;
+331:         String p2 = LoginView.askPin(this, "تأكيد الرمز", "أعد كتابة الرمز");
+332:         if (p2 == null) return;
+333:         try {
+334:             if (!pinOk(u.role, p1)) throw new IllegalArgumentException(pinRule(u.role));
+335:             if (!p1.equals(p2)) throw new IllegalArgumentException("الرمزان غير متطابقين");
+336:             db.setPin(u.id, p1);
+337:             Ui.toast("تم تغيير الرمز");
+338:         } catch (Exception e) {
+339:             Ui.error(this, e);
+340:         }
+341:     }
+342: 
+343:     /** 10.17: المستخدم يختار اسمه الظاهر لبقية المحاسبين. */
+344:     static void ownNick(Component parent, Db db) {
+345:         Model.User me = SmartApp.currentUser;
+346:         if (me == null) {
+347:             Ui.toast("الاسم الظاهر يعمل مع نظام المستخدمين");
+348:             return;
+349:         }
+350:         Model.User now = db.user(me.id);
+351:         Ui.Field n = Ui.field("اتركه فارغًا لاسم الدخول");
+352:         n.setText(now == null ? "" : now.nick);
+353:         JPanel c = Ui.column();
+354:         c.add(Ui.para("يراه بقية المحاسبين بجانب حركاتك بدل اسم دخولك «" + me.name + "». المدير يرى اسم الدخول دائمًا.", 13.5f, Ui.ink, 400));
+355:         c.add(Ui.gap(8));
+356:         c.add(Ui.labeled("اسمي الظاهر", n));
+357:         if (!Ui.form(parent, "اسمي الظاهر للآخرين", Ui.rtl(c), "حفظ")) return;
+358:         try {
+359:             db.setNick(me.id, n.val());
+360:             Ui.toast(n.val().isEmpty() ? "يظهر اسم دخولك" : "حُفظ الاسم الظاهر ✓");
+361:         } catch (Exception e) {
+362:             Ui.error(parent, e);
+363:         }
+364:     }
+365: 
+366:     /** 10.17: المدير يكتب رسالة للمحاسبين (الكل أو واحد)، ويرى ما أرسله ويسحبه. */
+367:     static void adminMessages(Component parent, App app) {
+368:         Db db = app.db;
+369:         java.util.List<Model.User> to = new java.util.ArrayList<>();
+370:         for (Model.User u : db.users(true)) if (SmartApp.currentUser == null || u.id != SmartApp.currentUser.id) to.add(u);
+371:         if (to.isEmpty()) {
+372:             Ui.toast("لا مستخدمين آخرين بعد");
+373:             return;
+374:         }
+375:         String[] names = new String[to.size() + 1];
+376:         names[0] = "كل المحاسبين";
+377:         for (int i = 0; i < to.size(); i++) names[i + 1] = to.get(i).name;
+378:         JComboBox<String> who = Ui.combo(names);
+379:         JTextArea body = Ui.area(4);
+380:         JPanel c = Ui.column();
+381:         c.add(Ui.labeled("إلى", who));
+382:         c.add(Ui.gap(6));
+383:         c.add(Ui.labeled("نص الرسالة (حتى 500 حرف)", Ui.areaBox(body)));
+384:         c.add(Ui.para("تظهر إشعارًا عند المحاسب وفي صفحته الرئيسية حتى يضغط «قرأتها»" + (SyncEngine.enabled(db) ? " (تصل لأجهزتهم مع المزامنة التالية)." : "."), 12.5f, Ui.muted, 460));
+385:         java.util.List<Db.AdminMsg> sent = db.adminMsgsSent(8);
+386:         if (!sent.isEmpty()) {
+387:             c.add(Ui.gap(8));
+388:             c.add(Ui.label("آخر ما أرسلته", 13, Ui.primaryInk, true));
+389:             for (Db.AdminMsg m : sent) {
+390:                 c.add(Ui.row(Ui.label(Ui.cut((m.toUser == null ? "للكل" : "إلى " + m.toName) + " — " + Model.date(m.at) + ": " + m.body.replace('\n', ' '), 90), 13, Ui.ink, false),
+391:                         Box.createHorizontalGlue(), Ui.ghost("سحب", e -> {
+392:                             db.deleteAdminMsg(m.uuid);
+393:                             Ui.toast("سُحبت الرسالة (تختفي عند من لم يقرأها)");
+394:                             ((JComponent) e.getSource()).setEnabled(false);
+395:                         })));
+396:             }
+397:         }
+398:         c.setPreferredSize(new Dimension(520, c.getPreferredSize().height));
+399:         if (!Ui.form(parent, "رسالة إلى المحاسبين", Ui.rtl(c), "إرسال")) return;
+400:         try {
+401:             db.sendAdminMsg(who.getSelectedIndex() == 0 ? null : to.get(who.getSelectedIndex() - 1).id, body.getText());
+402:             Ui.toast("أُرسلت الرسالة ✓");
+403:             SyncView.now(app);
+404:         } catch (Exception e) {
+405:             Ui.error(parent, e);
+406:         }
+407:     }
+408: 
+409:     /** يعرض رمز الاسترداد مرة واحدة ولا يُغلق قبل تأكيد حفظه. */
+410:     static void showRecoveryCode(Component parent, String code, String intro) {
+411:         JPanel c = Ui.column();
+412:         c.add(Ui.para(intro, 14, Ui.ink, 380));
+413:         c.add(Ui.gap(10));
+414:         JTextField f = new JTextField(code);
+415:         f.setEditable(false);
+416:         f.setFont(new Font(Font.MONOSPACED, Font.BOLD, 24));
+417:         f.setHorizontalAlignment(JTextField.CENTER);
+418:         f.setBackground(new Color(240, 247, 243));
+419:         f.setBorder(new Ui.RoundBorder(Ui.primary, 10));
+420:         f.setComponentOrientation(ComponentOrientation.LEFT_TO_RIGHT);
+421:         c.add(f);
+422:         c.add(Ui.gap(8));
+423:         c.add(Ui.para("اكتبه على ورقة واحفظه في مكان آمن بعيدًا عن الجهاز. هو الطريقة الوحيدة لاستعادة دخول المدير إن نُسي الرمز، ولن يظهر مرة أخرى.", 13, Ui.red, 380));
+424:         c.add(Ui.gap(6));
+425:         c.add(Ui.flow(Ui.ghost("نسخ الرمز (لدقيقة)", e -> {
+426:             Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(code), null);
+427:             Timer t = new Timer(60000, x -> {
+428:                 try {
+429:                     Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(""), null);
+430:                 } catch (Exception ignored) {
+431:                     // غير مهم
+432:                 }
+433:             });
+434:             t.setRepeats(false);
+435:             t.start();
+436:             Ui.toast("نُسخ الرمز لدقيقة واحدة. الصقه في مكان آمن الآن.");
+437:         })));
+438:         JCheckBox saved = Ui.check("كتبت الرمز وحفظته", false);
+439:         c.add(saved);
+440:         c.setPreferredSize(new Dimension(440, c.getPreferredSize().height));
+441:         while (true) {
+442:             Ui.form(parent, "رمز استرداد المدير", Ui.rtl(c), "تم");
+443:             if (saved.isSelected()) return;
+444:             Ui.toast("ضع علامة «كتبت الرمز وحفظته» أولًا");
+445:         }
+446:     }
+447: }

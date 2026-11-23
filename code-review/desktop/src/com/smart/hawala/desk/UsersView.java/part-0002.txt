@@ -1,0 +1,152 @@
+138:         render[0] = () -> {
+139:             list.removeAll();
+140:             String f = OwnerReports.norm(q.getText());
+141:             // المختارة أولًا (آخر اختيار في الأعلى)، ثم الباقي
+142:             java.util.List<Model.Office> order = new java.util.ArrayList<>();
+143:             for (Long id : roles.keySet()) for (Model.Office o : all) if (o.id == id) order.add(o);
+144:             for (Model.Office o : all) if (!roles.containsKey(o.id)) order.add(o);
+145:             int own = 0, chk = 0;
+146:             for (String r : roles.values()) if (Db.ROLE_CHECK.equals(r)) chk++;
+147:             else own++;
+148:             for (Model.Office o : order) {
+149:                 if (!f.isEmpty() && !OwnerReports.norm(o.name).contains(f)) continue;
+150:                 String role = roles.get(o.id);
+151:                 JComboBox<String> cb = Ui.combo(canCheck ? new String[]{"—", "يسجّل", "يتحقق"} : new String[]{"—", "يسجّل"});
+152:                 cb.setSelectedIndex(role == null ? 0 : Db.ROLE_CHECK.equals(role) && canCheck ? 2 : 1);
+153:                 cb.setMaximumSize(new Dimension(130, 34));
+154:                 cb.addActionListener(e -> {
+155:                     int i = cb.getSelectedIndex();
+156:                     if (i == 0) roles.remove(o.id);
+157:                     else {
+158:                         java.util.Map<Long, String> n = new java.util.LinkedHashMap<>();
+159:                         n.put(o.id, i == 2 ? Db.ROLE_CHECK : Db.ROLE_OWN);
+160:                         for (java.util.Map.Entry<Long, String> x : roles.entrySet()) if (x.getKey() != o.id) n.put(x.getKey(), x.getValue());
+161:                         roles.clear();
+162:                         roles.putAll(n);
+163:                         java.util.List<String> h = others.get(o.id);
+164:                         if (i == 1 && h != null && !h.isEmpty()) Ui.toast("تنبيه: «" + o.name + "» يسجّله " + Model.join(h, "، ") + " أيضًا");
+165:                     }
+166:                     SwingUtilities.invokeLater(render[0]);
+167:                 });
+168:                 list.add(Ui.row(Ui.label(o.name + (o.active ? "" : " (موقوف)"), 14, Ui.ink, role != null), Box.createHorizontalGlue(), cb));
+169:                 java.util.List<String> h = others.get(o.id);
+170:                 if (h != null && !h.isEmpty())
+171:                     list.add(Ui.label("    ! يسجّله أيضًا: " + Model.join(h, "، "), 12, Db.ROLE_OWN.equals(role) ? Ui.red : Ui.warnInk, Db.ROLE_OWN.equals(role)));
+172:                 list.add(Ui.gap(3));
+173:             }
+174:             count.setText("يسجّل " + own + " مكتب • يتحقق من " + chk);
+175:             Ui.rtl(list);
+176:             list.revalidate();
+177:             list.repaint();
+178:         };
+179:         q.getDocument().addDocumentListener(TxView.doc(render[0]));
+180:         render[0].run();
+181:         JScrollPane sp = Ui.scroll(list);
+182:         sp.setPreferredSize(new Dimension(460, Math.min(400, 40 * Math.max(3, all.size()) + 10)));
+183:         c.add(sp);
+184:         if (!Ui.form(this, "مكاتب " + u.name, Ui.rtl(c), "حفظ")) return;
+185:         java.util.List<String> shared = new java.util.ArrayList<>();
+186:         for (java.util.Map.Entry<Long, String> e : roles.entrySet()) {
+187:             if (!Db.ROLE_OWN.equals(e.getValue())) continue;
+188:             java.util.List<String> h = others.get(e.getKey());
+189:             Model.Office o = db.office(e.getKey());
+190:             if (h != null && !h.isEmpty() && o != null) shared.add("• «" + o.name + "» يسجّله أيضًا: " + Model.join(h, "، "));
+191:         }
+192:         if (!shared.isEmpty() && !Ui.confirm(this, "مكاتب يسجّلها محاسب آخر أيضًا", Model.join(shared, "\n")
+193:                 + "\n\nيجوز ذلك، لكن الأوضح أن يسجّل كل مكتبَ محاسبٌ واحد ويتحقق منه غيره. تأكد أن هذا مقصود.", "حفظ رغم ذلك")) return;
+194:         try {
+195:             db.setUserOffices(u.id, roles);
+196:             Ui.toast("حُفظت مكاتب " + u.name);
+197:             refresh();
+198:         } catch (Exception ex) {
+199:             Ui.error(this, ex);
+200:         }
+201:     }
+202: 
+203:     void confirmAdmin(String why, Runnable action) { confirmAdmin(this, db, why, action); }
+204: 
+205:     /** 10.14: تأكيد رمز المستخدم الحالي (المدير) قبل عملية حساسة، من أي شاشة. */
+206:     static void confirmAdmin(Component parent, Db db, String why, Runnable action) {
+207:         Model.User me = SmartApp.currentUser;
+208:         if (!db.usersEnabled() || me == null) {
+209:             action.run();
+210:             return;
+211:         }
+212:         if (reauthAt > 0 && Clock.now() - reauthAt < REAUTH_MS) {
+213:             action.run();
+214:             return;
+215:         }
+216:         if (!LoginView.canTry(db)) return;
+217:         String p = LoginView.askPin(parent, "تأكيد: " + why, "أدخل رمزك للتأكيد.");
+218:         if (p == null) return;
+219:         if (db.verifyPin(me.id, p)) {
+220:             LoginView.resetFails(db);
+221:             reauthAt = Clock.now();
+222:             action.run();
+223:         } else {
+224:             int f = LoginView.recordFail(db, me.name, me.id);
+225:             long w = Pin.lockoutMillis(f);
+226:             Ui.message(parent, "رمز خاطئ", w > 0 ? "انتظر " + LoginView.waitText(w) + "." : "الرمز غير صحيح.", JOptionPane.WARNING_MESSAGE);
+227:         }
+228:     }
+229: 
+230:     static boolean pinOk(String role, String pin) { return Auth.ADMIN.equals(role) ? Pin.validAdmin(pin) : Pin.valid(pin); }
+231: 
+232:     static String pinRule(String role) { return Auth.ADMIN.equals(role) ? "رمز المدير من 6 إلى 8 أرقام" : "الرمز من 4 إلى 8 أرقام"; }
+233: 
+234:     void userDialog(Model.User old, boolean firstAdmin) {
+235:         JPanel c = Ui.column();
+236:         Ui.Field name = Ui.field("اسم المستخدم");
+237:         if (old != null) name.setText(old.name);
+238:         // 10.17: الاسم الظاهر لبقية المحاسبين بدل اسم الدخول (اختياري)
+239:         Ui.Field nick = Ui.field("اختياري");
+240:         if (old != null) nick.setText(old.nick);
+241:         c.add(Ui.labeled("الاسم", name));
+242:         c.add(Ui.gap(6));
+243:         c.add(Ui.labeled("الاسم الظاهر للآخرين (يراه المحاسبون بدل اسم الدخول؛ المدير يرى اسم الدخول)", nick));
+244:         c.add(Ui.gap(8));
+245:         JCheckBox admin = Ui.check("مدير — كل الصلاحيات", firstAdmin || Auth.isAdmin(old));
+246:         boolean iAmAdmin = SmartApp.currentUser == null || Auth.isAdmin(db.user(SmartApp.currentUser.id));
+247:         admin.setEnabled(!firstAdmin && iAmAdmin);
+248:         c.add(admin);
+249:         JPanel permBox = Ui.column();
+250:         permBox.add(Ui.label("الصلاحيات (اختر ما يناسب هذا الشخص):", 13.5f, Ui.primaryInk, true));
+251:         java.util.Map<Auth.Perm, JCheckBox> boxes = new java.util.LinkedHashMap<>();
+252:         java.util.Set<String> cur = old == null ? Auth.parse("VIEW,TX_ADD") : Auth.perms(old);
+253:         JCheckBox review = Ui.check("     حركاته تحتاج اعتمادًا قبل أن تدخل الأرصدة (أيًا كان المبلغ)", cur.contains(Auth.REVIEW));
+254:         for (Object[] grp : Auth.GROUPS) {
+255:             permBox.add(Ui.label((String) grp[0], 13.5f, Ui.goldInk, true));
+256:             for (Auth.Perm p : (Auth.Perm[]) grp[1]) {
+257:                 String h = Auth.hint(p);
+258:                 JCheckBox cb = Ui.check(Auth.title(p) + (h.isEmpty() ? "" : "  — " + h), cur.contains(p.name()));
+259:                 permBox.add(cb);
+260:                 boxes.put(p, cb);
+261:                 if (p == Auth.Perm.TX_ADD) permBox.add(review);
+262:             }
+263:         }
+264:         permBox.setVisible(!admin.isSelected());
+265:         admin.addActionListener(e -> {
+266:             permBox.setVisible(!admin.isSelected());
+267:             SwingUtilities.getWindowAncestor(c).pack();
+268:         });
+269:         c.add(permBox);
+270:         JPasswordField p1 = Ui.password(), p2 = Ui.password();
+271:         JCheckBox active = Ui.check("الحساب نشط", old == null || old.active);
+272:         if (old == null) {
+273:             c.add(Ui.gap(8));
+274:             c.add(Ui.labeled(firstAdmin ? "رمز المدير (6 إلى 8 أرقام)" : "الرمز السري (4 إلى 8 أرقام، والمدير 6)", p1));
+275:             c.add(Ui.gap(6));
+276:             c.add(Ui.labeled("أعد كتابة الرمز", p2));
+277:         } else {
+278:             c.add(Ui.gap(8));
+279:             c.add(active);
+280:             c.add(Ui.para("لتغيير رمز هذا المستخدم استخدم زر «تغيير الرمز».", 12, Ui.muted, 360));
+281:         }
+282:         if (firstAdmin) {
+283:             c.add(Ui.gap(8));
+284:             c.add(Ui.para("بعد الحفظ يظهر «رمز استرداد المدير» مرة واحدة: اكتبه على ورقة. هو الطريقة الوحيدة لاستعادة الدخول إن نُسي رمز المدير.", 12, Ui.muted, 360));
+285:         }
+286:         while (Ui.form(this, old == null ? (firstAdmin ? "حساب المدير" : "مستخدم جديد") : "تعديل «" + old.name + "»", Ui.rtl(c), "حفظ")) {
+287:             try {
+288:                 String n = name.val();
+289:                 if (n.isEmpty()) throw new IllegalArgumentException("اكتب اسم المستخدم");

@@ -1,0 +1,97 @@
+1: package android.animation;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.List;
+5: 
+6: public final class AnimatorSet extends Animator {
+7:     /** مجموعات تبدأ متتالية؛ كل مجموعة تعمل معًا. */
+8:     private final List<List<Animator>> stages = new ArrayList<>();
+9:     private long duration = -1, delay;
+10:     private TimeInterpolator interp;
+11:     private boolean running;
+12:     private int stage;
+13:     private int pending;
+14: 
+15:     public void playTogether(Animator... a) { List<Animator> l = new ArrayList<>(); for (Animator x : a) if (x != null) l.add(x); stages.add(l); }
+16:     public void playTogether(java.util.Collection<Animator> a) { stages.add(new ArrayList<>(a)); }
+17:     public void playSequentially(Animator... a) { for (Animator x : a) if (x != null) { List<Animator> l = new ArrayList<>(); l.add(x); stages.add(l); } }
+18:     public void playSequentially(List<Animator> a) { for (Animator x : a) { List<Animator> l = new ArrayList<>(); l.add(x); stages.add(l); } }
+19:     public Builder play(Animator a) {
+20:         List<Animator> l = new ArrayList<>();
+21:         l.add(a);
+22:         stages.add(l);
+23:         return new Builder(l);
+24:     }
+25:     public final class Builder {
+26:         private final List<Animator> stageList;
+27:         Builder(List<Animator> s) { stageList = s; }
+28:         public Builder with(Animator a) { stageList.add(a); return this; }
+29:         public Builder before(Animator a) {
+30:             int i = stages.indexOf(stageList);
+31:             List<Animator> l = new ArrayList<>(); l.add(a);
+32:             stages.add(i + 1, l);
+33:             return this;
+34:         }
+35:         public Builder after(Animator a) {
+36:             int i = stages.indexOf(stageList);
+37:             List<Animator> l = new ArrayList<>(); l.add(a);
+38:             stages.add(i, l);
+39:             return this;
+40:         }
+41:         public Builder after(long d) { return this; }
+42:     }
+43:     public ArrayList<Animator> getChildAnimations() { ArrayList<Animator> r = new ArrayList<>(); for (List<Animator> s : stages) r.addAll(s); return r; }
+44:     @Override public AnimatorSet setDuration(long d) { duration = d; return this; }
+45:     @Override public long getDuration() { return duration; }
+46:     @Override public long getStartDelay() { return delay; }
+47:     @Override public void setStartDelay(long d) { delay = d; }
+48:     @Override public void setInterpolator(TimeInterpolator i) { interp = i; }
+49:     @Override public boolean isRunning() { return running; }
+50:     @Override public void setTarget(Object t) { for (List<Animator> s : stages) for (Animator a : s) a.setTarget(t); }
+51: 
+52:     @Override public void start() {
+53:         if (running) cancel();
+54:         running = true;
+55:         notifyStart();
+56:         stage = 0;
+57:         if (delay > 0) android.view.AttachInfo.MAIN.postDelayed(this::runStage, delay);
+58:         else runStage();
+59:     }
+60:     private void runStage() {
+61:         if (!running) return;
+62:         if (stage >= stages.size()) { running = false; notifyEnd(); return; }
+63:         List<Animator> s = stages.get(stage);
+64:         pending = s.size();
+65:         if (pending == 0) { stage++; runStage(); return; }
+66:         for (Animator a : s) {
+67:             if (duration >= 0) a.setDuration(duration);
+68:             if (interp != null) a.setInterpolator(interp);
+69:             a.addListener(new AnimatorListenerAdapter() {
+70:                 boolean done;
+71:                 @Override public void onAnimationEnd(Animator x) {
+72:                     if (done) return;
+73:                     done = true;
+74:                     x.removeListener(this);
+75:                     if (--pending == 0 && running) { stage++; runStage(); }
+76:                 }
+77:             });
+78:             a.start();
+79:         }
+80:     }
+81:     @Override public void cancel() {
+82:         if (!running) return;
+83:         running = false;
+84:         for (List<Animator> s : stages) for (Animator a : s) a.cancel();
+85:         notifyCancel();
+86:         notifyEnd();
+87:     }
+88:     @Override public void end() {
+89:         running = false;
+90:         for (List<Animator> s : stages) for (Animator a : s) a.end();
+91:         notifyEnd();
+92:     }
+93:     @Override public AnimatorSet clone() {
+94:         AnimatorSet a = (AnimatorSet) super.clone();
+95:         return a;
+96:     }
+97: }

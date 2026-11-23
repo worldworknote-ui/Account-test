@@ -1,0 +1,190 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.Activity;
+4: import android.app.AlertDialog;
+5: import android.content.ActivityNotFoundException;
+6: import android.content.ClipData;
+7: import android.content.Intent;
+8: import android.content.res.ColorStateList;
+9: import android.content.res.Configuration;
+10: import android.graphics.Bitmap;
+11: import android.graphics.BitmapFactory;
+12: import android.graphics.Canvas;
+13: import android.graphics.Color;
+14: import android.graphics.Typeface;
+15: import android.graphics.drawable.Drawable;
+16: import android.graphics.drawable.GradientDrawable;
+17: import android.graphics.drawable.LayerDrawable;
+18: import android.graphics.drawable.RippleDrawable;
+19: import android.graphics.drawable.StateListDrawable;
+20: import android.net.Uri;
+21: import android.text.Editable;
+22: import android.text.InputType;
+23: import android.text.TextUtils;
+24: import android.text.TextWatcher;
+25: import android.view.Gravity;
+26: import android.view.View;
+27: import android.view.ViewGroup;
+28: import android.view.Window;
+29: import android.widget.ArrayAdapter;
+30: import android.widget.Button;
+31: import android.widget.EditText;
+32: import android.widget.FrameLayout;
+33: import android.widget.HorizontalScrollView;
+34: import android.widget.ImageView;
+35: import android.widget.LinearLayout;
+36: import android.widget.ProgressBar;
+37: import android.widget.ScrollView;
+38: import android.widget.Spinner;
+39: import android.widget.TextView;
+40: import android.widget.Toast;
+41: import java.io.File;
+42: import java.util.ArrayList;
+43: import java.util.List;
+44: import java.util.Locale;
+45: 
+46: /**
+47:  * أدوات الواجهة المشتركة لكل الشاشات: الألوان (فاتح/ليلي)، الخط، الشريط العلوي، شريط التبويبات السفلي،
+48:  * الشريط الثابت أسفل النماذج، العناصر، الأزرار المجزأة، العمل في الخلفية، والمشاركة.
+49:  */
+50: public abstract class Ui extends Activity {
+51: 
+52:     Db db;
+53:     LinearLayout body;
+54:     /** ألوان الهوية (قابلة للتخصيص) + ألوان دلالية ثابتة. dark = لون النص الأساسي (يبقى الاسم للتوافق). */
+55:     int primary, accent, header, bg, red, dark, green;
+56:     int surface, line, ink, muted, creditBg, debitBg, warnBg, warnInk, primarySoft, primaryInk, goldSoft, goldInk, headerInk;
+57:     boolean night;
+58:     /** 10.9: خلفية أزرار الاختيار المجزأة، وحدّ البطاقات (لا حدّ في الليل). */
+59:     int segTrack, cardStroke;
+60:     /** تحت اختبارات Robolectric: بلا حركات (اللقطات تُرسم فورًا). */
+61:     static final boolean NO_MOTION = "robolectric".equals(android.os.Build.FINGERPRINT);
+62:     /** 11.0: الشاشات نفسها تعمل على الماك والويندوز (طبقة أندرويد فوق Swing). */
+63:     static final boolean DESKTOP = android.os.Build.FINGERPRINT.startsWith("desktop");
+64:     /** 11.0: قسم «نافذة الكمبيوتر» في شاشة المظهر؛ يضيفه برنامج الكمبيوتر وحده (لا شيء على الهاتف). */
+65:     static java.util.function.Consumer<MainActivity> deskDesign;
+66:     public static void deskDesignHook(java.util.function.Consumer<MainActivity> c) { deskDesign = c; }
+67:     /** الشريط العلوي بلون الخلفية (الافتراضي) أو ملوّن إذا اختار المستخدم «لون الشريط العلوي». */
+68:     boolean flatHeader = true;
+69:     boolean onHome;
+70:     Runnable back;
+71:     boolean ownActivity;
+72:     /** 11.5: متى فُتحت شاشة من التطبيق نفسه (منتقي ملفات، مشاركة…). لا يُعفى من القفل إلا توقف يأتي بعدها مباشرة. */
+73:     long ownAt;
+74:     boolean ownPause;
+75: 
+76:     void markOwn() {
+77:         ownActivity = true;
+78:         ownAt = android.os.SystemClock.elapsedRealtime();
+79:     }
+80:     boolean busyRunning;
+81: 
+82:     FrameLayout frame;
+83:     LinearLayout column, bar, barActions, footerBox;
+84:     ScrollView scroll;
+85:     View tabs;
+86:     TextView screenTitle;
+87: 
+88:     interface Work { Object run(BackupManager.Progress p) throws Exception; }
+89: 
+90:     interface Done { void ok(Object result); }
+91: 
+92:     // ===================================================================================
+93:     // الألوان والسمة
+94:     // ===================================================================================
+95: 
+96:     static int parseColor(String s, int def) {
+97:         try {
+98:             if (s == null || s.trim().isEmpty()) return def;
+99:             return Color.parseColor(s.trim());
+100:         } catch (Exception e) {
+101:             return def;
+102:         }
+103:     }
+104: 
+105:     static int darker(int c, float f) {
+106:         return Color.rgb((int) (Color.red(c) * f), (int) (Color.green(c) * f), (int) (Color.blue(c) * f));
+107:     }
+108: 
+109:     static int mix(int a, int b, float t) {
+110:         return Color.rgb((int) (Color.red(a) + (Color.red(b) - Color.red(a)) * t + .5f),
+111:                 (int) (Color.green(a) + (Color.green(b) - Color.green(a)) * t + .5f),
+112:                 (int) (Color.blue(a) + (Color.blue(b) - Color.blue(a)) * t + .5f));
+113:     }
+114: 
+115:     static double lum(int c) {
+116:         return (0.299 * Color.red(c) + 0.587 * Color.green(c) + 0.114 * Color.blue(c)) / 255.0;
+117:     }
+118: 
+119:     static boolean isLight(int c) { return lum(c) > 0.62; }
+120: 
+121:     static int onColor(int c) { return isLight(c) ? Color.rgb(29, 42, 38) : Color.WHITE; }
+122: 
+123:     static boolean isGray(int c) {
+124:         int r = Color.red(c), g = Color.green(c), b = Color.blue(c);
+125:         return Math.abs(r - g) < 14 && Math.abs(g - b) < 14 && r >= 80 && r <= 175;
+126:     }
+127: 
+128:     static String argb(int c) { return String.format(Locale.US, "FF%02X%02X%02X", Color.red(c), Color.green(c), Color.blue(c)); }
+129: 
+130:     /** وضع السمة المحفوظ: light / dark / auto. */
+131:     static boolean wantsNight(Db db, Configuration cfg) {
+132:         String m = db == null ? "light" : db.setting("theme_mode", "light");
+133:         if ("dark".equals(m)) return true;
+134:         if ("auto".equals(m)) return (cfg.uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+135:         return false;
+136:     }
+137: 
+138:     static int fontStyle(Db db) {
+139:         String f = db == null ? "plex" : db.setting("app_font", "plex");
+140:         switch (f) {
+141:             case "cairo": return R.style.FontCairo;
+142:             case "kufi": return R.style.FontKufi;
+143:             case "system": return R.style.FontSystem;
+144:             default: return R.style.FontPlex;
+145:         }
+146:     }
+147: 
+148:     /** تُستدعى مرة عند إنشاء الشاشة، قبل أي عنصر: تختار السمة الفاتحة أو الليلية وتطبّق الخط المختار. */
+149:     /** 10.12: بصمة السمة المطبّقة (الوضع والخط) — إن اختلفت لمستخدم دخل للتو تُعاد الشاشة بسمته. */
+150:     String appliedTheme = "";
+151: 
+152:     String themeSig() {
+153:         return db == null ? "" : db.setting("theme_mode", "light") + "|" + db.setting("app_font", "plex");
+154:     }
+155: 
+156:     void applyTheme() {
+157:         appliedTheme = themeSig();
+158:         night = wantsNight(db, getResources().getConfiguration());
+159:         setTheme(night ? R.style.AppThemeDark : R.style.AppTheme);
+160:         getTheme().applyStyle(fontStyle(db), true);
+161:     }
+162: 
+163:     void applyColors() {
+164:         int defPrimary = Color.rgb(11, 107, 83);
+165:         int userPrimary = parseColor(db == null ? "" : db.setting("primary_color", "#0B6B53"), defPrimary);
+166:         accent = parseColor(db == null ? "" : db.setting("accent_color", "#C7922F"), Color.rgb(199, 146, 47));
+167:         String hc = db == null ? "" : db.setting("header_color", "").trim();
+168:         // 10.9: سمة عصرية (نهاري وليلي) — أسطح بلا حدود ثقيلة، وألوان أنقى، ونعناعي للأخضر في الليل
+169:         if (!night) {
+170:             primary = userPrimary;
+171:             bg = parseColor(db == null ? "" : db.setting("bg_color", "#F3F5F4"), Color.rgb(243, 245, 244));
+172:             surface = Color.WHITE;
+173:             line = Color.rgb(226, 232, 229);
+174:             ink = Color.rgb(15, 26, 22);
+175:             muted = Color.rgb(94, 109, 103);
+176:             red = Color.rgb(200, 52, 60);
+177:             green = Color.rgb(22, 128, 82);
+178:             creditBg = Color.rgb(228, 244, 236);
+179:             debitBg = Color.rgb(252, 232, 233);
+180:             warnBg = Color.rgb(255, 242, 214);
+181:             warnInk = Color.rgb(110, 67, 0);
+182:             primarySoft = mix(Color.WHITE, primary, 0.09f);
+183:             primaryInk = darker(primary, 0.76f);
+184:             goldSoft = mix(Color.WHITE, accent, 0.16f);
+185:             goldInk = darker(accent, 0.58f);
+186:         } else {
+187:             // الوضع الليلي: الخلفية والأسطح ثابتة، والأخضر الأساسي يبقى للأزرار مع نسخة فاتحة للنصوص
+188:             primary = userPrimary == defPrimary ? Color.rgb(61, 220, 151) : userPrimary;
+189:             // 11.3: خلفية الليل قابلة للاختيار؛ الافتراضي: المخضرّة الأصلية مع اللون الأخضر الافتراضي، ورمادية محايدة مع أي لون آخر
+190:             String nb = db == null ? "" : db.setting("night_bg", "").trim();

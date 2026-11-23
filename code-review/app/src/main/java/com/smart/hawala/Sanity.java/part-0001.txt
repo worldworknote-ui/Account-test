@@ -1,0 +1,86 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.List;
+5: import java.util.Locale;
+6: 
+7: /**
+8:  * تنبيهات معقولية قبل حفظ حركة جديدة (منطق بحت): لا تمنع شيئًا، تُعرض في نافذة التأكيد فقط.
+9:  * 1. مبلغ يفوق ثلاثة أضعاف متوسط حركات المكتب بالعملة نفسها (صفر زائد؟).
+10:  * 2. تكرار محتمل: الشخص نفسه والمبلغ نفسه على المكتب نفسه خلال 10 دقائق.
+11:  * 3. الرصيد بعد الحركة يتجاوز حد المكتب لهذه العملة.
+12:  */
+13: public final class Sanity {
+14:     private Sanity() {}
+15: 
+16:     /** أقل عدد حركات سابقة ليُعتدّ بالمتوسط. */
+17:     public static final int MIN_HISTORY = 5;
+18:     public static final long DUP_WINDOW_MS = 10 * 60000L;
+19: 
+20:     public static final class Input {
+21:         public long amount, when, balanceBefore;
+22:         public boolean debit;
+23:         public String currency = "", person = "";
+24:         public int dec = 2;
+25:         public Long receivableLimit, payableLimit;
+26:         /** آخر الحركات النشطة لهذا المكتب (أي عملة)، الأحدث أولًا. */
+27:         public List<Model.Tx> history = new ArrayList<>();
+28:     }
+29: 
+30:     /**
+31:      * 8.0 (ت4): هل تحتاج حركة الموظف اعتماد المحاسب؟ threshold بالسنت الأمريكي (0 = كل حركاته).
+32:      * عملة بلا سعر صرف معروف لا يمكن تقويمها، فتُرسل للاعتماد احتياطًا.
+33:      */
+34:     /** 10.1: الاعتماد يُطلب ممن لا يملك صلاحية «اعتماد الحركات». */
+35:     public static boolean needsApproval(boolean on, boolean canApprove, long amountMinor, int dec, java.math.BigDecimal usdPerUnit, long thresholdUsdCents) {
+36:         if (!on || canApprove) return false;
+37:         if (thresholdUsdCents <= 0) return true;
+38:         if (usdPerUnit == null || usdPerUnit.signum() <= 0) return true;
+39:         java.math.BigDecimal cents = java.math.BigDecimal.valueOf(amountMinor, dec).multiply(usdPerUnit).movePointRight(2);
+40:         return cents.compareTo(java.math.BigDecimal.valueOf(thresholdUsdCents)) >= 0;
+41:     }
+42: 
+43:     static String norm(String s) {
+44:         return s == null ? "" : s.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+45:     }
+46: 
+47:     public static List<String> check(Input in) {
+48:         List<String> out = new ArrayList<>();
+49:         // 1) غير معتاد
+50:         long sum = 0;
+51:         int n = 0;
+52:         for (Model.Tx t : in.history) {
+53:             if (!t.isActive() || !in.currency.equals(t.currency)) continue;
+54:             sum += t.amount;
+55:             if (++n >= 50) break;
+56:         }
+57:         if (n >= MIN_HISTORY) {
+58:             long avg = sum / n;
+59:             if (avg > 0 && in.amount > 3 * avg) {
+60:                 out.add("مبلغ غير معتاد: \u2066" + Model.fmt(in.amount, in.dec) + " " + in.currency + "\u2069 أكبر من ثلاثة أضعاف متوسط آخر " + n
+61:                         + " حركة لهذا المكتب (\u2066" + Model.fmt(avg, in.dec) + "\u2069). تأكد من الأصفار.");
+62:             }
+63:         }
+64:         // 2) تكرار محتمل
+65:         String p = norm(in.person);
+66:         for (Model.Tx t : in.history) {
+67:             if (!t.isActive() || t.amount != in.amount || !in.currency.equals(t.currency)) continue;
+68:             if (!p.equals(norm(t.person))) continue;
+69:             long gap = Math.abs(in.when - t.createdAt);
+70:             if (gap <= DUP_WINDOW_MS) {
+71:                 long min = Math.max(1, gap / 60000L);
+72:                 out.add("تكرار محتمل: حركة بالمبلغ نفسه" + (p.isEmpty() ? "" : " للشخص نفسه") + " على هذا المكتب قبل " + (gap < 60000L ? "أقل من دقيقة" : min + " دقيقة") + ".");
+73:                 break;
+74:             }
+75:         }
+76:         // 3) حد المكتب
+77:         long after = in.balanceBefore + (in.debit ? in.amount : -in.amount);
+78:         if (after > 0 && in.receivableLimit != null && after > in.receivableLimit && in.balanceBefore <= in.receivableLimit) {
+79:             out.add("بعد هذه الحركة يصير لنا على المكتب \u2066" + Model.fmt(after, in.dec) + " " + in.currency + "\u2069 وحدّه \u2066" + Model.fmt(in.receivableLimit, in.dec) + "\u2069.");
+80:         }
+81:         if (after < 0 && in.payableLimit != null && -after > in.payableLimit && -in.balanceBefore <= in.payableLimit) {
+82:             out.add("بعد هذه الحركة يصير علينا للمكتب \u2066" + Model.fmt(-after, in.dec) + " " + in.currency + "\u2069 وحدّه \u2066" + Model.fmt(in.payableLimit, in.dec) + "\u2069.");
+83:         }
+84:         return out;
+85:     }
+86: }

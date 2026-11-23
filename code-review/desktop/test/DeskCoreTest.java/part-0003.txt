@@ -1,0 +1,24 @@
+302:             healthy(d5, "الاستعادة الانتقائية من الملف الحقيقي");
+303:             d5.close();
+304:         }
+305:         // 11.5: استخراج رمز الترخيص من ملف المفتاح ورابط QR ورسائل واتساب مقسّمة، وضغط طلب التفعيل
+306:         System.out.println("== 11.5) رمز الترخيص وطلب التفعيل");
+307:         String tk = "dj0xO2tpZD1rMTtsaWQ9U0EtMjAyNi0wMDAxO2RrPUFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaMDEyMzQ1Njc4OWFiY2Q.MEUCIQDx9dAyiOI8tq8eBaEbS0g9n1bBkOVv7lj8C2dOq6Js4QIgUqFzVBwV1gO8jWQ4Tt3fYIxm2_R5_Pyk0L7rRxLd-Ys";
+308:         check(tk.equals(LicenseToken.extract("SMARTACC-LICENSE\n" + tk + "\n")), "من ملف المفتاح");
+309:         check(tk.equals(LicenseToken.extract("smartacc://activate?k=" + tk)), "من رابط QR");
+310:         String split = "[14/11, 18:14] البائع: رمز ترخيص «المحاسب الذكي» (SA-2026-0001):\n[14/11, 18:14] البائع: " + tk.substring(0, 90)
+311:                 + "\n[14/11, 18:15] البائع: " + tk.substring(90) + "\n[14/11, 18:15] البائع: في التطبيق: المزيد ← الترخيص";
+312:         check(tk.equals(LicenseToken.extract(split)), "من رسالتي واتساب منسوختين معًا (البادئات تُحذف والجزءان يُجمعان)");
+313:         check(tk.equals(LicenseToken.extract("  " + tk.substring(0, 50) + "\n " + tk.substring(50) + " ")), "الرمز بأسطر ومسافات");
+314:         String js = "{\"t\":\"sa-activate\",\"v\":1,\"order\":\"2026-0001\",\"chain\":[\"" + "QUJD".repeat(600) + "\"]}";
+315:         String z = LicenseToken.packRequest(js);
+316:         java.util.zip.Inflater inf = new java.util.zip.Inflater(true);
+317:         inf.setInput(java.util.Base64.getUrlDecoder().decode(z.substring(9)));
+318:         byte[] back = new byte[js.length() + 64];
+319:         int nb = inf.inflate(back);
+320:         check(z.startsWith("SA8-REQZ:") && js.equals(new String(back, 0, nb, java.nio.charset.StandardCharsets.UTF_8)), "طلب التفعيل المضغوط يُفك كما هو");
+321:         if (System.getProperty("sa.reqz.out") != null) java.nio.file.Files.write(java.nio.file.Paths.get(System.getProperty("sa.reqz.out")), z.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+322:         System.out.println(fails == 0 ? "ALL " + passes + " PASSED" : fails + " FAILED of " + (passes + fails));
+323:         if (fails > 0) System.exit(1);
+324:     }
+325: }

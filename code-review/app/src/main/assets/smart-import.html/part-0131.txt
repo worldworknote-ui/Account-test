@@ -1,0 +1,164 @@
+2360:       if (!v) return;
+2361:       var k = key(v);
+2362:       if (!m[k]) m[k] = { text: clean(v), n: 0, guess: g(v) };
+2363:       m[k].n++;
+2364:     }
+2365:     return { dirs: dirs, curs: curs };
+2366:   }
+2367: 
+2368:   // ===================================================================================
+2369:   // البناء: صفوف ← مكاتب وحركات (بالقاعدة نفسها التي تحسب بها معادلات الملف)
+2370:   // ===================================================================================
+2371: 
+2372:   function newModel() {
+2373:     return { offices: [], officeIndex: {}, openings: [], txs: [], errors: [], warnings: [], skipped: [], checks: [], used: {}, rowsRead: 0, both: 0,
+2374:       issues: {}, direct: {}, filledDates: 0, emptyRows: 0, perTable: {}, keyTables: {}, balanceLogs: [], balanceChecks: [], impliedOpenings: [],
+2375:       lastBalance: {}, midOpenings: [], totalsSkipped: 0 };
+2376:   }
+2377: 
+2378:   var REASONS = {
+2379:     noAccount: "بلا اسم حساب", noCurrency: "بلا عملة", badCurrency: "عملة غير مطابَقة", noAmount: "بلا مبلغ", badAmount: "مبلغ غير مفهوم",
+2380:     zero: "مبلغ صفر", noDir: "بلا اتجاه (لنا/علينا)", badDir: "اتجاه غير مطابَق", excludedCur: "عملة مستبعدة", excludedDir: "اتجاه مستبعد",
+2381:     future: "تاريخ في المستقبل", decimals: "منازل عشرية أكثر من المسموح للعملة", filledDate: "بلا تاريخ صالح — أُخذ تاريخ الصف السابق",
+2382:     badFee: "أجرة غير مفهومة"
+2383:   };
+2384:   function flip(d) { return d === "D" ? "C" : "D"; }
+2385: 
+2386:   /** «رصيد سابق» و«رصيد منقول» وما يشبهها: رصيد يسبق الحركات. */
+2387:   var OPEN_RE = new RegExp(C.OPENING_RE.source + "|^(رصيد|الرصيد)\\s*(ال)?(منقول|مرحل|مدور)", "i");
+2388: 
+2389:   function issue(model, code, t, r, row, counted) {
+2390:     var g = model.issues[code] = model.issues[code] || { code: code, label: REASONS[code], counted: !!counted, rows: [] };
+2391:     if (g.rows.length < 3000) g.rows.push({ sheet: t.label, row: r + 1, cells: preview(t, row) });
+2392:     g.total = (g.total || 0) + 1;
+2393:   }
+2394: 
+2395:   function preview(t, row) {
+2396:     var o = {};
+2397:     ["date", "currency", "amount", "debit", "credit", "fee", "direction", "account", "description", "ref", "balance"].forEach(function (k) {
+2398:       var c = t.roles[k];
+2399:       if (c !== undefined) o[k] = text((row || [])[c]);
+2400:     });
+2401:     (t.roles.wide || []).forEach(function (w) { var v = text((row || [])[w.c]); if (v) o.amount = (o.amount ? o.amount + " • " : "") + w.h + ": " + v; });
+2402:     return o;
+2403:   }
+2404: 
+2405:   /** أول نص في الصف داخل أعمدة الجدول فقط. */
+2406:   function rowLabelIn(t, row) {
+2407:     for (var c = t.c0; c <= t.c1; c++) {
+2408:       var x = (row || [])[c];
+2409:       if (x && x.s !== undefined && clean(x.s)) return clean(x.s);
+2410:     }
+2411:     return "";
+2412:   }
+2413: 
+2414:   /** اسم المكتب في التطبيق بعد إعادة التسمية (دون إنشاء المكتب). */
+2415:   function officeKeyFor(cfg, name) {
+2416:     var nm = clean(name);
+2417:     return key(cfg.rename && cfg.rename[key(nm)] ? clean(cfg.rename[key(nm)]) : nm);
+2418:   }
+2419: 
+2420:   function officeOf(model, cfg, name, note) {
+2421:     var nm = clean(name);
+2422:     var shown = cfg.rename && cfg.rename[key(nm)] ? clean(cfg.rename[key(nm)]) : nm;
+2423:     var k = key(shown);
+2424:     var i = model.officeIndex[k];
+2425:     if (i === undefined) {
+2426:       i = model.offices.length;
+2427:       model.officeIndex[k] = i;
+2428:       model.offices.push({ name: shown, key: k, phone: "", variants: {}, tx: 0, openings: 0, notes: note || "" });
+2429:     }
+2430:     model.offices[i].variants[nm] = true;
+2431:     return i;
+2432:   }
+2433: 
+2434:   function addDirect(model, t, oi, code, signed) {
+2435:     var dk = model.offices[oi].key + "|" + code;
+2436:     model.direct[dk] = (model.direct[dk] || 0n) + signed;
+2437:     (model.keyTables[dk] = model.keyTables[dk] || {})[t.id] = true;
+2438:     model.used[code] = true;
+2439:   }
+2440: 
+2441:   function curDef(cfg, code) {
+2442:     var d = cfg.currencies && cfg.currencies[code];
+2443:     if (d) return d;
+2444:     var k = C.KNOWN[code];
+2445:     return k ? { name: k.name, dec: k.dec } : { name: code, dec: 2 };
+2446:   }
+2447: 
+2448:   /**
+2449:    * قيمة خلية «الرصيد» بالوحدة الصغرى وإشارتها كما في الملف. الرصيد المحسوب بمعادلة قد يحمل كسرًا عائمًا ضئيلًا
+2450:    * (70987.00000000001) فيُقرّب إلى منازل العملة فقط إن كان الفرق أقل من جزء من ألف من الوحدة الصغرى.
+2451:    * «لنا 500» / «علينا 500» تُقرأ بإشارتها؛ نص لا يُفهم اتجاهه ← null.
+2452:    */
+2453:   function balanceMinor(cell, dec) {
+2454:     if (!cell) return null;
+2455:     if (cell.n !== undefined && typeof cell.n === "number") {
+2456:       if (!isFinite(cell.n)) return null;
+2457:       var f = Math.pow(10, dec), x = cell.n * f, r = Math.round(x);
+2458:       if (Math.abs(x - r) > 1e-3 || Math.abs(r) > 9e15) return null;
+2459:       return BigInt(r);
+2460:     }
+2461:     var p = C.parseAmount(cell);
+2462:     if (!p.ok || p.empty) return null;
+2463:     var m = C.toMinor(p, dec);
+2464:     if (m === null) return null;
+2465:     var neg = p.neg;
+2466:     if (p.hadText) {
+2467:       var g = guessDir(clean(normDigits(text(cell))).replace(/[\d.,()\-+]/g, " "));
+2468:       if (!g) return null;
+2469:       if (g === "C") neg = !neg;
+2470:     }
+2471:     return neg ? -m : m;
+2472:   }
+2473: 
+2474:   /**
+2475:    * cfg: { now, dirMap{key→D|C|X}, curMap{key→code|__skip}, currencies{code→{name,dec}}, rename{}, use{tableId→bool},
+2476:    *        positiveIs{tableId→D|C}, balanceSign{tableId→D|C}, fixedCurrency{tableId→code}, defaultCurrency, listedAccounts (bool),
+2477:    *        inferOpening (bool, افتراضيًا نعم), openingDate }
+2478:    */
+2479:   function build(a, cfg, serialToDate) {
+2480:     var model = newModel();
+2481:     var used = a.tables.filter(function (t) { return cfg.use && t.id in cfg.use ? cfg.use[t.id] : t.use; });
+2482:     function rolesOf(t) { return Object.assign({}, t.roles, (cfg.roles && cfg.roles[t.id]) || {}); }
+2483:     used.forEach(function (t) { if (t.kind !== "balances" && t.kind !== "summary") buildJournal(model, cfg, t, rolesOf(t), serialToDate); });
+2484:     resolveBalances(model, cfg);
+2485:     // الأرصدة السابقة من جداول الأرصدة: قبل أول حركة بدقيقة (أو بالتاريخ الذي يحدده المستخدم)
+2486:     var first = null;
+2487:     model.txs.forEach(function (x) { if (first === null || x.when < first) first = x.when; });
+2488:     model.openings.forEach(function (x) { if (first === null || x.when < first) first = x.when; });
+2489:     var when = cfg.openingDate || (first !== null ? first - 60000 : cfg.now - 60000);
+2490:     used.forEach(function (t) { if (t.kind === "balances" || t.kind === "summary") buildBalances(model, cfg, t, rolesOf(t), when); });
+2491:     finalizeLast(model);
+2492:     // مكاتب من قائمة الأسماء بلا حركات
+2493:     if (cfg.listedAccounts !== false) {
+2494:       a.lists.forEach(function (l) {
+2495:         if (cfg.use && l.id in cfg.use && !cfg.use[l.id]) return;
+2496:         (l.values || []).forEach(function (v) {
+2497:           var i = officeOf(model, cfg, v, "");
+2498:           if (!model.offices[i].tx && !model.offices[i].openings) model.offices[i].emptyOk = true;
+2499:         });
+2500:       });
+2501:     }
+2502:     summaryChecks(a, model, cfg);
+2503:     model.offices.forEach(function (o) {
+2504:       var v = Object.keys(o.variants);
+2505:       if (v.length > 1) model.warnings.push("دُمجت كتابات مختلفة لاسم «" + o.name + "»: " + v.map(function (x) { return "«" + x + "»"; }).join(" / "));
+2506:     });
+2507:     // أسماء متشابهة لم تُدمج
+2508:     var groups = {};
+2509:     model.offices.forEach(function (o) { var k = C.looseKey(o.name); (groups[k] = groups[k] || []).push(o.name); });
+2510:     Object.keys(groups).forEach(function (k) { if (groups[k].length > 1) model.warnings.push("أسماء متشابهة قد تكون الحساب نفسه: " + groups[k].join(" / ") + " — وحّدها من «أسماء المكاتب» إن كانت حسابًا واحدًا."); });
+2511:     if (model.both) model.warnings.push(model.both + " صف فيه مبلغ «لنا» ومبلغ «علينا» معًا: سُجّل كل منهما حركة.");
+2512:     if (model.midOpenings.length) {
+2513:       model.warnings.push(model.midOpenings.length + " صف «رصيد سابق/منقول» جاء بعد حركات الحساب نفسه، ونُقل كما هو (كما تجمعه معادلات ملفك). تأكد أنه ليس تكرارًا لمجموع ما قبله: " +
+2514:         model.midOpenings.slice(0, 8).map(function (m) { return m.sheet + " صف " + m.row + " (" + m.office + ")"; }).join("، ") + (model.midOpenings.length > 8 ? "…" : ""));
+2515:     }
+2516:     return model;
+2517:   }
+2518: 
+2519:   function buildJournal(model, cfg, t, roles, serialToDate) {
+2520:     var stat = model.perTable[t.id] = { rows: 0, imported: 0, excluded: 0, empty: 0, filled: 0, totals: 0, balanceOnly: 0 };
+2521:     var order = C.guessDateOrder(sample(t, roles.date));
+2522:     var prevDate = null, firstDate = null;
+2523:     // أول تاريخ صالح (لصفوف بلا تاريخ في بداية الجدول)

@@ -1,0 +1,185 @@
+3031:       var am = [t.roles.amount, t.roles.debit, t.roles.credit].filter(function (x) { return x !== undefined; });
+3032:       for (var r = t.first; r <= t.last; r++) {
+3033:         var row = t.rows[r] || [];
+3034:         var curT = text(row[t.roles.currency]);
+3035:         if (!curT) continue;
+3036:         var code = (cfg.curMap && cfg.curMap[key(curT)]) || guessCur(curT);
+3037:         if (!code || code === "__skip") continue;
+3038:         am.forEach(function (c) {
+3039:           var p = C.parseAmount(row[c]);
+3040:           if (p.ok) dec[code] = Math.max(dec[code] || 0, p.frac.length);
+3041:         });
+3042:       }
+3043:     });
+3044:     return dec;
+3045:   }
+3046: 
+3047:   // ===================================================================================
+3048:   // التحقق من معادلات الملف نفسه: SUMIFS / SUMIF على جداوله، تُحسب من الصفوف وتقارَن بالقيم المحفوظة
+3049:   // ===================================================================================
+3050: 
+3051:   function splitArgs(s) {
+3052:     var out = [], depth = 0, q = false, cur = "";
+3053:     for (var i = 0; i < s.length; i++) {
+3054:       var ch = s.charAt(i);
+3055:       if (ch === '"') { q = !q; cur += ch; continue; }
+3056:       if (!q && ch === "(") depth++;
+3057:       if (!q && ch === ")") depth--;
+3058:       if (!q && depth === 0 && (ch === "," || ch === ";")) { out.push(cur.trim()); cur = ""; continue; }
+3059:       cur += ch;
+3060:     }
+3061:     out.push(cur.trim());
+3062:     return out;
+3063:   }
+3064: 
+3065:   /** «SUMIFS(…)-SUMIFS(…)» ليست استدعاءً واحدًا: يجب ألا يُغلق القوس الأول قبل النهاية. */
+3066:   function wholeCall(inner) {
+3067:     var depth = 0, q = false;
+3068:     for (var i = 0; i < inner.length; i++) {
+3069:       var ch = inner.charAt(i);
+3070:       if (ch === '"') q = !q;
+3071:       else if (!q && ch === "(") depth++;
+3072:       else if (!q && ch === ")") { depth--; if (depth < 0) return false; }
+3073:     }
+3074:     return depth === 0 && !q;
+3075:   }
+3076: 
+3077:   function resolveColumn(a, sheet, ref) {
+3078:     // مرجع منظّم: Table4[Ammount] أو Table4[[#Data],[Ammount]]
+3079:     var m = ref.match(/^([A-Za-z_؀-ۿ][\w.؀-ۿ]*)\[(?:\[#[^\]]+\],)?\[?([^\]]+)\]?\]$/);
+3080:     if (m) {
+3081:       var t = a.tables.filter(function (x) { return x.excel && x.excel.toLowerCase() === m[1].toLowerCase(); })[0];
+3082:       if (!t) return null;
+3083:       var name = m[2].replace(/^\[|\]$/g, "").replace(/'(.)/g, "$1");
+3084:       var i = t.names.map(function (n) { return n.toLowerCase(); }).indexOf(name.toLowerCase());
+3085:       return i < 0 ? null : { t: t, c: t.c0 + i };
+3086:     }
+3087:     // نطاق عادي: DATA!$C$4:$C$30652 أو C:C
+3088:     var mm = ref.replace(/\$/g, "").match(/^(?:'?([^'!]+)'?!)?([A-Z]+)(\d*):([A-Z]+)(\d*)$/i);
+3089:     if (!mm || mm[2].toUpperCase() !== mm[4].toUpperCase()) return null;
+3090:     var sh = mm[1] || sheet;
+3091:     var c = colIndex(mm[2].toUpperCase());
+3092:     var tt = a.tables.filter(function (x) { return x.sheet === sh && c >= x.c0 && c <= x.c1; })[0];
+3093:     return tt ? { t: tt, c: c } : null;
+3094:   }
+3095: 
+3096:   function criterion(raw, ws) {
+3097:     var s = raw.trim();
+3098:     var lit;
+3099:     if (/^".*"$/.test(s)) lit = s.slice(1, -1).replace(/""/g, '"');
+3100:     else if (/^-?\d+(\.\d+)?$/.test(s)) lit = s;
+3101:     else if (/^\$?[A-Z]+\$?\d+$/i.test(s) && ws) { var cell = ws[s.replace(/\$/g, "").toUpperCase()]; lit = cell ? String(cell.v) : ""; }
+3102:     else return null;
+3103:     var op = "=";
+3104:     var mo = lit.match(/^(<>|>=|<=|=|>|<)(.*)$/);
+3105:     if (mo) { op = mo[1]; lit = mo[2]; }
+3106:     if (op !== "=" && op !== "<>") return null;
+3107:     var rx = /[*?]/.test(lit) ? new RegExp("^" + lit.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$", "i") : null;
+3108:     var low = lit.toLowerCase();
+3109:     return function (v) {
+3110:       var x = v === null || v === undefined ? "" : String(v).toLowerCase();
+3111:       var eq = rx ? rx.test(x) : x === low;
+3112:       return op === "=" ? eq : !eq;
+3113:     };
+3114:   }
+3115: 
+3116:   function cellRaw(cell) {
+3117:     if (!cell) return "";
+3118:     if (cell.s !== undefined) return cell.s;
+3119:     if (cell.n !== undefined) return cell.n;
+3120:     return text(cell);
+3121:   }
+3122: 
+3123:   function formulaChecks(books, a) {
+3124:     var out = [];
+3125:     books.forEach(function (bk) {
+3126:       if (!bk.wb) return;
+3127:       bk.wb.SheetNames.forEach(function (sn) {
+3128:         var ws = bk.wb.Sheets[sn];
+3129:         if (!ws || !ws["!ref"]) return;
+3130:         Object.keys(ws).forEach(function (addr) {
+3131:           if (addr.charAt(0) === "!") return;
+3132:           var cell = ws[addr];
+3133:           if (!cell || !cell.f || typeof cell.v !== "number") return;
+3134:           var m = cell.f.match(/^\s*(SUMIFS|SUMIF)\((.*)\)\s*$/i);
+3135:           if (!m || !wholeCall(m[2])) return;
+3136:           var args = splitArgs(m[2]);
+3137:           var sum, conds = [];
+3138:           if (m[1].toUpperCase() === "SUMIFS") {
+3139:             if (args.length < 3 || args.length % 2 !== 1) return;
+3140:             sum = resolveColumn(a, sn, args[0]);
+3141:             for (var i = 1; i < args.length; i += 2) conds.push({ col: resolveColumn(a, sn, args[i]), f: criterion(args[i + 1], ws) });
+3142:           } else {
+3143:             if (args.length < 2) return;
+3144:             var rng = resolveColumn(a, sn, args[0]);
+3145:             sum = args[2] ? resolveColumn(a, sn, args[2]) : rng;
+3146:             conds.push({ col: rng, f: criterion(args[1], ws) });
+3147:           }
+3148:           if (!sum || conds.some(function (x) { return !x.col || !x.f || x.col.t !== sum.t; })) return;
+3149:           var t = sum.t, total = 0;
+3150:           for (var r = t.first; r <= t.last; r++) {
+3151:             var row = t.rows[r] || [];
+3152:             if (!conds.every(function (x) { return x.f(cellRaw(row[x.col.c])); })) continue;
+3153:             var p = C.parseAmount(row[sum.c]);
+3154:             if (p.ok && !p.empty) total += (p.neg ? -1 : 1) * Number(p.int + (p.frac ? "." + p.frac : ""));
+3155:           }
+3156:           out.push({ sheet: sn, cell: addr, formula: "=" + cell.f, cached: cell.v, computed: Math.round(total * 1e6) / 1e6, ok: Math.abs(total - cell.v) < 1e-6, table: t.label });
+3157:         });
+3158:       });
+3159:     });
+3160:     return out;
+3161:   }
+3162: 
+3163:   /**
+3164:    * تحقق إضافي: نسخة مفلترة لحساب واحد (مثل ورقة Detailed) ← رصيدها لكل عملة من صفوفها
+3165:    * يجب أن يساوي رصيد الحساب نفسه في النقل.
+3166:    */
+3167:   function derivedChecks(a, model, cfg, serialToDate) {
+3168:     var out = [];
+3169:     a.tables.forEach(function (t) {
+3170:       if (t.kind !== "derived" || t.roles.account === undefined || t.roles.currency === undefined) return;
+3171:       var accs = {};
+3172:       for (var r = t.first; r <= t.last; r++) { var v = text((t.rows[r] || [])[t.roles.account]); if (v) accs[key(v)] = clean(v); }
+3173:       var ks = Object.keys(accs);
+3174:       if (ks.length !== 1) return;
+3175:       var sub = newModel();
+3176:       var tt = Object.assign({}, t, { kind: "journal" });
+3177:       buildJournal(sub, Object.assign({}, cfg, { now: Number.MAX_SAFE_INTEGER }), tt, Object.assign({}, t.roles), serialToDate || null);
+3178:       var oi = model.officeIndex[key(cfg.rename && cfg.rename[ks[0]] ? cfg.rename[ks[0]] : accs[ks[0]])];
+3179:       if (oi === undefined) return;
+3180:       var o = model.offices[oi];
+3181:       Object.keys(sub.direct).forEach(function (k) {
+3182:         var code = k.split("|").pop();
+3183:         var mine = model.direct[o.key + "|" + code] || 0n;
+3184:         out.push({ sheet: t.label, account: o.name, code: code, file: sub.direct[k], ours: mine, ok: sub.direct[k] === mine, dec: curDef(cfg, code).dec });
+3185:       });
+3186:     });
+3187:     return out;
+3188:   }
+3189: 
+3190:   /** صفوف الورقة بأرقامها الحقيقية: الصف 0 = الصف 1 في Excel حتى لو بدأت الورقة من صف لاحق. */
+3191:   function sheetRows(ws, XLSX) {
+3192:     if (!ws || !ws["!ref"]) return [];
+3193:     var rg = XLSX.utils.decode_range(ws["!ref"]);
+3194:     var rows = C.sheetRows(ws, XLSX);
+3195:     var pad = [];
+3196:     for (var i = 0; i < rg.s.r; i++) pad.push(null);
+3197:     return pad.concat(rows);
+3198:   }
+3199: 
+3200:   return {
+3201:     sheetRows: sheetRows, excelTables: excelTables, decodeRef: decodeRef, guessDir: guessDir, guessCur: guessCur, guessTables: guessTables, inferRoles: inferRoles,
+3202:     analyze: analyze, build: build, suggestDecimals: suggestDecimals, formulaChecks: formulaChecks, derivedChecks: derivedChecks,
+3203:     detectSummaries: detectSummaries, detectFeeDirs: detectFeeDirs, reclassify: reclassify, collectValues: collectValues, balanceMinor: balanceMinor, OPEN_RE: OPEN_RE,
+3204:     REASONS: REASONS, colName: colName, key: key, topValues: topValues, curDef: curDef
+3205:   };
+3206: })(typeof Core !== "undefined" ? Core : require("../migration-tool/core.js"));
+3207: if (typeof module !== "undefined") module.exports = Smart;
+3208: </script>
+3209: <script>/* الاستيراد الذكي — الواجهة. الفهم والبناء في engine.js، والقيود وملف النسخة في core.js (من أداة النقل، دون تعديل). */
+3210: "use strict";
+3211: (function () {
+3212:   var $ = function (id) { return document.getElementById(id); };
+3213:   var C = Core, X = Smart;
+3214:   var S = { names: [], books: [], a: null, cfg: null, fchecks: [], result: null, need: {}, accFrom: {}, busy: false, q: "" };
+3215: 

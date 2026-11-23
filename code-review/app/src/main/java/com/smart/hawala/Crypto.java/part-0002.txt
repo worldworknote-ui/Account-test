@@ -1,0 +1,77 @@
+186:     /** للعرض: عند الفشل يرجع نصًا بديلًا بدل أن تنهار الشاشة. */
+187:     public static String dec(String s) {
+188:         if (s == null) return null;
+189:         try {
+190:             return decStrict(s);
+191:         } catch (Exception e) {
+192:             return PLACEHOLDER;
+193:         }
+194:     }
+195: 
+196:     public static byte[] encBytes(byte[] raw) {
+197:         try {
+198:             Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+199:             c.init(Cipher.ENCRYPT_MODE, key());
+200:             byte[] b = c.doFinal(raw);
+201:             byte[] iv = c.getIV();
+202:             byte[] o = new byte[1 + iv.length + b.length];
+203:             o[0] = (byte) iv.length;
+204:             System.arraycopy(iv, 0, o, 1, iv.length);
+205:             System.arraycopy(b, 0, o, 1 + iv.length, b.length);
+206:             return o;
+207:         } catch (Exception e) {
+208:             throw new IllegalStateException("تعذر تشفير الصورة على هذا الهاتف", e);
+209:         }
+210:     }
+211: 
+212:     public static byte[] decBytes(byte[] in) {
+213:         try {
+214:             int n = in[0] & 255;
+215:             byte[] iv = new byte[n];
+216:             System.arraycopy(in, 1, iv, 0, n);
+217:             Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+218:             c.init(Cipher.DECRYPT_MODE, key(), new GCMParameterSpec(128, iv));
+219:             return c.doFinal(in, 1 + n, in.length - 1 - n);
+220:         } catch (Exception e) {
+221:             throw new IllegalStateException("تعذر فك تشفير الصورة", e);
+222:         }
+223:     }
+224: 
+225:     /**
+226:      * فحص ذاتي عند كل تشغيل: نص معروف مشفّر عند أول تشغيل يُفك الآن. يكشف ضياع المفتاح فورًا
+227:      * بدل اكتشافه من نصوص بديلة في الشاشات أو في نسخة احتياطية تالفة.
+228:      */
+229:     public static boolean healthy(Context ctx) {
+230:         SharedPreferences sp = ctx.getSharedPreferences(DEK_PREFS, Context.MODE_PRIVATE);
+231:         try {
+232:             String canary = sp.getString("canary", null);
+233:             if (canary == null) {
+234:                 String c = enc("ok");
+235:                 if (!"ok".equals(decStrict(c))) return false;
+236:                 sp.edit().putString("canary", c).commit();
+237:                 return true;
+238:             }
+239:             return "ok".equals(decStrict(canary));
+240:         } catch (Throwable e) {
+241:             return false;
+242:         }
+243:     }
+244: 
+245:     /**
+246:      * بعد ضياع المفتاح فقط، وبطلب صريح من المستخدم قبل استعادة نسخة احتياطية: يسمح بمفاتيح جديدة.
+247:      * الحقول المشفرة القديمة غير مقروءة أصلًا؛ الاستعادة تكتب كل شيء من جديد بالمفتاح الجديد.
+248:      */
+249:     public static synchronized void resetForRestore(Context ctx) {
+250:         ctx.getSharedPreferences(DEK_PREFS, Context.MODE_PRIVATE).edit().clear().commit();
+251:         keyMustExist = false;
+252:         dek = null;
+253:         cachedKey = null;
+254:         clearCache();
+255:         init(ctx);
+256:         keyMustExist = true;
+257:     }
+258: 
+259:     public static void clearCache() {
+260:         synchronized (CACHE) { CACHE.clear(); }
+261:     }
+262: }

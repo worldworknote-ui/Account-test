@@ -1,0 +1,151 @@
+468:             sum.row(Report.TOTAL, c, a.count, new Report.Money(a.us, dc), new Report.Money(a.them, dc), new Report.Bal(a.net(), dc),
+469:                     new Report.Money(a.feeUs, dc), new Report.Money(a.feeThem, dc), new Report.Bal(a.impact(), dc));
+470:         }
+471:         sum.note = "«الصافي» = الحوالات لنا − علينا. حركات الأجور المستقلة تُحسب في الأجور لا في الحوالات، فلا يتكرر مبلغ. "
+472:                 + "«الأثر على الرصيد» = الصافي + صافي الأجور، وهو ما تغيّر في أرصدة المكاتب بهذه الحركات.";
+473: 
+474:         if (s.group != G_NONE) groupedSection(r, s, d, res);
+475:         if (s.group2 != G_NONE && s.group != G_NONE) pivotSections(r, s, d, res);
+476:         if (s.group == G_NONE || s.details) detailSection(r, s, d, res);
+477:         return r;
+478:     }
+479: 
+480:     static void groupedSection(Report r, Spec s, Data d, Result res) {
+481:         Report.Section g = r.section("حسب " + GROUP_NAMES[s.group], GROUP_NAMES[s.group]);
+482:         boolean multi = res.totals.size() > 1;
+483:         g.col(GROUP_NAMES[s.group], 1.6f, Report.TEXT);
+484:         if (multi) g.col("العملة", 0.6f, Report.TEXT);
+485:         g.col("العمليات", 0.7f, Report.INT).col("لنا", 1f, Report.MONEY).col("علينا", 1f, Report.MONEY).col("الصافي", 1f, Report.BAL)
+486:                 .col("صافي الأجور", 0.9f, Report.BAL).col("المتوسط", 0.9f, Report.MONEY).col("أكبر حوالة", 0.9f, Report.MONEY);
+487:         if (s.compare) g.col("عمليات سابقًا", 0.7f, Report.INT).col("تغيّر العمليات", 0.7f, Report.TEXT).col("تغيّر الحجم", 0.7f, Report.TEXT);
+488:         for (Map.Entry<String, Map<String, Agg>> e : res.groups.entrySet()) {
+489:             String label = res.labels.get(e.getKey());
+490:             Map<String, Agg> prev = res.previous.get(e.getKey());
+491:             Set<String> curs = new TreeSet<>(e.getValue().keySet());
+492:             if (prev != null) curs.addAll(prev.keySet());
+493:             boolean first = true;
+494:             for (String c : curs) {
+495:                 Agg a = e.getValue().getOrDefault(c, new Agg());
+496:                 Agg p = prev == null ? null : prev.get(c);
+497:                 int dc = dec(d, c);
+498:                 long transfers = a.count;
+499:                 long avg = a.us + a.them == 0 || transfers == 0 ? 0 : (a.us + a.them) / Math.max(1, transfers);
+500:                 List<Object> cells = new ArrayList<>();
+501:                 cells.add(label);
+502:                 if (multi) cells.add(c);
+503:                 cells.add(a.count);
+504:                 cells.add(new Report.Money(a.us, dc));
+505:                 cells.add(new Report.Money(a.them, dc));
+506:                 cells.add(new Report.Bal(a.net(), dc));
+507:                 cells.add(new Report.Bal(a.feesNet(), dc));
+508:                 cells.add(new Report.Money(avg, dc));
+509:                 cells.add(new Report.Money(a.max, dc));
+510:                 if (s.compare) {
+511:                     cells.add(p == null ? 0L : p.count);
+512:                     cells.add(change(a.count, p == null ? 0 : p.count));
+513:                     cells.add(change(a.volume(), p == null ? 0 : p.volume()));
+514:                 }
+515:                 g.row(Report.NORMAL, cells.toArray());
+516:                 first = false;
+517:             }
+518:         }
+519:         if (s.top > 0) g.note = "أعلى " + s.top + " فقط حسب الترتيب المختار.";
+520:     }
+521: 
+522:     static void pivotSections(Report r, Spec s, Data d, Result res) {
+523:         List<String> cols = new ArrayList<>(res.pivotLabels.keySet());
+524:         int maxCols = 24;
+525:         boolean more = cols.size() > maxCols;
+526:         if (more) {
+527:             // أكبر الأعمدة حسب العدد
+528:             final Map<String, Long> weight = new HashMap<>();
+529:             for (Map<String, Map<String, Agg>> row : res.pivot.values())
+530:                 for (Map.Entry<String, Map<String, Agg>> c : row.entrySet()) weight.merge(c.getKey(), sum(c.getValue(), M_COUNT), Long::sum);
+531:             cols.sort((a, b) -> Long.compare(weight.getOrDefault(b, 0L), weight.getOrDefault(a, 0L)));
+532:             cols = new ArrayList<>(cols.subList(0, maxCols));
+533:             Collections.sort(cols);
+534:         }
+535:         boolean count = s.measure == M_COUNT;
+536:         Set<String> curs = count ? Collections.singleton("") : res.totals.keySet();
+537:         for (String c : curs) {
+538:             String head = MEASURE_NAMES[s.measure] + (count ? "" : " بـ" + c) + " — " + GROUP_NAMES[s.group] + " × " + GROUP_NAMES[s.group2];
+539:             Report.Section p = r.section(head, "جدول " + (count ? "العدد" : c));
+540:             p.col(GROUP_NAMES[s.group], 1.4f, Report.TEXT);
+541:             int type = count ? Report.INT : (s.measure == M_US || s.measure == M_THEM || s.measure == M_VOLUME ? Report.MONEY : Report.BAL);
+542:             for (String k : cols) p.col(res.pivotLabels.get(k), 0.9f, type);
+543:             if (more) p.col("أخرى", 0.9f, type);
+544:             p.col("المجموع", 1f, type);
+545:             int dc = count ? 0 : dec(d, c);
+546:             long[] colTotals = new long[cols.size() + 2];
+547:             for (String g : res.groups.keySet()) {
+548:                 Map<String, Map<String, Agg>> row = res.pivot.getOrDefault(g, new HashMap<>());
+549:                 Object[] cells = new Object[cols.size() + 2 + (more ? 1 : 0)];
+550:                 cells[0] = res.labels.get(g);
+551:                 long total = 0, other = 0;
+552:                 for (Map.Entry<String, Map<String, Agg>> e : row.entrySet()) {
+553:                     long v = count ? sum(e.getValue(), M_COUNT) : e.getValue().getOrDefault(c, new Agg()).measure(s.measure);
+554:                     total += v;
+555:                     int i = cols.indexOf(e.getKey());
+556:                     if (i < 0) other += v;
+557:                 }
+558:                 for (int i = 0; i < cols.size(); i++) {
+559:                     Map<String, Agg> m = row.get(cols.get(i));
+560:                     long v = m == null ? 0 : count ? sum(m, M_COUNT) : m.getOrDefault(c, new Agg()).measure(s.measure);
+561:                     cells[1 + i] = cell(type, v, dc);
+562:                     colTotals[i] += v;
+563:                 }
+564:                 int at = 1 + cols.size();
+565:                 if (more) {
+566:                     cells[at++] = cell(type, other, dc);
+567:                     colTotals[cols.size()] += other;
+568:                 }
+569:                 cells[at] = cell(type, total, dc);
+570:                 colTotals[cols.size() + 1] += total;
+571:                 p.row(Report.NORMAL, cells);
+572:             }
+573:             Object[] tot = new Object[cols.size() + 2 + (more ? 1 : 0)];
+574:             tot[0] = "المجموع";
+575:             for (int i = 0; i < cols.size(); i++) tot[1 + i] = cell(type, colTotals[i], dc);
+576:             int at = 1 + cols.size();
+577:             if (more) tot[at++] = cell(type, colTotals[cols.size()], dc);
+578:             tot[at] = cell(type, colTotals[cols.size() + 1], dc);
+579:             p.row(Report.TOTAL, tot);
+580:             if (more) p.note = "أكبر " + maxCols + " عمودًا بعدد العمليات، والباقي في «أخرى».";
+581:         }
+582:     }
+583: 
+584:     static Object cell(int type, long v, int dec) {
+585:         if (type == Report.INT) return v;
+586:         if (type == Report.MONEY) return new Report.Money(v, dec);
+587:         return new Report.Bal(v, dec);
+588:     }
+589: 
+590:     static void detailSection(Report r, Spec s, Data d, Result res) {
+591:         Report.Section t = r.section(s.group == G_NONE ? "الحركات" : "تفاصيل الحركات", "الحركات");
+592:         boolean oneOffice = s.offices.size() == 1;
+593:         boolean running = s.runningBalance && oneOffice && s.status == S_ACTIVE && s.kind == K_ALL && s.direction == DIR_ALL
+594:                 && s.text.trim().isEmpty() && s.service.trim().isEmpty() && s.dest.trim().isEmpty() && s.user.trim().isEmpty()
+595:                 && s.minAmount == null && s.maxAmount == null;
+596:         t.col("التاريخ", 0.9f, Report.DATE);
+597:         if (!oneOffice) t.col("المكتب", 1.3f, Report.TEXT);
+598:         t.col("لنا", 1f, Report.MONEY).col("علينا", 1f, Report.MONEY).col("العملة", 0.5f, Report.TEXT).col("الأجرة", 1f, Report.TEXT)
+599:                 .col("المستفيد", 1.2f, Report.TEXT).col("البيان", 1.6f, Report.TEXT).col("الخدمة/الوجهة", 1f, Report.TEXT);
+600:         if (s.status != S_ACTIVE) t.col("الحالة", 0.7f, Report.TEXT);
+601:         if (running) t.col("الرصيد", 1.1f, Report.BAL);
+602:         Map<String, Long> bal = running ? balanceBefore(d, res.from) : new HashMap<>();
+603:         if (running) {
+604:             long o = s.offices.iterator().next();
+605:             for (Map.Entry<String, Long> e : bal.entrySet()) {
+606:                 String[] k = e.getKey().split("\\|", 2);
+607:                 if (Long.parseLong(k[0]) != o || e.getValue() == 0 || (!s.currencies.isEmpty() && !s.currencies.contains(k[1]))) continue;
+608:                 List<Object> cells = new ArrayList<>();
+609:                 cells.add(new Report.DateV(res.from));
+610:                 cells.add("");
+611:                 cells.add("");
+612:                 cells.add(k[1]);
+613:                 cells.add("");
+614:                 cells.add("");
+615:                 cells.add("الرصيد قبل الفترة");
+616:                 cells.add("");
+617:                 cells.add(new Report.Bal(e.getValue(), dec(d, k[1])));
+618:                 t.row(Report.SHADED, cells.toArray());

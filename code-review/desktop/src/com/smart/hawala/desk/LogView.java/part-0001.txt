@@ -1,0 +1,197 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.awt.datatransfer.StringSelection;
+6: import java.awt.event.MouseAdapter;
+7: import java.awt.event.MouseEvent;
+8: import java.awt.image.BufferedImage;
+9: import java.util.*;
+10: import java.util.List;
+11: import javax.imageio.ImageIO;
+12: import javax.swing.*;
+13: import javax.swing.table.DefaultTableModel;
+14: 
+15: /** سجل الحركات: تصفية بالفترة والمكتب والعملة والاتجاه والحالة والبحث، وتفاصيل كل حركة (تعديل، إلغاء، صور، اعتماد). */
+16: final class LogView extends View {
+17:     final JComboBox<String> period = Ui.combo(Ui.PERIODS);
+18:     final Ui.DateField from = new Ui.DateField(0), to = new Ui.DateField(0);
+19:     final JComboBox<Object> office = Ui.pickCombo();
+20:     final JComboBox<String> currency = Ui.combo(new String[0]);
+21:     final JComboBox<String> dir = Ui.combo(new String[]{"لنا وعلينا", "لنا فقط", "علينا فقط"});
+22:     final JComboBox<String> status = Ui.combo(new String[]{"النشطة", "مع الملغاة", "بانتظار الاعتماد"});
+23:     final Ui.Field search = Ui.field("بحث: مستفيد، بيان، مكتب، مبلغ، رقم الحركة، محاسب…");
+24:     /** 10.18: تصفية أوسع: نوع الحركة، من سجّلها، ومدى المبلغ. */
+25:     final JComboBox<String> kind = Ui.combo(new String[]{"كل الأنواع", "عادية", "قص عملات", "بين مكتبين", "مع أجرة", "بمرفقات", "معدّلة (مصحّحة)"});
+26:     final JComboBox<String> who = Ui.combo(new String[]{"كل المحاسبين"});
+27:     final Ui.Field minAmt = Ui.numeric("المبلغ من"), maxAmt = Ui.numeric("إلى");
+28:     final JLabel count = Ui.label("", 13, Ui.muted, false);
+29:     JTable table;
+30:     List<Model.Tx> rows = new ArrayList<>();
+31:     JPanel custom;
+32:     boolean loading;
+33: 
+34:     LogView(App app) {
+35:         super(app, "سجل الحركات");
+36:     }
+37: 
+38:     @Override void build() {
+39:         office.setFont(Ui.font(14, false));
+40:         office.setComponentOrientation(Ui.RTL);
+41:         office.setMaximumSize(new Dimension(240, 38));
+42:         office.setRenderer(new DefaultListCellRenderer() {
+43:             @Override public Component getListCellRendererComponent(JList<?> l, Object v, int i, boolean s, boolean f) {
+44:                 JLabel c = (JLabel) super.getListCellRendererComponent(l, v instanceof Model.Office ? ((Model.Office) v).name : "كل المكاتب", i, s, f);
+45:                 c.setHorizontalAlignment(SwingConstants.RIGHT);
+46:                 return c;
+47:             }
+48:         });
+49:         period.setSelectedIndex(3);
+50:         for (JComboBox<?> c : new JComboBox<?>[]{period, currency, dir, status}) c.setMaximumSize(new Dimension(170, 38));
+51:         custom = Ui.row(Ui.label("من", 13, Ui.muted, true), from, Ui.label("إلى", 13, Ui.muted, true), to);
+52:         custom.setMaximumSize(new Dimension(520, 40));
+53:         JPanel f1 = Ui.row(period, custom, office, currency, dir, status);
+54:         for (JComboBox<?> c : new JComboBox<?>[]{kind, who}) c.setMaximumSize(new Dimension(170, 38));
+55:         minAmt.setMaximumSize(new Dimension(120, 38));
+56:         maxAmt.setMaximumSize(new Dimension(120, 38));
+57:         JPanel f2 = Ui.row(search, kind, who, minAmt, maxAmt, Ui.ghost("مسح الفلاتر", e -> clearFilters()));
+58:         JPanel f3 = Ui.row(count);
+59:         JPanel top = Ui.column();
+60:         top.add(f1);
+61:         top.add(Ui.gap(8));
+62:         top.add(f2);
+63:         top.add(Ui.gap(6));
+64:         top.add(f3);
+65:         top.setBorder(new javax.swing.border.EmptyBorder(4, 24, 10, 24));
+66:         table = Ui.table(new DefaultTableModel());
+67:         JPanel holder = new JPanel(new BorderLayout());
+68:         holder.setBackground(Ui.bg);
+69:         holder.setBorder(new javax.swing.border.EmptyBorder(0, 24, 20, 24));
+70:         holder.add(Ui.tableBox(table));
+71:         JPanel center = new JPanel(new BorderLayout());
+72:         center.setBackground(Ui.bg);
+73:         center.add(top, BorderLayout.NORTH);
+74:         center.add(holder, BorderLayout.CENTER);
+75:         add(center, BorderLayout.CENTER);
+76:         Runnable re = () -> {
+77:             if (!loading) load();
+78:         };
+79:         period.addActionListener(e -> {
+80:             custom.setVisible(period.getSelectedIndex() == Ui.PERIODS.length - 1);
+81:             re.run();
+82:         });
+83:         from.onChange = re;
+84:         to.onChange = re;
+85:         office.addActionListener(e -> re.run());
+86:         currency.addActionListener(e -> re.run());
+87:         dir.addActionListener(e -> re.run());
+88:         status.addActionListener(e -> re.run());
+89:         kind.addActionListener(e -> re.run());
+90:         who.addActionListener(e -> re.run());
+91:         minAmt.getDocument().addDocumentListener(TxView.doc(re));
+92:         maxAmt.getDocument().addDocumentListener(TxView.doc(re));
+93:         search.getDocument().addDocumentListener(TxView.doc(re));
+94:         table.addMouseListener(new MouseAdapter() {
+95:             @Override public void mouseClicked(MouseEvent e) {
+96:                 if (e.getClickCount() == 2 && table.getSelectedRow() >= 0) details(LogView.this, app, rows.get(table.convertRowIndexToModel(table.getSelectedRow())).id);
+97:             }
+98:         });
+99:         custom.setVisible(false);
+100:     }
+101: 
+102:     void clearFilters() {
+103:         loading = true;
+104:         period.setSelectedIndex(3);
+105:         custom.setVisible(false);
+106:         office.setSelectedIndex(0);
+107:         if (currency.getItemCount() > 0) currency.setSelectedIndex(0);
+108:         dir.setSelectedIndex(0);
+109:         status.setSelectedIndex(0);
+110:         kind.setSelectedIndex(0);
+111:         if (who.getItemCount() > 0) who.setSelectedIndex(0);
+112:         minAmt.setText("");
+113:         maxAmt.setText("");
+114:         search.setText("");
+115:         loading = false;
+116:         load();
+117:     }
+118: 
+119:     @Override void open(Object arg) {
+120:         if ("pending".equals(arg)) {
+121:             loading = true;
+122:             status.setSelectedIndex(2);
+123:             period.setSelectedIndex(8);
+124:             loading = false;
+125:         }
+126:         refresh();
+127:     }
+128: 
+129:     @Override void refresh() {
+130:         actions.removeAll();
+131:         action(Ui.ghost("تصدير…", e -> export()));
+132:         if (can(Auth.Perm.TX_ADD)) action(Ui.primary("+ تسجيل حركة", e -> app.go("tx")));
+133:         loading = true;
+134:         Object sel = office.getSelectedItem();
+135:         DefaultComboBoxModel<Object> om = new DefaultComboBoxModel<>();
+136:         om.addElement("الكل");
+137:         for (Model.Office o : db.offices()) om.addElement(o);
+138:         office.setModel(om);
+139:         if (sel instanceof Model.Office) for (int i = 1; i < om.getSize(); i++) if (((Model.Office) om.getElementAt(i)).id == ((Model.Office) sel).id) office.setSelectedIndex(i);
+140:         Object cs = currency.getSelectedItem();
+141:         DefaultComboBoxModel<String> cm = new DefaultComboBoxModel<>();
+142:         cm.addElement("كل العملات");
+143:         for (Model.Currency c : db.currencies(true)) cm.addElement(c.code);
+144:         currency.setModel(cm);
+145:         if (cs != null) currency.setSelectedItem(cs);
+146:         Object ws = who.getSelectedItem();
+147:         DefaultComboBoxModel<String> wm = new DefaultComboBoxModel<>();
+148:         wm.addElement("كل المحاسبين");
+149:         if (db.usersEnabled() && app.can(Auth.Perm.VIEW)) for (Model.User u : db.users(false)) wm.addElement(Db.label(u));
+150:         who.setModel(wm);
+151:         who.setVisible(wm.getSize() > 1);
+152:         if (ws != null) who.setSelectedItem(ws);
+153:         loading = false;
+154:         load();
+155:         done();
+156:     }
+157: 
+158:     long[] range() {
+159:         int p = period.getSelectedIndex();
+160:         if (p == Ui.PERIODS.length - 1) {
+161:             long f = 0, t = 0;
+162:             try {
+163:                 f = from.start();
+164:                 t = to.endExclusive();
+165:             } catch (Exception ignored) {
+166:                 // تاريخ غير صالح: بلا حد
+167:             }
+168:             return new long[]{f, t == 0 ? Long.MAX_VALUE : t};
+169:         }
+170:         long[] r = Ui.period(p);
+171:         return new long[]{r[0], r[1] == 0 ? Long.MAX_VALUE : r[1]};
+172:     }
+173: 
+174:     void load() {
+175:         if (table == null) return;
+176:         long[] r = range();
+177:         List<Model.Tx> list;
+178:         if (status.getSelectedIndex() == 2) {
+179:             list = db.pendingTx();
+180:         } else {
+181:             Db.TxFilter f = new Db.TxFilter();
+182:             f.from = r[0];
+183:             f.to = r[1];
+184:             Object o = office.getSelectedItem();
+185:             if (o instanceof Model.Office) f.office = ((Model.Office) o).id;
+186:             if (currency.getSelectedIndex() > 0) f.currency = (String) currency.getSelectedItem();
+187:             if (dir.getSelectedIndex() == 1) f.type = Model.TYPE_DEBIT;
+188:             if (dir.getSelectedIndex() == 2) f.type = Model.TYPE_CREDIT;
+189:             f.includeCancelled = status.getSelectedIndex() == 1;
+190:             list = db.txLog(f);
+191:         }
+192:         String q = OwnerReports.norm(search.getText());
+193:         Ui.Keep keep = Ui.Keep.of(table, rows, t -> t.id);   // 10.5 (§6)
+194:         rows = new ArrayList<>();
+195:         // 10.3: من لا يملك «العرض» يرى حركاته هو فقط
+196:         boolean mineOnly = !app.can(Auth.Perm.VIEW);
+197:         Model.User meU = SmartApp.currentUser;

@@ -1,0 +1,228 @@
+193:   var CURVES = { "1.2.840.10045.3.1.7": ["P-256", 32], "1.3.132.0.34": ["P-384", 48], "1.3.132.0.35": ["P-521", 66] };
+194:   var RSA_OID = "1.2.840.113549.1.1.1", EC_OID = "1.2.840.10045.2.1";
+195: 
+196:   /** توقيع ECDSA بترميز DER ← r||s بطول ثابت (صيغة WebCrypto). */
+197:   function derToRaw(sig, size) {
+198:     var s = der(sig, 0), k = kids(s);
+199:     if (k.length !== 2) throw new Error("توقيع ECDSA غير صالح");
+200:     var out = new Uint8Array(size * 2);
+201:     k.forEach(function (n, idx) {
+202:       var v = body(n);
+203:       while (v.length > size && v[0] === 0) v = v.subarray(1);
+204:       if (v.length > size) throw new Error("توقيع ECDSA أطول من المنحنى");
+205:       out.set(v, idx * size + (size - v.length));
+206:     });
+207:     return out;
+208:   }
+209: 
+210:   /** r||s ← DER (التطبيق يتحقق بـ SHA256withECDSA في Java ويتوقع DER). */
+211:   function rawToDer(raw) {
+212:     var size = raw.length / 2, parts = [];
+213:     for (var p = 0; p < 2; p++) {
+214:       var v = raw.subarray(p * size, (p + 1) * size), s = 0;
+215:       while (s < v.length - 1 && v[s] === 0) s++;
+216:       v = v.subarray(s);
+217:       if (v[0] & 0x80) {
+218:         var w = new Uint8Array(v.length + 1);
+219:         w.set(v, 1);
+220:         v = w;
+221:       }
+222:       parts.push(v);
+223:     }
+224:     var len = 2 + parts[0].length + 2 + parts[1].length;
+225:     var hdr = len < 128 ? [0x30, len] : [0x30, 0x81, len];
+226:     var out = new Uint8Array(hdr.length + len), i = 0;
+227:     hdr.forEach(function (x) { out[i++] = x; });
+228:     parts.forEach(function (v) {
+229:       out[i++] = 0x02;
+230:       out[i++] = v.length;
+231:       out.set(v, i);
+232:       i += v.length;
+233:     });
+234:     return out;
+235:   }
+236: 
+237:   async function verifySig(cert, issuer) {
+238:     var a = SIG[cert.sigAlg];
+239:     if (!a) throw new Error("خوارزمية توقيع غير مدعومة: " + cert.sigAlg);
+240:     if (a[0] === "RSA") {
+241:       if (issuer.keyAlg !== RSA_OID) return false;
+242:       var rk = await subtle.importKey("spki", issuer.spki, { name: "RSASSA-PKCS1-v1_5", hash: a[1] }, false, ["verify"]);
+243:       return subtle.verify("RSASSA-PKCS1-v1_5", rk, cert.sig, cert.tbs);
+244:     }
+245:     if (issuer.keyAlg !== EC_OID || !CURVES[issuer.curve]) return false;
+246:     var cv = CURVES[issuer.curve];
+247:     var ek = await subtle.importKey("spki", issuer.spki, { name: "ECDSA", namedCurve: cv[0] }, false, ["verify"]);
+248:     var raw;
+249:     try {
+250:       raw = derToRaw(cert.sig, cv[1]);
+251:     } catch (e) {
+252:       return false;
+253:     }
+254:     return subtle.verify({ name: "ECDSA", hash: a[1] }, ek, raw, cert.tbs);
+255:   }
+256: 
+257:   // =================================================================================== وصف المفتاح (Key Attestation)
+258: 
+259:   var LEVELS = ["برمجي (Software)", "عتاد آمن (TEE)", "StrongBox"];
+260:   var BOOT = ["VERIFIED", "SELF_SIGNED", "UNVERIFIED", "FAILED"];
+261: 
+262:   function authList(n) {
+263:     var m = {};
+264:     kids(n).forEach(function (e) {
+265:       if (e.cls === 2) m[e.tag] = kids(e)[0];
+266:     });
+267:     return m;
+268:   }
+269: 
+270:   function parseAppId(node) {
+271:     var inner = der(body(node), 0), k = kids(inner);
+272:     return {
+273:       packages: kids(k[0]).map(function (p) {
+274:         var pk = kids(p);
+275:         return { name: fromUtf8(body(pk[0])), version: pk[1] ? int(pk[1]) : 0 };
+276:       }),
+277:       signatures: kids(k[1]).map(function (x) { return hex(body(x)).toUpperCase(); })
+278:     };
+279:   }
+280: 
+281:   function parseRoot(node) {
+282:     var k = kids(node);
+283:     return {
+284:       verifiedBootKey: b64url(body(k[0])),
+285:       deviceLocked: body(k[1])[0] !== 0,
+286:       verifiedBootState: BOOT[int(k[2])] || String(int(k[2]))
+287:     };
+288:   }
+289: 
+290:   function parseKeyDescription(bytes) {
+291:     var k = kids(der(bytes, 0));
+292:     var sw = authList(k[6]), hw = authList(k[7]);
+293:     var app = sw[709] || hw[709];
+294:     var rot = hw[704] || sw[704];
+295:     return {
+296:       attestationVersion: int(k[0]),
+297:       securityLevel: int(k[1]),
+298:       keymasterVersion: int(k[2]),
+299:       keymasterSecurityLevel: int(k[3]),
+300:       challenge: body(k[4]),
+301:       appId: app ? parseAppId(app) : null,
+302:       rootOfTrust: rot ? parseRoot(rot) : null,
+303:       origin: hw[702] ? int(hw[702]) : (sw[702] ? int(sw[702]) : null)
+304:     };
+305:   }
+306: 
+307:   /**
+308:    * يتحقق من سلسلة شهادات التصديق (الورقة أولًا). opts.status: ملف حالة الإلغاء من Google (اختياري)،
+309:    * opts.extraRoots: مفاتيح جذور إضافية (Base64).
+310:    */
+311:   async function verifyChain(chainB64, opts) {
+312:     opts = opts || {};
+313:     var res = { ok: false, sigOk: true, rootTrusted: false, rootName: "", problems: [], kd: null, leafSpki: null, revoked: [] };
+314:     if (!chainB64 || !chainB64.length) {
+315:       res.problems.push("لا توجد سلسلة تصديق");
+316:       return res;
+317:     }
+318:     var certs;
+319:     try {
+320:       certs = chainB64.map(function (c) { return parseCert(typeof c === "string" ? b64ToBytes(c) : c); });
+321:     } catch (e) {
+322:       res.sigOk = false;
+323:       res.problems.push("شهادة غير مقروءة: " + e.message);
+324:       return res;
+325:     }
+326:     res.leafSpki = certs[0].spki;
+327:     for (var i = 0; i < certs.length; i++) {
+328:       var issuer = certs[i + 1] || certs[i];
+329:       var good = false;
+330:       try {
+331:         good = await verifySig(certs[i], issuer);
+332:       } catch (e) {
+333:         res.problems.push(e.message);
+334:       }
+335:       if (!good) {
+336:         res.sigOk = false;
+337:         res.problems.push("توقيع الشهادة " + (i + 1) + " من " + certs.length + " لا يتحقق");
+338:       }
+339:       if (i > 0 && certs[i].exts[KD_OID]) {
+340:         res.sigOk = false;
+341:         res.problems.push("شهادة وسيطة تحمل امتداد التصديق (سلسلة مركّبة من هاتف آخر)");
+342:       }
+343:     }
+344:     var top = bytesToB64(certs[certs.length - 1].spki);
+345:     GOOGLE_ROOTS.concat((opts.extraRoots || []).map(function (s) { return { name: "جذر مضاف", spki: s }; })).forEach(function (r) {
+346:       if (r.spki === top) {
+347:         res.rootTrusted = true;
+348:         res.rootName = r.name;
+349:       }
+350:     });
+351:     var st = opts.status && opts.status.entries;
+352:     if (st) certs.forEach(function (c) {
+353:       var e = st[c.serial] || st[c.serial.toLowerCase()];
+354:       if (e && /REVOKED|SUSPENDED/i.test(e.status || "REVOKED")) res.revoked.push(c.serial + " (" + (e.reason || e.status || "") + ")");
+355:     });
+356:     if (!certs[0].exts[KD_OID]) res.problems.push("لا يوجد امتداد التصديق في شهادة المفتاح");
+357:     else if (certs[0].extCount[KD_OID] > 1) {
+358:       res.sigOk = false;
+359:       res.problems.push("امتداد التصديق مكرر");
+360:     } else {
+361:       try {
+362:         res.kd = parseKeyDescription(certs[0].exts[KD_OID]);
+363:       } catch (e) {
+364:         res.problems.push("امتداد التصديق غير مقروء: " + e.message);
+365:       }
+366:     }
+367:     res.ok = res.sigOk && res.rootTrusted && !!res.kd && !res.revoked.length;
+368:     return res;
+369:   }
+370: 
+371:   // =================================================================================== طلب التفعيل
+372: 
+373:   /**
+374:    * يستخرج النص بعد البادئة من رسالة كاملة (واتساب يضيف أسطرًا ونصوصًا قبله وبعده): يجرّب الأطول أولًا
+375:    * ثم يحذف المقاطع الأخيرة المفصولة بمسافات حتى ينجح check.
+376:    */
+377:   function extract(text, prefix, chars, check) {
+378:     var s = String(text || "");
+379:     var at = s.indexOf(prefix);
+380:     if (at < 0) return null;
+381:     var m = new RegExp("^[" + chars + "\\s]+").exec(s.substring(at + prefix.length));
+382:     if (!m) return null;
+383:     var chunks = m[0].split(/\s+/).filter(Boolean);
+384:     for (var n = chunks.length; n > 0; n--) {
+385:       var cand = chunks.slice(0, n).join("");
+386:       try {
+387:         var v = check(cand);
+388:         if (v) return v;
+389:       } catch (e) {
+390:         // نجرب أقصر
+391:       }
+392:     }
+393:     return null;
+394:   }
+395: 
+396:   /** 11.5: الطلب المضغوط (SA8-REQZ:): JSON مضغوط deflate-raw ثم Base64url — أقصر بنحو الثلث. */
+397:   async function inflateRaw(bytes) {
+398:     var ds = new DecompressionStream("deflate-raw");
+399:     var stream = new Blob([bytes]).stream().pipeThrough(ds);
+400:     return new Uint8Array(await new Response(stream).arrayBuffer());
+401:   }
+402: 
+403:   async function parseRequestAny(text) {
+404:     var s = String(text || "");
+405:     var at = s.indexOf("SA8-REQZ:");
+406:     if (at < 0) return parseRequest(s);
+407:     var m = /^[A-Za-z0-9_\-\s]+/.exec(s.substring(at + 9));
+408:     var chunks = m ? m[0].split(/\s+/).filter(Boolean) : [];
+409:     for (var n = chunks.length; n > 0; n--) {
+410:       try {
+411:         var o = JSON.parse(fromUtf8(await inflateRaw(b64ToBytes(chunks.slice(0, n).join("")))));
+412:         if (o && typeof o === "object") {
+413:           if (o.t !== "sa-activate") throw new Error("نوع الطلب غير معروف");
+414:           return o;
+415:         }
+416:       } catch (e) {
+417:         if (e && e.message === "نوع الطلب غير معروف") throw e;
+418:         // نجرب أقصر
+419:       }
+420:     }

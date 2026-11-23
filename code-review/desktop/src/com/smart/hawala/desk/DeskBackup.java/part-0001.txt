@@ -1,0 +1,158 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.io.File;
+5: import java.io.FileOutputStream;
+6: import java.io.OutputStream;
+7: import java.util.*;
+8: import javax.swing.SwingUtilities;
+9: 
+10: /**
+11:  * النسخ التلقائي على الماك: إلى مجلد يختاره المستخدم (ومنه iCloud Drive أو Dropbox أو قرص خارجي، فتصير نسخة سحابية تلقائيًا).
+12:  * بالقواعد نفسها التي في الهاتف (BackupPolicy): المجانية يوميًا على الأكثر، والكاملة حتى كل 6 ساعات أو بعد كل 25 حركة.
+13:  * كل نسخة تُنشأ وتُفك كاملة للتحقق داخل البرنامج، ثم تُنسخ للمجلد ويُعاد قراءتها وتطابق بصمتها؛ ولا نسخ بمفتاح مفقود.
+14:  */
+15: final class DeskBackup {
+16:     private DeskBackup() {}
+17: 
+18:     static final String PREFIX = "smart-accountant-mac-auto-";
+19:     private static volatile boolean running;
+20: 
+21:     static boolean configured(Db db) {
+22:         String dir = db.setting("desk_backup_dir", "");
+23:         return !dir.isEmpty() && !db.setting("auto_backup_pw", "").isEmpty();
+24:     }
+25: 
+26:     static boolean enabled(Db db) { return "1".equals(db.setting("auto_backup_on", "0")) && configured(db); }
+27: 
+28:     static long intervalHours(Db db) {
+29:         return BackupPolicy.intervalHours(db.settingLong("auto_backup_hours", 0), db.settingLong("auto_backup_days", 1), License.current.autoBackupMinHours());
+30:     }
+31: 
+32:     static int everyTx(Db db) { return BackupPolicy.everyTx(db.settingLong("auto_backup_every_tx", -1), License.current.autoBackupEveryTx()); }
+33: 
+34:     static boolean due(Db db) {
+35:         if (!enabled(db)) return false;
+36:         long last = db.settingLong("last_auto_backup", 0);
+37:         int every = everyTx(db);
+38:         long since = every > 0 ? db.txCount() - db.settingLong("last_backup_tx", 0) : 0;
+39:         return BackupPolicy.due(Clock.now(), last, intervalHours(db), since, every);
+40:     }
+41: 
+42:     static void runIfDueAsync(App app) {
+43:         if (running) return;
+44:         new Thread(() -> {
+45:             Db db = app.db;
+46:             try {
+47:                 if (!due(db)) return;
+48:                 long now = Clock.now();
+49:                 long tried = db.settingLong("auto_backup_try", 0);
+50:                 if (now - tried >= 0 && now - tried < 30 * 60000L) return;
+51:                 db.setSettingQuiet("auto_backup_try", "" + now);
+52:                 String where = runNow(app);
+53:                 // 10.16: إشعار نجاح النسخ التلقائي (كالهاتف) إن كان مفعّلًا، وإلا رسالة داخل البرنامج فقط
+54:                 SwingUtilities.invokeLater(() -> {
+55:                     if (!"0".equals(db.setting("notif_backup", "1"))) DeskNotify.show("تم إنشاء نسخة احتياطية تلقائية ✓", "حُفظت في: " + where);
+56:                     else Ui.toast("نسخة تلقائية ✓ " + where);
+57:                 });
+58:             } catch (Throwable t) {
+59:                 SwingUtilities.invokeLater(() -> {
+60:                     Ui.toast("فشل النسخ التلقائي: " + Ui.cut(Ui.friendly(t), 90));
+61:                     app.updateFoot();
+62:                 });
+63:             }
+64:         }, "auto-backup").start();
+65:     }
+66: 
+67:     static synchronized String runNow(App app) throws Exception {
+68:         running = true;
+69:         Db db = app.db;
+70:         char[] pw = null;
+71:         try {
+72:             if (!Crypto.healthy(app.ctx) || Db.lockedAside != null) throw new IllegalStateException("مفتاح التشفير غير متاح على هذا الجهاز؛ أُوقف النسخ التلقائي حتى لا تُستبدل النسخ السليمة. استعد آخر نسخة احتياطية.");
+73:             String enc = db.setting("auto_backup_pw", "");
+74:             if (enc.isEmpty()) throw new IllegalStateException("لم تُحدَّد كلمة مرور للنسخ التلقائي");
+75:             File dir = new File(db.setting("desk_backup_dir", ""));
+76:             if (!dir.isDirectory()) throw new IllegalStateException("مجلد النسخ التلقائي غير موجود: " + dir.getAbsolutePath() + " (هل القرص الخارجي مفصول؟)");
+77:             pw = Crypto.decStrict(enc).toCharArray();
+78:             BackupManager.Created created;
+79:             try {
+80:                 created = BackupManager.createLocal(app.ctx, db, pw, BuildInfo.VERSION + "-mac", m -> {});
+81:             } catch (BackupManager.BackupException first) {
+82:                 Thread.sleep(4000);
+83:                 created = BackupManager.createLocal(app.ctx, db, pw, BuildInfo.VERSION + "-mac", m -> {});
+84:             }
+85:             Arrays.fill(pw, '\0');
+86:             pw = null;
+87:             long now = Clock.now();
+88:             String name = PREFIX + created.file.getName().replace("smart-accountant-", "");
+89:             BackupManager.Delivery d = BackupManager.copyToFile(created.file, new File(dir, name));
+90:             db.recordBackup("AUTO", d.verified ? "نسخ تلقائي متحقق منه (ماك)" : "نسخ تلقائي دون إعادة قراءة (ماك)", new File(dir, name).getAbsolutePath(), d.size, created.counts, d.verified, d.note);
+91:             db.deleteSetting("auto_backup_error");
+92:             int keep = (int) Math.max(3, db.settingLong("auto_backup_keep", 7));
+93:             if (created.result.unreadable == 0) prune(dir, keep);
+94:             else db.setSettingQuiet("auto_backup_error", Model.date(now) + "\nالنسخة الأخيرة فيها " + created.result.unreadable + " حقلًا لم يمكن فكه؛ لم تُحذف النسخ الأقدم.");
+95:             try {
+96:                 monthlyReadable(db, dir);
+97:             } catch (Exception e) {
+98:                 db.setSettingQuiet("readable_export_error", Model.date(now) + "\n" + Ui.friendly(e));
+99:             }
+100:             db.setSettingQuiet("last_auto_backup", "" + now);
+101:             db.setSettingQuiet("last_backup", "" + now);
+102:             db.setSettingQuiet("last_backup_tx", "" + db.txCount());
+103:             db.setSettingQuiet("last_backup_status", d.verified ? "verified" : "unverified");
+104:             return name;
+105:         } catch (Exception e) {
+106:             db.setSettingQuiet("auto_backup_error", Model.date(Clock.now()) + "\n" + Ui.friendly(e));
+107:             throw e;
+108:         } finally {
+109:             if (pw != null) Arrays.fill(pw, '\0');
+110:             running = false;
+111:         }
+112:     }
+113: 
+114:     static void prune(File dir, int keep) {
+115:         File[] fs = dir.listFiles((d, n) -> n.startsWith(PREFIX) && n.endsWith(".sba"));
+116:         if (fs == null) return;
+117:         Arrays.sort(fs, (a, b) -> b.getName().compareTo(a.getName()));
+118:         for (int i = keep; i < fs.length; i++) fs[i].delete();
+119:     }
+120: 
+121:     /** نسخة مقروءة شهرية (اختيارية): Excel بالأرصدة وحركات الشهر الماضي، تُفتح بلا البرنامج وبلا كلمة مرور. */
+122:     static void monthlyReadable(Db db, File dir) throws Exception {
+123:         if (!"1".equals(db.setting("readable_export", "0"))) return;
+124:         Calendar c = Model.cal();
+125:         String month = String.format(Locale.US, "%04d-%02d", c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1);
+126:         if (month.equals(db.setting("readable_export_month", ""))) return;
+127:         long now = Clock.now();
+128:         String issuer = db.setting("office_name", "");
+129:         Entitlements ent = License.current;
+130:         Report bal = Reports.balances(db.officeTotals(null), db.decimalsMap(), db.currencyNames(), false, issuer, now);
+131:         bal.stamp(ent.watermark(), ent.lid);
+132:         xlsx(new File(dir, "smart-accountant-mac-readable-" + month + "-balances.xlsx"), bal);
+133:         c.set(Calendar.DAY_OF_MONTH, 1);
+134:         c.set(Calendar.HOUR_OF_DAY, 0);
+135:         c.set(Calendar.MINUTE, 0);
+136:         c.set(Calendar.SECOND, 0);
+137:         c.set(Calendar.MILLISECOND, 0);
+138:         long thisMonth = c.getTimeInMillis();
+139:         c.add(Calendar.MONTH, -1);
+140:         Db.TxFilter f = new Db.TxFilter();
+141:         f.from = c.getTimeInMillis();
+142:         f.to = thisMonth;
+143:         f.includeCancelled = true;
+144:         String prev = String.format(Locale.US, "%04d-%02d", c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1);
+145:         Report txs = Reports.txList("حركات شهر " + prev, new ArrayList<>(), db.txLog(f), db.officeNames(), db.decimalsMap(), issuer, now);
+146:         txs.stamp(ent.watermark(), ent.lid);
+147:         xlsx(new File(dir, "smart-accountant-mac-readable-" + prev + "-transactions.xlsx"), txs);
+148:         db.setSettingQuiet("readable_export_month", month);
+149:         db.setSettingQuiet("readable_export_at", "" + now);
+150:         db.deleteSetting("readable_export_error");
+151:     }
+152: 
+153:     static void xlsx(File f, Report r) throws Exception {
+154:         try (OutputStream o = new FileOutputStream(f)) {
+155:             XlsxWriter.write(r, o, null, Model.zone());
+156:         }
+157:     }
+158: }

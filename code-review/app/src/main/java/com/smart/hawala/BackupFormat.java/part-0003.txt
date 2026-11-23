@@ -1,0 +1,179 @@
+380:                     throw new SecureStreams.CorruptBackupException("عدد صفوف الجدول " + t + " لا يطابق المسجل في النسخة");
+381:                 }
+382:             }
+383:         }
+384:         if (p.summary.optInt("attachments", p.attachments.size()) != p.attachments.size()) {
+385:             for (StagedAttachment s : p.attachments) store.discard(s.handle);
+386:             throw new SecureStreams.CorruptBackupException("عدد الصور لا يطابق المسجل في النسخة");
+387:         }
+388:         JSONArray w = p.summary.optJSONArray("warnings");
+389:         if (w != null) for (int i = 0; i < w.length(); i++) p.warnings.add(w.optString(i));
+390:         int skipped = p.summary.optInt("skippedAttachments", 0);
+391:         if (skipped > 0) p.warnings.add("عند إنشاء هذه النسخة تم تخطي " + skipped + " صورة تالفة أو مفقودة في الهاتف الأصلي");
+392:         return p;
+393:     }
+394: 
+395:     private static void discardAll(Map<Long, StagedAttachment> staged, AttachmentStore store) {
+396:         for (StagedAttachment s : staged.values()) store.discard(s.handle);
+397:     }
+398: 
+399:     // ===================================================================================
+400:     // قراءة الصيغة 4 (نسخ الإصدار 4.0 و 4.0.1)
+401:     // ===================================================================================
+402: 
+403:     public static Parsed readV4(byte[] file, char[] password, AttachmentStore store) throws Exception {
+404:         JSONObject root;
+405:         try {
+406:             DataInputStream d = new DataInputStream(new ByteArrayInputStream(file));
+407:             byte[] m = new byte[MAGIC_V4.length];
+408:             d.readFully(m);
+409:             if (!Arrays.equals(m, MAGIC_V4)) throw new SecureStreams.CorruptBackupException("هذا الملف ليس نسخة احتياطية صحيحة");
+410:             int fmt = d.readInt();
+411:             if (fmt != 1) throw new SecureStreams.CorruptBackupException("إصدار النسخة غير مدعوم");
+412:             int iter = d.readInt();
+413:             if (iter < 100000 || iter > 2000000) throw new SecureStreams.CorruptBackupException("معلمات حماية غير صالحة");
+414:             int sl = d.readInt();
+415:             if (sl != 16) throw new SecureStreams.CorruptBackupException("بنية النسخة غير صالحة");
+416:             byte[] salt = new byte[sl];
+417:             d.readFully(salt);
+418:             int il = d.readInt();
+419:             if (il != 12) throw new SecureStreams.CorruptBackupException("بنية النسخة غير صالحة");
+420:             byte[] iv = new byte[il];
+421:             d.readFully(iv);
+422:             int len = d.readInt();
+423:             if (len < 16 || len > file.length) throw new SecureStreams.CorruptBackupException("حجم النسخة غير صالح");
+424:             byte[] enc = new byte[len];
+425:             d.readFully(enc);
+426:             SecretKeySpec key = SecureStreams.deriveKey(password, salt, iter);
+427:             Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+428:             c.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, iv));
+429:             c.updateAAD(MAGIC_V4);
+430:             byte[] raw;
+431:             try {
+432:                 raw = c.doFinal(enc);
+433:             } catch (AEADBadTagException bad) {
+434:                 throw new SecureStreams.CorruptBackupException("كلمة المرور غير صحيحة أو أن الملف تالف");
+435:             }
+436:             root = new JSONObject(new String(gunzip(raw), StandardCharsets.UTF_8));
+437:         } catch (EOFException | NegativeArraySizeException e) {
+438:             throw new SecureStreams.CorruptBackupException("الملف ناقص أو تالف");
+439:         } catch (GeneralSecurityException e) {
+440:             throw new SecureStreams.CorruptBackupException("تعذر فك النسخة: " + e.getMessage(), e);
+441:         }
+442:         if (!root.has("tables") || !root.has("schema")) throw new SecureStreams.CorruptBackupException("محتوى النسخة غير مكتمل");
+443: 
+444:         Parsed p = new Parsed();
+445:         p.format = 4;
+446:         p.manifest.put("format", 4);
+447:         p.manifest.put("app", APP_ID);
+448:         p.manifest.put("appVersion", root.optString("appVersion", "4.0"));
+449:         p.manifest.put("schema", root.optInt("schema", 4));
+450:         p.manifest.put("createdAt", root.optLong("createdAt", 0));
+451:         JSONArray tabs = root.getJSONArray("tables");
+452:         for (int i = 0; i < tabs.length(); i++) {
+453:             JSONObject tb = tabs.getJSONObject(i);
+454:             String name = tb.getString("name");
+455:             if (!Arrays.asList(TABLES).contains(name)) continue; // مثل backup_history: خاص بالهاتف القديم
+456:             JSONArray rows = tb.getJSONArray("rows");
+457:             List<JSONObject> list = new ArrayList<>(rows.length());
+458:             for (int j = 0; j < rows.length(); j++) list.add(rows.getJSONObject(j));
+459:             p.tables.put(name, list);
+460:         }
+461:         JSONArray at = root.optJSONArray("attachments");
+462:         try {
+463:             if (at != null) {
+464:                 for (int i = 0; i < at.length(); i++) {
+465:                     JSONObject r = at.getJSONObject(i);
+466:                     byte[] data = Base64.getMimeDecoder().decode(r.getString("data"));
+467:                     StagedAttachment s = new StagedAttachment();
+468:                     s.id = r.getLong("id");
+469:                     s.txId = r.getLong("tx_id");
+470:                     s.mime = r.optString("mime", "image/jpeg");
+471:                     s.createdAt = r.optLong("created_at", 0);
+472:                     s.size = data.length;
+473:                     s.sha256 = sha256Hex(data);
+474:                     s.handle = store.store(s.id, new ByteArrayInputStream(data));
+475:                     p.attachments.add(s);
+476:                 }
+477:             }
+478:         } catch (Exception e) {
+479:             for (StagedAttachment s : p.attachments) store.discard(s.handle);
+480:             throw e;
+481:         }
+482:         int skipped = root.optInt("skippedAttachments", 0);
+483:         if (skipped > 0) p.warnings.add("عند إنشاء هذه النسخة تم تخطي " + skipped + " صورة تالفة أو مفقودة في الهاتف الأصلي");
+484:         return p;
+485:     }
+486: 
+487:     // ===================================================================================
+488:     // الفحص الكامل
+489:     // ===================================================================================
+490: 
+491:     public static Report validate(Parsed p) {
+492:         Report r = new Report();
+493:         r.format = p.format;
+494:         r.createdAt = p.manifest.optLong("createdAt", 0);
+495:         r.appVersion = p.manifest.optString("appVersion", "");
+496:         r.warnings.addAll(p.warnings);
+497: 
+498:         for (String t : REQUIRED) {
+499:             if (!p.tables.containsKey(t)) r.errors.add("الجدول «" + t + "» مفقود من النسخة");
+500:         }
+501:         if (!r.errors.isEmpty()) return r;
+502: 
+503:         for (String t : ID_TABLES) {
+504:             Set<Long> seen = new HashSet<>();
+505:             for (JSONObject row : p.table(t)) {
+506:                 Long id = lng(row, "id");
+507:                 if (id == null) {
+508:                     r.errors.add("صف بلا رقم تعريف في الجدول " + t);
+509:                     break;
+510:                 }
+511:                 if (!seen.add(id)) {
+512:                     r.errors.add("رقم تعريف مكرر (" + id + ") في الجدول " + t);
+513:                     break;
+514:                 }
+515:             }
+516:         }
+517: 
+518:         Set<String> currencies = new HashSet<>();
+519:         for (JSONObject row : p.table("currencies")) {
+520:             String code = str(row, "code");
+521:             if (code == null || code.trim().isEmpty()) r.errors.add("عملة بلا رمز");
+522:             else if (!currencies.add(code)) r.errors.add("رمز عملة مكرر: " + code);
+523:         }
+524: 
+525:         Set<Long> offices = ids(p.table("offices"));
+526:         r.offices = offices.size();
+527:         r.currencies = currencies.size();
+528: 
+529:         Set<String> ocKeys = new HashSet<>();
+530:         for (JSONObject row : p.table("office_currencies")) {
+531:             Long o = lng(row, "office_id");
+532:             String c = str(row, "code");
+533:             if (o == null || !offices.contains(o)) {
+534:                 r.errors.add("عملة مكتب تشير إلى مكتب غير موجود (" + o + ")");
+535:                 break;
+536:             }
+537:             if (c == null || !currencies.contains(c)) {
+538:                 r.errors.add("عملة مكتب غير معرّفة: " + c);
+539:                 break;
+540:             }
+541:             if (!ocKeys.add(o + "|" + c)) {
+542:                 r.errors.add("تكرار عملة " + c + " للمكتب " + o);
+543:                 break;
+544:             }
+545:         }
+546: 
+547:         Set<Long> txs = new HashSet<>();
+548:         Set<String> uuids = new HashSet<>();
+549:         Set<String> unknownCur = new HashSet<>();
+550:         for (JSONObject row : p.table("tx")) {
+551:             Long id = lng(row, "id");
+552:             Long o = lng(row, "office_id");
+553:             if (id != null) txs.add(id);
+554:             if (o == null || !offices.contains(o)) {
+555:                 r.errors.add("حركة رقم " + id + " تشير إلى مكتب غير موجود");
+556:                 break;
+557:             }
+558:             String uuid = str(row, "uuid");

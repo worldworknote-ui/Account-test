@@ -1,0 +1,198 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import android.app.WindowStack;
+4: import android.view.View;
+5: import android.view.ViewGroup;
+6: import android.view.ViewRootImpl;
+7: import android.widget.TextView;
+8: import com.smart.hawala.SmartApp;
+9: import java.awt.*;
+10: import java.awt.event.InputEvent;
+11: import java.io.File;
+12: import java.util.ArrayList;
+13: import java.util.List;
+14: import javax.imageio.ImageIO;
+15: import javax.swing.*;
+16: 
+17: /**
+18:  * 11.0: تجربة الشكل على شاشة افتراضية (Xvfb) بالبرنامج الحقيقي ومجلد بيانات مؤقت فارغ:
+19:  * معالج أول تشغيل، تغيير حجم النافذة (المقياس يتبعها)، خيارات المعالج، التبديل إلى الشكل القديم والعودة، والكتابة مع التكبير.
+20:  * الاستعمال: java -Dsa.home=<مجلد مؤقت> ... com.smart.hawala.desk.LookDrive <مجلد اللقطات>
+21:  */
+22: public final class LookDrive {
+23:     static File out;
+24:     static final List<String> fails = new ArrayList<>();
+25:     static Robot robot;
+26: 
+27:     public static void main(String[] a) throws Exception {
+28:         out = new File(a[0]);
+29:         out.mkdirs();
+30:         String home = System.getProperty("sa.home");
+31:         if (home == null || !home.contains("tmp")) throw new IllegalStateException("sa.home يجب أن يكون مجلدًا مؤقتًا");
+32:         robot = new Robot();
+33:         Main.main(new String[0]);
+34:         sleep(6000);
+35:         check(PhoneWindow.frame != null && PhoneWindow.frame.isShowing(), "phone window shown");
+36:         check(LookWizard.dlg != null && LookWizard.dlg.isShowing(), "wizard shown on first run");
+37:         shot("01-first-run");
+38: 
+39:         // سحب طرف النافذة: المقياس يتبع الحجم
+40:         float s0 = ViewRootImpl.scale();
+41:         resize(760, 1000);
+42:         float s1 = ViewRootImpl.scale();
+43:         shot("02-bigger");
+44:         resize(380, 640);
+45:         float s2 = ViewRootImpl.scale();
+46:         shot("03-smaller");
+47:         System.out.println("scale: start " + s0 + " big " + s1 + " small " + s2);
+48:         // 11.6: يصغر مع النافذة الصغيرة ولا يكبر فوق الحجم الطبيعي (×الحجم المختار)
+49:         check(s1 > s2 + 0.15f, "scale follows window size (smaller window → smaller)");
+50:         resize(1600, 1100);
+51:         float s3 = ViewRootImpl.scale();
+52:         check(s3 <= s1 + 0.01f && s3 <= 1.0f * PhoneWindow.zoom(SmartApp.db) + 0.01f, "big window: no growth above natural size (" + s3 + ")");
+53:         resize(760, 1000);
+54:         resize(520, 900);
+55: 
+56:         click("كامل العرض");
+57:         sleep(800);
+58:         check("full".equals(SmartApp.db.setting("desk_column", "")), "column full saved");
+59:         resize(1100, 800);
+60:         shot("04-full-width");
+61:         click("تلقائي مع النافذة");
+62:         resize(520, 900);
+63: 
+64:         SwingUtilities.invokeAndWait(() -> {
+65:             JSlider s = find(LookWizard.dlg, JSlider.class);
+66:             s.setValue(130);
+67:         });
+68:         sleep(800);
+69:         float sz = ViewRootImpl.scale();
+70:         System.out.println("scale at 130%: " + sz);
+71:         shot("05-zoom-130");
+72:         SwingUtilities.invokeAndWait(() -> find(LookWizard.dlg, JSlider.class).setValue(100));
+73: 
+74:         click("ليلي");
+75:         sleep(2500);
+76:         shot("06-night");
+77:         check("dark".equals(SmartApp.db.setting("theme_mode", "")), "night saved");
+78:         click("فاتح");
+79:         sleep(2500);
+80: 
+81:         click("الشكل القديم");
+82:         sleep(4000);
+83:         check(App.frame != null && App.frame.isShowing() && PhoneWindow.frame == null, "switched to classic");
+84:         shot("07-classic");
+85:         click("مثل الهاتف (جديد)");
+86:         sleep(4000);
+87:         check(PhoneWindow.frame != null && PhoneWindow.frame.isShowing() && App.frame == null, "back to phone");
+88:         shot("08-phone-again");
+89: 
+90:         // الكتابة في خانة البحث مع تكبير 130٪
+91:         SwingUtilities.invokeAndWait(() -> find(LookWizard.dlg, JSlider.class).setValue(130));
+92:         sleep(1000);
+93:         click("ابدأ العمل");
+94:         sleep(800);
+95:         check(LookWizard.dlg == null, "wizard closed");
+96:         check("done".equals(SmartApp.db.setting("desk_wizard", "")), "wizard marked done");
+97:         Point p = hintPoint("ابحث");
+98:         check(p != null, "search field found");
+99:         if (p != null) {
+100:             robot.mouseMove(p.x, p.y);
+101:             robot.mousePress(InputEvent.BUTTON1_DOWN_MASK);
+102:             robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
+103:             sleep(700);
+104:             Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new java.awt.datatransfer.StringSelection("الأمل"), null);
+105:             robot.keyPress(java.awt.event.KeyEvent.VK_CONTROL);
+106:             robot.keyPress(java.awt.event.KeyEvent.VK_V);
+107:             robot.keyRelease(java.awt.event.KeyEvent.VK_V);
+108:             robot.keyRelease(java.awt.event.KeyEvent.VK_CONTROL);
+109:             sleep(1200);
+110:             shot("09-typing-scaled");
+111:             // الخانة الحقيقية فوق مكانها بالضبط
+112:             JTextField f = find(PhoneWindow.frame, JTextField.class);
+113:             check(f != null && f.isShowing() && "الأمل".equals(f.getText()), "typed into scaled field");
+114:             if (f != null && f.isShowing()) {
+115:                 Point fp = f.getLocationOnScreen();
+116:                 System.out.println("field at " + fp + " size " + f.getSize() + " click " + p + " font " + f.getFont().getSize2D());
+117:                 check(fp.y <= p.y && fp.y + f.getHeight() >= p.y, "field covers the box");
+118:             }
+119:         }
+120: 
+121:         // إعادة التشغيل: المعالج لا يظهر مرة أخرى (يُفحص بالإعداد)
+122:         System.out.println(fails.isEmpty() ? "LOOK OK" : "LOOK FAILURES: " + fails.size());
+123:         for (String f : fails) System.out.println("  " + f);
+124:         System.exit(fails.isEmpty() ? 0 : 1);
+125:     }
+126: 
+127:     static void check(boolean ok, String what) {
+128:         System.out.println((ok ? "ok   " : "FAIL ") + what);
+129:         if (!ok) fails.add(what);
+130:     }
+131: 
+132:     static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException ignored) { } }
+133: 
+134:     static void resize(int w, int h) throws Exception {
+135:         SwingUtilities.invokeAndWait(() -> {
+136:             PhoneWindow.frame.setExtendedState(Frame.NORMAL);
+137:             PhoneWindow.frame.setSize(w, h);
+138:         });
+139:         sleep(1200);
+140:     }
+141: 
+142:     static void shot(String name) throws Exception {
+143:         Rectangle r = new Rectangle(Toolkit.getDefaultToolkit().getScreenSize());
+144:         ImageIO.write(robot.createScreenCapture(r), "png", new File(out, name + ".png"));
+145:     }
+146: 
+147:     static void click(String label) throws Exception {
+148:         final AbstractButton[] b = {null};
+149:         SwingUtilities.invokeAndWait(() -> {
+150:             if (LookWizard.dlg == null) return;
+151:             for (AbstractButton x : all(LookWizard.dlg.getContentPane(), AbstractButton.class)) if (label.equals(x.getText())) b[0] = x;
+152:         });
+153:         if (b[0] == null) { check(false, "button " + label); return; }
+154:         Point p = b[0].getLocationOnScreen();
+155:         robot.mouseMove(p.x + b[0].getWidth() / 2, p.y + b[0].getHeight() / 2);
+156:         robot.mousePress(InputEvent.BUTTON1_DOWN_MASK);
+157:         robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
+158:         sleep(900);
+159:     }
+160: 
+161:     static <T> T find(Container c, Class<T> k) {
+162:         List<T> l = all(c, k);
+163:         return l.isEmpty() ? null : l.get(0);
+164:     }
+165: 
+166:     static <T> List<T> all(Component c, Class<T> k) {
+167:         List<T> o = new ArrayList<>();
+168:         if (k.isInstance(c)) o.add(k.cast(c));
+169:         if (c instanceof Container) for (Component x : ((Container) c).getComponents()) o.addAll(all(x, k));
+170:         if (c instanceof Window) for (Window w : ((Window) c).getOwnedWindows()) o.addAll(all(w, k));
+171:         return o;
+172:     }
+173: 
+174:     /** مركز خانة كتابة تبدأ عبارتها الإرشادية بالنص المعطى، بإحداثيات الشاشة. */
+175:     static Point hintPoint(String hint) throws Exception {
+176:         final Point[] r = {null};
+177:         SwingUtilities.invokeAndWait(() -> {
+178:             ViewRootImpl root = null;
+179:             View v = null;
+180:             for (ViewRootImpl x : WindowStack.roots()) {
+181:                 View f = findHint(x.getView(), hint);
+182:                 if (f != null) { root = x; v = f; }
+183:             }
+184:             if (v == null) { System.out.println("roots: " + WindowStack.roots().size()); return; }
+185:             float[] o = {v.getWidth() / 2f, v.getHeight() / 2f};
+186:             v.mapToRoot(o);
+187:             Point s = root.pane.getLocationOnScreen();
+188:             float sc = ViewRootImpl.scale();
+189:             r[0] = new Point(s.x + Math.round(o[0] * sc), s.y + Math.round(o[1] * sc));
+190:         });
+191:         return r[0];
+192:     }
+193: 
+194:     static View findHint(View v, String hint) {
+195:         if (v.getVisibility() != View.VISIBLE) return null;
+196:         if (v instanceof TextView && ((TextView) v).getHint() != null && ((TextView) v).getHint().toString().startsWith(hint)) return v;
+197:         if (v instanceof ViewGroup) {
+198:             ViewGroup g = (ViewGroup) v;

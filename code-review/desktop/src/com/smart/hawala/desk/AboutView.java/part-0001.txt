@@ -1,0 +1,65 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.awt.datatransfer.StringSelection;
+6: import java.net.URI;
+7: import javax.swing.*;
+8: 
+9: /** 9.0: «حول التطبيق»: معلومات عن التطبيق، ومن نحن، واتصل بنا (النصوص في AboutText المشترك مع الهاتف). */
+10: final class AboutView extends View {
+11:     AboutView(App app) {
+12:         super(app, "حول التطبيق");
+13:     }
+14: 
+15:     @Override void refresh() {
+16:         clear();
+17:         int w = textWidth();
+18:         subtitle.setText(AboutText.COMPANY + " — الإصدار " + BuildInfo.VERSION + " " + Ui.forOs());
+19:         Ui.Card us = Ui.card();
+20:         us.add(Ui.heading("من نحن"));
+21:         for (String p : AboutText.ABOUT_US) us.add(Ui.para(p, 14, Ui.ink, w));
+22:         add(us);
+23:         space(12);
+24:         Ui.Card c = Ui.card();
+25:         c.add(Ui.heading("اتصل بنا"));
+26:         c.add(Ui.label(Ui.ltr(AboutText.PHONE), 22, Ui.primaryInk, true));
+27:         c.add(Ui.label("واتساب أو اتصال، للدعم الفني وطلب النسخة الكاملة.", 13, Ui.muted, false));
+28:         c.add(Ui.gap(8));
+29:         c.add(Ui.flow(Ui.primary("مراسلة على واتساب", e -> open("https://wa.me/" + AboutText.PHONE_DIGITS)),
+30:                 Ui.ghost("نسخ الرقم", e -> {
+31:                     Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(AboutText.PHONE), null);
+32:                     Ui.toast("نُسخ الرقم");
+33:                 })));
+34:         add(c);
+35:         space(12);
+36:         Ui.Card f = Ui.card();
+37:         f.add(Ui.heading("معلومات عن التطبيق"));
+38:         f.add(Ui.para(AboutText.INTRO, 14, Ui.ink, w));
+39:         f.add(Ui.gap(8));
+40:         for (String[] x : AboutText.FEATURES) {
+41:             f.add(Ui.label(x[0], 14.5f, Ui.ink, true));
+42:             f.add(Ui.para(x[1], 13.5f, Ui.muted, w));
+43:             f.add(Ui.gap(6));
+44:         }
+45:         // 10.12: المنصات الأخرى (الهاتف أيضًا)، وطلبها بالتواصل
+46:         f.add(Ui.gap(4));
+47:         f.add(Ui.label("متوفر على الهاتف والويندوز والماك", 14.5f, Ui.primaryInk, true));
+48:         f.add(Ui.para("للمحاسب الذكي تطبيق للهاتف (أندرويد)، ونسخة للويندوز 10 و11، وللماك بشريحة Apple أو معالج Intel، "
+49:                 + "تتزامن كلها ببيانات واحدة. لطلب نسخة لجهاز آخر تواصل معنا.", 13.5f, Ui.muted, w));
+50:         f.add(Ui.flow(Ui.primary("اطلبها على واتساب", ev -> open("https://wa.me/" + AboutText.PHONE_DIGITS))));
+51:         f.add(Ui.gap(8));
+52:         Entitlements e = License.current;
+53:         f.add(Ui.para(e.pro ? "النسخة الكاملة: كل الميزات مفتوحة." : AboutText.FREE_LINE + "\n" + AboutText.BUY_LINE, 14, Ui.goldInk, w));
+54:         add(f);
+55:         done();
+56:     }
+57: 
+58:     void open(String url) {
+59:         try {
+60:             Desktop.getDesktop().browse(new URI(url));
+61:         } catch (Exception ex) {
+62:             Ui.info(this, "اتصل بنا", "الرقم: " + AboutText.PHONE);
+63:         }
+64:     }
+65: }

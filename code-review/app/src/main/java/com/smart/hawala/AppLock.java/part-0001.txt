@@ -1,0 +1,191 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.app.KeyguardManager;
+5: import android.content.Context;
+6: import android.graphics.Bitmap;
+7: import android.os.SystemClock;
+8: import android.view.Gravity;
+9: import android.widget.EditText;
+10: import android.widget.ImageView;
+11: import android.widget.LinearLayout;
+12: import android.widget.Spinner;
+13: import android.widget.TextView;
+14: import android.view.View;
+15: 
+16: /**
+17:  * 10.3: قفل التطبيق على هذا الجهاز — لكل مستخدم، دون صلاحية «الإعدادات» (لا يمنح أي صلاحية أخرى):
+18:  * <ul>
+19:  *   <li>«بصمة»: البصمة أو قفل شاشة الهاتف.</li>
+20:  *   <li>«رمز»: كلمة سر خاصة بالتطبيق — للهاتف الذي لا بصمة فيه ولا قفل شاشة، أو لمن لا يريد البصمة.</li>
+21:  * </ul>
+22:  * إن اختير قفل البصمة والهاتف بلا بصمة ولا قفل شاشة، يطلب التطبيق كلمة سر له بدل أن يُفتح دون حماية.
+23:  * الإعدادات خاصة بهذا الجهاز (لا تُزامَن ولا تنتقل مع النسخة).
+24:  */
+25: final class AppLock {
+26:     static final String OFF = "off", BIO = "bio", PIN = "pin";
+27:     private final MainActivity a;
+28: 
+29:     AppLock(MainActivity a) { this.a = a; }
+30: 
+31:     String mode() {
+32:         String m = a.db.setting("app_lock", "");
+33:         if (m.isEmpty()) m = "1".equals(a.db.setting("biometric", "0")) ? BIO : OFF;   // ترحيل إعداد 10.2 وما قبله
+34:         if (PIN.equals(m) && !hasPin()) return OFF;
+35:         return m;
+36:     }
+37: 
+38:     boolean on() { return !OFF.equals(mode()); }
+39: 
+40:     boolean hasPin() { return !a.db.setting("app_pin_hash", "").isEmpty(); }
+41: 
+42:     /** هل في الهاتف بصمة أو قفل شاشة (رمز/نمط/كلمة سر)؟ */
+43:     boolean deviceSecure() {
+44:         try {
+45:             KeyguardManager k = (KeyguardManager) a.getSystemService(Context.KEYGUARD_SERVICE);
+46:             return k != null && k.isDeviceSecure();
+47:         } catch (Throwable t) {
+48:             return true;
+49:         }
+50:     }
+51: 
+52:     void setMode(String m) {
+53:         a.db.setSettingQuiet("app_lock", m);
+54:         a.db.setSettingQuiet("biometric", BIO.equals(m) ? "1" : "0");
+55:     }
+56: 
+57:     // ===================================================================================
+58:     // شاشة القفل
+59:     // ===================================================================================
+60: 
+61:     /** يقفل التطبيق ويطلب الفتح بحسب الطريقة. */
+62:     void lockScreen() {
+63:         a.unlocked = false;
+64:         String m = mode();
+65:         if (BIO.equals(m) && !deviceSecure()) {
+66:             // الهاتف بلا بصمة ولا قفل شاشة: لا يُفتح دون حماية
+67:             if (hasPin()) pinScreen("هذا الهاتف بلا بصمة ولا قفل شاشة الآن، فيُفتح التطبيق بكلمة سره.");
+68:             else needPin();
+69:             return;
+70:         }
+71:         if (PIN.equals(m)) {
+72:             pinScreen(null);
+73:             return;
+74:         }
+75:         a.showLock();
+76:         a.authenticate();
+77:     }
+78: 
+79:     /** بعد فشل البصمة لأن الهاتف لا يملكها (11/12/14). */
+80:     void noBiometric() {
+81:         if (hasPin()) pinScreen("لا توجد بصمة ولا قفل شاشة على هذا الهاتف: افتح بكلمة سر التطبيق.");
+82:         else needPin();
+83:     }
+84: 
+85:     /**
+86:      * 10.11 (AUDIT-015): مهلة المحاولات الخاطئة بزمن تشغيل الهاتف (كدخول المستخدمين) لا بساعته، فتقديم الساعة لا ينهيها.
+87:      * إن أُعيد تشغيل الهاتف تبدأ المهلة كاملة من جديد.
+88:      */
+89:     private long lockLeft() {
+90:         long ms = a.db.settingLong("app_lock_ms", 0);
+91:         if (ms <= 0) return 0;
+92:         long now = SystemClock.elapsedRealtime(), start = a.db.settingLong("app_lock_rt", 0);
+93:         if (now < start) {
+94:             start = now;
+95:             a.db.setSettingQuiet("app_lock_rt", "" + start);
+96:         }
+97:         return Math.max(0, ms - (now - start));
+98:     }
+99: 
+100:     private void opened() {
+101:         a.db.setSettingQuiet("app_fails", "0");
+102:         a.db.deleteSetting("app_lock_ms");
+103:         a.unlocked = true;
+104:         a.lastAuthAt = SystemClock.elapsedRealtime();
+105:         a.afterUnlock();
+106:     }
+107: 
+108:     private void header(String msg) {
+109:         a.returning = true;   // 11.5: بلا حركة دخول
+110:         a.base("التطبيق مقفل", null);
+111:         Bitmap bm = a.homeLogo();
+112:         ImageView logo = new ImageView(a);
+113:         if (bm != null) logo.setImageBitmap(bm);
+114:         else logo.setImageResource(R.drawable.ic_logo);
+115:         a.body.addView(logo, a.lp(-1, 100, 16));
+116:         TextView t = a.text(msg, 16, a.dark, false);
+117:         t.setGravity(Gravity.CENTER);
+118:         a.add(t);
+119:     }
+120: 
+121:     void pinScreen(String note) {
+122:         header(note != null ? note : "اكتب كلمة سر التطبيق للمتابعة.");
+123:         final EditText p = a.field("كلمة سر التطبيق");
+124:         Ui.secret(p, false);
+125:         p.setGravity(Gravity.CENTER);
+126:         a.body.addView(p, a.lp(-1, 56, 10));
+127:         a.button("فتح التطبيق", a.primary, v -> {
+128:             long left = lockLeft();
+129:             if (left > 0) {
+130:                 a.toast("محاولات خاطئة كثيرة. انتظر " + UsersScreen.waitText(left) + ".");
+131:                 return;
+132:             }
+133:             String s = p.getText().toString();
+134:             p.setText("");
+135:             if (Pin.verify(s, a.db.setting("app_pin_salt", ""), a.db.setting("app_pin_hash", ""))) opened();
+136:             else {
+137:                 int f = (int) a.db.settingLong("app_fails", 0) + 1;
+138:                 a.db.setSettingQuiet("app_fails", "" + f);
+139:                 long w = Pin.lockoutMillis(f);
+140:                 if (w > 0) {
+141:                     a.db.setSettingQuiet("app_lock_rt", "" + SystemClock.elapsedRealtime());
+142:                     a.db.setSettingQuiet("app_lock_ms", "" + w);
+143:                     a.toast("كلمة السر غير صحيحة. انتظر " + UsersScreen.waitText(w) + ".");
+144:                 } else p.setError("كلمة السر غير صحيحة");
+145:             }
+146:         });
+147:         if (BIO.equals(mode()) && deviceSecure()) a.button("الفتح بالبصمة", a.accent, v -> a.authenticate());
+148:         TextView h = a.text("نسيت كلمة سر التطبيق؟ احذف بيانات التطبيق وأعد الاستعادة من نسخة احتياطية، أو استعمل المزامنة للانضمام من جديد.", 12, a.muted, false);
+149:         h.setGravity(Gravity.CENTER);
+150:         a.add(h);
+151:     }
+152: 
+153:     /** القفل مطلوب والهاتف بلا بصمة ولا كلمة سر للتطبيق: يُطلب وضع كلمة سر الآن. */
+154:     private void needPin() {
+155:         header("هذا الهاتف بلا بصمة ولا قفل شاشة، والتطبيق مضبوط على القفل. ضع كلمة سر للتطبيق ليبقى محميًا.");
+156:         a.button("وضع كلمة سر للتطبيق", a.primary, v -> newPin(() -> {
+157:             setMode(PIN);
+158:             opened();
+159:         }));
+160:         a.button("فتح دون قفل (إيقاف القفل على هذا الهاتف)", a.red, v -> a.confirm("فتح دون قفل",
+161:                 "سيعمل التطبيق على هذا الهاتف دون أي قفل، ويستطيع من يحمل الهاتف رؤية الحسابات. يمكنك وضع كلمة سر لاحقًا من «المزيد ← قفل التطبيق».",
+162:                 "فتح دون قفل", () -> {
+163:                     setMode(OFF);
+164:                     opened();
+165:                 }));
+166:     }
+167: 
+168:     /** كلمة سر جديدة للتطبيق (4 محارف على الأقل، مرتين). */
+169:     void newPin(final Runnable after) {
+170:         final EditText p1 = a.field("كلمة السر (4 محارف على الأقل)"), p2 = a.field("أعد كتابتها");
+171:         Ui.secret(p1, false);
+172:         Ui.secret(p2, false);
+173:         LinearLayout l = new LinearLayout(a);
+174:         l.setOrientation(LinearLayout.VERTICAL);
+175:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+176:         l.addView(p1, a.lp(-1, 52, 2));
+177:         l.addView(p2, a.lp(-1, 52, 2));
+178:         l.addView(a.text("تُطلب عند فتح التطبيق على هذا الجهاز. لا تُرسل لأي مكان.", 12, a.muted, false));
+179:         final AlertDialog d = new AlertDialog.Builder(a).setTitle("كلمة سر التطبيق").setView(l).setPositiveButton("حفظ", null).setNegativeButton("إلغاء", null).create();
+180:         d.setOnShowListener(x -> d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+181:             String s1 = p1.getText().toString();
+182:             if (s1.length() < 4) {
+183:                 p1.setError("4 محارف على الأقل");
+184:                 return;
+185:             }
+186:             if (!s1.equals(p2.getText().toString())) {
+187:                 p2.setError("غير متطابقة");
+188:                 return;
+189:             }
+190:             String salt = Pin.newSalt();
+191:             a.db.setSettingQuiet("app_pin_salt", salt);

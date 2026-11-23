@@ -1,0 +1,136 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.ContentValues;
+4: import android.database.Cursor;
+5: import net.zetetic.database.sqlcipher.SQLiteDatabase;
+6: import java.io.File;
+7: import java.io.FileOutputStream;
+8: import java.io.IOException;
+9: import java.nio.charset.StandardCharsets;
+10: import java.util.ArrayList;
+11: import java.util.Arrays;
+12: import java.util.Base64;
+13: import java.util.HashMap;
+14: import java.util.HashSet;
+15: import java.util.LinkedHashMap;
+16: import java.util.List;
+17: import java.util.Locale;
+18: import java.util.Map;
+19: import java.util.Set;
+20: import java.util.TreeMap;
+21: import java.util.UUID;
+22: import org.json.JSONArray;
+23: import org.json.JSONObject;
+24: 
+25: /**
+26:  * 10.0: طبقة المزامنة داخل قاعدة البيانات (مشتركة: الهاتف والماك والويندوز).
+27:  *
+28:  * <p>الفكرة: كل تغيير في جدول مالي يلتقطه مُشغِّل (Trigger) في سجل التغييرات (sync_chg) داخل المعاملة نفسها، فلا يفوت شيء
+29:  * مهما كان مسار الكود. «الختم» يحوّل التغييرات المكتملة إلى حزمة: صورة كل صف كما هو الآن (مفكوك التشفير المحلي)، بساعة HLC.
+30:  * الجهاز الآخر يطبّق الحزمة كاملة في معاملة واحدة أو لا يطبّقها.
+31:  *
+32:  * <p>قواعد الدقة المحاسبية:
+33:  * <ul>
+34:  *   <li>أرقام الصفوف عالمية: كل جهاز يرقّم من نطاقه (بادئته × 2^32)، فالصف نفسه بالرقم نفسه على كل الأجهزة، والأرصدة
+35:  *       تُشتق دائمًا من مجموع سطور القيود (لا أرقام مخزّنة تُدمج).</li>
+36:  *   <li>القيود تُضاف ولا تُعدَّل: الإلغاء قيد عكسي (REVERSAL) يشير إلى الأصل. إلغاء الحركة نفسها من جهازين = قيدان عكسيان
+37:  *       للأصل نفسه؛ الثاني يُتجاهل عند الوصول (لا يُلغى المبلغ مرتين).</li>
+38:  *   <li>تعديل الحركة نفسها من جهازين: الأسبق بالساعة يبقى، والأحدث يُلغيه الجهاز الذي أنشأه بقيد عكسي عادي، ويُسجَّل
+39:  *       تعارضًا للمراجعة (لا دمج تلقائي للمبالغ).</li>
+40:  *   <li>البيانات غير المالية (اسم مكتب، إعداد…) : الأحدث بالساعة يفوز للصف كله.</li>
+41:  *   <li>صف يشير إلى صف حذفه جهاز آخر (مكتب محذوف مثلًا): لا يُطبَّق ويُسجَّل تعارضًا.</li>
+42:  * </ul>
+43:  */
+44: public final class SyncStore {
+45:     private SyncStore() {}
+46: 
+47:     /** الجداول المتزامنة ومفاتيحها. الترتيب: الأب قبل الابن. */
+48:     static final String[][] TABLES = {
+49:             {"currencies", "code"}, {"users", "id"}, {"offices", "id"}, {"office_currencies", "office_id,code"}, {"tx", "id"}, {"attachments", "id"},
+50:             {"journal_entries", "id"}, {"journal_lines", "id"}, {"opening_balances", "id"}, {"settings", "k"}, {"exchange_rates", "code"},
+51:             {"reconciliations", "id"}, {"reconciliation_lines", "id"}, {"cash_boxes", "id"}, {"cash_moves", "id"}, {"cash_counts", "id"},
+52:             {"cash_clients", "id"}, {"client_moves", "id"},
+53:             // 10.5 (§7): مفاتيح طبيعية (لا تتكرر ولا تضيع بين جهازين)
+54:             {"user_offices", "user_id,office_id"}, {"tx_checks", "uuid"}, {"wa_marks", "uuid"},
+55:             // 10.13: حالة عمل المكتب اليوم (المكتب + اليوم مفتاح طبيعي)
+56:             {"office_work", "office_id,day"},
+57:             // 10.16: سجل العمليات المشترك (إضافة فقط)
+58:             {"audit_feed", "uuid"},
+59:             // 10.17: رسائل المدير إلى المحاسبين
+60:             {"admin_msgs", "uuid"},
+61:             // 10.18: الأمانات والمبالغ المجمّدة
+62:             {"office_holds", "uuid"}};
+63: 
+64:     static final Set<String> ID_TABLES = new HashSet<>();
+65:     static final Map<String, String[]> KEYS = new HashMap<>();
+66:     static {
+67:         for (String[] t : TABLES) {
+68:             KEYS.put(t[0], t[1].split(","));
+69:             if ("id".equals(t[1])) ID_TABLES.add(t[0]);
+70:         }
+71:     }
+72: 
+73:     /** إعدادات لا تُزامَن أبدًا (خاصة بالجهاز أو سرية أو داخلية). */
+74:     static boolean localSetting(String k) {
+75:         // 10.12: تفضيل شخصي («u12.tabs») يُعامل كمفتاحه الأصلي: الألوان تنتقل مع المستخدم لأجهزته، والشريط يبقى لكل جهاز
+76:         if (k != null) k = Db.baseKey(k);
+77:         return k == null || k.startsWith("sync") || k.startsWith("mig") || Db.DEVICE_SETTINGS.contains(k)
+78:                 || k.equals("crypto_v2_done") || k.startsWith("quota") || k.startsWith("license")
+79:                 // 10.5 (AUDIT-004): إعدادات هذا الجهاز وحده: مظهر الكمبيوتر، معرّف عميل Google وسرّه، آخر ما اختاره المستخدم هنا،
+80:                 // الإشعارات، المسودات، النسخ التلقائي، الذكاء الاصطناعي، تفضيلات التصدير والصفحة الرئيسية
+81:                 || k.startsWith("desk_") || k.startsWith("drive_") || k.startsWith("last_") || k.startsWith("notif_") || k.startsWith("draft_")
+82:                 || k.startsWith("auto_backup") || k.startsWith("readable_export") || k.startsWith("ai_") || k.startsWith("scroll_") || k.startsWith("ui_")
+83:                 || DEVICE_ONLY.contains(k);
+84:     }
+85: 
+86:     /** 10.5: مفاتيح محلية إضافية لا تبدأ ببادئة خاصة. */
+87:     static final java.util.Set<String> DEVICE_ONLY = new java.util.HashSet<>(java.util.Arrays.asList(
+88:             "export_format", "export_images", "export_separate", "fee_kind_last", "fee_per_last", "fee_rates_recent", "home_widgets",
+89:             "hw_offices_mode", "recent_offices", "wa_pin_office", "wa_pin_at"));
+90: 
+91:     private static final String[] DDL = {
+92:             "CREATE TABLE IF NOT EXISTS sync_meta(k TEXT PRIMARY KEY,v TEXT)",
+93:             "CREATE TABLE IF NOT EXISTS sync_flag(id INTEGER PRIMARY KEY,cap INTEGER NOT NULL DEFAULT 0)",
+94:             "CREATE TABLE IF NOT EXISTS sync_chg(seq INTEGER PRIMARY KEY AUTOINCREMENT,tbl TEXT NOT NULL,rid TEXT NOT NULL,op TEXT NOT NULL)",
+95:             "CREATE TABLE IF NOT EXISTS sync_clock(tbl TEXT NOT NULL,rid TEXT NOT NULL,hlc TEXT NOT NULL,PRIMARY KEY(tbl,rid))",
+96:             "CREATE TABLE IF NOT EXISTS sync_ids(tbl TEXT PRIMARY KEY,next INTEGER NOT NULL)",
+97:             "CREATE TABLE IF NOT EXISTS sync_outbox(seq INTEGER PRIMARY KEY,name TEXT NOT NULL,data BLOB NOT NULL,hash TEXT NOT NULL,uploaded INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL)",
+98:             "CREATE TABLE IF NOT EXISTS sync_cursor(dev TEXT PRIMARY KEY,seq INTEGER NOT NULL,hash TEXT NOT NULL)",
+99:             "CREATE TABLE IF NOT EXISTS sync_conflicts(id INTEGER PRIMARY KEY AUTOINCREMENT,created_at INTEGER NOT NULL,kind TEXT NOT NULL,tbl TEXT,rid TEXT,"
+100:                     + "detail TEXT,dev TEXT,resolved INTEGER NOT NULL DEFAULT 0,UNIQUE(kind,tbl,rid))",
+101:             // 10.4: بصمة كل صورة (SHA-256 لمحتواها المكشوف) — اسم ملفها المستقل في الخزنة مشتق منها
+102:             "CREATE TABLE IF NOT EXISTS sync_blobs(att_id INTEGER PRIMARY KEY,sha TEXT NOT NULL)"
+103:     };
+104: 
+105:     static String keyExpr(String alias, String[] key) {
+106:         if (key.length == 1) return alias + "." + key[0];
+107:         StringBuilder b = new StringBuilder();
+108:         for (int i = 0; i < key.length; i++) {
+109:             if (i > 0) b.append("||'|'||");
+110:             b.append(alias).append('.').append(key[i]);
+111:         }
+112:         return b.toString();
+113:     }
+114: 
+115:     static void ensureSchema(SQLiteDatabase d) {
+116:         for (String s : DDL) d.execSQL(s);
+117:         // 10.4: الصور التي تحتاجها كل حزمة (تُرفع قبلها)
+118:         boolean hasBlobs = false;
+119:         try (Cursor c = d.rawQuery("PRAGMA table_info(sync_outbox)", null)) {
+120:             while (c.moveToNext()) if ("blobs".equals(c.getString(1))) hasBlobs = true;
+121:         }
+122:         if (!hasBlobs) d.execSQL("ALTER TABLE sync_outbox ADD COLUMN blobs TEXT");
+123:         d.execSQL("INSERT OR IGNORE INTO sync_flag(id,cap) VALUES(1,0)");
+124:         String cap = "(SELECT cap FROM sync_flag WHERE id=1)=1";
+125:         for (String[] t : TABLES) {
+126:             String name = t[0];
+127:             String[] key = KEYS.get(name);
+128:             String nw = keyExpr("NEW", key), od = keyExpr("OLD", key);
+129:             if (name.equals("exchange_rates")) {
+130:                 // أسعار الإنترنت يجلبها كل جهاز بنفسه؛ يُزامَن السعر اليدوي فقط
+131:                 d.execSQL("CREATE TRIGGER IF NOT EXISTS sync1_i_" + name + " AFTER INSERT ON " + name + " WHEN " + cap + " AND NEW.manual_rate IS NOT NULL"
+132:                         + " BEGIN INSERT INTO sync_chg(tbl,rid,op) VALUES('" + name + "'," + nw + ",'U'); END");
+133:                 d.execSQL("CREATE TRIGGER IF NOT EXISTS sync1_u_" + name + " AFTER UPDATE OF manual_rate,manual_at ON " + name + " WHEN " + cap
+134:                         + " BEGIN INSERT INTO sync_chg(tbl,rid,op) VALUES('" + name + "'," + nw + ",'U'); END");
+135:                 continue;
+136:             }

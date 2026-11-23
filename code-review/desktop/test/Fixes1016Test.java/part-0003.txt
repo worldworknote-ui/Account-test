@@ -1,0 +1,131 @@
+286:         check(throwsMsg(() -> A.sendAdminMsg(null, "مرحبا"), null), "غير المدير لا يرسل");
+287:         as(A, admin);
+288:         A.sendAdminMsg(null, "اجتماع الساعة 5 للجميع");
+289:         String only = A.sendAdminMsg(acct, "راجعي حساب النور اليوم");
+290:         check(A.unreadAdminMsgs().isEmpty(), "المرسل لا تظهر له رسائله");
+291:         as(A, clerk);
+292:         check(A.unreadAdminMsgs().size() == 1 && A.unreadAdminMsgs().get(0).body.contains("اجتماع"), "محاسب يرى رسالة «الكل» فقط");
+293:         as(A, acct);
+294:         check(A.unreadAdminMsgs().size() == 2, "والمحاسب المقصود يرى رسالته ورسالة الكل");
+295:         check(A.adminMsgsToNotify().size() == 2 && A.adminMsgsToNotify().isEmpty(), "الإشعار مرة واحدة لكل رسالة");
+296:         A.markAdminMsgRead(only);
+297:         check(A.unreadAdminMsgs().size() == 1, "«قرأتها» تخفيها عنه وحده");
+298:         as(A, admin);
+299:         SmartApp.currentUser = A.user(admin);
+300:         syncAll(eA, eB);
+301:         as(B, acct);
+302:         check(B.unreadAdminMsgs().size() == 2 && B.adminMsgsToNotify().size() == 2, "الرسائل تصل بالمزامنة إلى جهاز المحاسب وتُشعره");
+303:         as(A, admin);
+304:         A.deleteAdminMsg(only);
+305:         syncAll(eA, eB);
+306:         as(B, acct);
+307:         check(B.unreadAdminMsgs().size() == 1, "سحب المدير للرسالة يخفيها عند من لم يقرأها");
+308:         as(A, admin);
+309:         check(A.adminMsgsSent(10).size() == 1, "وقائمة المرسل تعرض الباقي");
+310:         boolean h17 = true;
+311:         for (Db.Check c : A.healthCheck(true)) if (!c.ok) {
+312:             h17 = false;
+313:             System.out.println("      ✗ " + c.title + ": " + c.detail);
+314:         }
+315:         check(h17, "فحص الصحة سليم");
+316:         as(A, 0);
+317:         as(B, 0);
+318: 
+319:         System.out.println("== 8) نسخة احتياطية من مخطط أحدث لا تُستعاد");
+320:         Object[] dv = DeskCoreTest.device("f1016R");
+321:         Context ctxR = (Context) dv[0];
+322:         Db R = (Db) dv[1];
+323:         long off = R.addOffice("مكتب", "", "", "", "", "", null, null, ue, new HashMap<>(), Arrays.asList(new Db.Opening("USD", "لنا", 5000)));
+324:         BackupManager.Created cr = BackupManager.createLocal(ctxR, R, "كلمة-النسخة".toCharArray(), "10.16", m -> {});
+325:         BackupManager.Prepared prep = BackupManager.prepareRestore(ctxR, cr.file, "كلمة-النسخة".toCharArray(), m -> {});
+326:         check(prep.parsed.schema() == Db.VER && prep.parsed.tables.containsKey("audit_feed"), "النسخة تحمل المخطط " + Db.VER + " وجدول السجل المشترك");
+327:         prep.parsed.manifest.put("schema", Db.VER + 1);
+328:         String before = String.valueOf(R.balances(off));
+329:         boolean refused8 = false;
+330:         try {
+331:             BackupManager.applyRestore(ctxR, R, prep, m -> {});
+332:         } catch (Exception e) {
+333:             String msgs = "";
+334:             for (Throwable t = e; t != null; t = t.getCause()) msgs += t.getMessage() + " | ";
+335:             refused8 = msgs.contains("أحدث");
+336:             if (!refused8) System.out.println("      رسالة: " + msgs);
+337:         }
+338:         check(refused8 && String.valueOf(R.balances(off)).equals(before), "رُفضت برسالة واضحة والبيانات لم تُمس");
+339:         BackupManager.Prepared ok = BackupManager.prepareRestore(ctxR, cr.file, "كلمة-النسخة".toCharArray(), m -> {});
+340:         BackupManager.applyRestore(ctxR, R, ok, m -> {});
+341:         check(String.valueOf(R.balances(off)).equals(before), "والنسخة بالمخطط الحالي تُستعاد كما هي");
+342: 
+343:         System.out.println("== 9) ترحيل قاعدة 10.4 إلى المخطط " + Db.VER);
+344:         File src = new File(data, "db-10.4"), homeM = Files.createTempDirectory("sa-1016-mig").toFile();
+345:         MigrationTest.copy(src, homeM);
+346:         Db M = MigrationTest.open(homeM);
+347:         org.json.JSONObject want = new org.json.JSONObject(new String(Files.readAllBytes(new File(homeM, "expect.json").toPath()), "UTF-8"));
+348:         check(want.getString("bal").equals(String.valueOf(new TreeMap<>(M.officeBalances()))), "الأرصدة كما هي بعد الترحيل");
+349:         int ver;
+350:         try (Cursor c = M.getReadableDatabase().rawQuery("PRAGMA user_version", null)) {
+351:             c.moveToFirst();
+352:             ver = c.getInt(0);
+353:         }
+354:         boolean feedTable;
+355:         try (Cursor c = M.getReadableDatabase().rawQuery("SELECT COUNT(*) FROM audit_feed", null)) {
+356:             feedTable = c.moveToFirst() && c.getInt(0) == 0;
+357:         }
+358:         check(ver == Db.VER && feedTable, "المخطط صار " + ver + " وجدول السجل المشترك أُضيف فارغًا");
+359:         // 11.6: سجل العمليات يحتاج صلاحية «سجل العمليات» في طبقة البيانات: يُقرأ هنا بصفة المدير
+360:         for (Model.User mu : M.users(false)) if (Auth.isAdmin(mu)) as(M, mu.id);
+361:         check(!M.auditLogAll(20).isEmpty() && M.auditLogAll(20).size() == M.auditLog(20).size(), "وسجل العمليات القديم يُقرأ كما كان");
+362:         License.current = Entitlements.of(DeskCoreTest.fullGrant(), BuildInfo.BUILD_DATE);
+363: 
+364:         System.out.println("== 10) إضافة ملف النقل: اعتماد رصيد الملف بدل الجمع");
+365:         org.json.JSONObject expect = new org.json.JSONObject(new String(Files.readAllBytes(new File(data, "expect.json").toPath()), "UTF-8"));
+366:         String pw = expect.getJSONObject("A").getString("password");
+367:         Object[] d1 = DeskCoreTest.device("f1016M1");
+368:         Context ctx1 = (Context) d1[0];
+369:         Db M1 = (Db) d1[1];
+370:         License.current = Entitlements.of(DeskCoreTest.fullGrant(), BuildInfo.BUILD_DATE);
+371:         BackupManager.Prepared p1 = BackupManager.prepareRestore(ctx1, new File(data, "A.sba"), pw.toCharArray(), m -> {});
+372:         MergePlan first1 = MergePlan.build(p1.parsed.tables, p1.parsed.manifest, M1.mergeExisting());
+373:         check(first1.ok() && first1.adoptable() == 0, "أول إضافة: كل المكاتب جديدة فلا خيار اعتماد");
+374:         M1.mergeMigration(first1);
+375:         Map<String, Long> fileBal = new TreeMap<>();
+376:         for (Model.Office o : M1.offices()) for (Map.Entry<String, Long> e : M1.balances(o.id).entrySet()) if (e.getValue() != 0) fileBal.put(o.name + "|" + e.getKey(), e.getValue());
+377:         // رصيد إضافي على مكتب موجود، ثم «الملف نفسه» بهوية أخرى (كما لو صُدّر من المحاسب القديم لاحقًا)
+378:         Model.Office any = M1.offices().get(0);
+379:         String anyCur = M1.balances(any.id).keySet().iterator().next();
+380:         M1.addTx(tx(any.id, true, 12345, anyCur, "حركة بعد الإضافة"), null);
+381:         M1.getWritableDatabase().execSQL("DELETE FROM settings WHERE k='merged_files'");
+382:         Map<String, List<org.json.JSONObject>> t2 = new HashMap<>();
+383:         for (Map.Entry<String, List<org.json.JSONObject>> e : p1.parsed.tables.entrySet()) {
+384:             List<org.json.JSONObject> l = new ArrayList<>();
+385:             for (org.json.JSONObject o : e.getValue()) {
+386:                 org.json.JSONObject x = new org.json.JSONObject(o.toString());
+387:                 if (e.getKey().equals("tx")) x.put("uuid", "again-" + x.optString("uuid"));
+388:                 l.add(x);
+389:             }
+390:             t2.put(e.getKey(), l);
+391:         }
+392:         MergePlan sum = MergePlan.build(t2, p1.parsed.manifest, M1.mergeExisting());
+393:         if (!sum.ok()) System.out.println("      خطة: " + sum.errors);
+394:         check(sum.ok() && sum.adoptable() > 0 && sum.newOffices == 0, "الملف مرة ثانية: كل مكاتبه موجودة وعليها أرصدة (" + sum.adoptable() + ")");
+395:         MergePlan.Row row = null;
+396:         for (MergePlan.Row r : sum.rows) if (r.office.equals(any.name) && r.code.equals(anyCur)) row = r;
+397:         check(row != null && row.after == row.current + row.added, "الافتراضي كما كان: الرصيد الحالي + رصيد الملف");
+398:         sum.setAdopt(true);
+399:         check(row.after == row.added, "مع «اعتماد رصيد الملف»: المعاينة = رصيد الملف وحده");
+400:         int txBefore = M1.recentTx(100000).size();
+401:         M1.mergeMigration(sum);
+402:         Map<String, Long> got = new TreeMap<>();
+403:         for (Model.Office o : M1.offices()) for (Map.Entry<String, Long> e : M1.balances(o.id).entrySet()) if (e.getValue() != 0) got.put(o.name + "|" + e.getKey(), e.getValue());
+404:         check(got.equals(fileBal), "بعد الإضافة: رصيد كل مكتب = رصيد الملف تمامًا (لا قديم + جديد)");
+405:         check(M1.recentTx(100000).size() >= txBefore, "لم تُحذف أي حركة من الدفتر (الرصيد السابق أُلغي بقيد تسوية)");
+406:         boolean h = true;
+407:         for (Db.Check c : M1.healthCheck(true)) if (!c.ok) {
+408:             h = false;
+409:             System.out.println("      ✗ " + c.title + ": " + c.detail);
+410:         }
+411:         check(h, "فحص الصحة الكامل سليم بعد الاعتماد");
+412: 
+413:         System.out.println("\n" + passes + " نجح، " + fails + " فشل");
+414:         System.exit(fails == 0 ? 0 : 1);
+415:     }
+416: 

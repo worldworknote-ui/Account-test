@@ -1,0 +1,206 @@
+182:             JButton q = small("؟", "شرح الإطار");
+183:             q.addActionListener(e -> help());
+184:             JButton close = small("×", "إغلاق الإطار (Esc)");
+185:             close.addActionListener(e -> dispose());
+186:             style(copyBtn, "انقل كل النص الذي تحت المربع إلى البرنامج رسالةً واحدة");
+187:             copyBtn.setBackground(new Color(0xFF, 0xF1, 0x76));
+188:             copyBtn.addActionListener(e -> copyBox());
+189:             copyBtn.setVisible(false);
+190:             style(boxBtn, "مربع صغير تضعه فوق رسالة واحدة ثم «نسخ ما في المربع» (بدل الأرقام)");
+191:             boxBtn.addActionListener(e -> setBoxMode(boxBtn.isSelected()));
+192:             btns.add(copyBtn);
+193:             btns.add(pick);
+194:             btns.add(again);
+195:             btns.add(auto);
+196:             btns.add(multi);
+197:             btns.add(boxBtn);
+198:             btns.add(q);
+199:             btns.add(close);
+200:             normalOnly.add(pick);
+201:             normalOnly.add(again);
+202:             normalOnly.add(auto);
+203:             normalOnly.add(multi);
+204:             p.add(btns, BorderLayout.NORTH);
+205:             status.setForeground(Color.WHITE);
+206:             status.setFont(status.getFont().deriveFont(Font.BOLD, 12f));
+207:             status.setBorder(BorderFactory.createEmptyBorder(0, 4, 0, 4));
+208:             JPanel row2 = new JPanel(new BorderLayout(6, 0));
+209:             row2.setOpaque(false);
+210:             row2.setComponentOrientation(ComponentOrientation.RIGHT_TO_LEFT);
+211:             row2.add(status, BorderLayout.CENTER);
+212:             row2.add(send, BorderLayout.LINE_END);
+213:             p.add(row2, BorderLayout.CENTER);
+214:             Mover mv = new Mover(8);
+215:             p.addMouseListener(mv);
+216:             p.addMouseMotionListener(mv);
+217:             status.addMouseListener(mv);
+218:             status.addMouseMotionListener(mv);
+219:             row2.addMouseListener(mv);
+220:             row2.addMouseMotionListener(mv);
+221:             btns.addMouseListener(mv);
+222:             btns.addMouseMotionListener(mv);
+223:             return p;
+224:         }
+225: 
+226:         private void autoLabel() {
+227:             auto.setText(auto.isSelected() ? "قراءة تلقائية: تعمل" : "قراءة تلقائية: متوقفة");
+228:             auto.setBackground(auto.isSelected() ? new Color(0xFF, 0xF1, 0x76) : null);
+229:         }
+230: 
+231:         private JButton small(String s, String tip) {
+232:             JButton b = new JButton(s);
+233:             style(b, tip);
+234:             return b;
+235:         }
+236: 
+237:         private void style(AbstractButton b, String tip) {
+238:             b.setToolTipText(tip);
+239:             b.setFocusable(false);
+240:             b.setMargin(new Insets(2, 6, 2, 6));
+241:             b.setFont(b.getFont().deriveFont(Font.BOLD, 12f));
+242:         }
+243: 
+244:         private void refreshSend() {
+245:             send.setVisible(multi.isSelected());
+246:             send.setText("نقل المحدد (" + chosen.size() + ")");
+247:             send.setEnabled(!chosen.isEmpty());
+248:         }
+249: 
+250:         void say(String s) {
+251:             idle = s == null || s.isEmpty() ? " " : s;
+252:             if (!hovering) status.setText(idle);
+253:         }
+254: 
+255:         // ------------------------------- الحواف -------------------------------
+256: 
+257:         private JWindow edge(int mode) {
+258:             JWindow w = new JWindow(this);
+259:             w.setAlwaysOnTop(true);
+260:             w.setFocusableWindowState(false);
+261:             JPanel p = new JPanel() {
+262:                 @Override protected void paintComponent(Graphics g) {
+263:                     g.setColor(ACCENT);
+264:                     g.fillRect(0, 0, getWidth(), getHeight());
+265:                     // مقبض الزاوية السفلية لتغيير الحجم
+266:                     g.setColor(Color.WHITE);
+267:                     if (mode == 4) {
+268:                         g.fillRect(getWidth() - 22, 2, 18, getHeight() - 4);
+269:                         g.fillRect(4, 2, 18, getHeight() - 4);
+270:                     }
+271:                 }
+272:             };
+273:             p.setToolTipText("اسحب لتغيير الحجم");
+274:             Mover mv = new Mover(mode);
+275:             p.addMouseListener(mv);
+276:             p.addMouseMotionListener(mv);
+277:             w.setContentPane(p);
+278:             return w;
+279:         }
+280: 
+281:         void setArea(Rectangle r) {
+282:             Rectangle sc = screens();
+283:             r = new Rectangle(r);
+284:             r.width = Math.max(minW(), Math.min(r.width, sc.width));
+285:             r.height = Math.max(minH(), Math.min(r.height, sc.height - BAR));
+286:             // الشريط يبقى ظاهرًا على الشاشة
+287:             if (r.y - BAR < sc.y) r.y = sc.y + BAR;
+288:             if (r.x < sc.x - r.width + 80) r.x = sc.x - r.width + 80;
+289:             if (r.x > sc.x + sc.width - 80) r.x = sc.x + sc.width - 80;
+290:             if (r.y > sc.y + sc.height - 40) r.y = sc.y + sc.height - 40;
+291:             area = r;
+292:             setBounds(r.x, r.y - BAR, r.width, BAR + EDGE);
+293:             left.setBounds(r.x, r.y + EDGE, EDGE, r.height - 2 * EDGE);
+294:             right.setBounds(r.x + r.width - EDGE, r.y + EDGE, EDGE, r.height - 2 * EDGE);
+295:             bottom.setBounds(r.x, r.y + r.height - EDGE, r.width, EDGE);
+296:             validate();
+297:         }
+298: 
+299:         /** مكان الإطار المحفوظ على هذا الجهاز. */
+300:         boolean restore() {
+301:             Rectangle sc = screens();
+302:             String s = prefs == null ? "" : prefs.get("cap_bounds", "");
+303:             try {
+304:                 String[] p = s.split(",");
+305:                 if (p.length == 4) {
+306:                     Rectangle r = new Rectangle(Integer.parseInt(p[0].trim()), Integer.parseInt(p[1].trim()), Integer.parseInt(p[2].trim()), Integer.parseInt(p[3].trim()));
+307:                     if (sc.intersects(r)) {
+308:                         setArea(r);
+309:                         return true;
+310:                     }
+311:                 }
+312:             } catch (Exception ignored) {
+313:                 // إعداد تالف
+314:             }
+315:             Rectangle b = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
+316:             int w = Math.min(460, b.width - 40), h = Math.min(600, b.height - BAR - 40);
+317:             setArea(new Rectangle(b.x + b.width - w - 60, b.y + BAR + Math.max(10, (b.height - h - BAR) / 2), w, h));
+318:             return false;
+319:         }
+320: 
+321:         private void saveBounds() {
+322:             if (prefs != null && isDisplayable()) prefs.put("cap_bounds", area.x + "," + area.y + "," + area.width + "," + area.height);
+323:         }
+324: 
+325:         void showAll() {
+326:             setVisible(true);
+327:             left.setVisible(true);
+328:             right.setVisible(true);
+329:             bottom.setVisible(true);
+330:             watch.start();
+331:         }
+332: 
+333:         void toFrontAll() {
+334:             toFront();
+335:             left.toFront();
+336:             right.toFront();
+337:             bottom.toFront();
+338:             for (JWindow b : badgeWins) b.toFront();
+339:         }
+340: 
+341:         /** داخل الإطار (حيث تُقرأ الرسائل) بإحداثيات الشاشة. */
+342:         Rectangle inner() {
+343:             return new Rectangle(area.x + EDGE, area.y + EDGE, area.width - 2 * EDGE, area.height - 2 * EDGE);
+344:         }
+345: 
+346:         /** حُرّك الإطار أو تغيّر حجمه: تُمسح الأرقام وتُقرأ الرسائل بعد أن يتوقف. */
+347:         void moved() {
+348:             clearBadges();
+349:             lastSig = null;
+350:             pending = false;
+351:             if (!boxMode) settle.restart();
+352:             save.restart();
+353:         }
+354: 
+355:         /** 12.5: تشغيل «مربع النسخ» أو الرجوع لوضع الأرقام. */
+356:         void setBoxMode(boolean on) {
+357:             if (on == boxMode) return;
+358:             settle.stop();
+359:             clearBadges();
+360:             bubbles.clear();
+361:             chosen.clear();
+362:             multi.setSelected(false);
+363:             refreshSend();
+364:             boxMode = on;
+365:             boxBtn.setSelected(on);
+366:             boxBtn.setText(on ? "وضع الأرقام" : "مربع نسخ");
+367:             copyBtn.setVisible(on);
+368:             for (Component c : normalOnly) c.setVisible(!on);
+369:             if (on) {
+370:                 beforeBox = new Rectangle(area);
+371:                 Rectangle in = inner();
+372:                 int w = Math.min(380, Math.max(BOX_MIN_W, in.width)), h = 150;
+373:                 setArea(new Rectangle(in.x + (in.width - w) / 2, in.y + Math.max(0, (in.height - h) / 2), w, h));
+374:                 say("ضع المربع فوق رسالة (اسحبه من شريطه، وغيّر حجمه من حوافه) ثم «نسخ ما في المربع».");
+375:             } else {
+376:                 if (beforeBox != null) setArea(beforeBox);
+377:                 lastSig = null;
+378:                 read();
+379:             }
+380:             validate();
+381:             repaint();
+382:         }
+383: 
+384:         /** 12.5: كل ما تحت المربع نصًا واحدًا (المرسل والوقت يُفصلان كما في الفقاعة). */
+385:         void copyBox() {
+386:             if (reading || !isShowing()) return;
+387:             reading = true;

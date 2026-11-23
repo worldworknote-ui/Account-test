@@ -1,0 +1,130 @@
+824:                     : plan.adoptable() + " رصيد لمكاتب موجودة سيُجمع مع رصيد الملف. إن كان الملف يحمل الرصيد الأحدث الكامل (لا فرقًا يُضاف) ففعّل هذا الخيار.", 13, a.muted, false));
+825:         }
+826:         if (plan.ok()) {
+827:             a.hint("راجع كل سطر: «الآن» رصيد المكتب في التطبيق، «يُضاف» من الملف، «بعد الإضافة» ما سيصبح. "
+828:                     + "إن ظهر مكتب «جديد» وهو موجود عندك باسم مختلف قليلًا، ألغِ وعدّل اسمه في أداة النقل (الخطوة 4) ليطابق اسمه هنا.");
+829:             for (MergePlan.Row r : plan.rows) {
+830:                 LinearLayout x = a.card();
+831:                 LinearLayout h = a.row();
+832:                 h.addView(a.text(r.office, 15, a.ink, true), new LinearLayout.LayoutParams(0, -2, 1));
+833:                 h.addView(a.chip(r.isNew ? "جديد" : r.approximate ? "موجود (اسم مقارب)" : "موجود", r.isNew ? a.primaryInk : a.goldInk,
+834:                         r.isNew ? a.primarySoft : a.goldSoft), new LinearLayout.LayoutParams(-2, -2));
+835:                 x.addView(h);
+836:                 x.addView(a.text(r.code + (r.txCount > 0 ? "   •   " + r.txCount + " حركة" : ""), 13, a.muted, false));
+837:                 boolean rep = plan.adopt && !r.isNew && r.current != 0;
+838:                 x.addView(a.text("الآن: " + Model.bal(r.current, r.decimals) + (rep ? " (يُلغى بقيد تسوية)" : "") + "\n" + (rep ? "رصيد الملف: " : "يُضاف: ")
+839:                         + Model.bal(r.added, r.decimals) + "\n" + (rep ? "يُعتمد: " : "بعد الإضافة: ") + Model.bal(r.after, r.decimals), 14, a.dark, false));
+840:             }
+841:         }
+842:         LinearLayout foot = a.row();
+843:         Button go = a.makeButton("إضافة الآن", a.primary, v -> mergeApply(file, temporary, plan));
+844:         go.setEnabled(plan.ok() && !over);
+845:         if (!plan.ok() || over) go.setAlpha(0.45f);
+846:         foot.addView(go, new LinearLayout.LayoutParams(0, a.dp(50), 1));
+847:         LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-2, a.dp(50));
+848:         cp.setMargins(a.dp(8), 0, 0, 0);
+849:         foot.addView(a.makeButton("إلغاء", Color.rgb(130, 130, 130), v -> cancel.run()), cp);
+850:         a.footer(foot);
+851:     }
+852: 
+853:     private void pickNew(final File file, final boolean temporary, final BackupManager.Prepared prep, final MergePlan plan, final int allowed) {
+854:         final List<MergePlan.Office> news = plan.newOfficeList();
+855:         if (allowed <= 0) {
+856:             new AlertDialog.Builder(a).setTitle("لا مكان لمكتب جديد").setMessage("عندك الحد الأقصى من المكاتب. احذف مكتبًا لا تحتاجه فيعود مكانه، "
+857:                     + "أو أضف الملف إلى مكاتب بالأسماء نفسها، أو فعّل النسخة الكاملة.").setPositiveButton("حسنًا", null).show();
+858:             return;
+859:         }
+860:         String[] names = new String[news.size()];
+861:         final boolean[] on = new boolean[news.size()];
+862:         for (int i = 0; i < news.size(); i++) {
+863:             names[i] = news.get(i).name;
+864:             on[i] = i < allowed;
+865:         }
+866:         new AlertDialog.Builder(a).setTitle("اختر حتى " + allowed + " من المكاتب الجديدة").setMultiChoiceItems(names, on, (d, w, c) -> on[w] = c)
+867:                 .setPositiveButton("تم", (d, w) -> {
+868:                     java.util.Set<Long> keep = new java.util.HashSet<>();
+869:                     for (int i = 0; i < on.length; i++) if (on[i]) keep.add(news.get(i).fileId);
+870:                     if (keep.size() > allowed) {
+871:                         a.toast("اخترت " + keep.size() + "، والمتاح " + allowed + " فقط");
+872:                         pickNew(file, temporary, prep, plan, allowed);
+873:                         return;
+874:                     }
+875:                     plan.keepNew(keep);
+876:                     mergePreview(file, temporary, prep, plan);
+877:                 }).setNegativeButton("إلغاء", null).show();
+878:     }
+879: 
+880:     private static String newCodes(MergePlan plan) {
+881:         StringBuilder b = new StringBuilder();
+882:         for (MergePlan.NewCurrency n : plan.newCurrencies) b.append(b.length() > 0 ? "، " : "").append(n.code);
+883:         return b.toString();
+884:     }
+885: 
+886:     private void mergeApply(final File file, final boolean temporary, final MergePlan plan) {
+887:         a.busy("جارٍ حفظ نسخة أمان ثم الإضافة والتحقق…", p -> {
+888:             Snapshot.take(a, a.db, "إضافة ملف النقل");
+889:             p.update("جارٍ الإضافة والتحقق من الأرصدة…");
+890:             return a.db.mergeMigration(plan);
+891:         }, res -> {
+892:             BackupManager.clearStaging(a);
+893:             if (temporary) file.delete();
+894:             a.restoreInput = null;
+895:             new AlertDialog.Builder(a).setTitle("تمت الإضافة ✓")
+896:                     .setMessage("أُضيف " + plan.txs.size() + " حركة و " + plan.openings.size() + " رصيد سابق إلى " + plan.offices.size() + " مكتب ("
+897:                             + res + " جديد)" + (plan.adopt ? "، واعتُمد رصيد الملف للمكاتب الموجودة بدل جمعه" : "") + "، وتحقق التطبيق أن رصيد كل مكتب صار كما في المعاينة تمامًا.\n\n"
+898:                             + "إن لم تكن هذه النتيجة المطلوبة: الإعدادات ← النسخ الاحتياطي ← «التراجع عن إضافة ملف النقل».")
+899:                     .setPositiveButton("حسنًا", null).show();
+900:             a.showHome();
+901:         });
+902:     }
+903: 
+904:     /**
+905:      * 9.0: النسخة المجانية تتسع لـ 9 مكاتب: نسخة فيها أكثر لا تُستعاد كلها، بل يختار المستخدم المكاتب التي يريدها
+906:      * (مقترحة: الأكثر حركات)، فتُستعاد بكل حركاتها وأرصدتها، ويبقى الصندوق والإعدادات كما في النسخة.
+907:      */
+908:     private void pickOffices(final File file, final boolean temporary, final BackupManager.Prepared prep, final long max, final Runnable back) {
+909:         final List<BackupFormat.OfficeInfo> infos = BackupFormat.officeSummaries(prep.parsed);
+910:         Collections.sort(infos, (x, y) -> x.txCount != y.txCount ? Long.compare(y.txCount, x.txCount) : Long.compare(y.lastTx, x.lastTx));
+911:         final java.util.Set<Long> sel = new java.util.LinkedHashSet<>();
+912:         if (prep.keep != null) sel.addAll(prep.keep);
+913:         else for (BackupFormat.OfficeInfo o : infos) if (sel.size() < max) sel.add(o.id);
+914:         final Runnable cancel = () -> {
+915:             BackupManager.clearStaging(a);
+916:             if (temporary) file.delete();
+917:             a.restoreInput = null;
+918:             show();
+919:         };
+920:         a.base("اختر المكاتب (" + max + " كحد أقصى)", cancel);
+921:         LinearLayout c = a.card();
+922:         c.addView(a.text("في النسخة " + infos.size() + " مكتبًا، والنسخة المجانية تتسع لـ " + max + ".", 16, a.ink, true));
+923:         c.addView(a.text("اختر المكاتب التي تريد استعادتها: تُستعاد بكل حركاتها وأرصدتها كما في النسخة، والباقي لا يُستعاد. "
+924:                 + "اقترحنا الأكثر حركات؛ غيّر الاختيار كما تريد. لاستعادة الكل فعّل النسخة الكاملة.", 13, a.muted, false));
+925:         final TextView counter = a.add(a.text("", 15, a.primaryInk, true));
+926:         final Map<String, Integer> dec = a.db.decimalsMap();
+927:         final List<CheckBox> boxes = new ArrayList<>();
+928:         final Button[] go = new Button[1];
+929:         final Runnable update = () -> {
+930:             counter.setText("المختار: " + sel.size() + " من " + max);
+931:             counter.setTextColor(sel.size() > max ? a.red : a.primaryInk);
+932:             if (go[0] != null) {
+933:                 boolean ok = !sel.isEmpty() && sel.size() <= max;
+934:                 go[0].setEnabled(ok);
+935:                 go[0].setAlpha(ok ? 1f : 0.45f);
+936:             }
+937:         };
+938:         for (final BackupFormat.OfficeInfo o : infos) {
+939:             LinearLayout card = a.card();
+940:             final CheckBox cb = new CheckBox(a);
+941:             cb.setText(o.name.isEmpty() ? "مكتب #" + o.id : o.name);
+942:             cb.setTextSize(16);
+943:             cb.setChecked(sel.contains(o.id));
+944:             card.addView(cb);
+945:             List<String> parts = new ArrayList<>();
+946:             for (Map.Entry<String, Long> e : o.balances.entrySet()) {
+947:                 if (e.getValue() == 0) continue;
+948:                 Integer d = dec.get(e.getKey());
+949:                 parts.add("\u2066" + Model.fmt(Math.abs(e.getValue()), d == null ? 2 : d) + " " + e.getKey() + "\u2069 " + (e.getValue() > 0 ? "لنا" : "علينا"));
+950:             }
+951:             card.addView(a.text(o.txCount + " حركة" + (o.lastTx > 0 ? " — آخرها " + Model.day(o.lastTx) : "") + (o.active ? "" : " — موقوف")
+952:                     + (parts.isEmpty() ? "\nالرصيد صفر" : "\n" + Model.join(parts, "   •   ")), 13, a.muted, false));
+953:             cb.setOnCheckedChangeListener((b, on) -> {

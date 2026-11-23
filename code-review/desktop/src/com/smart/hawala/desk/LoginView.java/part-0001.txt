@@ -1,0 +1,195 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.util.ArrayList;
+6: import java.util.List;
+7: import javax.swing.*;
+8: 
+9: /** شاشة الدخول (عند تفعيل المستخدمين) وأدوات الرمز السري المشتركة: المحاولات الخاطئة، رمز الاسترداد، تأكيد المدير. */
+10: final class LoginView extends View {
+11:     LoginView(App app) {
+12:         super(app, "تسجيل الدخول");
+13:     }
+14: 
+15:     @Override void refresh() {
+16:         clear();
+17:         JPanel center = Ui.column();
+18:         Ui.Card c = Ui.card();
+19:         c.setMaximumSize(new Dimension(520, 2000));
+20:         JLabel logo = new JLabel(new ImageIcon(Main.appIcon(84)));
+21:         logo.setAlignmentX(Component.CENTER_ALIGNMENT);
+22:         c.add(logo);
+23:         String office = db.setting("office_name", "").trim();
+24:         JLabel on = Ui.label(office.isEmpty() ? app.shortTitle() : office, 22, Ui.primaryInk, true);
+25:         on.setAlignmentX(Component.CENTER_ALIGNMENT);
+26:         c.add(on);
+27:         c.add(Ui.gap(4));
+28:         JLabel hint = Ui.label("اكتب اسم المستخدم ورمزك السري", 14, Ui.muted, false);
+29:         hint.setAlignmentX(Component.CENTER_ALIGNMENT);
+30:         c.add(hint);
+31:         c.add(Ui.gap(14));
+32:         // 10.2: لا تُعرض أسماء المستخدمين؛ كل شخص يكتب اسمه
+33:         Model.User remembered = db.rememberedUser();
+34:         Ui.Field name = Ui.field("اسم المستخدم");
+35:         name.setText(remembered != null ? remembered.name : db.setting("last_login_name", ""));
+36:         name.setMaximumSize(new Dimension(Integer.MAX_VALUE, 44));
+37:         JPasswordField pin = Ui.password();
+38:         pin.setFont(Ui.font(20, true));
+39:         pin.setHorizontalAlignment(JTextField.CENTER);
+40:         pin.setMaximumSize(new Dimension(Integer.MAX_VALUE, 46));
+41:         JCheckBox remember = Ui.check("تذكرني على هذا الجهاز (يُفتح البرنامج بحسابي مباشرة)", remembered != null || "1".equals(db.setting("remember_default", "0")));
+42:         c.add(Ui.labeled("اسم المستخدم", name));
+43:         c.add(Ui.gap(6));
+44:         c.add(Ui.labeled("الرمز السري", pin));
+45:         c.add(Ui.gap(6));
+46:         c.add(Ui.row(remember, Box.createHorizontalGlue()));
+47:         c.add(Ui.gap(10));
+48:         Runnable go = () -> login(name.val(), new String(pin.getPassword()), remember.isSelected(), pin);
+49:         pin.addActionListener(e -> go.run());
+50:         name.addActionListener(e -> pin.requestFocusInWindow());
+51:         Ui.Btn enter = Ui.button("دخول", Ui.primary, e -> go.run());
+52:         enter.setAlignmentX(Component.CENTER_ALIGNMENT);
+53:         enter.setMaximumSize(new Dimension(Integer.MAX_VALUE, 46));
+54:         c.add(enter);
+55:         c.add(Ui.gap(8));
+56:         SwingUtilities.invokeLater(() -> (name.val().isEmpty() ? name : pin).requestFocusInWindow());
+57:         Ui.Btn forgot = Ui.ghost("نسيت الرمز؟", e -> forgot());
+58:         forgot.setAlignmentX(Component.CENTER_ALIGNMENT);
+59:         c.add(forgot);
+60:         if (SyncEngine.enabled(db)) {
+61:             c.add(Ui.gap(10));
+62:             JLabel sh = Ui.label("الحسابات من الجهاز الرئيسي في المزامنة. لا تجد اسمك؟ اطلب من المدير إنشاءه ثم حدّث.", 12.5f, Ui.muted, false);
+63:             sh.setAlignmentX(Component.CENTER_ALIGNMENT);
+64:             c.add(sh);
+65:             Ui.Btn up = Ui.ghost("تحديث الحسابات (مزامنة الآن)", e -> {
+66:                 SyncView.now(app);
+67:                 new Timer(6000, x -> {
+68:                     ((Timer) x.getSource()).stop();
+69:                     if (app.locked) refresh();
+70:                 }).start();
+71:             });
+72:             up.setAlignmentX(Component.CENTER_ALIGNMENT);
+73:             c.add(up);
+74:         }
+75:         JPanel wrap = new JPanel(new GridBagLayout());
+76:         wrap.setOpaque(false);
+77:         wrap.add(c);
+78:         center.add(Ui.gap(40));
+79:         center.add(wrap);
+80:         add(center);
+81:         done();
+82:     }
+83: 
+84:     // ===================================================================================
+85:     // المحاولات الخاطئة (محفوظة؛ الانتظار يتضاعف)
+86:     // ===================================================================================
+87: 
+88:     static long remaining(Db db) {
+89:         long until = db.settingLong("login_locked_until", 0);
+90:         long now = Clock.now();
+91:         if (until > now + 2 * 3600000L) until = now + 3600000L;   // ساعة مقدَّمة لا تمد الانتظار بلا حد
+92:         return Math.max(0, until - now);
+93:     }
+94: 
+95:     static int recordFail(Db db, String who, long userId) {
+96:         int f = (int) db.settingLong("login_fails", 0) + 1;
+97:         db.setSettingQuiet("login_fails", "" + f);
+98:         long ms = Pin.lockoutMillis(f);
+99:         if (ms > 0) db.setSettingQuiet("login_locked_until", "" + (Clock.now() + ms));
+100:         String prev = Db.currentUserName;
+101:         Db.currentUserName = who;
+102:         db.audit("LOGIN_FAILED", "user", userId, "محاولة " + f);
+103:         Db.currentUserName = prev;
+104:         return f;
+105:     }
+106: 
+107:     static void resetFails(Db db) {
+108:         db.setSettingQuiet("login_fails", "0");
+109:         db.deleteSetting("login_locked_until");
+110:     }
+111: 
+112:     static String waitText(long ms) {
+113:         long s = (ms + 999) / 1000;
+114:         if (s < 60) return s + " ثانية";
+115:         return (s + 59) / 60 + " دقيقة";
+116:     }
+117: 
+118:     static boolean canTry(Db db) {
+119:         long w = remaining(db);
+120:         if (w <= 0) return true;
+121:         Ui.toast("محاولات خاطئة كثيرة. انتظر " + waitText(w) + " ثم أعد المحاولة.");
+122:         return false;
+123:     }
+124: 
+125:     /** نافذة رمز سري؛ null عند الإلغاء. */
+126:     static String askPin(Component parent, String title, String msg) {
+127:         JPanel c = Ui.column();
+128:         if (msg != null && !msg.isEmpty()) {
+129:             c.add(Ui.para(msg, 14, Ui.ink, 320));
+130:             c.add(Ui.gap(8));
+131:         }
+132:         JPasswordField p = Ui.password();
+133:         p.setFont(Ui.font(22, true));
+134:         p.setHorizontalAlignment(JTextField.CENTER);
+135:         c.add(p);
+136:         c.setPreferredSize(new Dimension(340, c.getPreferredSize().height));
+137:         SwingUtilities.invokeLater(p::requestFocusInWindow);
+138:         p.addAncestorListener(new javax.swing.event.AncestorListener() {
+139:             @Override public void ancestorAdded(javax.swing.event.AncestorEvent e) { p.requestFocusInWindow(); }
+140: 
+141:             @Override public void ancestorRemoved(javax.swing.event.AncestorEvent e) {}
+142: 
+143:             @Override public void ancestorMoved(javax.swing.event.AncestorEvent e) {}
+144:         });
+145:         if (!Ui.form(parent, title, Ui.rtl(c), "متابعة")) return null;
+146:         return new String(p.getPassword());
+147:     }
+148: 
+149:     void login(String n, String pin, boolean remember, JPasswordField field) {
+150:         if (!canTry(db)) return;
+151:         field.setText("");
+152:         Model.User u = db.userByName(n);
+153:         if (u != null && db.verifyPin(u.id, pin)) {
+154:             resetFails(db);
+155:             db.setSettingQuiet("last_login_name", u.name);
+156:             db.setSettingQuiet("remember_default", remember ? "1" : "0");
+157:             if (remember) db.rememberUser(u.id);
+158:             else db.forgetUser();
+159:             Db.currentUserName = u.name;
+160:             db.audit("LOGIN", "user", u.id, "desk");
+161:             UsersView.reauthAt = Clock.now();
+162:             app.loggedIn(u);
+163:         } else {
+164:             int f = recordFail(db, n.isEmpty() ? "?" : n, u == null ? 0 : u.id);
+165:             long w = Pin.lockoutMillis(f);
+166:             Ui.message(this, "تعذر الدخول", "الاسم أو الرمز غير صحيح." + (w > 0 ? "\nانتظر " + waitText(w) + " قبل المحاولة التالية." : ""), JOptionPane.WARNING_MESSAGE);
+167:         }
+168:     }
+169: 
+170:     void pin(Model.User u) {
+171:         if (!canTry(db)) return;
+172:         String pin = askPin(this, u.name, "الرمز السري");
+173:         if (pin == null) return;
+174:         if (remaining(db) > 0) {
+175:             canTry(db);
+176:             return;
+177:         }
+178:         if (db.verifyPin(u.id, pin)) {
+179:             resetFails(db);
+180:             Db.currentUserName = u.name;
+181:             db.audit("LOGIN", "user", u.id, "mac");
+182:             UsersView.reauthAt = Clock.now();
+183:             app.loggedIn(u);
+184:         } else {
+185:             int f = recordFail(db, u.name, u.id);
+186:             long w = Pin.lockoutMillis(f);
+187:             Ui.message(this, "رمز خاطئ", w > 0 ? "انتظر " + waitText(w) + " قبل المحاولة التالية." : "بقيت " + Math.max(0, 5 - f) + " محاولة قبل الانتظار.",
+188:                     JOptionPane.WARNING_MESSAGE);
+189:         }
+190:     }
+191: 
+192:     void forgot() {
+193:         String msg = "• الموظف: اطلب من المدير تغيير رمزك من «المستخدمون».\n\n"
+194:                 + "• المدير: أدخل رمز الاسترداد الذي حفظته عند تفعيل المستخدمين (مثل ABCD-EFGH-JKMN-PQRS).";
+195:         if (!db.hasRecoveryCode()) {

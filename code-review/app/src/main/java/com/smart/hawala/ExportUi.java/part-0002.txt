@@ -1,0 +1,164 @@
+179:     /** 11.3: قسم «الأمانات والمبالغ المجمّدة» في الكشف (المفتوحة الآن، للعملات المختارة). */
+180:     void addHolds(Report r, Model.Office o, Set<String> codes) {
+181:         List<Db.Hold> hs = new ArrayList<>();
+182:         for (Db.Hold h : a.db.holds(o.id, true)) if (codes == null || codes.contains(h.currency)) hs.add(h);
+183:         if (hs.isEmpty()) return;
+184:         Map<String, String> names = a.db.currencyNames();
+185:         Report.Section s = r.section("الأمانات والمبالغ المجمّدة", "الأمانات");
+186:         s.note = "الأمانة المنفصلة لا تدخل في الرصيد. المجمّد جزء من الرصيد معلَّم كمجمّد. القائمة: المفتوحة حتى الآن.";
+187:         s.col("البيان", 2f, Report.TEXT).col("العملة", 1.2f, Report.TEXT).col("المبلغ", 1.3f, Report.TEXT).col("منذ", 1.2f, Report.TEXT).col("ملاحظة", 2f, Report.TEXT);
+188:         for (Db.Hold h : hs) {
+189:             String nm = names.get(h.currency);
+190:             s.row(Report.NORMAL, h.label(), nm == null ? h.currency : nm, Model.fmt(h.amount, a.db.decimals(h.currency)), Model.day(h.at), Model.nz(h.note));
+191:         }
+192:     }
+193: 
+194:     void balancesDialog(final boolean includeZero) {
+195:         List<View> extras = new ArrayList<>();
+196:         final CheckBox zero = new CheckBox(a);
+197:         zero.setText("تضمين المكاتب ذات الرصيد الصفري");
+198:         zero.setChecked(includeZero);
+199:         extras.add(zero);
+200:         open("تصدير أرصدة كل المكاتب", "لكل مكتب ولكل عملة: كل ما لنا، كل ما علينا، ثم الرصيد، مع الإجمالي لكل عملة.", extras, false,
+201:                 "أرصدة كل المكاتب",
+202:                 () -> {
+203:                     a.balancesScreen.show();
+204:                     balancesDialog(includeZero);
+205:                 },
+206:                 (images, st) -> Collections.singletonList(a.balancesScreen.report(zero.isChecked())));
+207:     }
+208: 
+209:     void dailyDialog(final long from, final long to) {
+210:         open("تصدير التقرير اليومي", "اليوم: " + Model.day(from), new ArrayList<View>(), true, "التقرير اليومي " + Model.day(from),
+211:                 () -> {
+212:                     a.dailyScreen.show(from);
+213:                     dailyDialog(from, to);
+214:                 },
+215:                 (images, st) -> {
+216:                     Db.TxFilter f = new Db.TxFilter();
+217:                     f.from = from;
+218:                     f.to = to;
+219:                     f.includeCancelled = true;
+220:                     List<Model.Tx> txs = a.db.txLog(f);
+221:                     return Collections.singletonList(Reports.daily(Model.day(from), a.db.dailyStats(from, to), txs, a.db.officeNames(), a.db.decimalsMap(),
+222:                             a.db.setting("office_name", ""), Clock.now(), images ? attachments(txs) : null));
+223:                 });
+224:     }
+225: 
+226:     void listDialog(final String title, final List<String> filters, final List<Model.Tx> txs) {
+227:         open("تصدير: " + title, "عدد الحركات: " + txs.size() + (filters.isEmpty() ? "" : "\n" + Model.join(filters, " • ")),
+228:                 new ArrayList<View>(), true, title,
+229:                 () -> {
+230:                     a.logScreen.show("نتائج البحث".equals(title));
+231:                     listDialog(title, filters, txs);
+232:                 },
+233:                 (images, st) -> Collections.singletonList(Reports.txList(title, filters, txs, a.db.officeNames(), a.db.decimalsMap(), a.db.setting("office_name", ""),
+234:                         Clock.now(), images ? attachments(txs) : null)));
+235:     }
+236: 
+237:     /** 8.0: تصدير تقرير جاهز (تقارير صاحب المكتب). */
+238:     void reportDialog(final String title, final Runnable reopen, final Build build) {
+239:         open("تصدير: " + title, null, new ArrayList<View>(), false, title, reopen, build);
+240:     }
+241: 
+242:     private Map<Long, List<Long>> attachments(List<Model.Tx> txs) {
+243:         Map<Long, Integer> counts = a.db.attachmentCounts(null);
+244:         Map<Long, List<Long>> m = new HashMap<>();
+245:         for (Model.Tx t : txs) {
+246:             Integer n = counts.get(t.id);
+247:             if (n != null && n > 0) m.put(t.id, a.db.attachmentIds(t.id));
+248:         }
+249:         return m;
+250:     }
+251: 
+252:     // ===================================================================================
+253:     // النافذة العامة
+254:     // ===================================================================================
+255: 
+256:     private void open(String title, String info, List<View> extras, boolean imagesPossible, final String subject,
+257:                       final Runnable reopen, final Build build) {
+258:         if (!a.require(Auth.Perm.EXPORT)) return;
+259:         ScrollView sv = new ScrollView(a);
+260:         LinearLayout l = new LinearLayout(a);
+261:         l.setOrientation(LinearLayout.VERTICAL);
+262:         l.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+263:         l.setPadding(a.dp(16), a.dp(6), a.dp(16), a.dp(6));
+264:         sv.addView(l);
+265:         if (info != null && !info.isEmpty()) l.addView(a.text(info, 14, a.dark, false));
+266:         l.addView(a.label("صيغة الملف"));
+267:         final Ui.Seg fmt = a.new Seg(new String[]{"PDF", "صور PNG", "Excel"}, null, lastFormat(), false);
+268:         l.addView(fmt.view);
+269:         for (View v : extras) l.addView(v);
+270:         final CheckBox img = new CheckBox(a);
+271:         img.setText("تضمين صور الحركات (الإيصالات) داخل الكشف");
+272:         final TextView imgNote = a.text("", 12, a.muted, false);
+273:         if (imagesPossible) {
+274:             img.setChecked("1".equals(a.db.setting("export_images", "0")));
+275:             l.addView(img);
+276:             l.addView(imgNote);
+277:         }
+278:         final Runnable sync = () -> {
+279:             boolean x = fmt.selected == XLSX;
+280:             img.setEnabled(!x);
+281:             imgNote.setText(x ? "ملف Excel لا يحمل الصور؛ اختر PDF أو صور لتضمينها." : "");
+282:         };
+283:         fmt.listener = i -> sync.run();
+284:         sync.run();
+285: 
+286:         final AlertDialog[] dlg = new AlertDialog[1];
+287:         final Ui.OnPick go = how -> {
+288:             final int format = fmt.selected;
+289:             final boolean images = imagesPossible && format != XLSX && img.isChecked();
+290:             a.db.setSettingQuiet("export_format", "" + format);
+291:             if (imagesPossible && format != XLSX) a.db.setSettingQuiet("export_images", img.isChecked() ? "1" : "0");
+292:             if (dlg[0] != null) dlg[0].dismiss();
+293:             run(build, format, images, how, subject);
+294:         };
+295:         l.addView(a.makeButton("مشاركة / إرسال (واتساب، بريد…)", a.primary, v -> go.picked(SHARE)), a.lp(-1, 50, 4));
+296:         l.addView(a.makeButton("حفظ في الهاتف", a.accent, v -> go.picked(SAVE)), a.lp(-1, 50, 4));
+297:         if (a.can(Auth.Perm.DESIGN)) {
+298:             l.addView(a.makeButton("خيارات تصميم الكشوفات…", Color.rgb(120, 120, 120), v -> {
+299:                 if (dlg[0] != null) dlg[0].dismiss();
+300:                 showStyle(reopen);
+301:             }), a.lp(-1, 46, 4));
+302:         }
+303:         dlg[0] = new AlertDialog.Builder(a).setTitle(title).setView(sv).setNegativeButton("إغلاق", null).create();
+304:         dlg[0].show();
+305:     }
+306: 
+307:     private ReportPdf.Opts opts(ExportStyle st, boolean images) {
+308:         ReportPdf.Opts o = new ReportPdf.Opts();
+309:         o.style = st;
+310:         o.accent = Ui.parseColor(st.color, a.primary);
+311:         o.logo = st.logo ? a.homeLogo() : null;
+312:         o.developer = a.db.setting("developer", "");
+313:         o.db = images ? a.db : null;
+314:         return o;
+315:     }
+316: 
+317:     private static String stamp() { return Model.sdf(new SimpleDateFormat("yyyyMMdd-HHmm", Locale.US)).format(new Date()); }
+318: 
+319:     private void run(final Build build, final int format, final boolean images, final int how, final String subject) {
+320:         final ExportStyle st = style();
+321:         final ReportPdf.Opts o = opts(st, images);
+322:         final File dir = a.sharedDir();
+323:         a.busy("جارٍ تجهيز الملف…", p -> {
+324:             List<Report> reports = build.build(images, st);
+325:             List<File> files = new ArrayList<>();
+326:             java.util.Set<String> used = new java.util.HashSet<>();
+327:             String stamp = stamp();
+328:             int n = 0;
+329:             for (Report r : reports) {
+330:                 if (r.dataRows() == 0) continue;
+331:                 Reports.colorize(r, st);
+332:                 Entitlements ent = License.current;
+333:                 r.stamp(ent.watermark() || License.highRisk(), ent.lid);
+334:                 n++;
+335:                 String base = Ui.safeName(r.fileBase) + "-" + stamp;
+336:                 if (!used.add(base)) base = base + "-" + n;
+337:                 if (reports.size() > 1) p.update("جارٍ تجهيز الملف " + n + " من " + reports.size() + "…");
+338:                 if (format == PDF) {
+339:                     if (reports.size() == 1) p.update("جارٍ رسم صفحات PDF…");
+340:                     files.add(ReportPdf.pdf(r, o, new File(dir, base + ".pdf")));
+341:                 } else if (format == PNG) {
+342:                     if (reports.size() == 1) p.update("جارٍ رسم الصور…");

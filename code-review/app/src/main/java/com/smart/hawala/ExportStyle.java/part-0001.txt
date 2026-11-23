@@ -1,0 +1,154 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.LinkedHashMap;
+4: import java.util.Map;
+5: 
+6: /** خيارات تصميم الكشوفات المصدّرة. تُحفظ في الإعدادات بمفاتيح تبدأ بـ st_ وتُنقل مع النسخة الاحتياطية. */
+7: public final class ExportStyle {
+8:     public String title = "كشف حساب";
+9:     public String color = "";          // فارغ = لون التطبيق الرئيسي
+10:     public boolean logo = true;
+11:     public String issuerInfo = "";     // عنوان/هاتف يظهر تحت اسم مكتبك
+12:     public boolean showPerson = true;
+13:     public boolean showDesc = true;
+14:     public boolean showRef = true;
+15:     public boolean showNotes = false;
+16:     public boolean showRunning = true;
+17:     public boolean showSummary = true;
+18:     public boolean hideCancelled = true;
+19:     public boolean newestFirst = false;
+20:     public String font = "normal";     // small / normal / large
+21:     public boolean landscape = false;
+22:     public String imageSize = "medium"; // small / medium / large
+23:     public String footer = "";
+24:     public boolean signature = false;
+25:     /** لون مختلف لكل عملة في الكشوفات. */
+26:     public boolean curColors = true;
+27:     /** ألوان اختارها المستخدم: «USD=#1565C0;EUR=#2E7D32». غير المذكورة تأخذ لونًا افتراضيًا ثابتًا. */
+28:     public String curColorMap = "";
+29: 
+30:     /** ألوان افتراضية ثابتة لأشهر العملات، ثم دورة ألوان واضحة لغيرها. */
+31:     static final String[][] DEFAULT_CUR_COLORS = {
+32:             {"USD", "#1565C0"}, {"EUR", "#2E7D32"}, {"TRY", "#C62828"}, {"SYP", "#6A1B9A"}, {"USDT", "#00838F"},
+33:             {"SAR", "#8D6E63"}, {"AED", "#E65100"}, {"GBP", "#283593"}, {"IQD", "#AD1457"}, {"JOD", "#455A64"}, {"EGP", "#9E7C0C"}
+34:     };
+35:     static final String[] CYCLE = {"#0277BD", "#558B2F", "#D84315", "#4527A0", "#00695C", "#6D4C41", "#C2185B", "#37474F"};
+36: 
+37:     static int hex(String h) {
+38:         String x = h.trim().replace("#", "");
+39:         if (x.length() == 6) x = "FF" + x;
+40:         return (int) Long.parseLong(x, 16);
+41:     }
+42: 
+43:     public Map<String, String> colorMap() {
+44:         Map<String, String> m = new LinkedHashMap<>();
+45:         for (String part : curColorMap.split(";")) {
+46:             int i = part.indexOf('=');
+47:             if (i > 0) m.put(part.substring(0, i).trim(), part.substring(i + 1).trim());
+48:         }
+49:         return m;
+50:     }
+51: 
+52:     public static String joinMap(Map<String, String> m) {
+53:         StringBuilder sb = new StringBuilder();
+54:         for (Map.Entry<String, String> e : m.entrySet()) {
+55:             if (e.getValue() == null || e.getValue().isEmpty()) continue;
+56:             if (sb.length() > 0) sb.append(';');
+57:             sb.append(e.getKey()).append('=').append(e.getValue());
+58:         }
+59:         return sb.toString();
+60:     }
+61: 
+62:     /** لون العملة (ARGB). */
+63:     public int colorFor(String code) {
+64:         String c = code == null ? "" : code.trim().toUpperCase(java.util.Locale.ROOT);
+65:         String chosen = colorMap().get(c);
+66:         try {
+67:             if (chosen != null && !chosen.isEmpty()) return hex(chosen);
+68:         } catch (Exception ignored) {
+69:             // لون غير صالح: نرجع للافتراضي
+70:         }
+71:         for (String[] d : DEFAULT_CUR_COLORS) if (d[0].equals(c)) return hex(d[1]);
+72:         int h = 0;
+73:         for (char ch : c.toCharArray()) h = h * 31 + ch;
+74:         return hex(CYCLE[Math.abs(h % CYCLE.length)]);
+75:     }
+76: 
+77:     public String colorHexFor(String code) {
+78:         int v = colorFor(code);
+79:         return String.format(java.util.Locale.US, "#%06X", v & 0xFFFFFF);
+80:     }
+81: 
+82:     public float fontScale() {
+83:         return "small".equals(font) ? 0.88f : "large".equals(font) ? 1.18f : 1f;
+84:     }
+85: 
+86:     public float imageWidth() {
+87:         return "small".equals(imageSize) ? 150f : "large".equals(imageSize) ? 360f : 240f;
+88:     }
+89: 
+90:     private static boolean b(Map<String, String> m, String k, boolean def) {
+91:         String v = m.get(k);
+92:         return v == null || v.isEmpty() ? def : "1".equals(v);
+93:     }
+94: 
+95:     private static String s(Map<String, String> m, String k, String def) {
+96:         String v = m.get(k);
+97:         return v == null ? def : v;
+98:     }
+99: 
+100:     public static ExportStyle from(Map<String, String> m) {
+101:         ExportStyle st = new ExportStyle();
+102:         st.title = s(m, "st_title", st.title);
+103:         if (st.title.trim().isEmpty()) st.title = "كشف حساب";
+104:         st.color = s(m, "st_color", "");
+105:         st.logo = b(m, "st_logo", true);
+106:         st.issuerInfo = s(m, "st_issuer_info", "");
+107:         st.showPerson = b(m, "st_person", true);
+108:         st.showDesc = b(m, "st_desc", true);
+109:         st.showRef = b(m, "st_ref", true);
+110:         st.showNotes = b(m, "st_notes", false);
+111:         st.showRunning = b(m, "st_running", true);
+112:         st.showSummary = b(m, "st_summary", true);
+113:         st.hideCancelled = b(m, "st_hide_cancelled", true);
+114:         st.newestFirst = b(m, "st_newest_first", false);
+115:         st.font = s(m, "st_font", "normal");
+116:         st.landscape = b(m, "st_landscape", false);
+117:         st.imageSize = s(m, "st_image_size", "medium");
+118:         st.footer = s(m, "st_footer", "");
+119:         st.signature = b(m, "st_signature", false);
+120:         st.curColors = b(m, "st_cur_colors", true);
+121:         st.curColorMap = s(m, "st_cur_color_map", "");
+122:         return st;
+123:     }
+124: 
+125:     public Map<String, String> toMap() {
+126:         Map<String, String> m = new LinkedHashMap<>();
+127:         m.put("st_title", title);
+128:         m.put("st_color", color);
+129:         m.put("st_logo", logo ? "1" : "0");
+130:         m.put("st_issuer_info", issuerInfo);
+131:         m.put("st_person", showPerson ? "1" : "0");
+132:         m.put("st_desc", showDesc ? "1" : "0");
+133:         m.put("st_ref", showRef ? "1" : "0");
+134:         m.put("st_notes", showNotes ? "1" : "0");
+135:         m.put("st_running", showRunning ? "1" : "0");
+136:         m.put("st_summary", showSummary ? "1" : "0");
+137:         m.put("st_hide_cancelled", hideCancelled ? "1" : "0");
+138:         m.put("st_newest_first", newestFirst ? "1" : "0");
+139:         m.put("st_font", font);
+140:         m.put("st_landscape", landscape ? "1" : "0");
+141:         m.put("st_image_size", imageSize);
+142:         m.put("st_footer", footer);
+143:         m.put("st_signature", signature ? "1" : "0");
+144:         m.put("st_cur_colors", curColors ? "1" : "0");
+145:         m.put("st_cur_color_map", curColorMap);
+146:         return m;
+147:     }
+148: 
+149:     public static final String[] KEYS = {
+150:             "st_title", "st_color", "st_logo", "st_issuer_info", "st_person", "st_desc", "st_ref", "st_notes", "st_running",
+151:             "st_summary", "st_hide_cancelled", "st_newest_first", "st_font", "st_landscape", "st_image_size", "st_footer", "st_signature",
+152:             "st_cur_colors", "st_cur_color_map"
+153:     };
+154: }

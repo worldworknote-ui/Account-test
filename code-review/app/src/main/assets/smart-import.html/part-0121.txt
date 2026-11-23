@@ -1,0 +1,173 @@
+718:     if (i === undefined) {
+719:       i = model.offices.length;
+720:       model.officeIndex[key] = i;
+721:       model.offices.push({ name: clean(name), key: key, phone: clean(phone || ""), variants: {}, tx: 0, openings: 0 });
+722:     }
+723:     var o = model.offices[i];
+724:     o.variants[orig] = true;
+725:     if (!o.phone && phone) o.phone = clean(phone);
+726:     return i;
+727:   }
+728: 
+729:   function err(model, src, msg) { model.errors.push({ sheet: src.sheet, row: src.row, msg: msg }); }
+730: 
+731:   function skip(model, src, reason) { model.skipped.push({ sheet: src.sheet, row: src.row, reason: reason }); }
+732: 
+733:   function curDef(cfg, code) {
+734:     var d = cfg.currencies && cfg.currencies[code];
+735:     if (d) return d;
+736:     var k = KNOWN[code];
+737:     return k ? { name: k.name, dec: k.dec } : null;
+738:   }
+739: 
+740:   /** يحدد عملة الصف: من عمود (عبر جدول المطابقة) أو عملة ثابتة. */
+741:   function rowCurrency(cfg, sec, row, model, src) {
+742:     if (sec.currencyFrom === "fixed") {
+743:       if (!sec.fixedCurrency) { err(model, src, "لم تُحدَّد العملة الثابتة لهذا القسم"); return null; }
+744:       return sec.fixedCurrency;
+745:     }
+746:     var t = text(row[sec.cols.currency]);
+747:     if (!t) { err(model, src, "خانة العملة فارغة"); return null; }
+748:     var code = cfg.currencyMap[officeKey(t)];
+749:     if (code === "__skip") return "__skip";
+750:     if (!code) { err(model, src, "العملة «" + t + "» غير مطابَقة مع رمز عملة"); return null; }
+751:     return code;
+752:   }
+753: 
+754:   function amountMinor(cfg, model, src, p, code, what) {
+755:     var def = curDef(cfg, code);
+756:     if (!def) { err(model, src, "العملة " + code + " غير معرّفة"); return null; }
+757:     var m = toMinor(p, def.dec);
+758:     if (m === null) {
+759:       err(model, src, what + " فيه منازل عشرية أكثر من المسموح لعملة " + code + " (" + def.dec + "). غيّر عدد المنازل للعملة أو صحّح الخلية.");
+760:       return null;
+761:     }
+762:     if (m > 9000000000000000n) { err(model, src, what + " كبير جدًا"); return null; }
+763:     return m;
+764:   }
+765: 
+766:   function flip(dir, cfg) { return cfg.reverse ? (dir === "D" ? "C" : "D") : dir; }
+767: 
+768:   /** قسم الأرصدة الافتتاحية: صف لكل مكتب (وعملة). */
+769:   function buildOpenings(model, cfg, sec, sheets) {
+770:     sheets.forEach(function (sh) {
+771:       var rows = sh.rows;
+772:       for (var r = sec.headerRow + 1; r < rows.length; r++) {
+773:         var row = rows[r];
+774:         var src = { sheet: sh.name, row: r + 1 };
+775:         if (isBlankRow(row)) continue;
+776:         model.rowsRead++;
+777:         var name = text(row[sec.cols.office]);
+778:         var label = rowLabel(row);
+779:         if (TOTAL_RE.test(name) || (!name && TOTAL_RE.test(label))) { skip(model, src, "صف مجموع"); continue; }
+780:         var values = [];
+781:         if (sec.layout === "wide") {
+782:           (sec.wide || []).forEach(function (w) {
+783:             if (w.code && w.code !== "__skip") values.push({ code: w.code, v: row[w.col], signed: true });
+784:           });
+785:         } else {
+786:           var code = rowCurrency(cfg, sec, row, model, src);
+787:           if (code === null) continue;
+788:           if (code === "__skip") { skip(model, src, "عملة مستبعدة"); continue; }
+789:           if (sec.layout === "split") {
+790:             values.push({ code: code, v: row[sec.cols.debit], dir: "D" });
+791:             values.push({ code: code, v: row[sec.cols.credit], dir: "C" });
+792:           } else values.push({ code: code, v: row[sec.cols.amount], signed: true });
+793:         }
+794:         var any = false, bad = false, net = {};
+795:         values.forEach(function (x) {
+796:           var p = parseAmount(x.v);
+797:           if (p.empty) return;
+798:           if (!p.ok) { err(model, src, "مبلغ غير مفهوم: «" + text(x.v) + "» — " + p.reason); bad = true; return; }
+799:           if (p.zero) return;
+800:           if (!x.signed && p.neg) { err(model, src, "قيمة سالبة في عمود " + (x.dir === "D" ? "لنا/مدين" : "علينا/دائن") + ": «" + text(x.v) + "»"); bad = true; return; }
+801:           var m = amountMinor(cfg, model, src, p, x.code, "المبلغ");
+802:           if (m === null) { bad = true; return; }
+803:           var pos = sec.positiveIs || "D";
+804:           var dir = x.signed ? (p.neg ? (pos === "D" ? "C" : "D") : pos) : x.dir;
+805:           dir = flip(dir, cfg);
+806:           net[x.code] = (net[x.code] || 0n) + (dir === "D" ? m : -m);
+807:           any = true;
+808:         });
+809:         if (bad) continue;
+810:         if (!name) {
+811:           if (any) err(model, src, "يوجد رصيد بلا اسم مكتب");
+812:           else skip(model, src, "صف بلا مكتب ولا رصيد");
+813:           continue;
+814:         }
+815:         var oi = officeFor(model, name, sec.cols.phone !== undefined ? text(row[sec.cols.phone]) : "", cfg);
+816:         if (!any) { skip(model, src, "مكتب بلا رصيد (أُضيف المكتب فقط)"); model.offices[oi].emptyOk = true; continue; }
+817:         Object.keys(net).forEach(function (code) {
+818:           if (net[code] === 0n) return;
+819:           model.openings.push({ office: oi, code: code, minor: net[code], when: sec.date || null, src: src });
+820:           model.offices[oi].openings++;
+821:           model.used[code] = true;
+822:         });
+823:       }
+824:     });
+825:   }
+826: 
+827:   /** قسم الحركات: صف لكل حركة، من ورقة واحدة أو من أوراق متعددة (كل ورقة مكتب). */
+828:   function buildTxs(model, cfg, sec, sheets, serialToDate) {
+829:     sheets.forEach(function (sh) {
+830:       var rows = sh.rows;
+831:       var prevDate = null, prevOffice = "";
+832:       var firstDate = null;
+833:       var pendingOpen = [];
+834:       for (var r = sec.headerRow + 1; r < rows.length; r++) {
+835:         var row = rows[r];
+836:         var src = { sheet: sh.name, row: r + 1 };
+837:         if (isBlankRow(row)) continue;
+838:         model.rowsRead++;
+839:         var label = rowLabel(row);
+840:         var officeName = sec.officeFrom === "sheet" ? sh.name : text(row[sec.cols.office]);
+841:         var dateRaw = text(row[sec.cols.date]);
+842:         // صف المجموع: عنوانه «المجموع/الإجمالي» ولا تاريخ فيه (الحركة الحقيقية لها تاريخ دائمًا)
+843:         if (!dateRaw && (TOTAL_RE.test(label) || (sec.officeFrom !== "sheet" && TOTAL_RE.test(officeName)))) { skip(model, src, "صف مجموع"); continue; }
+844:         var isOpening = OPENING_RE.test(label) || (sec.cols.description !== undefined && OPENING_RE.test(text(row[sec.cols.description])));
+845:         if (!officeName && sec.fillOffice && prevOffice) officeName = prevOffice;
+846:         // المبالغ
+847:         var parts = [];
+848:         var bad = false;
+849:         var code = null;
+850:         var needCur = function () {
+851:           if (code !== null) return code;
+852:           code = rowCurrency(cfg, sec, row, model, src);
+853:           return code;
+854:         };
+855:         if (sec.layout === "split") {
+856:           [["D", sec.cols.debit], ["C", sec.cols.credit]].forEach(function (x) {
+857:             if (x[1] === undefined) return;
+858:             var p = parseAmount(row[x[1]]);
+859:             if (p.empty || (p.ok && p.zero)) return;
+860:             if (!p.ok) { err(model, src, "مبلغ غير مفهوم: «" + text(row[x[1]]) + "» — " + p.reason); bad = true; return; }
+861:             if (p.neg) { err(model, src, "قيمة سالبة في عمود " + (x[0] === "D" ? "لنا/مدين" : "علينا/دائن") + ": «" + text(row[x[1]]) + "»"); bad = true; return; }
+862:             parts.push({ dir: x[0], p: p });
+863:           });
+864:         } else {
+865:           var pa = parseAmount(row[sec.cols.amount]);
+866:           if (!pa.empty && !(pa.ok && pa.zero)) {
+867:             if (!pa.ok) { err(model, src, "مبلغ غير مفهوم: «" + text(row[sec.cols.amount]) + "» — " + pa.reason); bad = true; }
+868:             else if (sec.layout === "typed") {
+869:               var tv = text(row[sec.cols.type]);
+870:               var dm = cfg.typeMap[officeKey(tv)];
+871:               if (dm === "X") { skip(model, src, "نوع مستبعد: " + tv); continue; }
+872:               if (dm !== "D" && dm !== "C") { err(model, src, tv ? "نوع الحركة «" + tv + "» غير مطابَق (لنا أو علينا)" : "خانة نوع الحركة فارغة"); bad = true; }
+873:               else if (pa.neg) { err(model, src, "مبلغ سالب مع عمود نوع: «" + text(row[sec.cols.amount]) + "»"); bad = true; }
+874:               else parts.push({ dir: dm, p: pa });
+875:             } else {
+876:               var pos = sec.positiveIs || "D";
+877:               parts.push({ dir: pa.neg ? (pos === "D" ? "C" : "D") : pos, p: pa });
+878:             }
+879:           }
+880:         }
+881:         // عمود الرصيد (للتحقق فقط)
+882:         var balCell = sec.cols.balance !== undefined ? row[sec.cols.balance] : null;
+883:         if (bad) continue;
+884:         if (parts.length === 0) {
+885:           if (isOpening && balCell) {
+886:             // «رصيد سابق» مكتوب في عمود الرصيد فقط
+887:             var pb = parseAmount(balCell);
+888:             if (pb.ok && !pb.zero) parts.push({ dir: pb.neg ? (sec.balancePositiveIs === "D" ? "C" : "D") : (sec.balancePositiveIs || "D"), p: pb, fromBalance: true });
+889:           }
+890:           if (parts.length === 0) {

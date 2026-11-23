@@ -1,0 +1,38 @@
+168:             head.addView(a.smallButton(o.pinned ? "إلغاء التثبيت" : "تثبيت", Color.rgb(130, 130, 130), v -> {
+169:                 a.db.setPinned(o.officeId, !o.pinned);
+170:                 show();
+171:             }), new LinearLayout.LayoutParams(-2, a.dp(38)));
+172:             c.addView(head);
+173:             Model.Recon rc = recons.get(o.officeId);
+174:             if (rc != null) c.addView(a.text("آخر مطابقة: " + Model.date(rc.createdAt) + " — " + ReconScreen.statusText(rc), 12, a.reconScreen.statusColor(rc), false));
+175:             for (Map.Entry<String, long[]> e : o.perCurrency.entrySet()) {
+176:                 long[] v = e.getValue();
+177:                 if (!showZero && v[0] == 0 && v[1] == 0 && v[2] == 0) continue;
+178:                 int d = a.db.decimals(e.getKey());
+179:                 LinearLayout br = a.row();
+180:                 br.setPadding(0, a.dp(3), 0, 0);
+181:                 br.addView(a.text(e.getKey(), 14, a.muted, true), new LinearLayout.LayoutParams(a.dp(52), -2));
+182:                 TextView t = a.text(a.mb(v[2], d), 15, v[2] > 0 ? a.green : v[2] < 0 ? a.red : a.ink, true);
+183:                 br.addView(t, new LinearLayout.LayoutParams(0, -2, 1));
+184:                 c.addView(br);
+185:                 if (showGross) c.addView(a.text("كل ما لنا: " + a.mf(v[0], d) + "   •   كل ما علينا: " + a.mf(v[1], d), 12, a.muted, false));
+186:             }
+187:             Model.Office off = a.db.office(o.officeId);
+188:             if (off != null) {
+189:                 List<String> alerts = a.officesScreen.limitAlerts(off);
+190:                 if (!alerts.isEmpty()) c.addView(a.text("⚠ " + Model.join(alerts, "\n"), 13, a.red, true));
+191:             }
+192:             c.setOnClickListener(v -> {
+193:                 Model.Office office = a.db.office(o.officeId);
+194:                 if (office != null) a.officeHub.showOffice(office);
+195:             });
+196:         }
+197:         if (shown == 0) list.addView(a.text("لا توجد مكاتب مطابقة.", 14, a.muted, false));
+198:         else list.addView(a.text("اضغط على أي مكتب لفتح صفحته.", 12, a.muted, false));
+199:     }
+200: 
+201:     Report report(boolean includeZero) {
+202:         return a.db.withHolds(Reports.balances(a.db.officeTotals(null), a.db.decimalsMap(), a.db.currencyNames(), includeZero,
+203:                 a.db.setting("office_name", ""), Clock.now()));
+204:     }
+205: }

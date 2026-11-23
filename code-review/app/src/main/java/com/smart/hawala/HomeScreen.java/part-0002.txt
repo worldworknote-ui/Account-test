@@ -1,0 +1,156 @@
+162:             lp.setMargins(a.dp(4), 0, a.dp(2), 0);
+163:             barRow.addView(iv, at, lp);
+164:         }
+165:         a.eyeAction(this::show);
+166:         // 10.9: الوضع الليلي والنهاري بضغطة من الرئيسية (الإعداد نفسه في «المظهر»)
+167:         a.headerAction(a.night ? R.drawable.ic_sun : R.drawable.ic_moon, a.night ? "الوضع النهاري" : "الوضع الليلي", v -> {
+168:             a.db.setSettingQuiet("theme_mode", a.night ? "light" : "dark");
+169:             a.restyle("home");
+170:         });
+171:         a.headerAction(R.drawable.ic_edit, "تخصيص الصفحة الرئيسية", v -> editor());
+172:         if (u != null) a.headerAction(R.drawable.ic_user, "المستخدم", v -> userMenu(u));
+173: 
+174:         int shown = 0;
+175:         // 10.13: حدود العناصر (لتقسيم الشاشة العريضة عمودين دون فصل عنوان عن محتواه)
+176:         List<Integer> bounds = new ArrayList<>();
+177:         for (String[] w : layout(a.db)) {
+178:             if (!"1".equals(w[1])) continue;
+179:             bounds.add(a.body.getChildCount());
+180:             try {
+181:                 render(w[0], office);
+182:                 shown++;
+183:             } catch (Exception e) {
+184:                 // عنصر واحد لا يُسقط الصفحة كلها
+185:                 a.hint("تعذر عرض «" + widget(w[0]).title + "»: " + Ui.friendly(e));
+186:             }
+187:         }
+188:         if (shown == 0) {
+189:             LinearLayout c = a.card();
+190:             c.addView(a.text("أخفيت كل عناصر الصفحة الرئيسية", 16, a.ink, true));
+191:             c.addView(a.makeButton("اختيار العناصر", a.primary, v -> editor()), a.lp(-1, 48, 6));
+192:         }
+193:         if (a.wide() && bounds.size() >= 3) {
+194:             int n = a.body.getChildCount(), best = -1;
+195:             for (int b : bounds) if (b > 0 && b < n && (best < 0 || Math.abs(b - n / 2) < Math.abs(best - n / 2))) best = b;
+196:             if (best > 0) a.splitBody(a.body.getChildAt(best));
+197:         }
+198:         signature();
+199:         if (!a.checkPreviousCrash() && a.can(Auth.Perm.BACKUP)) a.maybeReminderDialog(a.backupReminderText());
+200:     }
+201: 
+202:     private void render(String key, String office) {
+203:         switch (key) {
+204:             case "search": search(); break;
+205:             case "welcome": {
+206:                 String welcome = MainActivity.welcomeText(a.db.setting("welcome", ""), office);
+207:                 if (!welcome.isEmpty()) a.hint(welcome);
+208:                 break;
+209:             }
+210:             case "alerts": attention(); break;
+211:             case "clipboard":
+212:                 if (a.can(Auth.Perm.TX_ADD)) {
+213:                     clipSlot = new LinearLayout(a);
+214:                     clipSlot.setOrientation(LinearLayout.VERTICAL);
+215:                     a.body.addView(clipSlot, new LinearLayout.LayoutParams(-1, -2));
+216:                     refreshClipCard();
+217:                 }
+218:                 break;
+219:             case "net": netBalances(); break;
+220:             case "cash": a.cashScreen.homeCard(); break;
+221:             case "totals": totalsTable(); break;
+222:             case "usd": usdValue(); break;
+223:             case "today": todayGroup(); break;
+224:             case "daily": dailyByCurrency(); break;
+225:             case "offices": officeBalances(); break;
+226:             case "recent_tx": recentTx(); break;
+227:             case "recons": pendingRecons(); break;
+228:             case "limits": limits(); break;
+229:             case "recent_offices": recentOffices(); break;
+230:             case "paste": pasteCard(); break;
+231:             case "shortcuts": shortcuts(); break;
+232:             case "rates": rates(); break;
+233:             default: break;
+234:         }
+235:     }
+236: 
+237:     /** 12.6: ثابت وغير قابل للإخفاء، وآخر شيء في الصفحة (بعرض الشاشة كله حتى بالعمودين). */
+238:     private void signature() {
+239:         TextView name = a.text(BuildInfo.APP_NAME, 13, a.muted, true);
+240:         name.setGravity(Gravity.CENTER);
+241:         a.body.addView(name, a.lp(-1, -2, 14));
+242:         TextView dev = a.text("الإصدار " + a.versionName() + " • " + a.db.setting("developer", "برمجة: Ai creative solutions"), 12, a.muted, false);
+243:         dev.setGravity(Gravity.CENTER);
+244:         dev.setContentDescription("اسم البرنامج وإصداره");
+245:         a.body.addView(dev, a.lp(-1, -2, 2));
+246:     }
+247: 
+248:     private void search() {
+249:         if (!a.can(Auth.Perm.VIEW)) return;
+250:         LinearLayout sb = a.officeHub.searchBox("ابحث: مكتب، مستفيد، مبلغ، مرجع");
+251:         final android.widget.EditText q = (android.widget.EditText) sb.getTag();
+252:         q.setFocusable(false);
+253:         q.setOnClickListener(v -> a.logScreen.searchFor(""));
+254:         sb.setOnClickListener(v -> a.logScreen.searchFor(""));
+255:         a.body.addView(sb, a.lp(-1, 50, 6));
+256:     }
+257: 
+258:     private Set<String> chosenCurrencies(String key) {
+259:         Set<String> s = new java.util.LinkedHashSet<>();
+260:         for (String c : a.db.setting(key, "").split(",")) if (!c.trim().isEmpty()) s.add(c.trim());
+261:         return s;
+262:     }
+263: 
+264:     private TextView small(String s, int size, int color, boolean bold) {
+265:         TextView t = a.text(s, size, color, bold);
+266:         t.setPadding(a.dp(2), a.dp(1), a.dp(2), a.dp(1));
+267:         return t;
+268:     }
+269: 
+270:     // ===================================================================================
+271:     // تنبيهات: دفعة واتساب، رمز الاسترداد، النسخ الاحتياطي
+272:     // ===================================================================================
+273: 
+274:     private void attention() {
+275:         int queued = a.waQueue.remaining();
+276:         if (queued > 0 && a.can(Auth.Perm.TX_ADD)) {
+277:             LinearLayout qc = a.card();
+278:             qc.setBackground(a.round(a.primarySoft, a.primary, 16));
+279:             LinearLayout h = a.row();
+280:             h.addView(a.icon(R.drawable.ic_chat, a.primaryInk, 22), new LinearLayout.LayoutParams(a.dp(22), a.dp(22)));
+281:             h.addView(a.text("دفعة رسائل واتساب لم تكتمل: بقيت " + queued + " رسالة", 15, a.primaryInk, true), new LinearLayout.LayoutParams(0, -2, 1));
+282:             qc.addView(h);
+283:             LinearLayout qr = a.row();
+284:             qr.addView(a.smallButton("متابعة التسجيل", a.primary, v -> a.waQueue.showCurrent()), a.weight(44, 1.3f, 2));
+285:             qr.addView(a.smallButton("إنهاء الدفعة", Color.rgb(120, 120, 120), v -> a.waQueue.stop()), a.weight(44, 1, 2));
+286:             qc.addView(qr);
+287:         }
+288:         // 10.17: رسائل المدير غير المقروءة
+289:         for (final Db.AdminMsg am : a.db.unreadAdminMsgs()) a.notice(R.drawable.ic_info, "رسالة من المدير" + (am.from.isEmpty() ? "" : " (" + a.db.shown(am.from) + ")")
+290:                 + " — " + Model.date(am.at) + ":\n" + am.body, true, "قرأتها", v -> {
+291:             a.db.markAdminMsgRead(am.uuid);
+292:             show();
+293:         });
+294:         // 10.16: تعارضات المزامنة وتعثرها تظهر هنا (كانت لا تُرى إلا داخل شاشة المزامنة)
+295:         if (a.can(Auth.Perm.NOTIFS)) for (String[] al : SyncEngine.homeAlerts(a.db)) a.notice(R.drawable.ic_warn, al[0], "1".equals(al[1]), "المزامنة", v -> a.syncScreen.show());
+296:         if (SyncEngine.enabled(a.db) && (a.can(Auth.Perm.TX_CANCEL) || a.can(Auth.Perm.APPROVE))) {
+297:             int dups = SyncEngine.duplicates(a.db).size();
+298:             if (dups > 0) a.notice(R.drawable.ic_warn, dups + " زوج حركات قد يكون مكررًا (سُجّل من جهازين)", true, "مراجعة", v -> a.syncScreen.showDuplicates());
+299:         }
+300:         if (a.can(Auth.Perm.APPROVE) && a.db.usersEnabled()) {
+301:             long pend = a.db.pendingCount();
+302:             if (pend > 0) a.notice(R.drawable.ic_check2, pend + " حركة بانتظار اعتمادك", false, "مراجعة", v -> a.logScreen.showPending());
+303:         }
+304:         // 9.0: إذن الإشعارات (أندرويد 13+) لتذكيرات المكاتب والنسخ التلقائي: يُطلب مرة من هنا، وبعدها من «المزيد ← الإشعارات»
+305:         if (Notifier.on(a.db) && !a.notifScreen.allowedNow() && !"1".equals(a.db.setting("notif_asked", "0"))) {
+306:             a.notice(R.drawable.ic_bell, "اسمح بالإشعارات لتصلك تذكيرات المكاتب (لا حركات منذ يوم، مطابقة لم تُرسل) وتأكيد النسخ التلقائي.", false, "السماح", v -> {
+307:                 a.db.setSettingQuiet("notif_asked", "1");
+308:                 a.notifScreen.askPermission();
+309:             });
+310:         }
+311:         Model.User u = SmartApp.currentUser;
+312:         if (u != null && Auth.ADMIN.equals(u.role) && !a.db.hasRecoveryCode()) {
+313:             a.notice(R.drawable.ic_key, "لا يوجد رمز استرداد للمدير. إن نُسي رمز المدير لن يمكن استعادة الدخول.", true, "إنشاء", v -> a.usersScreen.createRecoveryFromHome());
+314:         }
+315:         if (a.can(Auth.Perm.BACKUP)) {
+316:             String autoErr = a.db.setting("auto_backup_error", "");
+317:             if (!autoErr.isEmpty()) a.notice(R.drawable.ic_warn, "فشل النسخ التلقائي الأخير", true, "التفاصيل", v -> a.backupScreen.show());

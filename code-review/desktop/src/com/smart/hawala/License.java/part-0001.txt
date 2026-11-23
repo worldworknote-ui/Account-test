@@ -1,0 +1,184 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.Context;
+4: import java.io.File;
+5: import java.io.FileOutputStream;
+6: import java.io.InputStream;
+7: import java.io.OutputStream;
+8: import java.net.HttpURLConnection;
+9: import java.net.URL;
+10: import java.nio.charset.StandardCharsets;
+11: import java.security.KeyFactory;
+12: import java.security.KeyPair;
+13: import java.security.KeyPairGenerator;
+14: import java.security.MessageDigest;
+15: import java.security.PrivateKey;
+16: import java.security.SecureRandom;
+17: import java.security.spec.ECGenParameterSpec;
+18: import java.security.spec.PKCS8EncodedKeySpec;
+19: import java.util.Base64;
+20: import java.util.Locale;
+21: import javax.crypto.Mac;
+22: import javax.crypto.spec.SecretKeySpec;
+23: import org.json.JSONArray;
+24: import org.json.JSONObject;
+25: 
+26: /**
+27:  * الترخيص على الماك: الواجهة نفسها التي تستدعيها Db وشاشة الترخيص، والرمز نفسه (LicenseToken، توقيع البائع ECDSA P-256)
+28:  * مربوط ببصمة مفتاح جهاز. الفرق عن الهاتف: لا يوجد «تصديق عتادي» في الماك، فمفتاح الجهاز يُنشأ ويُحفظ في سلسلة المفاتيح،
+29:  * ويحمل الطلب معرّف الجهاز (IOPlatformUUID مجزّأً) ليراه البائع. الطلب يحمل platform=mac فتعرضه أداة البائع بوضوح.
+30:  * الفشل يعني المجاني لا الإغلاق، ولا شيء هنا يحجز البيانات.
+31:  */
+32: public final class License {
+33:     private License() {}
+34: 
+35:     static final String DEV = "license_device_key", MAC = "quota_mac_key";
+36:     private static final String FILE = "license.txt";
+37:     static final String REQ_PREFIX = "SA8-REQ:", REL_PREFIX = "SA8-REL:";
+38: 
+39:     public static volatile Entitlements current = Entitlements.free("");
+40:     public static volatile String signals = "";
+41:     public static volatile boolean signatureOk = true;
+42:     /** 11.5: على الكمبيوتر لا فحص لتوقيع الحزمة بهذه الطريقة. */
+43:     public static volatile boolean signatureUnknown;
+44: 
+45:     public static synchronized void load(Context ctx, Db db) {
+46:         try {
+47:             String token = storedToken(ctx, db);
+48:             if (token.isEmpty()) {
+49:                 current = Entitlements.free("");
+50:                 return;
+51:             }
+52:             byte[] dk = deviceKeyX509();
+53:             LicenseToken.Grant g = LicenseToken.verify(token, dk);
+54:             if (g == null) {
+55:                 current = Entitlements.free(dk == null
+56:                         ? "رمز الترخيص المحفوظ يخص جهازًا آخر أو مفتاح هذا الجهاز غير موجود (مثلًا بعد نقل البيانات إلى ماك جديد). اطلب نقل الرخصة."
+57:                         : "رمز الترخيص المحفوظ لا يطابق مفتاح هذا الجهاز. اطلب رمزًا جديدًا من البائع.");
+58:                 return;
+59:             }
+60:             if (revoked(db, g.lid())) {
+61:                 current = Entitlements.free("أُلغيت الرخصة " + g.lid() + " (مسرّبة أو منقولة). تواصل مع البائع.");
+62:                 return;
+63:             }
+64:             current = LicenseGuard.decide(ctx, db, g);   // 12.7: المكتب والوقت الموثوق   // 12.6: الاشتراك بتاريخ انتهاء
+65:         } catch (Throwable t) {
+66:             current = Entitlements.free("تعذر التحقق من الترخيص الآن (" + t.getClass().getSimpleName() + "). أعد فتح البرنامج؛ الإضافة متوقفة عند حدود المجاني فقط.");
+67:         }
+68:     }
+69: 
+70:     static String storedToken(Context ctx, Db db) {
+71:         String a = db.setting("license_token", "").trim();
+72:         String b = readFile(ctx).trim();
+73:         if (a.equals(b)) return a;
+74:         byte[] dk = null;
+75:         try {
+76:             dk = deviceKeyX509();
+77:         } catch (Throwable ignored) {
+78:             // يُعامل كغير صالح
+79:         }
+80:         boolean aOk = !a.isEmpty() && LicenseToken.verify(a, dk) != null;
+81:         boolean bOk = !b.isEmpty() && LicenseToken.verify(b, dk) != null;
+82:         String keep = aOk ? a : bOk ? b : (a.isEmpty() ? b : a);
+83:         save(ctx, db, keep);
+84:         return keep;
+85:     }
+86: 
+87:     private static String readFile(Context ctx) {
+88:         try (InputStream in = new java.io.FileInputStream(new File(ctx.getFilesDir(), FILE))) {
+89:             return new String(Db.readAll(in), StandardCharsets.UTF_8);
+90:         } catch (Exception e) {
+91:             return "";
+92:         }
+93:     }
+94: 
+95:     private static void save(Context ctx, Db db, String token) {
+96:         db.setSettingQuiet("license_token", token);
+97:         File f = new File(ctx.getFilesDir(), FILE);
+98:         if (token.isEmpty()) {
+99:             f.delete();
+100:             return;
+101:         }
+102:         try (OutputStream o = new FileOutputStream(f)) {
+103:             o.write(token.getBytes(StandardCharsets.UTF_8));
+104:         } catch (Exception ignored) {
+105:             // يكفي الموضع الأول
+106:         }
+107:     }
+108: 
+109:     private static boolean revoked(Db db, String lid) {
+110:         for (String x : db.setting("license_revoked", "").split(",")) if (!x.trim().isEmpty() && x.trim().equals(lid)) return true;
+111:         return false;
+112:     }
+113: 
+114:     // ===================================================================================
+115:     // مفتاح الجهاز وطلب التفعيل
+116:     // ===================================================================================
+117: 
+118:     /** المفتاح محفوظ «عام|خاص» (Base64) في سلسلة المفاتيح. */
+119:     private static String[] stored() throws Exception {
+120:         String s = SecretStore.get(DEV);
+121:         if (s == null || !s.contains("|")) return null;
+122:         return s.split("\\|", 2);
+123:     }
+124: 
+125:     static byte[] deviceKeyX509() throws Exception {
+126:         String[] k = stored();
+127:         return k == null ? null : Base64.getDecoder().decode(k[0]);
+128:     }
+129: 
+130:     private static PrivateKey privateKey() throws Exception {
+131:         String[] k = stored();
+132:         if (k == null) throw new IllegalStateException("لا يوجد مفتاح جهاز");
+133:         return KeyFactory.getInstance("EC").generatePrivate(new PKCS8EncodedKeySpec(Base64.getDecoder().decode(k[1])));
+134:     }
+135: 
+136:     private static void createDeviceKey() throws Exception {
+137:         KeyPairGenerator g = KeyPairGenerator.getInstance("EC");
+138:         g.initialize(new ECGenParameterSpec("secp256r1"), new SecureRandom());
+139:         KeyPair kp = g.generateKeyPair();
+140:         SecretStore.put(DEV, Base64.getEncoder().encodeToString(kp.getPublic().getEncoded()) + "|" + Base64.getEncoder().encodeToString(kp.getPrivate().getEncoded()));
+141:     }
+142: 
+143:     /** معرّف عتاد الماك (IOPlatformUUID) مجزّأً: يراه البائع ليعرف أن الطلب من الجهاز نفسه عند النقل. */
+144:     static String hardwareId() {
+145:         String raw = "";
+146:         try {
+147:             if (System.getProperty("os.name", "").toLowerCase(Locale.US).contains("mac")) {
+148:                 SecretStore.Res r = SecretStore.run("/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice");
+149:                 java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"IOPlatformUUID\"\\s*=\\s*\"([^\"]+)\"").matcher(r.out);
+150:                 if (m.find()) raw = m.group(1);
+151:             } else if (System.getProperty("os.name", "").toLowerCase(Locale.US).contains("win")) {
+152:                 SecretStore.Res r = SecretStore.run("reg", "query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid");
+153:                 java.util.regex.Matcher m = java.util.regex.Pattern.compile("MachineGuid\\s+REG_SZ\\s+(\\S+)").matcher(r.out);
+154:                 if (m.find()) raw = "win:" + m.group(1);
+155:             }
+156:         } catch (Throwable ignored) {
+157:             // يبقى فارغًا
+158:         }
+159:         if (raw.isEmpty()) return "";
+160:         try {
+161:             return BackupFormat.hex(MessageDigest.getInstance("SHA-256").digest(("SA8|" + raw).getBytes(StandardCharsets.UTF_8))).substring(0, 32);
+162:         } catch (Exception e) {
+163:             return "";
+164:         }
+165:     }
+166: 
+167:     static String model() {
+168:         if (System.getProperty("os.name", "").toLowerCase(Locale.US).contains("win"))
+169:             return "Windows PC / " + System.getProperty("os.name", "") + " " + System.getProperty("os.version", "") + " / " + System.getProperty("os.arch", "");
+170:         String m = "Mac";
+171:         try {
+172:             SecretStore.Res r = SecretStore.run("/usr/sbin/sysctl", "-n", "hw.model");
+173:             if (r.code == 0 && !r.out.trim().isEmpty()) m = r.out.trim();
+174:         } catch (Throwable ignored) {
+175:             // غير مهم
+176:         }
+177:         return m + " / macOS " + System.getProperty("os.version", "") + " / " + System.getProperty("os.arch", "");
+178:     }
+179: 
+180:     public static String requestText(Context ctx, Db db, String order) throws Exception {
+181:         order = order == null ? "" : order.trim();
+182:         if (order.isEmpty() || order.length() > 64) throw new IllegalArgumentException("اكتب رقم الطلب الذي أعطاك إياه البائع (حتى 64 حرفًا).");
+183:         if (deviceKeyX509() == null) createDeviceKey();
+184:         byte[] pub = deviceKeyX509();

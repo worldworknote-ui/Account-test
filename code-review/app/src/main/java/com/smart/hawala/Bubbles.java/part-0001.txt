@@ -1,0 +1,176 @@
+1: package com.smart.hawala;
+2: 
+3: import java.nio.charset.StandardCharsets;
+4: import java.util.ArrayList;
+5: import java.util.Base64;
+6: import java.util.Comparator;
+7: import java.util.List;
+8: import java.util.Locale;
+9: import java.util.regex.Pattern;
+10: 
+11: /**
+12:  * 12.1: «إطار الالتقاط» على الكمبيوتر. قارئ الشاشة (إمكانية الوصول في النظام، أو قراءة الصورة) يعيد عناصر بمكانها ونصها،
+13:  * وهنا نجمعها في فقاعات مرقمة ونخمّن اسم المحادثة (الغروب) من رأس النافذة.
+14:  * صيغة سطر القارئ: «النوع⇥x⇥y⇥w⇥h⇥النص بـBase64». الأنواع: W النافذة (وعنوانها)، R فقاعة كاملة، T نص عنصر، L سطر من قراءة الصورة، H رأس المحادثة،
+15:  * B (12.2) شكل فقاعة وجدناه في الصورة (BubbleShapes) بلا نص: تُجمع فيه أسطر القراءة التي يقع وسطها داخله.
+16:  * منطق بحت بلا أندرويد ولا Swing حتى يُختبر.
+17:  */
+18: public final class Bubbles {
+19:     private Bubbles() {}
+20: 
+21:     public static final class Node {
+22:         public final char kind;
+23:         public final int x, y, w, h;
+24:         public final String text;
+25: 
+26:         public Node(char kind, int x, int y, int w, int h, String text) {
+27:             this.kind = kind;
+28:             this.x = x;
+29:             this.y = y;
+30:             this.w = Math.max(0, w);
+31:             this.h = Math.max(0, h);
+32:             this.text = text == null ? "" : text;
+33:         }
+34: 
+35:         int cx() { return x + w / 2; }
+36: 
+37:         int cy() { return y + h / 2; }
+38: 
+39:         boolean inside(int[] r) { return r == null || (cx() >= r[0] && cx() <= r[0] + r[2] && cy() >= r[1] && cy() <= r[1] + r[3]); }
+40: 
+41:         boolean contains(Node o) { return o.x >= x && o.y >= y && o.x + o.w <= x + w && o.y + o.h <= y + h; }
+42:     }
+43: 
+44:     public static final class Bubble {
+45:         public final int number;
+46:         public final int x, y, w, h;
+47:         public final String time, text;
+48:         /** 12.3: اسم المرسل في الغروب إن ظهر في أول الفقاعة («~ Abo Nour +40…»)، وإلا فارغ. */
+49:         public final String sender;
+50: 
+51:         Bubble(int number, int x, int y, int w, int h, String time, String text) { this(number, x, y, w, h, time, text, ""); }
+52: 
+53:         Bubble(int number, int x, int y, int w, int h, String time, String text, String sender) {
+54:             this.number = number;
+55:             this.x = x;
+56:             this.y = y;
+57:             this.w = w;
+58:             this.h = h;
+59:             this.time = time;
+60:             this.text = text;
+61:             this.sender = sender == null ? "" : sender;
+62:         }
+63: 
+64:         public WaText.Msg msg() { return new WaText.Msg(sender, time, text); }
+65:     }
+66: 
+67:     public static final class Result {
+68:         public final List<Bubble> bubbles = new ArrayList<>();
+69:         /** اسم المحادثة إن عُرف، وإلا فارغ. */
+70:         public String chat = "";
+71:         /** عنوان النافذة (اسم البرنامج). */
+72:         public String window = "";
+73:     }
+74: 
+75:     public static List<Node> parse(String out) {
+76:         List<Node> l = new ArrayList<>();
+77:         if (out == null) return l;
+78:         for (String line : out.split("\n")) {
+79:             // لا trim: النص الفارغ في آخر السطر (حقل أخير فارغ بعد ⇥) يجب أن يبقى حقلًا
+80:             String[] p = line.replace("\r", "").replaceAll("^\\s+", "").split("\t", -1);
+81:             if (p.length < 6 || p[0].length() != 1) continue;
+82:             try {
+83:                 String t = p[5].isEmpty() ? "" : new String(Base64.getDecoder().decode(p[5]), StandardCharsets.UTF_8);
+84:                 l.add(new Node(p[0].charAt(0), (int) Double.parseDouble(p[1]), (int) Double.parseDouble(p[2]),
+85:                         (int) Double.parseDouble(p[3]), (int) Double.parseDouble(p[4]), t));
+86:             } catch (Exception ignored) {
+87:                 // سطر تالف
+88:             }
+89:         }
+90:         return l;
+91:     }
+92: 
+93:     /** ما لا يكون رسالة: فواصل الأيام، «رسائل غير مقروءة»، تنبيه التشفير، عناصر الواجهة. */
+94:     private static final Pattern NOISE = Pattern.compile("(?iu)^\\s*(اليوم|أمس|امس|today|yesterday|"
+95:             + "\\d+\\s*(رسالة|رسائل)\\s*غير\\s*مقروءة|\\d+\\s*unread\\s*messages?|"
+96:             + "(الأحد|الاثنين|الإثنين|الثلاثاء|الأربعاء|الخميس|الجمعة|السبت|sunday|monday|tuesday|wednesday|thursday|friday|saturday)|"
+97:             + "\\d{1,4}[/.\\-]\\d{1,2}[/.\\-]\\d{1,4}|"
+98:             + ".*(مشفّرة تمامًا|مشفرة تماما|end-to-end encrypted).*|"
+99:             + "اكتب رسالة|type a message|بحث|search|whatsapp|واتساب|الدردشات|chats|المجتمعات|communities|الحالة|status)\\s*$");
+100: 
+101:     static boolean noise(String t) {
+102:         String s = MessageParser.digits(WaText.stripMarks(t)).trim();
+103:         return s.isEmpty() || NOISE.matcher(s).matches() || WaCuts.timeLine(s) || WaWords.systemText(s);
+104:     }
+105: 
+106:     /**
+107:      * يبني الفقاعات داخل الإطار. frame = {x, y, w, h} بإحداثيات الشاشة، أو null للنافذة كلها.
+108:      */
+109:     public static Result build(List<Node> nodes, int[] frame) {
+110:         Result r = new Result();
+111:         Node win = null;
+112:         for (Node n : nodes) if (n.kind == 'W') { win = n; break; }
+113:         if (win != null) r.window = win.text.trim();
+114:         List<Node> rows = new ArrayList<>(), lines = new ArrayList<>(), shapes = new ArrayList<>();
+115:         for (Node n : nodes) {
+116:             if (!n.inside(frame)) continue;
+117:             if (n.kind == 'R') rows.add(n);
+118:             else if (n.kind == 'B' || n.kind == 'M') shapes.add(n);
+119:             else if ((n.kind == 'T' || n.kind == 'L') && !n.text.trim().isEmpty()) lines.add(n);
+120:         }
+121:         // فقاعة بلا اسم في إمكانية الوصول: نصها من عناصر النص التي بداخلها (من الأعلى للأسفل)
+122:         for (int i = 0; i < rows.size(); i++) {
+123:             Node n = rows.get(i);
+124:             if (!n.text.trim().isEmpty()) continue;
+125:             List<Node> in = new ArrayList<>();
+126:             for (Node t : lines) if (n.contains(t)) in.add(t);
+127:             in.sort(Comparator.comparingInt((Node t) -> t.y).thenComparingInt(t -> -t.x));
+128:             StringBuilder sb = new StringBuilder();
+129:             for (Node t : in) {
+130:                 if (sb.length() > 0) sb.append('\n');
+131:                 sb.append(t.text.trim());
+132:             }
+133:             rows.set(i, new Node('R', n.x, n.y, n.w, n.h, sb.toString()));
+134:         }
+135:         rows.removeIf(n -> n.text.trim().isEmpty());
+136:         List<Bubble> raw = new ArrayList<>();
+137:         if (!rows.isEmpty()) {
+138:             // الأكبر الذي يحتوي غيره يُترك إن كان نصه يجمع نصوص أبنائه: نأخذ أصغر الفقاعات (الفقاعة نفسها لا القائمة كلها)
+139:             rows.sort(Comparator.comparingInt(n -> n.y));
+140:             List<Node> keep = new ArrayList<>();
+141:             for (Node n : rows) {
+142:                 boolean parent = false;
+143:                 for (Node o : rows) if (o != n && n.contains(o) && (n.w > o.w || n.h > o.h)) { parent = true; break; }
+144:                 if (!parent) keep.add(n);
+145:             }
+146:             for (Node n : keep) raw.add(bubble(n.x, n.y, n.w, n.h, n.text));
+147:         } else if (!lines.isEmpty()) {
+148:             List<Bubble> byShape = shapes.isEmpty() ? new ArrayList<>() : byShapes(shapes, lines);
+149:             raw.addAll(byShape.isEmpty() ? cluster(lines) : byShape);
+150:         }
+151:         int k = 1;
+152:         for (Bubble b : raw) {
+153:             if (noise(b.text)) continue;
+154:             r.bubbles.add(new Bubble(k++, b.x, b.y, b.w, b.h, b.time, b.text, b.sender));
+155:         }
+156:         r.chat = chatName(nodes, win, frame);
+157:         return r;
+158:     }
+159: 
+160:     private static Bubble bubble(int x, int y, int w, int h, String text) {
+161:         String t = WaText.stripMarks(text).replace("\r\n", "\n").trim();
+162:         String time = WaCuts.lastTime(t);
+163:         // 12.3: سطر المرسل في أول فقاعة الغروب يصير «المرسل»، وتُحذف أسطر Forwarded وEdited وحجم الملف أينما كانت
+164:         String[] sp = WaWords.split(t);
+165:         // واتساب ويب يكتب في اسم الفقاعة أحيانًا الوقت ملصقًا بآخر النص: «… 100 دولار10:32 م»
+166:         String body = WaCuts.dropMeta(sp[1]).trim();
+167:         if (time.isEmpty()) {
+168:             String[] tt = WaCuts.trailingTime(body);
+169:             body = tt[0];
+170:             time = tt[1];
+171:         }
+172:         return new Bubble(0, x, y, w, h, time, body, sp[0]);
+173:     }
+174: 
+175:     /**
+176:      * 12.2: الرسالة كلها رقم واحد: كل سطر قراءة يذهب إلى شكل الفقاعة الذي يقع وسطه داخله (الأصغر إن تداخلت).

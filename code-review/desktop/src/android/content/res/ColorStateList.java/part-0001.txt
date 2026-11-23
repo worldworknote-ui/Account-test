@@ -1,0 +1,29 @@
+1: package android.content.res;
+2: 
+3: public class ColorStateList {
+4:     private final int[][] states;
+5:     private final int[] colors;
+6:     public ColorStateList(int[][] states, int[] colors) { this.states = states; this.colors = colors; }
+7:     public static ColorStateList valueOf(int c) { return new ColorStateList(new int[][]{{}}, new int[]{c}); }
+8:     public int getDefaultColor() { return colors.length == 0 ? 0 : colors[colors.length - 1]; }
+9:     public boolean isStateful() { return states.length > 1 || (states.length == 1 && states[0].length > 0); }
+10:     public int getColorForState(int[] st, int def) {
+11:         if (st == null) st = new int[0];
+12:         outer:
+13:         for (int i = 0; i < states.length; i++) {
+14:             for (int s : states[i]) {
+15:                 boolean has = false;
+16:                 for (int x : st) if (x == Math.abs(s)) { has = true; break; }
+17:                 if (s > 0 && !has) continue outer;
+18:                 if (s < 0 && has) continue outer;
+19:             }
+20:             return colors[i];
+21:         }
+22:         return def;
+23:     }
+24:     public ColorStateList withAlpha(int a) {
+25:         int[] c = colors.clone();
+26:         for (int i = 0; i < c.length; i++) c[i] = (a << 24) | (c[i] & 0xFFFFFF);
+27:         return new ColorStateList(states, c);
+28:     }
+29: }

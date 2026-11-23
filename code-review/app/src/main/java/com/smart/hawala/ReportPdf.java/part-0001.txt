@@ -1,0 +1,210 @@
+1: package com.smart.hawala;
+2: 
+3: import android.graphics.Bitmap;
+4: import android.graphics.Canvas;
+5: import android.graphics.Color;
+6: import android.graphics.Paint;
+7: import android.graphics.Rect;
+8: import android.graphics.RectF;
+9: import android.graphics.Typeface;
+10: import android.graphics.pdf.PdfDocument;
+11: import android.text.Layout;
+12: import android.text.StaticLayout;
+13: import android.text.TextDirectionHeuristics;
+14: import android.text.TextPaint;
+15: import java.io.File;
+16: import java.io.FileOutputStream;
+17: import java.io.IOException;
+18: import java.io.OutputStream;
+19: import java.util.ArrayList;
+20: import java.util.List;
+21: 
+22: /**
+23:  * يرسم أي تقرير ({@link Report}) كصفحات A4: PDF، أو صور PNG صفحة صفحة، أو صورة معاينة للصفحة الأولى.
+24:  * رأس بالشعار واسم مكتبك، ملخص مفصل لكل عملة، جداول بالتفاف النص العربي وتكرار رأس الجدول،
+25:  * صور الوصولات تحت حركاتها، خانات التوقيع، وترقيم الصفحات.
+26:  */
+27: public final class ReportPdf {
+28: 
+29:     public static final class Opts {
+30:         public ExportStyle style = new ExportStyle();
+31:         public int accent = Color.rgb(11, 107, 83);
+32:         public Bitmap logo;
+33:         public String developer = "";
+34:         /** لجلب الصور عند الرسم (null = بدون صور). */
+35:         public Db db;
+36:     }
+37: 
+38:     private abstract static class Block {
+39:         float h;
+40:         Block repeatHeader;
+41:         boolean keepWithNext;
+42: 
+43:         abstract void draw(Canvas c, float top);
+44:     }
+45: 
+46:     private final Report r;
+47:     private final Opts o;
+48:     private final float W, H, M = 28f, FOOTER = 24f, RUNNING = 22f, PAD = 3.5f, CW;
+49:     private final TextPaint text = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+50:     private final TextPaint bold = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+51:     private final TextPaint white = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+52:     private final TextPaint muted = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+53:     private final TextPaint small = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+54:     private final TextPaint title = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+55:     private final TextPaint heading = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+56:     private final Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
+57:     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+58:     private final int light, shade, total;
+59: 
+60:     private ReportPdf(Report r, Opts o) {
+61:         this.r = r;
+62:         this.o = o;
+63:         boolean land = o.style.landscape;
+64:         W = land ? 842f : 595f;
+65:         H = land ? 595f : 842f;
+66:         CW = W - 2 * M;
+67:         float s = o.style.fontScale();
+68:         text.setTextSize(8.5f * s);
+69:         text.setColor(Color.rgb(35, 35, 35));
+70:         bold.setTextSize(8.8f * s);
+71:         bold.setColor(Color.rgb(25, 25, 25));
+72:         bold.setTypeface(Typeface.DEFAULT_BOLD);
+73:         white.setTextSize(8.8f * s);
+74:         white.setColor(Color.WHITE);
+75:         white.setTypeface(Typeface.DEFAULT_BOLD);
+76:         muted.setTextSize(8.2f * s);
+77:         muted.setColor(Color.rgb(140, 140, 140));
+78:         small.setTextSize(7.4f * s);
+79:         small.setColor(Color.rgb(110, 110, 110));
+80:         title.setTextSize(15f * s);
+81:         title.setTypeface(Typeface.DEFAULT_BOLD);
+82:         title.setColor(o.accent);
+83:         heading.setTextSize(10.5f * s);
+84:         heading.setTypeface(Typeface.DEFAULT_BOLD);
+85:         heading.setColor(darker(o.accent));
+86:         line.setColor(Color.rgb(212, 212, 212));
+87:         line.setStrokeWidth(0.6f);
+88:         light = blend(o.accent, 0.13f);
+89:         shade = Color.rgb(248, 247, 243);
+90:         total = blend(o.accent, 0.22f);
+91:     }
+92: 
+93:     static int blend(int c, float a) {
+94:         return Color.rgb((int) (255 - (255 - Color.red(c)) * a), (int) (255 - (255 - Color.green(c)) * a), (int) (255 - (255 - Color.blue(c)) * a));
+95:     }
+96: 
+97:     static int darker(int c) {
+98:         return Color.rgb((int) (Color.red(c) * 0.8f), (int) (Color.green(c) * 0.8f), (int) (Color.blue(c) * 0.8f));
+99:     }
+100: 
+101:     private static StaticLayout layout(String s, TextPaint p, float width, Layout.Alignment align) {
+102:         String t = s == null ? "" : s;
+103:         return StaticLayout.Builder.obtain(t, 0, t.length(), p, Math.max(8, (int) width))
+104:                 .setAlignment(align)
+105:                 .setTextDirection(TextDirectionHeuristics.RTL)
+106:                 .setIncludePad(false)
+107:                 .setLineSpacing(0f, 1.06f)
+108:                 .build();
+109:     }
+110: 
+111:     private static void drawLayout(Canvas c, StaticLayout l, float x, float y) {
+112:         c.save();
+113:         c.translate(x, y);
+114:         l.draw(c);
+115:         c.restore();
+116:     }
+117: 
+118:     // ---------------------------------------------------------------------------- الكتل
+119: 
+120:     private Block header() {
+121:         final float logoSize = o.style.logo && o.logo != null ? 54f : 0f;
+122:         final float gap = logoSize > 0 ? 10f : 0f;
+123:         final StaticLayout t = layout(r.title, title, CW - logoSize - gap, Layout.Alignment.ALIGN_NORMAL);
+124:         final StaticLayout lines = layout(Model.join(r.headerLines, "\n"), small, CW - logoSize - gap, Layout.Alignment.ALIGN_NORMAL);
+125:         Block b = new Block() {
+126:             @Override void draw(Canvas c, float top) {
+127:                 if (logoSize > 0) {
+128:                     RectF dst = new RectF(W - M - logoSize, top, W - M, top + logoSize);
+129:                     c.drawBitmap(o.logo, new Rect(0, 0, o.logo.getWidth(), o.logo.getHeight()), dst, null);
+130:                 }
+131:                 drawLayout(c, t, M, top);
+132:                 drawLayout(c, lines, M, top + t.getHeight() + 4);
+133:                 Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+134:                 p.setColor(o.accent);
+135:                 p.setStrokeWidth(1.6f);
+136:                 c.drawLine(M, top + h - 5, W - M, top + h - 5, p);
+137:             }
+138:         };
+139:         b.h = Math.max(logoSize, t.getHeight() + 4 + lines.getHeight()) + 12;
+140:         return b;
+141:     }
+142: 
+143:     private Block band(String s, final int accent) {
+144:         TextPaint hp = heading;
+145:         if (accent != 0) {
+146:             hp = new TextPaint(heading);
+147:             hp.setColor(darker(accent));
+148:         }
+149:         final StaticLayout l = layout(s, hp, CW - 2 * PAD, Layout.Alignment.ALIGN_NORMAL);
+150:         Block b = new Block() {
+151:             @Override void draw(Canvas c, float top) {
+152:                 fill.setColor(accent != 0 ? blend(accent, 0.13f) : light);
+153:                 c.drawRect(M, top + 8, W - M, top + h, fill);
+154:                 fill.setColor(accent != 0 ? accent : o.accent);
+155:                 c.drawRect(W - M - 3, top + 8, W - M, top + h, fill);
+156:                 drawLayout(c, l, M + PAD, top + 8 + PAD);
+157:             }
+158:         };
+159:         b.h = l.getHeight() + 8 + 2 * PAD;
+160:         b.keepWithNext = true;
+161:         return b;
+162:     }
+163: 
+164:     private Block kv(final Report.Kv kv) {
+165:         final float boxW = Math.min(CW, 330f);
+166:         final float labelW = boxW * 0.58f;
+167:         final StaticLayout lab = layout(kv.label, kv.emphasis ? bold : text, labelW - 2 * PAD, Layout.Alignment.ALIGN_NORMAL);
+168:         final StaticLayout val = layout(Report.text(kv.value), kv.emphasis ? bold : text, boxW - labelW - 2 * PAD, Layout.Alignment.ALIGN_CENTER);
+169:         Block b = new Block() {
+170:             @Override void draw(Canvas c, float top) {
+171:                 float right = W - M, left = right - boxW;
+172:                 fill.setColor(kv.emphasis ? total : Color.rgb(246, 246, 246));
+173:                 c.drawRect(right - labelW, top, right, top + h, fill);
+174:                 if (kv.emphasis) {
+175:                     fill.setColor(total);
+176:                     c.drawRect(left, top, right - labelW, top + h, fill);
+177:                 }
+178:                 drawLayout(c, lab, right - labelW + PAD, top + PAD);
+179:                 drawLayout(c, val, left + PAD, top + PAD);
+180:                 c.drawLine(left, top + h, right, top + h, line);
+181:                 c.drawLine(left, top, left, top + h, line);
+182:                 c.drawLine(right, top, right, top + h, line);
+183:                 c.drawLine(right - labelW, top, right - labelW, top + h, line);
+184:             }
+185:         };
+186:         b.h = Math.max(lab.getHeight(), val.getHeight()) + 2 * PAD;
+187:         return b;
+188:     }
+189: 
+190:     private Block note(String s) {
+191:         final StaticLayout l = layout(s, muted, CW, Layout.Alignment.ALIGN_NORMAL);
+192:         Block b = new Block() {
+193:             @Override void draw(Canvas c, float top) { drawLayout(c, l, M, top + 4); }
+194:         };
+195:         b.h = l.getHeight() + 8;
+196:         return b;
+197:     }
+198: 
+199:     private float[] widths(List<Report.Col> cols) {
+200:         float sum = 0;
+201:         for (Report.Col c : cols) sum += c.weight;
+202:         float[] w = new float[cols.size()];
+203:         for (int i = 0; i < w.length; i++) w[i] = CW * cols.get(i).weight / sum;
+204:         return w;
+205:     }
+206: 
+207:     /** صف جدول. الأعمدة تُرسم من اليمين لليسار (العمود الأول في أقصى اليمين). */
+208:     private Block row(final List<Report.Col> cols, final float[] w, Object[] cells, final int style, final boolean isHeader, final int accent, final int tint) {
+209:         final StaticLayout[] ls = new StaticLayout[cols.size()];
+210:         float hh = 0;

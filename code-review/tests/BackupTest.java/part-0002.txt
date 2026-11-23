@@ -1,0 +1,96 @@
+132:     final long[] cnt = {0};
+133:     BackupFormat.AttachmentStore counting = new BackupFormat.AttachmentStore() {
+134:       public Object store(long id, InputStream in) throws Exception { byte[] b = new byte[8192]; int n; while((n=in.read(b))>0) cnt[0]+=n; return id; }
+135:       public void discard(Object h) {} };
+136:     try (InputStream fi = new BufferedInputStream(new FileInputStream(tmp))) {
+137:       BackupFormat.Parsed pl = BackupFormat.readV5(new SecureStreams.DecryptingInputStream(fi, pw), counting);
+138:       check(pl.attachments.size() == 40 && pl.table("tx").size() == 2000, "large backup verified, file=" + tmp.length() + " bytes, imgBytes=" + cnt[0] + ", " + (System.currentTimeMillis()-t0) + "ms (default 310k iterations x2)");
+139:     }
+140:     System.out.println("12) 8.0: large tables spill to an encrypted temp file (constant memory)");
+141:     File spillDir = new File(tmp.getParentFile(), "spill-" + System.nanoTime());
+142:     long oldSpill = BackupFormat.spillChars;
+143:     BackupFormat.spillChars = 20000;
+144:     try (InputStream fi = new BufferedInputStream(new FileInputStream(tmp))) {
+145:       BackupFormat.Parsed ps = BackupFormat.readV5(new SecureStreams.DecryptingInputStream(fi, pw), counting, spillDir);
+146:       check(ps.tables.get("tx") instanceof BackupFormat.SpilledRows && ps.tables.get("journal_lines") instanceof BackupFormat.SpilledRows, "tx and journal_lines spilled to disk");
+147:       check(!(ps.tables.get("offices") instanceof BackupFormat.SpilledRows), "small tables stay in memory");
+148:       check(ps.table("tx").size() == 2000 && ps.table("journal_lines").size() == 4000, "sizes kept: tx=" + ps.table("tx").size());
+149:       BackupFormat.Report rs = BackupFormat.validate(ps);
+150:       check(rs.ok() && rs.txActive + rs.txCancelled == 2000 && rs.entries == 2000, "spilled backup validates: " + rs.errors);
+151:       long sum1 = 0, sum2 = 0; int n1 = 0;
+152:       for (JSONObject t : ps.table("tx")) { sum1 += t.getLong("amount_minor"); n1++; }
+153:       for (JSONObject t : ps.table("tx")) sum2 += t.getLong("amount_minor");
+154:       check(n1 == 2000 && sum1 == sum2 && sum1 == 1000L * 2000 * 2001 / 2, "two passes give identical rows, sum=" + sum1);
+155:       check(ps.table("tx").get(1).getString("uuid").equals("u-2") && ps.table("tx").get(1999).getString("person").equals("شخص 2000"), "get(i) reads the right row");
+156:       File sf = ((BackupFormat.SpilledRows) ps.tables.get("tx")).file();
+157:       byte[] raw = java.nio.file.Files.readAllBytes(sf.toPath());
+158:       String asText = new String(raw, "UTF-8") + new String(raw, "ISO-8859-1");
+159:       check(raw.length > 50000 && !asText.contains("u-1999") && !asText.contains("amount_minor") && !asText.contains("شخص"), "temp file is encrypted (no plaintext), " + raw.length + " bytes");
+160:       BackupFormat.discardSpill(ps);
+161:       check(!sf.exists(), "discardSpill deletes the temp files");
+162:     } finally {
+163:       BackupFormat.spillChars = oldSpill;
+164:       File[] left = spillDir.listFiles(); if (left != null) for (File x : left) x.delete(); spillDir.delete();
+165:     }
+166:     tmp.delete();
+167: 
+168:     // 10.14: نسخة بالإصدار 2 (رمز استرداد النسخ): تُفتح بكلمة المرور أو بالرمز، وتُرفض بغيرهما، وأي تلاعب يُكتشف
+169:     {
+170:       String code = "ABCD-EFGH-JKMN-PQRS-TUVW-XYZ2";
+171:       byte[] rsalt = new byte[16]; new SecureRandom().nextBytes(rsalt);
+172:       SecureStreams.RecoveryKey rk = SecureStreams.RecoveryKey.derive(code, rsalt, 100000);
+173:       ByteArrayOutputStream bo2 = new ByteArrayOutputStream();
+174:       SecureStreams.EncryptingOutputStream e3 = new SecureStreams.EncryptingOutputStream(bo2, "كلمة-النسخ".toCharArray(), 100000, 64 * 1024, rk);
+175:       byte[] payload = new byte[200000]; new SecureRandom().nextBytes(payload);
+176:       e3.write(payload); e3.close();
+177:       byte[] file2 = bo2.toByteArray();
+178:       check(readAll(file2, "كلمة-النسخ".toCharArray()).length == payload.length, "v2: تُفتح بكلمة المرور");
+179:       check(java.util.Arrays.equals(readAll(file2, "abcd efgh jkmn pqrs tuvw xyz2".toCharArray()), payload), "v2: تُفتح برمز الاسترداد بأي شكل كُتب (أحرف صغيرة ومسافات)");
+180:       boolean wrong = false;
+181:       try { readAll(file2, "ABCD-EFGH-JKMN-PQRS-TUVW-XYZ3".toCharArray()); } catch (SecureStreams.WrongPasswordException w) { wrong = w.getMessage().contains("رمز استرداد"); }
+182:       check(wrong, "v2: رمز خاطئ أو كلمة خاطئة تُرفض برسالة تذكر رمز الاسترداد");
+183:       byte[] tampered = file2.clone(); tampered[60] ^= 1;
+184:       boolean caught = false;
+185:       try { readAll(tampered, "كلمة-النسخ".toCharArray()); } catch (java.io.IOException x) { caught = true; }
+186:       check(caught, "v2: تعديل بايت في الرأس يُكتشف");
+187:       ByteArrayOutputStream bo1 = new ByteArrayOutputStream();
+188:       SecureStreams.EncryptingOutputStream e1 = new SecureStreams.EncryptingOutputStream(bo1, "كلمة-النسخ".toCharArray(), 100000, 64 * 1024, null);
+189:       e1.write(payload); e1.close();
+190:       byte[] v1 = bo1.toByteArray();
+191:       check(v1[11] == 1 && file2[11] == 2, "بلا رمز تبقى النسخة بالإصدار 1 (تقرؤها الإصدارات الأقدم)");
+192:     }
+193: 
+194:     System.out.println(fails == 0 ? "ALL TESTS PASSED" : (fails + " FAILURE(S)"));
+195:     System.exit(fails == 0 ? 0 : 1);
+196:   }
+197: 
+198:   static byte[] readAll(byte[] file, char[] pw) throws Exception {
+199:     try (InputStream in = new SecureStreams.DecryptingInputStream(new ByteArrayInputStream(file), pw)) {
+200:       ByteArrayOutputStream o = new ByteArrayOutputStream(); byte[] b = new byte[8192]; int n;
+201:       while ((n = in.read(b)) > 0) o.write(b, 0, n);
+202:       return o.toByteArray();
+203:     }
+204:   }
+205: 
+206:   /** Re-implementation of the 4.0.1 BackupManager.create() byte layout, to prove compatibility. */
+207:   static byte[] makeV4(char[] pass) throws Exception {
+208:     JSONObject root = new JSONObject(); root.put("schema", 4); root.put("createdAt", 123L); root.put("app","x"); root.put("appVersion","4.0");
+209:     JSONArray tables = new JSONArray();
+210:     String[][] data = {{"currencies","[{\"code\":\"USD\",\"name\":\"دولار\",\"decimals\":2,\"active\":1}]"},{"offices","[{\"id\":1,\"name\":\"مكتب\",\"active\":1}]"},{"office_currencies","[]"},
+211:       {"tx","[{\"id\":1,\"uuid\":\"abc\",\"office_id\":1,\"type\":\"مدين / لنا\",\"amount_minor\":500,\"currency\":\"USD\",\"fee_type\":\"بدون أجرة\",\"fee_minor\":0,\"created_at\":1,\"status\":\"ACTIVE\"}]"},
+212:       {"journal_entries","[{\"id\":1,\"tx_id\":1,\"kind\":\"PRINCIPAL\"}]"},{"journal_lines","[{\"id\":1,\"entry_id\":1,\"account\":\"OFFICE\",\"office_id\":1,\"currency\":\"USD\",\"debit_minor\":500,\"credit_minor\":0},{\"id\":2,\"entry_id\":1,\"account\":\"SETTLEMENT\",\"currency\":\"USD\",\"debit_minor\":0,\"credit_minor\":500}]"},
+213:       {"opening_balances","[]"},{"exchange_rates","[]"},{"settings","[]"},{"backup_history","[]"},{"audit_logs","[]"}};
+214:     for (String[] d : data) tables.put(new JSONObject().put("name", d[0]).put("rows", new JSONArray(d[1])));
+215:     root.put("tables", tables);
+216:     JSONArray at = new JSONArray(); at.put(new JSONObject().put("id",1).put("tx_id",1).put("mime","image/jpeg").put("created_at",2).put("data", Base64.getEncoder().encodeToString(new byte[]{1,2,3,4,5})));
+217:     root.put("attachments", at); root.put("skippedAttachments", 0);
+218:     ByteArrayOutputStream gz = new ByteArrayOutputStream(); try (GZIPOutputStream z = new GZIPOutputStream(gz)) { z.write(root.toString().getBytes("UTF-8")); }
+219:     byte[] plain = gz.toByteArray(); byte[] salt = new byte[16]; byte[] iv = new byte[12]; new SecureRandom().nextBytes(salt); new SecureRandom().nextBytes(iv);
+220:     byte[] MAGIC = "SMARTBK4".getBytes("US-ASCII");
+221:     PBEKeySpec s = new PBEKeySpec(pass, salt, 310000, 256); byte[] k = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(s).getEncoded();
+222:     Cipher c = Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(k,"AES"), new GCMParameterSpec(128, iv)); c.updateAAD(MAGIC); byte[] cipher = c.doFinal(plain);
+223:     ByteArrayOutputStream o = new ByteArrayOutputStream(); o.write(MAGIC); DataOutputStream d = new DataOutputStream(o);
+224:     d.writeInt(1); d.writeInt(310000); d.writeInt(16); d.write(salt); d.writeInt(12); d.write(iv); d.writeInt(cipher.length); d.write(cipher); d.flush();
+225:     return o.toByteArray();
+226:   }
+227: }

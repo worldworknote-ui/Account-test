@@ -1,0 +1,53 @@
+1: import com.smart.hawala.*;
+2: import java.io.FileOutputStream;
+3: import java.util.*;
+4: 
+5: /** ألوان العملات في الكشوفات: الأقسام والصفوف تأخذ لون عملتها، والأرقام لا تتغير، وملف Excel صالح. */
+6: public class CurrencyColorTest {
+7:     static int fails = 0;
+8:     static void check(boolean c, String m) { System.out.println((c ? "  PASS " : "  FAIL ") + m); if (!c) fails++; }
+9:     public static void main(String[] a) throws Exception {
+10:         ExportStyle st = new ExportStyle();
+11:         check(st.curColors, "currency colors on by default");
+12:         check(st.colorFor("USD") == ExportStyleColors.hex("#1565C0") && st.colorFor("EUR") != st.colorFor("USD"), "default colors differ per currency");
+13:         st.curColorMap = "EUR=#AD1457";
+14:         check(st.colorFor("EUR") == ExportStyleColors.hex("#AD1457"), "user color for EUR");
+15:         check(st.colorFor("XYZ") == st.colorFor("XYZ") && st.colorFor("XYZ") != 0, "stable color for unknown code");
+16:         ExportStyle back = ExportStyle.from(st.toMap());
+17:         check(back.curColors && back.curColorMap.equals("EUR=#AD1457"), "settings round trip");
+18: 
+19:         Report r = Reports.sample(st, "مكتبي");
+20:         int accents = 0, tinted = 0;
+21:         for (Report.Section s : r.sections) {
+22:             if (s.accent != 0) accents++;
+23:             for (Report.Row row : s.rows) if (row.tint != 0) tinted++;
+24:         }
+25:         check(accents == 2, "two currency sections colored (got " + accents + ")");
+26:         check(tinted == 2, "summary rows tinted per currency (got " + tinted + ")");
+27:         try (FileOutputStream f = new FileOutputStream(a[0] + "/sample.xlsx")) { XlsxWriter.write(r, f, "FF0B6B53", TimeZone.getTimeZone("UTC")); }
+28: 
+29:         // أرصدة كل المكاتب: كل صف بعملته
+30:         Model.OfficeTotals o = new Model.OfficeTotals();
+31:         o.officeId = 1; o.name = "كاش شام"; o.active = true;
+32:         o.perCurrency.put("USD", new long[]{50000, 20000, 30000});
+33:         o.perCurrency.put("SYP", new long[]{0, 900000, -900000});
+34:         Map<String, Integer> dec = new HashMap<>(); dec.put("USD", 2); dec.put("SYP", 0);
+35:         Report b = Reports.balances(Collections.singletonList(o), dec, new HashMap<>(), false, "مكتبي", System.currentTimeMillis());
+36:         Reports.colorize(b, st);
+37:         Set<Integer> tints = new HashSet<>();
+38:         for (Report.Section s : b.sections) for (Report.Row row : s.rows) if (row.tint != 0) tints.add(row.tint);
+39:         check(tints.size() == 2, "balances rows tinted with 2 colors");
+40:         try (FileOutputStream f = new FileOutputStream(a[0] + "/balances.xlsx")) { XlsxWriter.write(b, f, "FF0B6B53", TimeZone.getTimeZone("UTC")); }
+41: 
+42:         st.curColors = false;
+43:         Report off = Reports.sample(st, "x");
+44:         boolean none = true;
+45:         for (Report.Section s : off.sections) { if (s.accent != 0) none = false; for (Report.Row row : s.rows) if (row.tint != 0) none = false; }
+46:         check(none, "switch off → no colors");
+47:         System.out.println(fails == 0 ? "ALL CURRENCY COLOR TESTS PASSED" : fails + " FAILED");
+48:         System.exit(fails == 0 ? 0 : 1);
+49:     }
+50: }
+51: class ExportStyleColors {
+52:     static int hex(String h) { return (int) Long.parseLong("FF" + h.replace("#", ""), 16); }
+53: }

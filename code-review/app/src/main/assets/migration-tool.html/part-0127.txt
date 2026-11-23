@@ -1,0 +1,149 @@
+1655:     parseAmount: parseAmount, toMinor: toMinor, fmtMinor: fmtMinor, balWord: balWord,
+1656:     parseDate: parseDate, guessDateOrder: guessDateOrder, epoch: epoch, fmtDate: fmtDate,
+1657:     sheetRows: sheetRows, text: text, isBlankRow: isBlankRow,
+1658:     guessHeaderRow: guessHeaderRow, guessColumns: guessColumns, guessCurrency: guessCurrency, guessDirection: guessDirection,
+1659:     KNOWN: KNOWN, DEFAULT_CODES: DEFAULT_CODES, OPENING_RE: OPENING_RE, TOTAL_RE: TOTAL_RE,
+1660:     build: build, tables: tables, stmtHeader: stmtHeader, splitAccount: splitAccount, parseStatements: parseStatements, isStatementFile: isStatementFile, checkStatement: checkStatement,
+1661:     buildStatements: buildStatements, PRE_RE: PRE_RE, FOOT_RE: FOOT_RE, keyOf: keyOf, displayName: displayName, balancesFromTables: balancesFromTables, checkBalanced: checkBalanced, report: report,
+1662:     crc32: crc32, zipStored: zipStored, backupZip: backupZip, encrypt: encrypt, makeBackup: makeBackup, reportCsv: reportCsv
+1663:   };
+1664: })();
+1665: if (typeof module !== "undefined") module.exports = Core;
+1666: </script>
+1667: <script>/* أداة النقل — الواجهة. المنطق المحاسبي كله في core.js */
+1668: "use strict";
+1669: (function () {
+1670:   var $ = function (id) { return document.getElementById(id); };
+1671:   var C = Core;
+1672:   var S = {
+1673:     fileName: "", sheets: [], rows: {},
+1674:     open: { enabled: false, sheet: "", headerRow: 0, cols: {}, layout: "single", currencyFrom: "column", fixedCurrency: "USD", positiveIs: "D", wide: [], date: "" },
+1675:     tx: { enabled: false, sheets: [], officeFrom: "column", headerRow: 0, cols: {}, descCols: [], layout: "split", currencyFrom: "column", fixedCurrency: "USD",
+1676:       positiveIs: "D", dateOrder: "dmy", fillDate: true, feeDir: "D", balancePositiveIs: "D" },
+1677:     currencyMap: {}, currencyDefs: {}, typeMap: {}, rename: {}, mergeSimilar: false, reverse: false,
+1678:     result: null,
+1679:     // كشوفات الحساب (ملف لكل مكتب وعملة)
+1680:     mode: "single", stmts: [], stmtFiles: [], otherFiles: [],
+1681:     st: { balancesOnly: false, mergeCom: false, positiveIs: "C" }
+1682:   };
+1683:   var ACCEPT = ".xlsx,.xlsm,.xls,.csv,.txt,.tsv,.ods,.xml,.htm,.html";
+1684: 
+1685:   function esc(s) {
+1686:     return String(s === null || s === undefined ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; });
+1687:   }
+1688:   function el(html) { var t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; }
+1689:   function colName(i) { var s = ""; i++; while (i > 0) { var m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
+1690:   function headers(rows, hr) { return (rows[hr] || []).map(function (c, i) { var t = C.text(c); return { i: i, label: colName(i) + (t ? " — " + t : "") }; }); }
+1691:   function width(rows, hr) { var w = 0; for (var r = hr; r < Math.min(rows.length, hr + 60); r++) w = Math.max(w, (rows[r] || []).length); return w; }
+1692:   function colOptions(rows, hr, sel, optional) {
+1693:     var h = headers(rows, hr);
+1694:     var w = width(rows, hr);
+1695:     for (var i = h.length; i < w; i++) h.push({ i: i, label: colName(i) });
+1696:     var o = optional ? '<option value="">— لا يوجد —</option>' : '<option value="">— اختر —</option>';
+1697:     return o + h.map(function (x) { return '<option value="' + x.i + '"' + (sel === x.i ? " selected" : "") + ">" + esc(x.label) + "</option>"; }).join("");
+1698:   }
+1699:   function codeOptions(sel, extra) {
+1700:     var codes = Object.keys(C.KNOWN);
+1701:     Object.keys(S.currencyDefs).forEach(function (c) { if (codes.indexOf(c) < 0) codes.push(c); });
+1702:     var o = (extra || "") + codes.map(function (c) {
+1703:       var d = S.currencyDefs[c] || C.KNOWN[c];
+1704:       return '<option value="' + c + '"' + (sel === c ? " selected" : "") + ">" + c + " — " + esc(d ? d.name : c) + "</option>";
+1705:     }).join("");
+1706:     return o + '<option value="__new">رمز آخر…</option>';
+1707:   }
+1708:   function seg(name, opts, val) {
+1709:     return '<div class="seg">' + opts.map(function (o) {
+1710:       return '<label><input type="radio" name="' + name + '" value="' + o[0] + '"' + (o[0] === val ? " checked" : "") + ">" + esc(o[1]) + "</label>";
+1711:     }).join("") + "</div>";
+1712:   }
+1713:   function num(v) { return v === "" || v === null || v === undefined ? undefined : +v; }
+1714: 
+1715:   // ===================================================================================
+1716:   // 1. قراءة الملف
+1717:   // ===================================================================================
+1718: 
+1719:   function decodeText(buf) {
+1720:     try { return new TextDecoder("utf-8", { fatal: true }).decode(buf); } catch (e) { return new TextDecoder("windows-1256").decode(buf); }
+1721:   }
+1722: 
+1723:   /** يقرأ ملفًا إلى أوراق وصفوف. */
+1724:   function readBook(file) {
+1725:     return file.arrayBuffer().then(function (ab) {
+1726:       var buf = new Uint8Array(ab);
+1727:       var wb;
+1728:       var lower = file.name.toLowerCase();
+1729:       if (/\.(csv|txt|tsv)$/.test(lower)) {
+1730:         var text = decodeText(buf).replace(/^\uFEFF/, "");
+1731:         var semi = (text.split("\n")[0].match(/;/g) || []).length > (text.split("\n")[0].match(/,/g) || []).length;
+1732:         wb = XLSX.read(text, { type: "string", raw: true, FS: lower.endsWith(".tsv") ? "\t" : (semi ? ";" : undefined) });
+1733:       } else {
+1734:         wb = XLSX.read(buf, { type: "array", cellNF: true, cellDates: false });
+1735:       }
+1736:       return { name: file.name, sheets: wb.SheetNames.map(function (n) { return { name: n, rows: C.sheetRows(wb.Sheets[n], XLSX) }; }) };
+1737:     });
+1738:   }
+1739: 
+1740:   /**
+1741:    * ملف واحد بجدول عام ← الإعداد اليدوي (الخطوة 2). ملف أو أكثر فيه كشوفات حساب ← وضع الكشوفات:
+1742:    * كل كشف يُقرأ ويُتحقق منه وحده، ثم تُجمع عملات الحساب الواحد في مكتب واحد.
+1743:    * append: إضافة ملفات إلى الكشوفات الحالية (ملف بالاسم نفسه يُستبدل).
+1744:    */
+1745:   function readFiles(list, append) {
+1746:     var files = Array.prototype.slice.call(list || []);
+1747:     if (!files.length) return;
+1748:     var info = $("fileInfo");
+1749:     info.className = "msg info";
+1750:     info.textContent = files.length > 1 ? "جارٍ قراءة " + files.length + " ملف…" : "جارٍ قراءة الملف…";
+1751:     Promise.all(files.map(function (f) {
+1752:       return readBook(f).catch(function (e) { return { name: f.name, error: e && e.message ? e.message : String(e) }; });
+1753:     })).then(function (books) {
+1754:       var found = [], plain = [], failed = [];
+1755:       books.forEach(function (b) {
+1756:         if (b.error) { failed.push(b); return; }
+1757:         var blocks = C.parseStatements(b.name, b.sheets);
+1758:         if (C.isStatementFile(blocks)) found.push({ name: b.name, sheets: b.sheets.length, blocks: blocks });
+1759:         else plain.push(b);
+1760:       });
+1761:       if (!found.length && !append && books.length === 1 && plain.length === 1) { loadSingle(plain[0]); return; }
+1762:       if (!found.length && !(append && S.mode === "statements")) {
+1763:         info.className = "msg err";
+1764:         info.innerHTML = "لم نتعرف على كشوفات حساب في الملفات المختارة." + (failed.length ? " تعذرت قراءة: " + failed.map(function (f) { return esc(f.name); }).join("، ") + "." : "") +
+1765:           " لنقل جدول عام (أرصدة أو حركات) اختر ملفًا واحدًا فقط.";
+1766:         return;
+1767:       }
+1768:       loadStatements(found, plain.map(function (b) { return b.name; }).concat(failed.map(function (b) { return b.name + " (تعذرت قراءته)"; })), append);
+1769:     });
+1770:   }
+1771: 
+1772:   function loadSingle(book) {
+1773:     S.mode = "single";
+1774:     S.fileName = book.name;
+1775:     S.sheets = book.sheets.map(function (x) { return x.name; });
+1776:     S.rows = {};
+1777:     book.sheets.forEach(function (x) { S.rows[x.name] = x.rows; });
+1778:     afterLoad();
+1779:   }
+1780: 
+1781:   function loadStatements(found, others, append) {
+1782:     var keep = append && S.mode === "statements" ? S.stmtFiles.filter(function (f) { return !found.some(function (n) { return n.name === f.name; }); }) : [];
+1783:     S.mode = "statements";
+1784:     S.stmtFiles = keep.concat(found);
+1785:     S.stmts = [];
+1786:     S.stmtFiles.forEach(function (f) { S.stmts = S.stmts.concat(f.blocks); });
+1787:     S.otherFiles = (append ? S.otherFiles : []).concat(others || []);
+1788:     S.fileName = S.stmtFiles.length === 1 ? S.stmtFiles[0].name : S.stmtFiles.length + " كشف حساب";
+1789:     S.result = null;
+1790:     var info = $("fileInfo");
+1791:     info.className = "msg ok";
+1792:     info.innerHTML = "✓ قُرئ " + S.stmtFiles.length + " ملف فيها <b>" + S.stmts.length + " كشف حساب</b>." +
+1793:       (S.otherFiles.length ? '<br><span class="err-t">لم يُتعرف على هذه الملفات ككشوفات ولن تُنقل: ' + S.otherFiles.map(esc).join("، ") + "</span>" : "");
+1794:     $("step1").classList.add("done");
+1795:     ["step2", "step3", "step4", "step5"].forEach(function (x) { $(x).classList.remove("off"); });
+1796:     renderAll();
+1797:   }
+1798: 
+1799:   function dataRows(n) { return (S.rows[n] || []).filter(function (r) { return !C.isBlankRow(r); }).length; }
+1800: 
+1801:   function afterLoad() {
+1802:     $("stmtPanel").classList.add("hidden");
+1803:     $("singleSetup").classList.remove("hidden");

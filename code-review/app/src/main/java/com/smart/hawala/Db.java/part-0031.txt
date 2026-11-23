@@ -1,0 +1,151 @@
+4554:         return "هذا الجهاز منضم إلى مزامنة. المستخدمون يُفعَّلون ويُوقفون من الجهاز الرئيسي فقط، وتصل حساباتهم إلى هنا تلقائيًا. "
+4555:                 + "بعدها يدخل كل شخص هنا بحسابه الذي أنشأه له المدير.";
+4556:     }
+4557: 
+4558:     public boolean usersEnabled() {
+4559:         try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM users WHERE active=1", null)) {
+4560:             return c.moveToFirst() && c.getLong(0) > 0;
+4561:         }
+4562:     }
+4563: 
+4564:     public long addUser(String name, String role, String pin) {
+4565:         return addUser(name, role, Auth.ADMIN.equals(role) ? null : Auth.legacyPerms(role), pin);
+4566:     }
+4567: 
+4568:     /** 10.1: role = ADMIN أو CUSTOM مع قائمة الصلاحيات. */
+4569:     public long addUser(String name, String role, String perms, String pin) {
+4570:         require(Auth.Perm.USERS);
+4571:         if (!usersEnabled() && founderBlock() != null) throw new IllegalStateException(founderBlock());
+4572:         if (Auth.ADMIN.equals(role)) requireAdmin("إنشاء حساب مدير للمدير وحده.");
+4573:         else checkGrant(perms, null);
+4574:         if (name == null || name.trim().isEmpty()) throw new IllegalArgumentException("اكتب اسم المستخدم");
+4575:         checkNameFree(name, 0);
+4576:         if (!Pin.valid(pin)) throw new IllegalArgumentException("الرمز يجب أن يكون من 4 إلى 8 أرقام");
+4577:         if (Auth.ADMIN.equals(role) && !Pin.validAdmin(pin)) throw new IllegalArgumentException("رمز المدير يجب أن يكون من 6 إلى 8 أرقام");
+4578:         checkUserSlot();
+4579:         String salt = Pin.newSalt();
+4580:         ContentValues v = new ContentValues();
+4581:         v.put("name", name.trim());
+4582:         v.put("role", role);
+4583:         v.put("pin_salt", salt);
+4584:         v.put("pin_hash", Pin.hashV2(pin, salt, pinPepper()));
+4585:         v.put("active", 1);
+4586:         v.put("created_at", Clock.now());
+4587:         if (!Auth.ADMIN.equals(role)) v.put("perms", perms == null ? "" : perms);
+4588:         long id = ins(getWritableDatabase(), "users", v);
+4589:         audit("ADD_USER", "user", id, name.trim() + " / " + role);
+4590:         return id;
+4591:     }
+4592: 
+4593:     /**
+4594:      * 10.11 (AUDIT-016): الدخول بكتابة الاسم، فلا يتكرر اسم بين حسابين غير محذوفين (بعد التوحيد: الهمزات والمسافات…)؛
+4595:      * وإلا لا يستطيع صاحب الحساب الثاني الدخول أبدًا.
+4596:      */
+4597:     private void checkNameFree(String name, long exceptId) {
+4598:         String n = Sanity.norm(name);
+4599:         for (Model.User u : users(false)) {
+4600:             if (u.id != exceptId && Sanity.norm(u.name).equals(n))
+4601:                 throw new IllegalArgumentException("يوجد مستخدم بالاسم «" + u.name + "». اختر اسمًا مختلفًا (الدخول يكون بالاسم).");
+4602:         }
+4603:     }
+4604: 
+4605:     /** المجاني: مستخدم واحد نشط (المالك بصفة مدير يحمي التطبيق برمزه). المستخدمون الموجودون لا يُوقفون أبدًا. */
+4606:     private void checkUserSlot() {
+4607:         long max = License.current.maxUsers();
+4608:         if (max == Entitlements.UNLIMITED) return;
+4609:         try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM users WHERE active=1", null)) {
+4610:             if (c.moveToFirst() && c.getLong(0) >= max) {
+4611:                 throw new Entitlements.LimitReached(Entitlements.userLimitMessage(max));
+4612:             }
+4613:         }
+4614:     }
+4615: 
+4616:     /**
+4617:      * 10.5 (AUDIT-023): من يملك «المستخدمون» دون أن يكون مديرًا لا يمنح صلاحية لا يملكها، ولا يعدّل صلاحياته هو
+4618:      * (ومنها رفع قيد «حركاته تحتاج اعتمادًا» عن نفسه). المدير بلا قيد. الحسابات الحالية لا تتغير صلاحياتها.
+4619:      */
+4620:     private void checkGrant(String perms, Model.User target) {
+4621:         Model.User me = actor();
+4622:         if (me == null || Auth.isAdmin(me) || isSystem()) return;
+4623:         java.util.Set<String> want = Auth.expand(Auth.parse(perms == null ? "" : perms)), mine = Auth.perms(me);
+4624:         if (target != null && target.id == me.id) {
+4625:             java.util.Set<String> a1 = new java.util.HashSet<>(want), b1 = new java.util.HashSet<>(Auth.perms(target));
+4626:             a1.removeIf(Auth::marker);
+4627:             b1.removeIf(Auth::marker);
+4628:             if (!a1.equals(b1)) throw new SecurityException("لا تعدّل صلاحياتك بنفسك؛ يعدّلها المدير.");
+4629:             return;
+4630:         }
+4631:         java.util.Set<String> before = target == null ? new java.util.HashSet<String>() : Auth.perms(target);
+4632:         // رفع قيد «حركاته تحتاج اعتمادًا» قرار اعتماد: للمدير أو لمن يملك «الاعتماد»
+4633:         if (before.contains(Auth.REVIEW) && !want.contains(Auth.REVIEW) && !mine.contains(Auth.Perm.APPROVE.name()))
+4634:             throw new SecurityException("رفع قيد «حركاته تحتاج اعتمادًا» للمدير أو لمن يملك «اعتماد الحركات».");
+4635:         for (String p : want) {
+4636:             if (Auth.marker(p) || before.contains(p) || mine.contains(p)) continue;
+4637:             throw new SecurityException("لا تمنح صلاحية لا تملكها أنت («" + permTitle(p) + "»)؛ يمنحها المدير.");
+4638:         }
+4639:     }
+4640: 
+4641:     private static String permTitle(String p) {
+4642:         try {
+4643:             return Auth.title(Auth.Perm.valueOf(p));
+4644:         } catch (Exception e) {
+4645:             return p;
+4646:         }
+4647:     }
+4648: 
+4649:     public void updateUser(long id, String name, String role, boolean active) {
+4650:         Model.User old = user(id);
+4651:         updateUser(id, name, role, Auth.ADMIN.equals(role) ? null : (old != null && role.equals(old.role) && old.perms != null ? old.perms : Auth.legacyPerms(role)), active);
+4652:     }
+4653: 
+4654:     /** 10.1: تعديل الاسم والصفة (مدير أو صلاحيات مخصّصة) والصلاحيات والحالة. */
+4655:     public void updateUser(long id, String name, String role, String perms, boolean active) {
+4656:         require(Auth.Perm.USERS);
+4657:         Model.User target = user(id);
+4658:         if (target == null) throw new IllegalArgumentException("المستخدم غير موجود");
+4659:         if (Auth.isAdmin(target)) requireAdmin("حساب المدير يعدّله مدير فقط.");
+4660:         if (Auth.ADMIN.equals(role)) requireAdmin("جعل مستخدم مديرًا للمدير وحده.");
+4661:         if (!Auth.ADMIN.equals(role)) checkGrant(perms, target);
+4662:         if (name == null || name.trim().isEmpty()) throw new IllegalArgumentException("اكتب اسم المستخدم");
+4663:         checkNameFree(name, id);
+4664:         if (active) {
+4665:             boolean was = false;
+4666:             try (Cursor c = getReadableDatabase().rawQuery("SELECT active FROM users WHERE id=" + id, null)) {
+4667:                 if (c.moveToFirst()) was = c.getInt(0) == 1;
+4668:             }
+4669:             if (!was) checkUserSlot();
+4670:         }
+4671:         SQLiteDatabase d = getWritableDatabase();
+4672:         d.beginTransaction();
+4673:         try {
+4674:             ContentValues v = new ContentValues();
+4675:             v.put("name", name.trim());
+4676:             v.put("role", role);
+4677:             if (Auth.ADMIN.equals(role)) v.putNull("perms");
+4678:             else v.put("perms", perms == null ? "" : perms);
+4679:             v.put("active", active ? 1 : 0);
+4680:             d.update("users", v, "id=" + id, null);
+4681:             long admins;
+4682:             try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM users WHERE active=1 AND role=?", new String[]{Auth.ADMIN})) {
+4683:                 admins = c.moveToFirst() ? c.getLong(0) : 0;
+4684:             }
+4685:             long activeUsers;
+4686:             try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM users WHERE active=1", null)) {
+4687:                 activeUsers = c.moveToFirst() ? c.getLong(0) : 0;
+4688:             }
+4689:             if (activeUsers > 0 && admins == 0) throw new IllegalStateException("يجب أن يبقى مدير واحد نشط على الأقل");
+4690:             audit(d, "UPDATE_USER", "user", id, name.trim() + " / " + role + (active ? "" : " / موقوف"));
+4691:             d.setTransactionSuccessful();
+4692:         } finally {
+4693:             d.endTransaction();
+4694:         }
+4695:     }
+4696: 
+4697:     /**
+4698:      * 10.8: حذف حساب مستخدم دون المساس بما سجّله: لا تُحذف حركاته ولا تحققاته ولا يتغير رصيد. يُغلق الحساب نهائيًا
+4699:      * (لا دخول: يُمسح رمزه ويُوقف)، ويُزال من المكاتب، ويختفي من القوائم؛ ويبقى اسمه في تفاصيل كل ما سجّله «(حساب محذوف)».
+4700:      * لا يحذف المستخدم حسابه وهو داخل به، وحساب المدير يحذفه مدير، ويبقى مدير نشط واحد على الأقل.
+4701:      */
+4702:     public void deleteUser(long id) {
+4703:         require(Auth.Perm.USERS);
+4704:         Model.User target = user(id);

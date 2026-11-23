@@ -1,0 +1,190 @@
+1: package com.smart.hawala;
+2: 
+3: import android.graphics.Bitmap;
+4: import android.graphics.Canvas;
+5: import android.graphics.Color;
+6: import android.graphics.Paint;
+7: import android.graphics.RectF;
+8: import android.graphics.Typeface;
+9: import android.text.Layout;
+10: import android.text.StaticLayout;
+11: import android.text.TextPaint;
+12: import java.util.List;
+13: 
+14: /** صورة «مطابقة رصيد» أنيقة للإرسال: الترحيب، العنوان، المكتب والتاريخ، ثم سطر لكل عملة بلونه، والتذييل. */
+15: final class BalanceCard {
+16:     private BalanceCard() {}
+17: 
+18:     private static final int W = 1080;
+19:     private static final int OUT = 36;      // هامش الصورة حول البطاقة
+20:     private static final int PAD = 44;      // هامش داخل البطاقة
+21:     private static final int ROW_H = 118;
+22:     private static final int GREEN = Color.rgb(27, 120, 70), RED = Color.rgb(173, 46, 54), GRAY = Color.rgb(120, 120, 120), INK = Color.rgb(40, 40, 40);
+23: 
+24:     private static TextPaint paint(float size, int color, boolean bold) {
+25:         TextPaint p = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+26:         p.setTextSize(size);
+27:         p.setColor(color);
+28:         p.setTypeface(Typeface.create(Typeface.DEFAULT, bold ? Typeface.BOLD : Typeface.NORMAL));
+29:         return p;
+30:     }
+31: 
+32:     private static StaticLayout wrap(String s, TextPaint p, int width) {
+33:         return StaticLayout.Builder.obtain(s, 0, s.length(), p, width).setAlignment(Layout.Alignment.ALIGN_CENTER).setLineSpacing(6f, 1f).build();
+34:     }
+35: 
+36:     private static int blend(int c, float a) {
+37:         return Color.rgb((int) (255 - (255 - Color.red(c)) * a), (int) (255 - (255 - Color.green(c)) * a), (int) (255 - (255 - Color.blue(c)) * a));
+38:     }
+39: 
+40:     /** 12.6: علامة النسخة المجانية على صورة المطابقة. */
+41:     static final String FREE_MARK = "نسخة مجانية";
+42: 
+43:     static Bitmap render(Reconcile.Template t, String office, String issuer, long at, List<Reconcile.Row> rows, int accent, Bitmap logo) {
+44:         final int cardL = OUT, cardR = W - OUT, inner = cardR - cardL - 2 * PAD;
+45:         final float cx = W / 2f;
+46: 
+47:         TextPaint greetP = paint(34, GRAY, false);
+48:         TextPaint titleP = paint(62, Ui.onColor(accent), true);
+49:         TextPaint issuerTopP = paint(30, Ui.onColor(accent), false);
+50:         TextPaint officeP = paint(44, INK, true);
+51:         TextPaint dateP = paint(32, GRAY, false);
+52:         TextPaint nameP = paint(40, INK, true);
+53:         TextPaint amountP = paint(46, INK, true);
+54:         TextPaint wordP = paint(32, Color.WHITE, true);
+55:         TextPaint footP = paint(32, GRAY, false);
+56: 
+57:         String greeting = Model.nz(t.greeting).trim();
+58:         String orn = Model.nz(t.ornament).trim();
+59:         String title = (orn.isEmpty() ? "" : orn + "  ") + t.title.trim() + (orn.isEmpty() ? "" : "  " + orn);
+60:         String to = (Model.nz(t.salutation).trim() + " " + Model.nz(office).trim() + " " + Model.nz(t.honorific).trim()).trim();
+61:         String footer = Model.nz(t.footer).trim();
+62:         String sign = t.showIssuer ? Model.nz(issuer).trim() : "";
+63: 
+64:         StaticLayout greetL = greeting.isEmpty() ? null : wrap(greeting, greetP, inner);
+65:         StaticLayout toL = wrap(to, officeP, inner);
+66:         StaticLayout footL = footer.isEmpty() ? null : wrap(footer, footP, inner);
+67: 
+68:         // ---- القياس
+69:         int y = OUT + PAD;
+70:         int greetTop = y;
+71:         if (greetL != null) y += greetL.getHeight() + 28;
+72:         int bandTop = y, bandH = sign.isEmpty() ? 150 : 186;
+73:         y += bandH + 36;
+74:         int toTop = y;
+75:         y += toL.getHeight() + 8;
+76:         int dateBase = y + 34;
+77:         y += 34 + 40;
+78:         int rowsTop = y;
+79:         int nRows = Math.max(1, rows.size());
+80:         y += nRows * (ROW_H + 18) + 22;
+81:         int footTop = y;
+82:         if (footL != null) y += footL.getHeight() + 20;
+83:         // 12.6: النسخة المجانية: «نسخة مجانية» بخط صغير أحمر أسفل البطاقة (غير مزعج)
+84:         final boolean free = License.current.watermark();
+85:         int freeBase = y + 26;
+86:         if (free) y += 38;
+87:         y += PAD;
+88:         int H = y + OUT;
+89: 
+90:         Bitmap bm = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
+91:         Canvas c = new Canvas(bm);
+92:         c.drawColor(blend(accent, 0.10f));
+93:         Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+94:         fill.setColor(Color.WHITE);
+95:         c.drawRoundRect(new RectF(cardL, OUT, cardR, H - OUT), 36, 36, fill);
+96: 
+97:         // ---- الترحيب
+98:         if (greetL != null) {
+99:             c.save();
+100:             c.translate(cardL + PAD, greetTop);
+101:             greetL.draw(c);
+102:             c.restore();
+103:         }
+104: 
+105:         // ---- شريط العنوان
+106:         fill.setColor(accent);
+107:         RectF band = new RectF(cardL + PAD, bandTop, cardR - PAD, bandTop + bandH);
+108:         c.drawRoundRect(band, 28, 28, fill);
+109:         titleP.setTextAlign(Paint.Align.CENTER);
+110:         float maxTitle = band.width() - (logo != null ? 2 * 150 : 60);
+111:         while (titleP.measureText(title) > maxTitle && titleP.getTextSize() > 34) titleP.setTextSize(titleP.getTextSize() - 2);
+112:         while (issuerTopP.measureText(sign) > maxTitle && issuerTopP.getTextSize() > 22) issuerTopP.setTextSize(issuerTopP.getTextSize() - 1);
+113:         float titleBase = bandTop + (sign.isEmpty() ? bandH / 2f + 22 : 84);
+114:         c.drawText(title, cx, titleBase, titleP);
+115:         if (!sign.isEmpty()) {
+116:             issuerTopP.setTextAlign(Paint.Align.CENTER);
+117:             c.drawText(sign, cx, bandTop + 140, issuerTopP);
+118:         }
+119:         if (logo != null) {
+120:             float s = 104, lx = band.right - 26 - s, ly = band.centerY() - s / 2;
+121:             fill.setColor(Color.WHITE);
+122:             c.drawCircle(lx + s / 2, ly + s / 2, s / 2 + 6, fill);
+123:             c.drawBitmap(logo, null, new RectF(lx + 8, ly + 8, lx + s - 8, ly + s - 8), new Paint(Paint.FILTER_BITMAP_FLAG | Paint.ANTI_ALIAS_FLAG));
+124:         }
+125: 
+126:         // ---- المكتب والتاريخ
+127:         c.save();
+128:         c.translate(cardL + PAD, toTop);
+129:         toL.draw(c);
+130:         c.restore();
+131:         dateP.setTextAlign(Paint.Align.CENTER);
+132:         c.drawText("التاريخ: " + Model.date(at), cx, dateBase, dateP);
+133: 
+134:         // ---- الأرصدة
+135:         float right = cardR - PAD, left = cardL + PAD;
+136:         float ry = rowsTop;
+137:         if (rows.isEmpty()) {
+138:             fill.setColor(blend(GREEN, 0.10f));
+139:             c.drawRoundRect(new RectF(left, ry, right, ry + ROW_H), 24, 24, fill);
+140:             nameP.setTextAlign(Paint.Align.CENTER);
+141:             c.drawText("لا توجد أرصدة قائمة؛ الحساب مسدَّد بالكامل ✅", cx, ry + ROW_H / 2f + 14, nameP);
+142:         }
+143:         for (Reconcile.Row r : rows) {
+144:             int col = t.color(r.sign());
+145:             fill.setColor(blend(col, 0.09f));
+146:             RectF box = new RectF(left, ry, right, ry + ROW_H);
+147:             c.drawRoundRect(box, 24, 24, fill);
+148:             fill.setColor(col);
+149:             c.drawRoundRect(new RectF(right - 12, ry + 18, right, ry + ROW_H - 18), 6, 6, fill);
+150:             float mid = ry + ROW_H / 2f;
+151:             // الكلمة في شارة ملوّنة على اليسار، والمبلغ بجانبها
+152:             String w = Reconcile.word(t, r);
+153:             float ww = wordP.measureText(w) + 44;
+154:             amountP.setTextSize(46);
+155:             float aw = amountP.measureText(t.amount(r));
+156:             // 10.16: «لنا/لكم» قبل الرقم (على يمينه في القراءة العربية) أو بعده (على يساره)
+157:             boolean before = t.wordBefore();
+158:             float amountX = before ? left + 26 : left + 26 + ww + 22;
+159:             float pillL = before ? left + 26 + aw + 22 : left + 26;
+160:             RectF pill = new RectF(pillL, mid - 30, pillL + ww, mid + 30);
+161:             float amountEnd = Math.max(pill.right, amountX + aw);
+162:             String label = r.label(t.showCode);
+163:             float avail = right - 34 - amountEnd - 28;
+164:             nameP.setTextSize(40);
+165:             while (nameP.measureText(label) > avail && nameP.getTextSize() > 26) nameP.setTextSize(nameP.getTextSize() - 2);
+166:             nameP.setTextAlign(Paint.Align.RIGHT);
+167:             c.drawText(label, right - 34, mid + 14, nameP);
+168:             c.drawRoundRect(pill, 30, 30, fill);
+169:             wordP.setTextAlign(Paint.Align.CENTER);
+170:             c.drawText(w, pill.centerX(), mid + 11, wordP);
+171:             amountP.setColor(col);
+172:             amountP.setTextAlign(Paint.Align.LEFT);
+173:             c.drawText(t.amount(r), amountX, mid + 16, amountP);
+174:             ry += ROW_H + 18;
+175:         }
+176: 
+177:         // ---- التذييل
+178:         if (footL != null) {
+179:             Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
+180:             line.setColor(Color.rgb(225, 222, 214));
+181:             line.setStrokeWidth(2);
+182:             c.drawLine(cx - 160, footTop - 12, cx + 160, footTop - 12, line);
+183:             c.save();
+184:             c.translate(cardL + PAD, footTop + 8);
+185:             footL.draw(c);
+186:             c.restore();
+187:         }
+188:         if (free) {
+189:             TextPaint fp = paint(22, Color.rgb(198, 40, 40), false);
+190:             fp.setTextAlign(Paint.Align.CENTER);

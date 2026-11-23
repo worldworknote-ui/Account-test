@@ -1,0 +1,205 @@
+1833:     description: ["description", "البيان", "بيان", "الشرح", "التفاصيل", "الوصف", "details", "memo", "narration", "ملاحظه", "المستفيد"],
+1834:     ref: ["id", "id_no", "idno", "no", "رقم", "الرقم", "رقم القيد", "رقم الحركه", "رقم السند", "ref", "reference", "serial", "#", "م", "ت"],
+1835:     balance: ["balance", "الرصيد", "رصيد", "running balance", "الرصيد التراكمي"],
+1836:     fee: ["fee", "fees", "commission", "comm", "الاجره", "اجره", "الاجور", "اجور", "العموله", "عموله", "الكوميسيون", "عمولة التحويل"],
+1837:     phone: ["phone", "mobile", "tel", "telephone", "الهاتف", "هاتف", "رقم الهاتف", "الجوال", "جوال", "الموبايل", "موبايل", "واتساب", "whatsapp"]
+1838:   };
+1839:   var HINT_KEYS = {};
+1840:   Object.keys(HINTS).forEach(function (r) { HINT_KEYS[r] = HINTS[r].map(hkey); });
+1841: 
+1842:   function hint(role, header) {
+1843:     var k = hkey(header || "");
+1844:     if (!k) return 0;
+1845:     var hs = HINT_KEYS[role];
+1846:     if (hs.indexOf(k) >= 0) return 2;
+1847:     for (var i = 0; i < hs.length; i++) if (hs[i].length >= 4 && k.indexOf(hs[i]) >= 0) return 1;
+1848:     return 0;
+1849:   }
+1850: 
+1851:   // ===================================================================================
+1852:   // اكتشاف الجداول
+1853:   // ===================================================================================
+1854: 
+1855:   // نص يبدو رقمًا («1.250,50»، «(300)»، «٣٠٠») أو تاريخًا («15/06/2026»): ملفات CSV كلها نصوص
+1856:   var NUM_TEXT = /^[\s(+\-]*[0-9٠-٩۰-۹][0-9٠-٩۰-۹.,٫٬\s]*\)?-?\s*$/;
+1857:   var DATE_TEXT = /^\s*[0-9٠-٩۰-۹]{1,4}\s*[\/\-.]\s*[0-9٠-٩۰-۹]{1,2}\s*[\/\-.]\s*[0-9٠-٩۰-۹]{1,4}/;
+1858: 
+1859:   function cellKind(c) {
+1860:     if (!c) return "";
+1861:     if (c.date) return "d";
+1862:     if (c.n !== undefined) return "n";
+1863:     var t = text(c);
+1864:     if (!t) return "";
+1865:     if (DATE_TEXT.test(t)) return "d";
+1866:     if (NUM_TEXT.test(t)) return "n";
+1867:     return "s";
+1868:   }
+1869: 
+1870:   function rowSig(row) {
+1871:     var t = 0, n = 0, d = 0, any = 0, first = -1, last = -1;
+1872:     (row || []).forEach(function (c, i) {
+1873:       var k = cellKind(c);
+1874:       if (!k) return;
+1875:       any++;
+1876:       if (first < 0) first = i;
+1877:       last = i;
+1878:       if (k === "s") t++;
+1879:       else if (k === "n") n++;
+1880:       else d++;
+1881:     });
+1882:     return { t: t, n: n, d: d, any: any, first: first, last: last };
+1883:   }
+1884: 
+1885:   function headerScore(row) {
+1886:     var s = 0;
+1887:     (row || []).forEach(function (c) {
+1888:       if (!c || c.s === undefined) return;
+1889:       var h = text(c);
+1890:       Object.keys(HINTS).forEach(function (r) { if (hint(r, h) === 2) s += 2; });
+1891:     });
+1892:     return s;
+1893:   }
+1894: 
+1895:   /** جداول بلا تعريف Excel: صف عناوين (نصوص) تحته صفوف فيها أرقام أو تواريخ، حتى فراغ طويل. */
+1896:   function guessTables(rows) {
+1897:     var out = [];
+1898:     var n = rows.length;
+1899:     var r = 0;
+1900:     while (r < n) {
+1901:       while (r < n && rowSig(rows[r]).any === 0) r++;
+1902:       if (r >= n) break;
+1903:       var best = -1, bestScore = -1;
+1904:       for (var h = r; h < Math.min(n, r + 40); h++) {
+1905:         var sg = rowSig(rows[h]);
+1906:         if (sg.t < 2 || sg.t < sg.any * 0.6) continue;
+1907:         var data = 0, numeric = 0;
+1908:         for (var k = h + 1; k < Math.min(n, h + 12); k++) {
+1909:           var s2 = rowSig(rows[k]);
+1910:           if (!s2.any) continue;
+1911:           data++;
+1912:           if (s2.n + s2.d > 0) numeric++;
+1913:         }
+1914:         var strong = headerScore(rows[h]) >= 4;
+1915:         if (numeric < 1 || (numeric < 2 && !strong) || (data < 2 && !strong)) continue;
+1916:         var score = sg.t + 3 * headerScore(rows[h]) + numeric;
+1917:         if (score > bestScore) { bestScore = score; best = h; }
+1918:       }
+1919:       if (best < 0) { r += 40; continue; }
+1920:       var end = best + 1, blank = 0, lastData = best;
+1921:       while (end < n) {
+1922:         var s3 = rowSig(rows[end]);
+1923:         if (!s3.any) { blank++; if (blank >= 8) break; }
+1924:         else { blank = 0; lastData = end; }
+1925:         end++;
+1926:       }
+1927:       var hs = rowSig(rows[best]);
+1928:       var c1 = hs.last;
+1929:       for (var q = best + 1; q <= Math.min(lastData, best + 300); q++) c1 = Math.max(c1, rowSig(rows[q]).last);
+1930:       out.push({ header: best, first: best + 1, last: lastData, c0: Math.max(0, hs.first), c1: c1 });
+1931:       r = end;
+1932:     }
+1933:     return out;
+1934:   }
+1935: 
+1936:   /** قائمة نصية بعمود واحد (مثل أسماء الحسابات). */
+1937:   function guessList(rows) {
+1938:     var byCol = {};
+1939:     var total = 0;
+1940:     rows.forEach(function (row, r) {
+1941:       (row || []).forEach(function (c, i) {
+1942:         if (!c) return;
+1943:         var t = text(c);
+1944:         if (!t) return;
+1945:         total++;
+1946:         var b = byCol[i] = byCol[i] || { n: 0, texts: 0, rows: [], first: r, last: r };
+1947:         b.n++;
+1948:         if (c.s !== undefined && !/^\d+([.,]\d+)?$/.test(t)) b.texts++;
+1949:         b.rows.push(r);
+1950:         b.last = r;
+1951:       });
+1952:     });
+1953:     var best = null;
+1954:     Object.keys(byCol).forEach(function (i) {
+1955:       var b = byCol[i];
+1956:       if (b.n >= 5 && b.texts >= b.n * 0.8 && b.n >= total * 0.8 && (!best || b.n > best.n)) best = { c: +i, n: b.n, first: b.first, last: b.last };
+1957:     });
+1958:     return best;
+1959:   }
+1960: 
+1961:   // ===================================================================================
+1962:   // ملف تعريف كل عمود من محتواه
+1963:   // ===================================================================================
+1964: 
+1965:   /** عيّنة موزعة على الجدول (حتى 4000 صف) تكفي لمعرفة نوع العمود بسرعة، وأول 400 صف متتالية لكشف الأرقام المتسلسلة. */
+1966:   function profile(t, c) {
+1967:     var p = { c: c, n: 0, dates: 0, nums: 0, ints: 0, texts: 0, numText: 0, cur: 0, dir: 0, neg: 0, maxDec: 0, distinct: {}, nd: 0, seqHits: 0, seqPairs: 0, avgLen: 0, phones: 0 };
+1968:     var prev = null, lenSum = 0;
+1969:     var span = t.last - t.first + 1, step = Math.max(1, Math.floor(span / 4000));
+1970:     for (var q = t.first; q <= Math.min(t.last, t.first + 400); q++) {
+1971:       var cq = (t.rows[q] || [])[c];
+1972:       var sv = cq ? text(cq) : "";
+1973:       var iq = null;
+1974:       if (cq && cq.n !== undefined && Number.isInteger(cq.n)) iq = cq.n;
+1975:       else if (sv && /^\s*0*\d+\s*$/.test(normDigits(sv))) iq = +normDigits(sv);
+1976:       if (iq !== null && prev !== null) { p.seqPairs++; if (iq === prev + 1) p.seqHits++; }
+1977:       prev = iq;
+1978:     }
+1979:     p.visited = 0;
+1980:     for (var r = t.first; r <= t.last; r += step) {
+1981:       p.visited++;
+1982:       var cell = (t.rows[r] || [])[c];
+1983:       if (!cell) continue;
+1984:       var s = text(cell);
+1985:       if (!s) continue;
+1986:       p.n++;
+1987:       lenSum += s.length;
+1988:       var k = key(s);
+1989:       if (!(k in p.distinct)) { p.distinct[k] = 0; p.nd++; }
+1990:       p.distinct[k]++;
+1991:       if (cell.date) p.dates++;
+1992:       else if (cell.n !== undefined) {
+1993:         p.nums++;
+1994:         if (Number.isInteger(cell.n)) p.ints++;
+1995:         if (cell.n < 0) p.neg++;
+1996:         var dec = String(cell.n).split(".")[1];
+1997:         if (dec) p.maxDec = Math.max(p.maxDec, dec.replace(/0+$/, "").length);
+1998:       } else {
+1999:         p.texts++;
+2000:         var pa = C.parseAmount(s);
+2001:         if (pa.ok && !pa.hadText) {
+2002:           p.numText++;
+2003:           if (pa.neg) p.neg++;
+2004:           p.maxDec = Math.max(p.maxDec, pa.frac.length);
+2005:         }
+2006:         if (C.parseDate(s, "dmy") && /\d{1,4}\s*[\/\-.]\s*\d{1,2}\s*[\/\-.]\s*\d{1,4}/.test(normDigits(s))) p.dates++;
+2007:         if (guessCur(s)) p.cur++;
+2008:         if (guessDir(s)) p.dir++;
+2009:         if (/^(\+|00|0)\d[\d\s\-]{6,}$/.test(clean(normDigits(s)).replace(/[\u200e\u200f\u202a-\u202e]/g, ""))) p.phones++;
+2010:       }
+2011:     }
+2012:     p.avgLen = p.n ? lenSum / p.n : 0;
+2013:     p.ratio = function (x) { return p.n ? x / p.n : 0; };
+2014:     return p;
+2015:   }
+2016: 
+2017:   function topValues(p, n) {
+2018:     return Object.keys(p.distinct).sort(function (a, b) { return p.distinct[b] - p.distinct[a]; }).slice(0, n || 8);
+2019:   }
+2020: 
+2021:   // ===================================================================================
+2022:   // أدوار الأعمدة
+2023:   // ===================================================================================
+2024: 
+2025:   function inferRoles(t) {
+2026:     var cols = [];
+2027:     for (var c = t.c0; c <= t.c1; c++) {
+2028:       // الأعمدة الفارغة تبقى: عمود «علينا» فارغ في ورقة مكتب لم يُسلَّم بعد ما زال عمود «علينا»
+2029:       cols.push({ c: c, h: t.names[c - t.c0] || "", p: profile(t, c) });
+2030:     }
+2031:     var roles = {}, used = {};
+2032:     // عدد الصفوف التي فُحصت فعلًا (العيّنة)، لتُقارن به أعداد الأعمدة
+2033:     var rowsN = Math.max(1, cols.length ? cols[0].p.visited : t.last - t.first + 1);
+2034:     function take(role, col) { roles[role] = col.c; used[col.c] = true; }
+2035:     function best(filter, score) {
+2036:       var b = null, bs = -1e9;
+2037:       cols.forEach(function (col) {

@@ -1,0 +1,133 @@
+172:         f1.currency = "USD";
+173:         f1.amount = 10;
+174:         f1.when = T0;
+175:         f1.officeId = 2L;
+176:         f1.fee = 3;
+177:         check(CashBox.validate(f1, cfg, T0) != null, "أجور بلا جهة (لنا/علينا) مرفوضة");
+178:         f1.feeSide = CashBox.FEE_THEM;
+179:         check(CashBox.validate(f1, cfg, T0) == null, "أجور علينا صالحة");
+180:         CashBox.Config off = new CashBox.Config();
+181:         check(CashBox.validate(f1, off, T0).contains("غير مُعَد"), "الصندوق غير المعَد يرفض");
+182: 
+183:         System.out.println("== الإعدادات والبنود");
+184:         Map<String, String> st = new HashMap<>();
+185:         st.put("cash_on", "1");
+186:         st.put("cash_currencies", "USD,EUR,USD");
+187:         st.put("cash_cats_exp", "حراسة,إيجار المحل");
+188:         st.put("cash_allow_internal", "0");
+189:         CashBox.Config c2 = CashBox.Config.from(st);
+190:         check(c2.on && c2.currencies.equals(Arrays.asList("USD", "EUR")) && !c2.allowInternal && c2.name.equals(CashBox.DEFAULT_NAME), "قراءة الإعدادات بلا تكرار");
+191:         check(c2.expenseCats.indexOf("حراسة") == c2.expenseCats.size() - 2 && c2.expenseCats.get(c2.expenseCats.size() - 1).equals("أخرى")
+192:                 && Collections.frequency(c2.expenseCats, "إيجار المحل") == 1, "البند الجديد قبل «أخرى» ولا يتكرر الموجود");
+193: 
+194:         System.out.println("== التقرير");
+195:         CashBox.ReportSpec sp = new CashBox.ReportSpec();
+196:         Map<String, Integer> dec = new HashMap<>();
+197:         dec.put("USD", 2);
+198:         dec.put("EUR", 2);
+199:         Map<Long, String> names = new HashMap<>();
+200:         names.put(9L, "النور");
+201:         Report rep = CashBox.report(ms, sp, dec, names, "الصندوق", "مكتب");
+202:         boolean hasSum = false, hasExp = false, hasOff = false, hasStmt = false;
+203:         for (Report.Section s : rep.sections) {
+204:             if (s.heading.equals("خلاصة الصندوق")) hasSum = true;
+205:             if (s.heading.equals("المصاريف حسب البند")) hasExp = true;
+206:             if (s.heading.equals("الصندوق مع المكاتب")) hasOff = s.rows.size() == 1 && Report.text(s.rows.get(0).cells[0]).equals("النور");
+207:             if (s.heading.startsWith("كشف الصندوق — USD")) {
+208:                 Report.Row last = s.rows.get(s.rows.size() - 1);
+209:                 hasStmt = ((Report.Money) last.cells[6]).v == usd;
+210:             }
+211:         }
+212:         check(hasSum && hasExp && hasOff && hasStmt, "أقسام التقرير: الخلاصة، المصاريف، مع المكاتب (النور فقط: المعلّقة لا تُحسب)، والكشف ينتهي بالرصيد");
+213:         String csv = ReportBuilder.csv(rep);
+214:         check(csv.contains("خلاصة الصندوق") && csv.contains("إيجار المحل"), "التقرير يُصدَّر CSV");
+215: 
+216:         System.out.println("== عدّاد واتساب اليومي");
+217:         WaQuota q = new WaQuota();
+218:         boolean ok = true;
+219:         for (int k = 0; k < 20; k++) ok &= q.use(WaQuota.key("رسالة " + k), 20, "20261020");
+220:         check(ok && !q.allows(WaQuota.key("رسالة 99"), 20, "20261020") && !q.use(WaQuota.key("رسالة 99"), 20, "20261020"), "20 رسالة ثم الإدخال اليدوي");
+221:         check(q.use(WaQuota.key("  رسالة   5 "), 20, "20261020") && q.used("20261020") == 20, "الرسالة نفسها (ولو بمسافات مختلفة) لا تُحتسب مرتين");
+222:         check(q.allows(WaQuota.key("رسالة 99"), 20, "20261021") && q.used("20261021") == 0, "يوم جديد: يبدأ العد من جديد");
+223:         WaQuota q2 = WaQuota.parse(q.serialize());
+224:         check(q2.day.equals(q.day) && q2.seen.equals(q.seen), "الحفظ والقراءة");
+225:         check(q.allows("x", Entitlements.UNLIMITED, "20261020"), "الكاملة: بلا حد");
+226: 
+227:         System.out.println("== ترتيب المكاتب");
+228:         List<Model.Office> offs = new ArrayList<>();
+229:         String[] nm = {"ياسمين", "الأمل", "باب الحارة", "تيسير"};
+230:         for (int k = 0; k < nm.length; k++) {
+231:             Model.Office o = new Model.Office();
+232:             o.id = k + 1;
+233:             o.name = nm[k];
+234:             o.active = true;
+235:             offs.add(o);
+236:         }
+237:         offs.get(2).pinned = true;
+238:         OfficeOrder.Inputs oi = new OfficeOrder.Inputs();
+239:         oi.usdNet.put(1L, new java.math.BigDecimal("-5000"));
+240:         oi.usdNet.put(2L, new java.math.BigDecimal("300"));
+241:         oi.usdNet.put(4L, new java.math.BigDecimal("1200"));
+242:         oi.usage.put(2L, new long[]{40, 100});
+243:         oi.usage.put(4L, new long[]{40, 300});
+244:         oi.usage.put(1L, new long[]{2, 900});
+245:         oi.opened.put(4L, 50L);
+246:         oi.opened.put(1L, 90L);
+247:         OfficeOrder.sort(offs, OfficeOrder.BIGGEST, oi);
+248:         check(ids(offs).equals("3,1,4,2"), "الأكبر رصيدًا (بالقيمة المطلقة للميزان) والمثبّت أولًا: " + ids(offs));
+249:         OfficeOrder.sort(offs, OfficeOrder.SMALLEST, oi);
+250:         check(ids(offs).equals("3,2,4,1"), "الأصغر رصيدًا: " + ids(offs));
+251:         OfficeOrder.sort(offs, OfficeOrder.MOST_USED, oi);
+252:         check(ids(offs).equals("3,4,2,1"), "الأكثر استخدامًا (آخر 90 يومًا ثم الكل): " + ids(offs));
+253:         OfficeOrder.sort(offs, OfficeOrder.LAST_OPENED, oi);
+254:         check(ids(offs).equals("3,1,4,2"), "آخر ما فتحته: " + ids(offs));
+255:         OfficeOrder.sort(offs, OfficeOrder.ALPHA, oi);
+256:         check(offs.get(1).name.equals("الأمل") && offs.get(0).pinned, "أبجديًا بعد المثبّت");
+257:         String op = OfficeOrder.touchOpened("1:5,2:6", 2, 99);
+258:         check(op.equals("2:99,1:5") && OfficeOrder.parseOpened(op).get(2L) == 99, "سجل آخر فتح: الأحدث أولًا بلا تكرار");
+259: 
+260:         // 9.0.1: البيع والشراء، والجرد، والصناديق، والعملاء
+261:         Map<String, Integer> decs = new java.util.HashMap<>();
+262:         decs.put("USD", 2);
+263:         decs.put("EUR", 2);
+264:         decs.put("SYP", 0);
+265:         check(CashBox.counterAmount(100000, 2, "0.92", 2) == 92000, "المقابل: 1,000 × 0.92 = 920.00");
+266:         check(CashBox.counterAmount(10000, 2, "13,500", 0) == 1350000, "المقابل بعملة بلا كسور: 100 × 13,500 = 1,350,000 SYP");
+267:         check(CashBox.counterAmount(10000, 2, "abc", 2) == null && CashBox.counterAmount(10000, 2, "0", 2) == null, "سعر غير صالح أو صفر يُرفض");
+268:         Map<String, java.math.BigDecimal> rt = new java.util.HashMap<>();
+269:         rt.put("EUR", new java.math.BigDecimal("1.08"));
+270:         rt.put("SYP", new java.math.BigDecimal("0.0000769230769"));
+271:         check(CashBox.crossRate("USD", "EUR", rt).toPlainString().equals("0.925926") && CashBox.crossRate("USD", "SYP", rt).toPlainString().equals("13000"),
+272:                 "السعر المقترح: 1 USD = 0.925926 EUR و13000 SYP: " + CashBox.crossRate("USD", "SYP", rt).toPlainString());
+273:         CashBox.Input sl = new CashBox.Input();
+274:         sl.kind = CashBox.EXCHANGE;
+275:         sl.side = CashBox.SELL;
+276:         sl.currency = "USD";
+277:         sl.amount = 10000;
+278:         sl.toCurrency = "EUR";
+279:         sl.toAmount = 9200;
+280:         check(CashBox.changes(sl).get("USD") == -10000 && CashBox.changes(sl).get("EUR") == 9200, "أثر البيع: USD −100 وEUR +92");
+281:         sl.side = CashBox.BUY;
+282:         check(CashBox.changes(sl).get("USD") == 10000 && CashBox.changes(sl).get("EUR") == -9200 && sl.outgoing()[0].equals("EUR"), "أثر الشراء: USD +100 وEUR −92 (الخارج EUR)");
+283:         CashBox.Config cf = new CashBox.Config();
+284:         cf.on = true;
+285:         cf.currencies.addAll(java.util.Arrays.asList("USD", "EUR"));
+286:         sl.rate = "0.92";
+287:         sl.when = T0;
+288:         check(CashBox.validate(sl, cf, T0 + 1) == null, "الشراء صالح");
+289:         sl.side = "X";
+290:         check(CashBox.validate(sl, cf, T0 + 1) != null, "جهة غير معروفة تُرفض");
+291:         List<CashBox.CountLine> cl = new ArrayList<>();
+292:         cl.add(new CashBox.CountLine("USD", 100000, 90000));   // عجز 100
+293:         cl.add(new CashBox.CountLine("EUR", 50000, 59200));    // زيادة 92 ≈ 99.36$
+294:         cl.add(new CashBox.CountLine("SYP", 0, 0));
+295:         List<CashBox.Suggestion> sug = CashBox.analyze(cl, rt, decs);
+296:         check(sug.size() == 1 && sug.get(0).soldCur.equals("USD") && sug.get(0).gotCur.equals("EUR") && sug.get(0).rate.toPlainString().equals("0.92"),
+297:                 "زيادة EUR تعادل عجز USD = بيع 100 USD بسعر 0.92");
+298:         check(CashBox.netUsd(cl, rt, decs, null).compareTo(new java.math.BigDecimal("-0.64")) == 0, "صافي الجرد بالدولار: −0.64 " + CashBox.netUsd(cl, rt, decs, null));
+299:         cl.set(1, new CashBox.CountLine("EUR", 50000, 55000));
+300:         check(CashBox.analyze(cl, rt, decs).isEmpty(), "زيادة 50 EUR (54$) لا تعادل عجز 100$: لا اقتراح");
+301:         List<CashBox.CountLine> rj = CashBox.linesFrom(CashBox.linesJson(cl));
+302:         check(rj.size() == 3 && rj.get(1).counted == 55000 && rj.get(0).diff() == -10000, "سطور الجرد تُحفظ وتُقرأ كما هي");
+303:         Map<String, String> stb = new java.util.HashMap<>();
+304:         stb.put("cash_on", "1");

@@ -1,0 +1,166 @@
+1: /*
+2:  * الاستيراد الذكي — يفهم أغلب ملفات Excel بلا إعداد: يكتشف الجداول (جداول Excel المعرّفة أو بالتخمين)،
+3:  * ويعرف دور كل عمود من محتواه لا من اسمه فقط (تاريخ، عملة، مبلغ، اتجاه، حساب، بيان، رقم قيد، رصيد)،
+4:  * ويصنّف الأوراق (سجل حركات، نسخة مفلترة مشتقة، أرصدة، قائمة حسابات، قوائم قيم)،
+5:  * ثم يبني مكاتب وحركات بالقاعدة نفسها التي تحسب بها معادلات الملف (SUMIFS)، ويتحقق من مجاميع الملف نفسه.
+6:  * يعتمد على Core (أداة النقل) للمبالغ والتواريخ والقيود وملف النسخة، دون تعديلها.
+7:  */
+8: "use strict";
+9: var Smart = (function (C) {
+10:   var text = C.text, clean = C.clean, normDigits = C.normDigits;
+11: 
+12:   // ===================================================================================
+13:   // أدوات عامة
+14:   // ===================================================================================
+15: 
+16:   function colName(i) { var s = ""; i++; while (i > 0) { var m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
+17: 
+18:   function colIndex(letters) {
+19:     var n = 0;
+20:     for (var i = 0; i < letters.length; i++) n = n * 26 + (letters.charCodeAt(i) - 64);
+21:     return n - 1;
+22:   }
+23: 
+24:   /** «B8:H5279» ← {s:{r,c}, e:{r,c}} (صفر أولًا). */
+25:   function decodeRef(ref) {
+26:     var m = String(ref || "").replace(/\$/g, "").match(/^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/i);
+27:     if (!m) return null;
+28:     var s = { r: +m[2] - 1, c: colIndex(m[1].toUpperCase()) };
+29:     var e = m[3] ? { r: +m[4] - 1, c: colIndex(m[3].toUpperCase()) } : { r: s.r, c: s.c };
+30:     return { s: s, e: e };
+31:   }
+32: 
+33:   function unxml(s) {
+34:     return String(s || "").replace(/&#x([0-9a-f]+);/gi, function (_, h) { return String.fromCharCode(parseInt(h, 16)); })
+35:       .replace(/&#(\d+);/g, function (_, d) { return String.fromCharCode(+d); })
+36:       .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+37:   }
+38: 
+39:   function attr(tag, name) {
+40:     var m = tag.match(new RegExp("\\s" + name.replace(":", "\\:") + '="([^"]*)"'));
+41:     return m ? unxml(m[1]) : null;
+42:   }
+43: 
+44:   function fileText(wb, path) {
+45:     if (!wb || !wb.files) return null;
+46:     var f = wb.files[path] || wb.files["/" + path];
+47:     if (!f || !f.content) return null;
+48:     try { return new TextDecoder("utf-8").decode(f.content instanceof Uint8Array ? f.content : new Uint8Array(f.content)); } catch (e) { return null; }
+49:   }
+50: 
+51:   function resolvePath(dir, target) {
+52:     if (target.charAt(0) === "/") return target.slice(1);
+53:     var parts = (dir ? dir.split("/") : []);
+54:     target.split("/").forEach(function (p) {
+55:       if (p === "..") parts.pop();
+56:       else if (p !== ".") parts.push(p);
+57:     });
+58:     return parts.join("/");
+59:   }
+60: 
+61:   function rowLabel(row) {
+62:     for (var i = 0; i < (row || []).length; i++) {
+63:       var c = row[i];
+64:       if (c && c.s !== undefined && clean(c.s)) return clean(c.s);
+65:     }
+66:     return "";
+67:   }
+68: 
+69:   /** مفتاح مطابقة للنصوص (الحسابات والقيم): يتجاهل المسافات الزائدة وحالة الأحرف. */
+70:   function key(s) { return C.officeKey(s); }
+71: 
+72:   /** مفتاح عناوين الأعمدة: بلا مسافات ولا رموز، مع توحيد الهمزات. */
+73:   function hkey(s) { return C.headerKey(s).replace(/\s/g, ""); }
+74: 
+75:   // ===================================================================================
+76:   // جداول Excel المعرّفة (ListObjects): أدق مصدر لحدود الجدول وعناوينه
+77:   // ===================================================================================
+78: 
+79:   function excelTables(wb) {
+80:     var out = [];
+81:     var wbx = fileText(wb, "xl/workbook.xml"), rels = fileText(wb, "xl/_rels/workbook.xml.rels");
+82:     if (!wbx || !rels) return out;
+83:     var relMap = {};
+84:     rels.replace(/<Relationship\b[^>]*>/g, function (t) { relMap[attr(t, "Id")] = attr(t, "Target"); return t; });
+85:     wbx.replace(/<sheet\b[^>]*>/g, function (t) {
+86:       var name = attr(t, "name"), rid = attr(t, "r:id");
+87:       var target = rid && relMap[rid];
+88:       if (!target) return t;
+89:       var path = resolvePath("xl", target);
+90:       var dir = path.slice(0, path.lastIndexOf("/")), file = path.slice(path.lastIndexOf("/") + 1);
+91:       var srels = fileText(wb, dir + "/_rels/" + file + ".rels");
+92:       if (!srels) return t;
+93:       srels.replace(/<Relationship\b[^>]*>/g, function (r) {
+94:         if (!/\/table$/.test(attr(r, "Type") || "")) return r;
+95:         var tx = fileText(wb, resolvePath(dir, attr(r, "Target")));
+96:         if (!tx) return r;
+97:         var head = (tx.match(/<table\b[^>]*>/) || [""])[0];
+98:         var cols = [];
+99:         tx.replace(/<tableColumn\b[^>]*>/g, function (c) { cols.push(attr(c, "name") || ""); return c; });
+100:         out.push({ name: attr(head, "displayName") || attr(head, "name") || "", sheet: name, ref: attr(head, "ref"),
+101:           headerRows: attr(head, "headerRowCount") === "0" ? 0 : 1, totalsRows: +(attr(head, "totalsRowCount") || 0), columns: cols });
+102:         return r;
+103:       });
+104:       return t;
+105:     });
+106:     return out;
+107:   }
+108: 
+109:   // ===================================================================================
+110:   // التعرف على القيم: الاتجاه والعملة والعناوين
+111:   // ===================================================================================
+112: 
+113:   var D_WORDS = ["مدين", "لنا", "عليه", "منه", "debit", "dr", "debtor", "receivable"].map(function (w) { return C.looseKey(w); });
+114:   var C_WORDS = ["دائن", "لكم", "علينا", "له", "لهم", "credit", "cr", "creditor", "payable"].map(function (w) { return C.looseKey(w); });
+115: 
+116:   /** «مدين(لنا)» ← D، «دائن(لكم)» ← C، «علينا» ← C (لا تُخدع بأن «لنا» داخل «علينا»). */
+117:   function guessDir(t) {
+118:     var s = clean(normDigits(t)).toLowerCase();
+119:     if (!s || s.length > 40) return null;
+120:     var toks = s.split(/[^a-z؀-ۿ]+/).filter(Boolean).map(function (w) { return C.looseKey(w); });
+121:     if (!toks.length) return s === "+" ? "D" : s === "-" ? "C" : null;
+122:     var d = 0, c = 0;
+123:     toks.forEach(function (w) {
+124:       if (C_WORDS.indexOf(w) >= 0) c++;
+125:       else if (D_WORDS.indexOf(w) >= 0) d++;
+126:     });
+127:     if (d && !c) return "D";
+128:     if (c && !d) return "C";
+129:     return null;
+130:   }
+131: 
+132:   function guessCur(t) {
+133:     var s = clean(t);
+134:     if (!s || s.length > 30) return null;
+135:     return C.guessCurrency(s) || C.guessCurrency(s.toUpperCase());
+136:   }
+137: 
+138:   var HINTS = {
+139:     date: ["date", "التاريخ", "تاريخ", "تاريخ الحركه", "التاريخ والوقت", "datetime", "time", "الوقت", "يوم"],
+140:     currency: ["currency", "العمله", "عمله", "cur", "ccy", "نوع العمله"],
+141:     amount: ["amount", "ammount", "amout", "ammout", "المبلغ", "مبلغ", "القيمه", "قيمه", "value", "sum", "الكميه", "مقدار"],
+142:     direction: ["in-out", "inout", "in out", "type", "النوع", "نوع", "نوع الحركه", "الاتجاه", "لنا علينا", "لنا/علينا", "مدين دائن", "dr/cr", "drcr", "حركه"],
+143:     debit: ["debit", "dr", "مدين", "لنا", "عليه", "مدين لنا", "منه"],
+144:     credit: ["credit", "cr", "دائن", "علينا", "له", "دائن علينا", "لكم"],
+145:     account: ["account", "name of account", "name of accunt", "accunt", "acount", "الحساب", "اسم الحساب", "حساب", "المكتب", "اسم المكتب", "مكتب",
+146:       "العميل", "الوكيل", "الطرف", "الجهه", "office", "agent", "client", "customer", "name", "الاسم", "اسم"],
+147:     description: ["description", "البيان", "بيان", "الشرح", "التفاصيل", "الوصف", "details", "memo", "narration", "ملاحظه", "المستفيد"],
+148:     ref: ["id", "id_no", "idno", "no", "رقم", "الرقم", "رقم القيد", "رقم الحركه", "رقم السند", "ref", "reference", "serial", "#", "م", "ت"],
+149:     balance: ["balance", "الرصيد", "رصيد", "running balance", "الرصيد التراكمي"],
+150:     fee: ["fee", "fees", "commission", "comm", "الاجره", "اجره", "الاجور", "اجور", "العموله", "عموله", "الكوميسيون", "عمولة التحويل"],
+151:     phone: ["phone", "mobile", "tel", "telephone", "الهاتف", "هاتف", "رقم الهاتف", "الجوال", "جوال", "الموبايل", "موبايل", "واتساب", "whatsapp"]
+152:   };
+153:   var HINT_KEYS = {};
+154:   Object.keys(HINTS).forEach(function (r) { HINT_KEYS[r] = HINTS[r].map(hkey); });
+155: 
+156:   function hint(role, header) {
+157:     var k = hkey(header || "");
+158:     if (!k) return 0;
+159:     var hs = HINT_KEYS[role];
+160:     if (hs.indexOf(k) >= 0) return 2;
+161:     for (var i = 0; i < hs.length; i++) if (hs[i].length >= 4 && k.indexOf(hs[i]) >= 0) return 1;
+162:     return 0;
+163:   }
+164: 
+165:   // ===================================================================================
+166:   // اكتشاف الجداول

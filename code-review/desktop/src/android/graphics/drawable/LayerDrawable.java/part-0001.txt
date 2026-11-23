@@ -1,0 +1,73 @@
+1: package android.graphics.drawable;
+2: 
+3: import android.graphics.*;
+4: 
+5: public class LayerDrawable extends Drawable implements Drawable.Callback {
+6:     static final class Layer { Drawable d; int l, t, r, b; int id = -1; int gravity; int w = -1, h = -1; }
+7:     final java.util.List<Layer> layers = new java.util.ArrayList<>();
+8:     private int alpha = 255;
+9: 
+10:     public LayerDrawable(Drawable[] ds) {
+11:         for (Drawable d : ds) addLayer(d);
+12:     }
+13:     public int addLayer(Drawable d) {
+14:         Layer l = new Layer();
+15:         l.d = d;
+16:         if (d != null) d.setCallback(this);
+17:         layers.add(l);
+18:         return layers.size() - 1;
+19:     }
+20:     public int getNumberOfLayers() { return layers.size(); }
+21:     public Drawable getDrawable(int i) { return layers.get(i).d; }
+22:     public void setDrawable(int i, Drawable d) { layers.get(i).d = d; if (d != null) d.setCallback(this); onBoundsChange(getBounds()); invalidateSelf(); }
+23:     public void setId(int i, int id) { layers.get(i).id = id; }
+24:     public Drawable findDrawableByLayerId(int id) { for (Layer l : layers) if (l.id == id) return l.d; return null; }
+25:     public boolean setDrawableByLayerId(int id, Drawable d) { for (Layer l : layers) if (l.id == id) { l.d = d; onBoundsChange(getBounds()); return true; } return false; }
+26:     public void setLayerInset(int i, int l, int t, int r, int b) {
+27:         Layer x = layers.get(i); x.l = l; x.t = t; x.r = r; x.b = b; onBoundsChange(getBounds());
+28:     }
+29:     public void setLayerInsetRelative(int i, int s, int t, int e, int b) { setLayerInset(i, e, t, s, b); }
+30:     public void setLayerGravity(int i, int g) { layers.get(i).gravity = g; onBoundsChange(getBounds()); }
+31:     public void setLayerSize(int i, int w, int h) { Layer x = layers.get(i); x.w = w; x.h = h; onBoundsChange(getBounds()); }
+32:     public void setLayerInsetTop(int i, int t) { layers.get(i).t = t; onBoundsChange(getBounds()); }
+33:     public void setLayerInsetBottom(int i, int b) { layers.get(i).b = b; onBoundsChange(getBounds()); }
+34:     public void setLayerInsetLeft(int i, int l) { layers.get(i).l = l; onBoundsChange(getBounds()); }
+35:     public void setLayerInsetRight(int i, int r) { layers.get(i).r = r; onBoundsChange(getBounds()); }
+36: 
+37:     @Override protected void onBoundsChange(Rect b) {
+38:         for (Layer l : layers) {
+39:             if (l.d == null) continue;
+40:             int L = b.left + l.l, T = b.top + l.t, R = b.right - l.r, B = b.bottom - l.b;
+41:             if (l.w >= 0 || l.h >= 0) {
+42:                 int w = l.w >= 0 ? l.w : R - L, h = l.h >= 0 ? l.h : B - T;
+43:                 int g = l.gravity;
+44:                 int x = (g & android.view.Gravity.HORIZONTAL_GRAVITY_MASK) == android.view.Gravity.RIGHT ? R - w
+45:                         : (g & android.view.Gravity.HORIZONTAL_GRAVITY_MASK) == android.view.Gravity.CENTER_HORIZONTAL ? (L + R - w) / 2 : L;
+46:                 int y = (g & android.view.Gravity.VERTICAL_GRAVITY_MASK) == android.view.Gravity.BOTTOM ? B - h
+47:                         : (g & android.view.Gravity.VERTICAL_GRAVITY_MASK) == android.view.Gravity.CENTER_VERTICAL ? (T + B - h) / 2 : T;
+48:                 l.d.setBounds(x, y, x + w, y + h);
+49:             } else l.d.setBounds(L, T, R, B);
+50:         }
+51:     }
+52:     @Override public void draw(Canvas c) {
+53:         float old = c.alpha;
+54:         c.alpha = old * alpha / 255f;
+55:         for (Layer l : layers) if (l.d != null) l.d.draw(c);
+56:         c.alpha = old;
+57:     }
+58:     @Override public boolean setState(int[] s) {
+59:         boolean ch = super.setState(s);
+60:         for (Layer l : layers) if (l.d != null) ch |= l.d.setState(s);
+61:         return ch;
+62:     }
+63:     @Override public boolean isStateful() { for (Layer l : layers) if (l.d != null && l.d.isStateful()) return true; return false; }
+64:     @Override public void setAlpha(int a) { alpha = a; invalidateSelf(); }
+65:     @Override public int getAlpha() { return alpha; }
+66:     @Override public void setTintList(android.content.res.ColorStateList t) { for (Layer l : layers) if (l.d != null) l.d.setTintList(t); }
+67:     @Override public int getIntrinsicWidth() { int w = -1; for (Layer l : layers) if (l.d != null) w = Math.max(w, l.d.getIntrinsicWidth() + l.l + l.r); return w; }
+68:     @Override public int getIntrinsicHeight() { int h = -1; for (Layer l : layers) if (l.d != null) h = Math.max(h, l.d.getIntrinsicHeight() + l.t + l.b); return h; }
+69:     @Override public java.awt.Shape outline() { return layers.isEmpty() || layers.get(0).d == null ? null : layers.get(0).d.outline(); }
+70:     @Override public void invalidateDrawable(Drawable who) { invalidateSelf(); }
+71:     @Override public void scheduleDrawable(Drawable who, Runnable what, long when) { scheduleSelf(what, when); }
+72:     @Override public void unscheduleDrawable(Drawable who, Runnable what) { unscheduleSelf(what); }
+73: }

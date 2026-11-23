@@ -1,0 +1,103 @@
+354:             if (x.uuid.isEmpty() || !p.offices.containsKey(x.fileOffice)) {
+355:                 p.errors.add("حركة غير صالحة في الملف (رقم " + x.fileId + ").");
+356:                 return p;
+357:             }
+358:             if (!Model.TYPE_DEBIT.equals(x.type) && !Model.TYPE_CREDIT.equals(x.type)) {
+359:                 p.errors.add("نوع حركة غير معروف في الملف: " + x.type);
+360:                 return p;
+361:             }
+362:             if (!Model.FEE_NONE.equals(x.feeType) && !Model.FEE_US.equals(x.feeType) && !Model.FEE_THEM.equals(x.feeType)) {
+363:                 p.errors.add("نوع أجرة غير معروف في الملف: " + x.feeType);
+364:                 return p;
+365:             }
+366:             int[] d = dec.get(x.currency);
+367:             Long amt = d == null ? null : convert(t.optLong("amount_minor"), d[0], d[1]);
+368:             if (amt == null || amt <= 0) {
+369:                 p.errors.add("مبلغ حركة غير صالح في الملف (رقم " + x.fileId + ").");
+370:                 return p;
+371:             }
+372:             x.amount = amt;
+373:             add(fromParts, x.fileOffice + "|" + x.currency, Model.TYPE_DEBIT.equals(x.type) ? amt : -amt);
+374:             if (!Model.FEE_NONE.equals(x.feeType)) {
+375:                 int[] fd = dec.get(x.feeCurrency);
+376:                 Long fee = fd == null ? null : convert(t.optLong("fee_minor"), fd[0], fd[1]);
+377:                 if (fee == null || fee <= 0) {
+378:                     p.errors.add("أجرة غير صالحة في الملف (حركة " + x.fileId + ").");
+379:                     return p;
+380:                 }
+381:                 x.fee = fee;
+382:                 add(fromParts, x.fileOffice + "|" + x.feeCurrency, Model.FEE_US.equals(x.feeType) ? fee : -fee);
+383:                 p.offices.get(x.fileOffice).codes.add(x.feeCurrency);
+384:             } else x.fee = 0;
+385:             if (ex.lockBefore > 0 && x.when < ex.lockBefore) {
+386:                 p.errors.add("في الملف حركات قبل تاريخ الإقفال المحاسبي في التطبيق؛ فك الإقفال أولًا أو صدّر فترة بعده.");
+387:                 return p;
+388:             }
+389:             p.txs.add(x);
+390:             p.offices.get(x.fileOffice).codes.add(x.currency);
+391:         }
+392:         for (Opening o : p.openings) {
+393:             if (ex.lockBefore > 0 && o.when < ex.lockBefore) {
+394:                 p.errors.add("في الملف أرصدة سابقة بتاريخ قبل الإقفال المحاسبي في التطبيق؛ فك الإقفال أولًا.");
+395:                 return p;
+396:             }
+397:         }
+398:         // تحقق داخلي: ما ستكتبه الحركات والأرصدة يساوي قيود الملف نفسها
+399:         Set<String> keys = new HashSet<>(p.expected.keySet());
+400:         keys.addAll(fromParts.keySet());
+401:         for (String k : keys) {
+402:             long a = p.expected.containsKey(k) ? p.expected.get(k) : 0, b = fromParts.containsKey(k) ? fromParts.get(k) : 0;
+403:             if (a != b) {
+404:                 p.errors.add("الملف غير متسق: قيود المكتب لا تساوي حركاته وأرصدته (" + k + ").");
+405:                 return p;
+406:             }
+407:         }
+408: 
+409:         // المعاينة
+410:         Map<String, Integer> txCount = new HashMap<>();
+411:         for (Tx x : p.txs) {
+412:             String k = x.fileOffice + "|" + x.currency;
+413:             txCount.put(k, (txCount.containsKey(k) ? txCount.get(k) : 0) + 1);
+414:         }
+415:         for (Office of : p.offices.values()) {
+416:             for (String code : of.codes) {
+417:                 Row r = new Row();
+418:                 r.fileOffice = of.fileId;
+419:                 r.office = of.targetId != null ? of.targetName : of.name;
+420:                 r.isNew = of.targetId == null;
+421:                 r.approximate = of.approximate;
+422:                 r.code = code;
+423:                 r.decimals = dec.get(code)[1];
+424:                 Long cur = of.targetId == null ? null : ex.balances.get(of.targetId + "|" + code);
+425:                 r.current = cur == null ? 0 : cur;
+426:                 Long add = p.expected.get(of.fileId + "|" + code);
+427:                 r.added = add == null ? 0 : add;
+428:                 r.after = r.current + r.added;
+429:                 Integer n = txCount.get(of.fileId + "|" + code);
+430:                 r.txCount = n == null ? 0 : n;
+431:                 p.rows.add(r);
+432:             }
+433:         }
+434:         if (p.txs.isEmpty() && p.openings.isEmpty()) p.errors.add("الملف لا يحتوي أرصدة ولا حركات.");
+435:         return p;
+436:     }
+437: 
+438:     private static List<JSONObject> list(Map<String, List<JSONObject>> t, String name) {
+439:         List<JSONObject> l = t.get(name);
+440:         return l == null ? new ArrayList<JSONObject>() : l;
+441:     }
+442: 
+443:     private static void put(Map<String, List<Long>> m, String k, long v) {
+444:         List<Long> l = m.get(k);
+445:         if (l == null) {
+446:             l = new ArrayList<>();
+447:             m.put(k, l);
+448:         }
+449:         l.add(v);
+450:     }
+451: 
+452:     private static void add(Map<String, Long> m, String k, long v) {
+453:         Long p = m.get(k);
+454:         m.put(k, (p == null ? 0 : p) + v);
+455:     }
+456: }

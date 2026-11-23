@@ -1,0 +1,99 @@
+239:             } catch (java.lang.reflect.InvocationTargetException e) {
+240:                 throw e.getCause();
+241:             }
+242:         });
+243:         boolean joinThrew = false;
+244:         try {
+245:             new SyncEngine(C, cut).join("كلمة-سر-المزامنة".toCharArray(), false, "المكتب الثاني");
+246:         } catch (Exception e) {
+247:             joinThrew = true;
+248:             System.out.println("      خطأ الانضمام: " + e.getMessage());
+249:         }
+250:         check(!joinThrew && SyncEngine.enabled(C), "انقطاع الاتصال بعد تسجيل الجهاز: الانضمام ينجح ولا يظهر خطأ");
+251:         check(SyncEngine.status(C).lastError.contains("انضم الجهاز"), "ويُذكر أن أول مزامنة تعثرت وستُعاد: " + SyncEngine.status(C).lastError);
+252:         check(!C.offices().isEmpty(), "وبيانات لقطة الخزنة وصلت الجهاز المنضم");
+253:         SyncEngine eC = new SyncEngine(C, new FileSyncFolder(shared));
+254:         syncAll(eA, eB, eC);
+255:         check(SyncEngine.status(C).lastError.isEmpty() && SyncEngine.status(A).members.size() == membersBefore + 1, "الجولة التالية تكمل: الجهاز الجديد يظهر عند الآخرين وبلا خطأ");
+256:         check(new TreeMap<>(C.balances(amal)).equals(new TreeMap<>(A.balances(amal))), "وبعدها أرصدته مطابقة للجهاز الرئيسي");
+257:         long tc = C.addTx(tx(nour, true, 4400, "USD", "من المكتب الثاني", Clock.now() - 1000), null);
+258:         syncAll(eA, eB, eC);
+259:         check(A.tx(tc) != null && new TreeMap<>(A.balances(nour)).equals(new TreeMap<>(C.balances(nour))), "وحركاته تصل الجميع");
+260:         SyncEngine.resolveAll(A);
+261: 
+262:         System.out.println("== 7) سجل الإشعارات");
+263:         A.clearNotifLog();
+264:         A.logNotif("مزامنة", "وصلت 3 حركات من البيت");
+265:         A.logNotif("رسالة المدير", "أرسلوا المطابقات اليوم");
+266:         List<String[]> nl = A.notifLog(50);
+267:         check(nl.size() == 2 && nl.get(0)[1].equals("رسالة المدير") && nl.get(1)[2].contains("3 حركات"), "كل إشعار يُحفظ (الأحدث أولًا) بنصه");
+268:         syncAll(eA, eB);
+269:         check(B.notifLog(50).isEmpty() || !B.notifLog(50).get(0)[1].equals("رسالة المدير"), "سجل الإشعارات محلي لكل جهاز");
+270:         A.clearNotifLog();
+271:         check(A.notifLog(50).isEmpty(), "المسح يفرغ السجل");
+272: 
+273:         System.out.println("== 8) التوزيع التلقائي للمكاتب");
+274:         long o3 = A.addOffice("الشام", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+275:         long o4 = A.addOffice("حلب", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+276:         long admin = A.addUser("المدير", Auth.ADMIN, null, "123456");
+277:         as(A, admin);
+278:         long u1 = A.addUser("سامر", Auth.CUSTOM, "VIEW,TX_ADD,VERIFY", "1111");
+279:         long u2 = A.addUser("رنا", Auth.CUSTOM, "VIEW,TX_ADD,VERIFY", "2222");
+280:         A.setOfficeTeam(nour, new HashSet<>(Arrays.asList(u1)), new HashSet<>());
+281:         List<Db.TeamPlan> plan = A.autoTeamPlan();
+282:         int fresh = 0, s1 = 0, s2 = 0;
+283:         Db.TeamPlan pn = null;
+284:         for (Db.TeamPlan p : plan) {
+285:             if (p.office.id == nour) pn = p;
+286:             if (!p.assigned) fresh++;
+287:             for (Model.User u : p.owners) {
+288:                 if (u.id == u1) s1++;
+289:                 if (u.id == u2) s2++;
+290:             }
+291:         }
+292:         check(plan.size() == 4 && fresh == 3 && s1 == 2 && s2 == 2, "غير الموزّع يُوزَّع بالتساوي مع احتساب ما لدى كل محاسب (2 و2)");
+293:         check(pn != null && pn.assigned && pn.owners.get(0).id == u1 && pn.checkers.size() == 1 && pn.checkers.get(0).id == u2 && !pn.same(), "الموزّع يبقى من يسجّله ويُقترح له من يتحقق");
+294:         check(A.teams().stream().filter(t -> !t.owners.isEmpty()).count() == 1, "الخطة لا تحفظ شيئًا قبل الاعتماد");
+295:         for (Db.TeamPlan p : plan) if (!p.assigned) A.applyTeamPlan(p);
+296:         check(A.teams().stream().filter(t -> !t.owners.isEmpty() && (t.office.id == nour || !t.checkers.isEmpty())).count() == 4, "اعتماد غير الموزّع يحفظه بمن يسجّل ومن يتحقق");
+297:         boolean nourUntouched = true;
+298:         for (Db.Team t : A.teams()) if (t.office.id == nour) nourUntouched = t.checkers.isEmpty();
+299:         check(nourUntouched, "المكتب الموزّع لا يتغير حتى يوافق المدير عليه");
+300:         A.applyTeamPlan(pn);
+301:         boolean allSame = true;
+302:         for (Db.TeamPlan p : A.autoTeamPlan()) allSame &= p.same();
+303:         check(allSame, "بعد الاعتماد: لا شيء يتغير عند إعادة التوزيع");
+304:         as(A, u1);
+305:         check(throwsMsg(() -> A.autoTeamPlan(), null), "المحاسب لا يوزّع المكاتب");
+306:         check(throwsMsg(() -> A.setOfficeZone("Europe/Berlin"), null), "المحاسب لا يغيّر توقيت المكتب");
+307:         as(A, 0);
+308: 
+309:         System.out.println("== 9) ترحيل قاعدة 10.4 إلى المخطط " + Db.VER);
+310:         File src = new File(a[a.length - 1]);
+311:         if (!src.isDirectory()) check(false, "مجلد قاعدة 10.4 غير موجود: " + src);
+312:         else {
+313:             File home = Files.createTempDirectory("sa-1018-mig").toFile();
+314:             MigrationTest.copy(src, home);
+315:             DeskCoreTest.resetCrypto();
+316:             Db M = MigrationTest.open(home);
+317:             Map<Long, Map<String, Long>> balM = new TreeMap<>(M.officeBalances());
+318:             check(count(M, "SELECT COUNT(*) FROM office_holds") == 0 && count(M, "SELECT COUNT(*) FROM notif_log") == 0, "الجداول الجديدة أُنشئت فارغة");
+319:             int ver;
+320:             try (Cursor c = M.getReadableDatabase().rawQuery("PRAGMA user_version", null)) {
+321:                 c.moveToFirst();
+322:                 ver = c.getInt(0);
+323:             }
+324:             check(ver == Db.VER && Db.VER >= 11, "رقم المخطط بعد الترحيل " + ver);
+325:             for (Model.User u : M.users(false)) if (Auth.isAdmin(u)) as(M, u.id);
+326:             Model.Office mo = M.offices().get(0);
+327:             String cur = M.officeCurrencies(mo.id).get(0);
+328:             M.addHold(mo.id, cur, Db.HOLD_TRUST, Db.SIDE_THEIRS, 12345, "بعد الترحيل");
+329:             check(new TreeMap<>(M.officeBalances()).equals(balM) && M.holds(mo.id, true).size() == 1, "الأرصدة كما هي بعد الترحيل، والأمانات تعمل على القاعدة القديمة");
+330:             check(!M.balancesAfter(mo.id, cur).isEmpty() || M.balances(mo.id).getOrDefault(cur, 0L) == 0, "«الرصيد بعدها» يعمل على حركات القاعدة القديمة");
+331:         }
+332: 
+333:         System.out.println();
+334:         System.out.println(fails == 0 ? "نجحت اختبارات 10.18 كلها (" + passes + ")" : "فشل " + fails + " من " + (passes + fails));
+335:         System.exit(fails == 0 ? 0 : 1);
+336:     }
+337: }

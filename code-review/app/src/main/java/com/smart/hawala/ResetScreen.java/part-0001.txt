@@ -1,0 +1,106 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.content.Context;
+5: import android.content.Intent;
+6: import android.widget.EditText;
+7: import android.widget.LinearLayout;
+8: import java.io.File;
+9: 
+10: /**
+11:  * 10.4: «إعادة تعيين البرنامج»: يصبح التطبيق على هذا الهاتف كأنه مثبت للتو. خياران: حذف البيانات مع إبقاء الرخصة، أو حذف كل شيء.
+12:  * للمدير فقط (أو لصاحب الهاتف إن لم يكن نظام المستخدمين مفعّلًا)، برمزه وبكتابة كلمة «حذف»، مع عرض النسخة الاحتياطية قبله.
+13:  * الأجهزة الأخرى في المزامنة لا تتأثر: يُعلن هذا الجهاز خروجه منها ولا يُرسل أي حذف.
+14:  */
+15: final class ResetScreen {
+16:     private final MainActivity a;
+17: 
+18:     ResetScreen(MainActivity a) { this.a = a; }
+19: 
+20:     static boolean allowed(Db db) { return !db.usersEnabled() || Auth.isAdmin(SmartApp.currentUser); }
+21: 
+22:     void start() {
+23:         if (!allowed(a.db)) {
+24:             a.error(new IllegalStateException("إعادة تعيين البرنامج لمدير المكتب فقط."));
+25:             return;
+26:         }
+27:         final String[] opts = {"حذف البيانات وإبقاء الرخصة", "حذف كل شيء بما فيه الرخصة"};
+28:         new AlertDialog.Builder(a).setTitle("إعادة تعيين البرنامج").setItems(opts, (d, w) -> confirm(w == 0)).setNegativeButton("إلغاء", null).show();
+29:     }
+30: 
+31:     private void confirm(final boolean keepLicense) {
+32:         LinearLayout l = new LinearLayout(a);
+33:         l.setOrientation(LinearLayout.VERTICAL);
+34:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+35:         boolean sync = SyncEngine.enabled(a.db);
+36:         l.addView(a.text("يُحذف من هذا الهاتف نهائيًا:\n• كل الحركات والمكاتب والأرصدة والصناديق والعملاء والصور\n• المستخدمون والإعدادات والتصميم\n• النسخ الاحتياطية الداخلية"
+37:                 + (keepLicense ? "" : "\n• الرخصة (تحتاج إدخال رمز التفعيل من جديد)")
+38:                 + (sync ? "\n\nالمزامنة: يرسل الهاتف ما لم يُرسل ثم يخرج منها. بيانات الأجهزة الأخرى لا تتأثر." : "")
+39:                 + "\n\nالنسخ الاحتياطية التي حفظتها خارج التطبيق (في مجلد أو سحابة) تبقى.", 14, a.ink, false));
+40:         final EditText pin = a.db.usersEnabled() ? a.field("رمز المدير") : null;
+41:         if (pin != null) {
+42:             Ui.secret(pin, true);
+43:             l.addView(pin, a.lp(-1, 50, 6));
+44:         }
+45:         final EditText word = a.field("اكتب: " + AppReset.CONFIRM_WORD);
+46:         l.addView(word, a.lp(-1, 50, 4));
+47:         final AlertDialog dlg = new AlertDialog.Builder(a).setTitle(keepLicense ? "حذف البيانات (تبقى الرخصة)" : "حذف كل شيء").setView(l)
+48:                 .setPositiveButton("حذف نهائي", null)
+49:                 .setNeutralButton("نسخة احتياطية أولًا", (x, w) -> a.backupScreen.backupDialog())
+50:                 .setNegativeButton("إلغاء", null).create();
+51:         dlg.setOnShowListener(x -> {
+52:             dlg.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(a.red);
+53:             dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+54:                 if (!AppReset.CONFIRM_WORD.equals(word.getText().toString().trim())) {
+55:                     word.setError("اكتب «" + AppReset.CONFIRM_WORD + "» للتأكيد");
+56:                     return;
+57:                 }
+58:                 if (pin != null && !a.db.verifyPin(SmartApp.currentUser.id, pin.getText().toString())) {
+59:                     pin.setError("الرمز غير صحيح");
+60:                     return;
+61:                 }
+62:                 dlg.dismiss();
+63:                 run(keepLicense);
+64:             });
+65:         });
+66:         dlg.show();
+67:     }
+68: 
+69:     private void run(final boolean keepLicense) {
+70:         a.db.audit("APP_RESET", "app", 0, keepLicense ? "إعادة تعيين: حذف البيانات وإبقاء الرخصة" : "إعادة تعيين: حذف كل شيء");
+71:         a.busy("جارٍ إعادة تعيين البرنامج…", p -> {
+72:             if (SyncEngine.enabled(a.db)) {
+73:                 SyncFolder f = SyncScreen.folder(a, a.db);
+74:                 if (f != null) {
+75:                     try {
+76:                         new SyncEngine(a.db, f).retire();
+77:                     } catch (Throwable ignored) {
+78:                         // يظهر للأجهزة الأخرى غائبًا فيُزال من هناك
+79:                     }
+80:                 }
+81:             }
+82:             return null;
+83:         }, res -> {
+84:             SyncJob.schedule(a, false);
+85:             wipe(a, a.db, keepLicense);
+86:             a.toast("أُعيد تعيين البرنامج");
+87:             Intent i = Intent.makeRestartActivityTask(new android.content.ComponentName(a, MainActivity.class));
+88:             a.startActivity(i);
+89:             Runtime.getRuntime().exit(0);
+90:         });
+91:     }
+92: 
+93:     /** الحذف نفسه (قابل للاختبار): قاعدة البيانات والملفات، والتفضيلات الخاصة بالجهاز عدا مفتاح التشفير. */
+94:     static void wipe(Context ctx, Db db, boolean keepLicense) {
+95:         AppReset.wipe(ctx, db, keepLicense);
+96:         File prefs = new File(ctx.getApplicationInfo().dataDir, "shared_prefs");
+97:         File[] ps = prefs.listFiles();
+98:         if (ps != null) for (File f : ps) {
+99:             String n = f.getName().replace(".xml", "");
+100:             if (n.equals(Crypto.DEK_PREFS)) continue;
+101:             ctx.getSharedPreferences(n, Context.MODE_PRIVATE).edit().clear().commit();
+102:         }
+103:         SmartApp.db = null;
+104:         SmartApp.currentUser = null;
+105:     }
+106: }

@@ -1,0 +1,120 @@
+297:         check(B.verifyPin(samer, "1234") && D.verifyPin(adminId, "123456") && !B.verifyPin(samer, "9999"), "الرموز نفسها تعمل على كل جهاز (سرّ الرموز من الجهاز الرئيسي)");
+298:         SmartApp.currentUser = B.user(samer);
+299:         check(B.allowed(Auth.Perm.TX_ADD) && B.allowed(Auth.Perm.CASH) && !B.allowed(Auth.Perm.DELETE) && !B.allowed(Auth.Perm.USERS), "صلاحيات سامر على جهاز البيت كما اختارها المدير");
+300:         check(throwsMsg(() -> B.addUser("دخيل", Auth.ADMIN, null, "654321"), "صلاحية"), "سامر لا ينشئ حسابات");
+301:         long tS = B.addTx(tx(nour, true, 7000, "USD", "سجّلها سامر"), null);
+302:         SmartApp.currentUser = A.user(adminId);
+303:         A.updateUser(samer, "سامر", Auth.CUSTOM, "VIEW", true);
+304:         syncAll(eA, eB, eD);
+305:         check(A.tx(tS) != null, "حركة سامر من البيت وصلت للمحل");
+306:         SmartApp.currentUser = B.user(samer);
+307:         check("VIEW".equals(B.user(samer).perms) && !B.allowed(Auth.Perm.TX_ADD), "تعديل الصلاحيات من الرئيسي يسري فورًا على الجهاز الآخر");
+308:         // 11.6: السجلات الحساسة في طبقة البيانات: سجل العمليات والإشعارات وسجل الاستخدام
+309:         boolean blockedAudit = false, blockedNotif = false, blockedUsage = false;
+310:         try { B.auditLogAll(10); } catch (SecurityException e) { blockedAudit = true; }
+311:         try { B.notifLog(10); } catch (SecurityException e) { blockedNotif = true; }
+312:         try { B.usageSessions(0); } catch (SecurityException e) { blockedUsage = true; }
+313:         check(blockedAudit && blockedNotif && blockedUsage, "مستخدم بلا صلاحيات السجلات: لا سجل عمليات ولا إشعارات ولا سجل استخدام");
+314:         SmartApp.currentUser = B.user(adminId);
+315:         boolean adminOk = true;
+316:         try { B.auditLogAll(10); B.notifLog(10); B.usageSessions(0); } catch (SecurityException e) { adminOk = false; }
+317:         check(adminOk, "المدير يرى السجلات كلها");
+318:         // 12.0: صلاحيات تفصيلية في طبقة البيانات: قائمة قديمة (بلا علامة) تُشتق منها الجديدة، والتفصيلية تُطبَّق كما اختيرت
+319:         A.updateUser(samer, "سامر", Auth.CUSTOM, "VIEW,TX_ADD,TX_EDIT", true);
+320:         syncAll(eA, eB, eD);
+321:         SmartApp.currentUser = B.user(samer);
+322:         check(B.allowed(Auth.Perm.FX) && B.allowed(Auth.Perm.XFER) && B.allowed(Auth.Perm.STATEMENT) && !B.allowed(Auth.Perm.CLIENTS),
+323:                 "قائمة قديمة: القص وبين مكتبين والكشف مشتقة منها كما كانت، والعملاء لا (بلا صندوق)");
+324:         SmartApp.currentUser = A.user(adminId);
+325:         A.updateUser(samer, "سامر", Auth.CUSTOM, "VIEW,TX_ADD,P12", true);
+326:         syncAll(eA, eB, eD);
+327:         SmartApp.currentUser = B.user(samer);
+328:         boolean fxBlocked = throwsMsg(() -> B.addFx(nour, "USD", 1000, "EUR", 900, "0.9", "قص", 0), "صلاحية");
+329:         Db.TxInput oldTx = tx(nour, true, 500, "USD", "بتاريخ سابق");
+330:         oldTx.when = Clock.now() - 3L * 86_400_000L;
+331:         boolean backBlocked = throwsMsg(() -> { try { B.addTx(oldTx, null); } catch (java.io.IOException e) { throw new RuntimeException(e); } }, "صلاحية");
+332:         long today = B.addTx(tx(nour, true, 500, "USD", "اليوم"), null);
+333:         check(fxBlocked && backBlocked && today > 0 && !B.allowed(Auth.Perm.STATEMENT), "تفصيلية: بلا «قص» ولا «تاريخ سابق» يُرفضان في القاعدة، والتسجيل اليوم يعمل");
+334:         SmartApp.currentUser = A.user(adminId);
+335:         A.updateUser(samer, "سامر", Auth.CUSTOM, "VIEW", true);
+336:         syncAll(eA, eB, eD);
+337:         SmartApp.currentUser = B.user(samer);
+338:         SmartApp.currentUser = B.user(samer);
+339:         SmartApp.currentUser = B.user(adminId);
+340:         check(throwsMsg(() -> B.disableUsers(), "الجهاز الرئيسي"), "إيقاف نظام المستخدمين من الجهاز الرئيسي فقط");
+341:         SmartApp.currentUser = A.user(adminId);
+342:         A.updateUser(samer, "سامر", Auth.CUSTOM, "VIEW", false);
+343:         syncAll(eA, eB, eD);
+344:         SmartApp.currentUser = B.user(samer);
+345:         check(!B.user(samer).active && !B.allowed(Auth.Perm.VIEW), "إيقاف الحساب من الرئيسي يمنعه على كل الأجهزة");
+346:         SmartApp.currentUser = null;
+347:         check(bal(A).equals(bal(B)) && bal(A).equals(bal(D)), "الأرصدة متطابقة بعد كل ذلك");
+348: 
+349:         // 11.5: إشعار المدير في الخلفية بلا «تذكرني»: آخر من دخل على الجهاز هو المعني (كان لا يصل شيء)
+350:         System.out.println("== 10ب) إشعارات المزامنة في الخلفية");
+351:         SmartApp.currentUser = A.user(adminId);
+352:         A.addTx(tx(nour, true, 1234, "USD", "إشعار الخلفية"), null);
+353:         eA.sync();
+354:         SyncEngine.Result rN = eB.sync();
+355:         SmartApp.currentUser = null;
+356:         Db keepDb = SmartApp.db;
+357:         SmartApp.db = B;
+358:         java.lang.reflect.Method an = Class.forName("com.smart.hawala.Notifier").getDeclaredMethod("afterSync", android.content.Context.class, Db.class, SyncEngine.Result.class, boolean.class);
+359:         an.setAccessible(true);
+360:         android.content.Context nctx = new android.content.Context(Files.createTempDirectory("sa-notif").toFile());
+361:         int nq0 = notifCount(B);
+362:         an.invoke(null, nctx, B, rN, false);
+363:         int nq1 = notifCount(B);
+364:         B.setSettingQuiet("notif_last_user", "" + adminId);
+365:         an.invoke(null, nctx, B, rN, false);
+366:         int nq2 = notifCount(B);
+367:         check(rN.newTx.size() >= 1 && nq1 == nq0 && nq2 > nq1, "بلا أحد داخل: لا إشعار؛ مع «آخر من دخل» (المدير): وصل إشعار الحركة الجديدة (" + nq0 + "/" + nq1 + "/" + nq2 + ")");
+368:         an.invoke(null, nctx, B, rN, true);
+369:         check(notifCount(B) > nq2, "التطبيق أمام المستخدم: لا إشعار نظام لكن يبقى في سجل الإشعارات");
+370:         SmartApp.db = keepDb;
+371: 
+372:         System.out.println("== 11) خزنة من الإصدار 10.0 (بلا «الجهاز الرئيسي» في رأسها)");
+373:         File old = Files.createTempDirectory("sa-sync-old").toFile();
+374:         Db X = dev("syncX");
+375:         X.addOffice("مكتب س", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+376:         SyncEngine eX = new SyncEngine(X, new FileSyncFolder(old));
+377:         eX.create("كلمة-سر-قديمة".toCharArray(), "س");
+378:         File hf = new File(old, SyncEngine.HEADER);
+379:         org.json.JSONObject h = new org.json.JSONObject(new String(Files.readAllBytes(hf.toPath()), "UTF-8"));
+380:         h.remove("founder");
+381:         Files.write(hf.toPath(), h.toString(1).getBytes("UTF-8"));
+382:         X.getWritableDatabase().execSQL("DELETE FROM sync_meta WHERE k IN ('founder','secrets_sent')");
+383:         Db Y = dev("syncY");
+384:         SyncEngine eY = new SyncEngine(Y, new FileSyncFolder(old));
+385:         eY.join("كلمة-سر-قديمة".toCharArray(), false, "ص");
+386:         syncAll(eX, eY);
+387:         org.json.JSONObject h2 = new org.json.JSONObject(new String(Files.readAllBytes(hf.toPath()), "UTF-8"));
+388:         check(X.syncFounder() && !Y.syncFounder() && !h2.optString("founder").isEmpty(), "المنشئ عُرف وكتب نفسه في الرأس عند أول مزامنة بالإصدار الجديد");
+389:         long xa = X.addUser("مدير س", Auth.ADMIN, null, "123456");
+390:         syncAll(eX, eY);
+391:         check(Y.verifyPin(xa, "123456"), "حساب المدير ورمزه يعملان على الجهاز المنضم");
+392:         SmartApp.currentUser = null;
+393: 
+394:         System.out.println("== 12) الحركة نفسها من جهازين قبل التزامن: مراجعة التكرار");
+395:         SmartApp.currentUser = A.user(adminId);
+396:         long dA = A.addTx(tx(nour, true, 45600, "USD", "أبو عمر"), null);
+397:         SmartApp.currentUser = B.user(adminId);
+398:         long dB = B.addTx(tx(nour, true, 45600, "USD", "أبو  عمر"), null);
+399:         long eA2 = A.addTx(tx(amal, false, 1000, "USD", "سليم"), null);
+400:         long eB2 = B.addTx(tx(amal, false, 1000, "USD", "سليم"), null);
+401:         syncAll(eA, eB, eD);
+402:         List<SyncEngine.Dup> da = SyncEngine.duplicates(A), db2 = SyncEngine.duplicates(B);
+403:         check(da.size() == 2 && db2.size() == 2, "كُشف الزوجان على الجهازين (" + da.size() + " و" + db2.size() + ")");
+404:         SmartApp.currentUser = A.user(adminId);
+405:         SyncEngine.Dup p1 = null, p2 = null;
+406:         for (SyncEngine.Dup x : da) {
+407:             if (x.a.id == Math.min(dA, dB) || x.b.id == Math.min(dA, dB)) p1 = x;
+408:             else p2 = x;
+409:         }
+410:         long before12 = b(A.balances(nour), "USD");
+411:         SyncEngine.dropDuplicate(A, p1, p1.a.id == dB ? p1.a : p1.b);
+412:         SmartApp.currentUser = B.user(adminId);
+413:         SyncEngine.Dup q2 = null;
+414:         for (SyncEngine.Dup x : SyncEngine.duplicates(B)) if (x.a.id == Math.min(eA2, eB2)) q2 = x;
+415:         SyncEngine.keepBoth(B, q2);
+416:         syncAll(eA, eB, eD);

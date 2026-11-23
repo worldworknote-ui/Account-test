@@ -1,0 +1,100 @@
+1: package android.graphics.pdf;
+2: 
+3: import java.awt.*;
+4: import java.awt.image.BufferedImage;
+5: import java.io.*;
+6: import java.nio.charset.StandardCharsets;
+7: import java.util.ArrayList;
+8: import java.util.List;
+9: import java.util.zip.Deflater;
+10: 
+11: /** كاتب PDF: كل صفحة تُرسم بدقة عالية (2.5×) وتُضغط بلا فقد — كما في PDF نسخة الكمبيوتر السابقة. */
+12: final class PdfWriter {
+13:     static final float SCALE = 2.5f;
+14:     private final List<PageCanvas> pages = new ArrayList<>();
+15: 
+16:     final class PageCanvas {
+17:         final int w, h;
+18:         final BufferedImage img;
+19:         final Graphics2D g;
+20:         PageCanvas(int w, int h) {
+21:             this.w = w;
+22:             this.h = h;
+23:             img = new BufferedImage(Math.round(w * SCALE), Math.round(h * SCALE), BufferedImage.TYPE_INT_RGB);
+24:             g = img.createGraphics();
+25:             g.setColor(Color.WHITE);
+26:             g.fillRect(0, 0, img.getWidth(), img.getHeight());
+27:             g.scale(SCALE, SCALE);
+28:         }
+29:         Graphics2D graphics() { return g; }
+30:         void finish() { g.dispose(); }
+31:     }
+32: 
+33:     PageCanvas newPage(int w, int h) { PageCanvas p = new PageCanvas(w, h); pages.add(p); return p; }
+34: 
+35:     void write(OutputStream os) throws IOException {
+36:         Out o = new Out(os);
+37:         for (PageCanvas p : pages) o.page(p.img, p.w, p.h);
+38:         o.finish();
+39:     }
+40: 
+41:     private static final class Out {
+42:         final OutputStream out;
+43:         long pos;
+44:         final List<Long> offsets = new ArrayList<>();
+45:         final List<Integer> pageIds = new ArrayList<>();
+46:         int next = 3;
+47:         Out(OutputStream out) throws IOException {
+48:             this.out = out;
+49:             offsets.add(0L); offsets.add(0L); offsets.add(0L);
+50:             write("%PDF-1.4\n%âãÏÓ\n".getBytes(StandardCharsets.ISO_8859_1));
+51:         }
+52:         void write(byte[] b) throws IOException { out.write(b); pos += b.length; }
+53:         void w(String s) throws IOException { write(s.getBytes(StandardCharsets.ISO_8859_1)); }
+54:         int obj() { int id = next++; while (offsets.size() <= id) offsets.add(0L); return id; }
+55:         void begin(int id) throws IOException { offsets.set(id, pos); w(id + " 0 obj\n"); }
+56:         void page(BufferedImage im, float pw, float ph) throws IOException {
+57:             int iw = im.getWidth(), ih = im.getHeight();
+58:             byte[] raw = new byte[iw * ih * 3];
+59:             int k = 0;
+60:             int[] row = new int[iw];
+61:             for (int y = 0; y < ih; y++) {
+62:                 im.getRGB(0, y, iw, 1, row, 0, iw);
+63:                 for (int x = 0; x < iw; x++) { int c = row[x]; raw[k++] = (byte) (c >> 16); raw[k++] = (byte) (c >> 8); raw[k++] = (byte) c; }
+64:             }
+65:             Deflater d = new Deflater(Deflater.BEST_COMPRESSION);
+66:             d.setInput(raw);
+67:             d.finish();
+68:             ByteArrayOutputStream z = new ByteArrayOutputStream(raw.length / 8);
+69:             byte[] buf = new byte[65536];
+70:             while (!d.finished()) z.write(buf, 0, d.deflate(buf));
+71:             d.end();
+72:             byte[] data = z.toByteArray();
+73:             int img = obj(), content = obj(), page = obj();
+74:             begin(img);
+75:             w("<< /Type /XObject /Subtype /Image /Width " + iw + " /Height " + ih + " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length " + data.length + " >>\nstream\n");
+76:             write(data);
+77:             w("\nendstream\nendobj\n");
+78:             String cs = "q " + f(pw) + " 0 0 " + f(ph) + " 0 0 cm /Im0 Do Q\n";
+79:             begin(content);
+80:             w("<< /Length " + cs.length() + " >>\nstream\n" + cs + "endstream\nendobj\n");
+81:             begin(page);
+82:             w("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + f(pw) + " " + f(ph) + "] /Resources << /XObject << /Im0 " + img + " 0 R >> >> /Contents " + content + " 0 R >>\nendobj\n");
+83:             pageIds.add(page);
+84:         }
+85:         static String f(float v) { return String.format(java.util.Locale.US, "%.2f", v); }
+86:         void finish() throws IOException {
+87:             offsets.set(2, pos);
+88:             StringBuilder kids = new StringBuilder();
+89:             for (int id : pageIds) kids.append(id).append(" 0 R ");
+90:             w("2 0 obj\n<< /Type /Pages /Kids [" + kids + "] /Count " + pageIds.size() + " >>\nendobj\n");
+91:             offsets.set(1, pos);
+92:             w("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+93:             long xref = pos;
+94:             w("xref\n0 " + next + "\n0000000000 65535 f \n");
+95:             for (int i = 1; i < next; i++) w(String.format(java.util.Locale.US, "%010d 00000 n \n", offsets.get(i)));
+96:             w("trailer\n<< /Size " + next + " /Root 1 0 R >>\nstartxref\n" + xref + "\n%%EOF\n");
+97:             out.flush();
+98:         }
+99:     }
+100: }

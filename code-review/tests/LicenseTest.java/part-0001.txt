@@ -1,0 +1,138 @@
+1: import com.smart.hawala.BackupPolicy;
+2: import com.smart.hawala.Entitlements;
+3: import com.smart.hawala.LicenseToken;
+4: import com.smart.hawala.QuotaState;
+5: import com.smart.hawala.Report;
+6: import com.smart.hawala.XlsxWriter;
+7: import java.io.ByteArrayInputStream;
+8: import java.io.ByteArrayOutputStream;
+9: import java.nio.charset.StandardCharsets;
+10: import java.nio.file.Files;
+11: import java.nio.file.Path;
+12: import java.nio.file.Paths;
+13: import java.security.KeyPair;
+14: import java.security.KeyPairGenerator;
+15: import java.security.MessageDigest;
+16: import java.security.Signature;
+17: import java.security.spec.ECGenParameterSpec;
+18: import java.util.Base64;
+19: import java.util.HashMap;
+20: import java.util.Map;
+21: import java.util.TimeZone;
+22: import java.util.regex.Matcher;
+23: import java.util.regex.Pattern;
+24: import java.util.zip.ZipEntry;
+25: import java.util.zip.ZipInputStream;
+26: 
+27: /**
+28:  * 8.0: الترخيص وحدود المجاني. رمز موقّع ECDSA P-256 مربوط ببصمة مفتاح الهاتف؛ ما يحق للنسخة؛ عدّادات لا تنقص؛
+29:  * توقيت النسخ التلقائي؛ علامة «نسخة مجانية» وبصمة الرخصة في الملفات المصدّرة.
+30:  * وسيط اختياري: مجلد فيه node-tokens.json من اختبارات أداة البائع (توقيع WebCrypto) للتحقق عبر التطبيقين.
+31:  */
+32: public class LicenseTest {
+33:     static int fails = 0, passes = 0;
+34: 
+35:     static void check(boolean c, String m) {
+36:         if (c) passes++;
+37:         else fails++;
+38:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+39:     }
+40: 
+41:     static final Base64.Encoder U = Base64.getUrlEncoder().withoutPadding();
+42:     static KeyPair vendor, vendor2, device, device2;
+43:     static Map<String, String> trusted = new HashMap<>();
+44: 
+45:     static KeyPair ec() throws Exception {
+46:         KeyPairGenerator g = KeyPairGenerator.getInstance("EC");
+47:         g.initialize(new ECGenParameterSpec("secp256r1"));
+48:         return g.generateKeyPair();
+49:     }
+50: 
+51:     static String token(String payload, KeyPair k) throws Exception {
+52:         byte[] p = payload.getBytes(StandardCharsets.UTF_8);
+53:         Signature s = Signature.getInstance("SHA256withECDSA");
+54:         s.initSign(k.getPrivate());
+55:         s.update(p);
+56:         return U.encodeToString(p) + "." + U.encodeToString(s.sign());
+57:     }
+58: 
+59:     static String dk(KeyPair d) throws Exception { return LicenseToken.deviceFingerprint(d.getPublic().getEncoded()); }
+60: 
+61:     static String base(KeyPair d) throws Exception {
+62:         return "v=1;lid=SA-2026-0001;ed=pro;ft=all;uu=20271231;dk=" + dk(d) + ";kid=t1";
+63:     }
+64: 
+65:     static LicenseToken.Grant verify(String t, KeyPair d) { return LicenseToken.verify(t, d == null ? null : d.getPublic().getEncoded(), trusted); }
+66: 
+67:     public static void main(String[] args) throws Exception {
+68:         vendor = ec();
+69:         vendor2 = ec();
+70:         device = ec();
+71:         device2 = ec();
+72:         trusted.put("t1", Base64.getEncoder().encodeToString(vendor.getPublic().getEncoded()));
+73:         trusted.put("t2", Base64.getEncoder().encodeToString(vendor2.getPublic().getEncoded()));
+74: 
+75:         System.out.println("== بصمة مفتاح الهاتف");
+76:         byte[] pub = device.getPublic().getEncoded();
+77:         String want = U.encodeToString(MessageDigest.getInstance("SHA-256").digest(pub));
+78:         check(want.equals(dk(device)), "dk = Base64url(SHA-256(X.509)) بلا حشو");
+79:         check(dk(device).length() == 43 && !dk(device).contains("="), "طول البصمة 43 حرفًا");
+80: 
+81:         System.out.println("== رمز صحيح");
+82:         String good = token(base(device), vendor);
+83:         LicenseToken.Grant g = verify(good, device);
+84:         check(g != null, "رمز موقّع لهذا الهاتف يُقبل");
+85:         check(g != null && "SA-2026-0001".equals(g.lid()), "رقم الرخصة يُقرأ");
+86:         check(g != null && g.has("offices") && g.has("ai") && g.has("anything"), "ft=all يشمل كل الميزات");
+87:         check(g != null && g.coversBuild(20261014) && g.coversBuild(20271231) && !g.coversBuild(20280101), "فترة التحديثات uu تشمل البناء حتى تاريخها فقط");
+88:         check(verify(" " + good.substring(0, 20) + "\n" + good.substring(20, 50) + "\r\n " + good.substring(50) + "\n", device) != null,
+89:                 "مسافات وأسطر جديدة من النسخ واللصق تُتجاهل");
+90:         check(verify(token(base(device).replace("kid=t1", "kid=t2"), vendor2), device) != null, "المفتاح الاحتياطي k2 (t2) مقبول");
+91: 
+92:         System.out.println("== رموز مرفوضة");
+93:         check(verify(good, device2) == null, "الرمز نفسه على هاتف آخر يُرفض (dk)");
+94:         String forged = U.encodeToString(base(device).replace("ft=all", "ft=all,x").getBytes(StandardCharsets.UTF_8)) + good.substring(good.indexOf('.'));
+95:         check(verify(forged, device) == null, "تعديل حقل بعد التوقيع يُرفض");
+96:         check(verify(token(base(device), ec()), device) == null, "توقيع بمفتاح غير موثوق يُرفض");
+97:         check(verify(token(base(device), vendor2), device) == null, "توقيع k2 مع kid=k1 يُرفض");
+98:         check(verify(token(base(device).replace("kid=t1", "kid=zz"), vendor), device) == null, "kid مجهول يُرفض");
+99:         check(verify(token(base(device).replace(";kid=t1", ""), vendor), device) == null, "بلا kid يُرفض");
+100:         check(verify(token(base(device).replace("v=1", "v=2"), vendor), device) == null, "إصدار صيغة غير معروف v=2 يُرفض");
+101:         check(verify(token(base(device).replace("lid=SA-2026-0001", "lid="), vendor), device) == null, "بلا رقم رخصة يُرفض");
+102:         check(verify(token(base(device) + ";ft=none", vendor), device) == null, "حقل مكرر يُرفض");
+103:         check(verify(token(base(device).replace("dk=" + dk(device), "dk=" + dk(device2)), vendor), device) == null, "رمز صحيح لهاتف آخر لا يعمل هنا");
+104:         check(verify(good.substring(0, good.length() - 4), device) == null, "رمز مبتور يُرفض");
+105:         check(verify(good.replace(".", ""), device) == null, "بلا نقطة يُرفض");
+106:         check(verify(good + ".x", device) == null, "نقطتان يُرفض");
+107:         check(verify(good.substring(0, good.indexOf('.') + 1), device) == null, "توقيع فارغ يُرفض");
+108:         check(verify("@@@." + good.substring(good.indexOf('.') + 1), device) == null, "Base64 فاسد يُرفض");
+109:         check(verify(null, device) == null && verify(good, null) == null, "null لا يرمي");
+110:         check(LicenseToken.verify(good, pub) == null, "مفتاح اختبار ليس من المفاتيح المضمّنة في التطبيق");
+111:         // التوقيع الخام (r||s) كما يعطيه WebCrypto لا يُقبل: أداة البائع يجب أن تحوّله إلى DER
+112:         byte[] der = Base64.getUrlDecoder().decode(good.substring(good.indexOf('.') + 1));
+113:         byte[] raw = derToRaw(der);
+114:         check(raw.length == 64 && verify(good.substring(0, good.indexOf('.') + 1) + U.encodeToString(raw), device) == null, "توقيع خام 64 بايت (P1363) يُرفض: الصيغة DER");
+115:         check(verify(good.substring(0, good.indexOf('.') + 1) + U.encodeToString(rawToDer(raw)), device) != null, "تحويل الخام إلى DER (كما في أداة البائع) يُقبل");
+116:         check(LicenseToken.peek(good).get("lid").equals("SA-2026-0001") && LicenseToken.peek("garbage").isEmpty(), "peek للعرض فقط ولا يرمي");
+117: 
+118:         System.out.println("== المفاتيح المضمّنة");
+119:         check(LicenseToken.TRUSTED.size() == 2 && LicenseToken.TRUSTED.containsKey("k1") && LicenseToken.TRUSTED.containsKey("k2"), "k1 و k2 مضمّنان");
+120:         boolean immutable;
+121:         try {
+122:             LicenseToken.TRUSTED.put("evil", "x");
+123:             immutable = false;
+124:         } catch (UnsupportedOperationException e) {
+125:             immutable = true;
+126:         }
+127:         check(immutable, "قائمة المفاتيح الموثوقة لا تُعدَّل أثناء التشغيل");
+128:         for (String k : LicenseToken.TRUSTED.values()) {
+129:             java.security.PublicKey pk = java.security.KeyFactory.getInstance("EC").generatePublic(new java.security.spec.X509EncodedKeySpec(Base64.getDecoder().decode(k)));
+130:             check(pk.getAlgorithm().equals("EC") && ((java.security.interfaces.ECPublicKey) pk).getParams().getCurve().getField().getFieldSize() == 256, "مفتاح مضمّن صالح P-256");
+131:         }
+132: 
+133:         System.out.println("== ما يحق للنسخة");
+134:         Entitlements free = Entitlements.free("");
+135:         check(!free.pro && free.maxOffices() == 15 && free.maxTxPerOffice() == 1500, "المجانية (12.6): 15 مكتبًا و1500 حركة لكل مكتب");
+136:         check(free.maxCashBoxes() == 1 && free.maxClients() == 25, "المجانية (12.6): صندوق واحد و25 عميلًا");
+137:         check(free.waPerDay() == 20 && Entitlements.of(g, 20261014).waPerDay() == Entitlements.UNLIMITED, "المجانية: استخراج 20 رسالة واتساب يوميًا، والكاملة بلا حد");
+138:         check(free.maxUsers() == 1 && !free.ai() && free.watermark(), "المجانية: مستخدم واحد، بلا ذكاء اصطناعي، بعلامة على التصدير");

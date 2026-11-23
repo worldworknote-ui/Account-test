@@ -1,0 +1,47 @@
+1: package com.smart.hawala;
+2: 
+3: import com.google.zxing.BarcodeFormat;
+4: import com.google.zxing.BinaryBitmap;
+5: import com.google.zxing.DecodeHintType;
+6: import com.google.zxing.RGBLuminanceSource;
+7: import com.google.zxing.Result;
+8: import com.google.zxing.common.HybridBinarizer;
+9: import com.google.zxing.qrcode.QRCodeReader;
+10: import java.util.EnumMap;
+11: import java.util.Map;
+12: 
+13: /**
+14:  * 11.6: قراءة رمز QR من صورة (لقطة شاشة أو صورة من واتساب) بمكتبة ZXing الأساسية (جافا خالصة، بلا كاميرا ولا أذونات).
+15:  * تُستعمل لرمز الترخيص من أداة البائع (smartacc://activate?k=…). نفس الكود على الهاتف والكمبيوتر.
+16:  */
+17: final class QrRead {
+18:     private QrRead() {}
+19: 
+20:     /** النص المقروء، أو null إن لم يوجد رمز QR مقروء. argb: بكسلات الصورة صفًا صفًا. */
+21:     static String decode(int[] argb, int w, int h) {
+22:         Map<DecodeHintType, Object> hints = new EnumMap<>(DecodeHintType.class);
+23:         hints.put(DecodeHintType.TRY_HARDER, Boolean.TRUE);
+24:         hints.put(DecodeHintType.POSSIBLE_FORMATS, java.util.Collections.singletonList(BarcodeFormat.QR_CODE));
+25:         hints.put(DecodeHintType.CHARACTER_SET, "UTF-8");
+26:         RGBLuminanceSource src = new RGBLuminanceSource(w, h, argb);
+27:         // صورة عادية، ثم معكوسة الألوان (رمز فاتح على خلفية داكنة)
+28:         for (int pass = 0; pass < 2; pass++) {
+29:             try {
+30:                 Result r = new QRCodeReader().decode(new BinaryBitmap(new HybridBinarizer(pass == 0 ? src : src.invert())), hints);
+31:                 if (r != null && r.getText() != null) return r.getText();
+32:             } catch (Exception ignored) {
+33:                 // نجرب المحاولة التالية
+34:             }
+35:         }
+36:         return null;
+37:     }
+38: 
+39:     /** من صورة أندرويد (تُصغَّر الصور الكبيرة جدًا أولًا). */
+40:     static String decode(android.graphics.Bitmap bm) {
+41:         if (bm == null) return null;
+42:         int w = bm.getWidth(), h = bm.getHeight();
+43:         int[] px = new int[w * h];
+44:         bm.getPixels(px, 0, w, 0, 0, w, h);
+45:         return decode(px, w, h);
+46:     }
+47: }

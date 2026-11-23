@@ -1,0 +1,236 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.Dialog;
+4: import android.database.Cursor;
+5: import android.database.sqlite.SQLiteDatabase;
+6: import android.graphics.Bitmap;
+7: import android.graphics.Canvas;
+8: import android.os.Looper;
+9: import android.view.View;
+10: import android.widget.EditText;
+11: import java.io.File;
+12: import java.io.FileOutputStream;
+13: import java.lang.reflect.Field;
+14: import java.lang.reflect.Method;
+15: import java.math.BigDecimal;
+16: import java.util.ArrayList;
+17: import java.util.Arrays;
+18: import java.util.HashMap;
+19: import java.util.LinkedHashMap;
+20: import java.util.List;
+21: import java.util.Map;
+22: import java.util.Objects;
+23: import org.junit.Test;
+24: import org.junit.runner.RunWith;
+25: import org.robolectric.Robolectric;
+26: import org.robolectric.RobolectricTestRunner;
+27: import org.robolectric.Shadows;
+28: import org.robolectric.annotation.Config;
+29: import org.robolectric.annotation.GraphicsMode;
+30: import org.robolectric.annotation.LooperMode;
+31: import org.robolectric.shadows.ShadowDialog;
+32: 
+33: @GraphicsMode(GraphicsMode.Mode.NATIVE)
+34: @RunWith(RobolectricTestRunner.class)
+35: @Config(sdk = {34}, application = TestApp.class, qualifiers = "ar-w400dp-h860dp-xxhdpi")
+36: @LooperMode(LooperMode.Mode.PAUSED)
+37: public class ShotTest {
+38:     static File dir = new File(System.getProperty("shots.dir", "/tmp/shots"));
+39:     static List<String> errors = new ArrayList();
+40: 
+41:     static void idle() {
+42:         for (int i = 0; i < 40; i++) {
+43:             Shadows.shadowOf(Looper.getMainLooper()).idle();
+44:             try {
+45:                 Thread.sleep(25L);
+46:             } catch (InterruptedException e) {
+47:             }
+48:         }
+49:         Shadows.shadowOf(Looper.getMainLooper()).idle();
+50:     }
+51: 
+52:     static void shot(MainActivity a, String name) {
+53:         idle();
+54:         try {
+55:             int w = a.getWindow().getDecorView().getWidth();
+56:             if (w <= 0) {
+57:                 w = 1200;
+58:             }
+59:             int ws = View.MeasureSpec.makeMeasureSpec(w, 1073741824);
+60:             int us = View.MeasureSpec.makeMeasureSpec(0, 0);
+61:             a.bar.measure(ws, View.MeasureSpec.makeMeasureSpec(a.bar.getHeight() > 0 ? a.bar.getHeight() : a.dp(58), 1073741824));
+62:             a.body.measure(ws, us);
+63:             int bh = a.body.getMeasuredHeight();
+64:             int barH = a.bar.getMeasuredHeight();
+65:             int fh = 0;
+66:             int th = 0;
+67:             if (a.footerBox.getVisibility() == 0) {
+68:                 a.footerBox.measure(ws, us);
+69:                 fh = a.footerBox.getMeasuredHeight();
+70:             }
+71:             if (a.tabs != null) {
+72:                 int tabH = a.tabs.getLayoutParams() != null && a.tabs.getLayoutParams().height > 0 ? a.tabs.getLayoutParams().height : a.dp(Ui.TAB_FRAME_DP);
+73:                 a.tabs.measure(ws, View.MeasureSpec.makeMeasureSpec(tabH, 1073741824));
+74:                 th = a.tabs.getMeasuredHeight();
+75:             }
+76:             Bitmap out = Bitmap.createBitmap(w, Math.min(barH + bh + fh + th, 12000), Bitmap.Config.ARGB_8888);
+77:             Canvas c = new Canvas(out);
+78:             c.drawColor(a.bg);
+79:             a.bar.layout(0, 0, w, barH);
+80:             a.bar.draw(c);
+81:             c.save();
+82:             c.translate(0.0f, barH);
+83:             a.body.layout(0, 0, w, bh);
+84:             a.body.draw(c);
+85:             c.restore();
+86:             if (fh > 0) {
+87:                 c.save();
+88:                 c.translate(0.0f, barH + bh);
+89:                 a.footerBox.layout(0, 0, w, fh);
+90:                 a.footerBox.draw(c);
+91:                 c.restore();
+92:             }
+93:             if (th > 0) {
+94:                 c.save();
+95:                 c.translate(0.0f, barH + bh + fh);
+96:                 a.tabs.layout(0, 0, w, th);
+97:                 a.tabs.draw(c);
+98:                 c.restore();
+99:             }
+100:             dir.mkdirs();
+101:             FileOutputStream o = new FileOutputStream(new File(dir, name + ".png"));
+102:             try {
+103:                 out.compress(Bitmap.CompressFormat.PNG, 100, o);
+104:                 o.close();
+105:                 System.out.println("SHOT " + name + " " + w + "x" + out.getHeight());
+106:             } catch (Throwable th2) {
+107:                 try {
+108:                     o.close();
+109:                 } catch (Throwable th3) {
+110:                     th2.addSuppressed(th3);
+111:                 }
+112:                 throw th2;
+113:             }
+114:         } catch (Throwable t) {
+115:             errors.add(name + ": " + t);
+116:             t.printStackTrace();
+117:         }
+118:     }
+119: 
+120:     static void shotDialog(MainActivity a, String name) {
+121:         idle();
+122:         try {
+123:             Dialog d = ShadowDialog.getLatestDialog();
+124:             View v = d.getWindow().getDecorView();
+125:             v.measure(View.MeasureSpec.makeMeasureSpec(1000, 1073741824), View.MeasureSpec.makeMeasureSpec(0, 0));
+126:             int h = Math.min(v.getMeasuredHeight(), 6000);
+127:             v.layout(0, 0, 1000, h);
+128:             Bitmap out = Bitmap.createBitmap(1000, h, Bitmap.Config.ARGB_8888);
+129:             Canvas c = new Canvas(out);
+130:             c.drawColor(-1);
+131:             v.draw(c);
+132:             dir.mkdirs();
+133:             FileOutputStream o = new FileOutputStream(new File(dir, name + ".png"));
+134:             try {
+135:                 out.compress(Bitmap.CompressFormat.PNG, 100, o);
+136:                 o.close();
+137:                 System.out.println("SHOT " + name + " 1000x" + h);
+138:                 d.dismiss();
+139:             } catch (Throwable th) {
+140:                 try {
+141:                     o.close();
+142:                 } catch (Throwable th2) {
+143:                     th.addSuppressed(th2);
+144:                 }
+145:                 throw th;
+146:             }
+147:         } catch (Throwable t) {
+148:             errors.add(name + ": " + t);
+149:             t.printStackTrace();
+150:         }
+151:     }
+152: 
+153:     // 10.6: أدوات للقائمة نصف الدائرية والشاشتين الجديدتين
+154:     static View find(View v, java.util.function.Predicate<View> p) {
+155:         if (v == null) return null;
+156:         if (p.test(v)) return v;
+157:         if (v instanceof android.view.ViewGroup) {
+158:             android.view.ViewGroup g = (android.view.ViewGroup) v;
+159:             for (int i = 0; i < g.getChildCount(); i++) {
+160:                 View r = find(g.getChildAt(i), p);
+161:                 if (r != null) return r;
+162:             }
+163:         }
+164:         return null;
+165:     }
+166: 
+167:     static View byDesc(View root, String prefix) {
+168:         return find(root, v -> v.getContentDescription() != null && v.getContentDescription().toString().startsWith(prefix));
+169:     }
+170: 
+171:     static android.widget.Button buttonText(View root, String text) {
+172:         return (android.widget.Button) find(root, v -> v instanceof android.widget.Button && text.equals(((android.widget.Button) v).getText().toString()));
+173:     }
+174: 
+175:     static EditText byHint(View root, String hint) {
+176:         return (EditText) find(root, v -> v instanceof EditText && ((EditText) v).getHint() != null && ((EditText) v).getHint().toString().startsWith(hint));
+177:     }
+178: 
+179:     static void later(long ms) {
+180:         for (long t = 0; t < ms; t += 50) {
+181:             Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(50));
+182:             try {
+183:                 Thread.sleep(10L);
+184:             } catch (InterruptedException e) {
+185:             }
+186:         }
+187:         idle();
+188:     }
+189: 
+190:     /** لقطة للنافذة كما تظهر (مع الطبقات فوقها كقائمة «تسجيل»). */
+191:     static void shotWindow(MainActivity a, String name) {
+192:         idle();
+193:         try {
+194:             View f = a.frame;
+195:             int w = f.getWidth() > 0 ? f.getWidth() : 1200, h = f.getHeight() > 0 ? f.getHeight() : 2580;
+196:             Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+197:             Canvas c = new Canvas(out);
+198:             c.drawColor(a.bg);
+199:             f.draw(c);
+200:             dir.mkdirs();
+201:             try (FileOutputStream o = new FileOutputStream(new File(dir, name + ".png"))) {
+202:                 out.compress(Bitmap.CompressFormat.PNG, 100, o);
+203:             }
+204:             System.out.println("SHOT " + name + " " + w + "x" + h);
+205:         } catch (Throwable t) {
+206:             errors.add(name + ": " + t);
+207:             t.printStackTrace();
+208:         }
+209:     }
+210: 
+211:     static void confirmLatest() {
+212:         idle();
+213:         android.app.AlertDialog d = (android.app.AlertDialog) ShadowDialog.getLatestDialog();
+214:         d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
+215:         later(600);
+216:     }
+217: 
+218:     static Db.TxInput tx(long office, boolean us, long amount, String cur, String person, String desc, long when) {
+219:         Db.TxInput t = new Db.TxInput();
+220:         t.office = office;
+221:         t.type = us ? "مدين / لنا" : "دائن / علينا";
+222:         t.amount = amount;
+223:         t.currency = cur;
+224:         t.person = person;
+225:         t.description = desc;
+226:         t.when = when;
+227:         return t;
+228:     }
+229: 
+230:     @Test
+231:     public void shots() throws Exception {
+232:         MainActivity a = (MainActivity) Robolectric.buildActivity(MainActivity.class).setup().get();
+233:         idle();
+234:         Db db = a.db;
+235:         long now = System.currentTimeMillis();
+236:         List<String> ue = Arrays.asList("USD", "EUR");

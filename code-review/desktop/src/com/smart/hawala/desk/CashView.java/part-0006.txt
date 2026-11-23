@@ -1,0 +1,145 @@
+750:         boolean internal = !cfg.strict || cfg.allowInternal;
+751:         for (CashBox.Suggestion s : sugg) {
+752:             p.add(Ui.gap(10));
+753:             Ui.Card k = Ui.tinted(new Color(250, 241, 210), GOLD);
+754:             k.add(Ui.para("زيادة " + money(s.got, s.gotCur) + " (≈ " + s.gotUsd + " $) وعجز " + money(s.sold, s.soldCur) + " (≈ " + s.soldUsd + " $): قيمتاهما متقاربتان، "
+755:                     + "الأرجح أنك بعت " + money(s.sold, s.soldCur) + " بـ " + money(s.got, s.gotCur) + " بسعر " + Ui.ltr("1 " + s.soldCur + " = " + s.rate.toPlainString() + " " + s.gotCur)
+756:                     + " ولم تسجّل العملية.", 13.5f, new Color(110, 82, 6), 560));
+757:             JCheckBox cb = Ui.check("سجّلها عملية بيع (بدل تسويتي عجز وزيادة)", false);
+758:             cb.setEnabled(internal);
+759:             picks.add(cb);
+760:             k.add(cb);
+761:             p.add(k);
+762:         }
+763:         if (sugg.isEmpty() && up.signum() > 0 && down.signum() > 0)
+764:             p.add(Ui.para("في الجرد زيادة وعجز بعملات مختلفة لكن قيمتيهما غير متقاربتين، فلا تبدو عملية بيع واحدة. راجع الحركات قبل الحفظ.", 13, Ui.muted, 560));
+765:         p.add(Ui.gap(8));
+766:         p.add(Ui.para("يُحفظ الجرد في «سجل الجرد» كما هو، وما بقي من فروق يُسجَّل «تسوية جرد» فيطابق الصندوق المعدود.", 12.5f, Ui.muted, 560));
+767:         if (!Ui.form(this, "مراجعة الجرد", Ui.rtl(p), "حفظ الجرد")) return;
+768:         List<CashBox.Suggestion> chosen = new ArrayList<>();
+769:         for (int i = 0; i < sugg.size(); i++) if (picks.get(i).isSelected()) chosen.add(sugg.get(i));
+770:         try {
+771:             CashBox.Count r = db.cashCount(cfg.id, counted, note, chosen);
+772:             app.changed();
+773:             Ui.toast(r.adjusted == 0 && r.sales.isEmpty() ? "الصندوق مطابق للمعدود ✓" : "حُفظ الجرد، والصندوق الآن مطابق للمعدود");
+774:             refresh();
+775:         } catch (Exception e) {
+776:             Ui.error(this, e);
+777:         }
+778:     }
+779: 
+780:     void countLog() {
+781:         CashBox.Config cfg = db.cashConfig();
+782:         Map<String, Integer> dec = db.decimalsMap();
+783:         DefaultTableModel mdl = new DefaultTableModel(new Object[]{"التاريخ", "بواسطة", "العجز والزيادة", "الصافي بالدولار", "سُجّل بيعًا", "ملاحظة"}, 0) {
+784:             @Override public boolean isCellEditable(int a, int b) { return false; }
+785:         };
+786:         for (CashBox.Count k : db.cashCounts(cfg.id)) {
+787:             List<String> parts = new ArrayList<>();
+788:             for (CashBox.CountLine l : k.lines) {
+789:                 long df = l.diff();
+790:                 parts.add(df == 0 ? l.currency + " مطابق" : (df > 0 ? "زيادة " : "عجز ") + Model.fmt(Math.abs(df), CashBox.dec(dec, l.currency)) + " " + l.currency);
+791:             }
+792:             String net = k.netUsd.isEmpty() ? "" : new BigDecimal(k.netUsd).setScale(2, RoundingMode.HALF_EVEN).toPlainString();
+793:             mdl.addRow(new Object[]{Model.date(k.createdAt), k.userName, String.join(" • ", parts), net, k.sales.replace("\u2066", "").replace("\u2069", ""), k.note});
+794:         }
+795:         JTable t = Ui.table(mdl);
+796:         Ui.widths(t, 130, 110, 320, 100, 260, 160);
+797:         t.applyComponentOrientation(Ui.RTL);
+798:         JScrollPane sp = Ui.tableBox(t);
+799:         sp.setPreferredSize(new Dimension(1000, 420));
+800:         Ui.form(this, "سجل الجرد — " + cfg.name, sp, "إغلاق");
+801:     }
+802: 
+803:     // ===================================================================================
+804:     // الإعداد: العملات كلها بأسعارها، والربط، والصناديق
+805:     // ===================================================================================
+806: 
+807:     String rateText(String code, Map<String, Db.Rate> rates) {
+808:         if ("USD".equals(code)) return "العملة الأساس";
+809:         Db.Rate r = rates.get(code);
+810:         if (r == null || r.usd == null) return "بلا سعر صرف";
+811:         if (r.usd.compareTo(BigDecimal.ONE) >= 0) return "1 " + code + " = " + r.usd.setScale(4, RoundingMode.HALF_EVEN).stripTrailingZeros().toPlainString() + " USD — " + r.source;
+812:         return "1 USD = " + BigDecimal.ONE.divide(r.usd, 2, RoundingMode.HALF_EVEN).stripTrailingZeros().toPlainString() + " " + code + " — " + r.source;
+813:     }
+814: 
+815:     /** لوحة العملات: كل عملات التطبيق مع سعرها، وحقل الرصيد الافتتاحي للعملات الجديدة. */
+816:     JPanel currencyPanel(Set<String> selected, Map<String, Long> bal, Map<String, JCheckBox> checks, Map<String, Ui.Field> opens) {
+817:         JPanel g = new JPanel(new GridLayout(0, 3, 12, 6));
+818:         g.setOpaque(false);
+819:         Map<String, Db.Rate> rates = db.rates();
+820:         for (Model.Currency c : db.currencies(true)) {
+821:             boolean had = selected.contains(c.code);
+822:             JCheckBox cb = Ui.check(c.code + " — " + c.name, had);
+823:             checks.put(c.code, cb);
+824:             g.add(cb);
+825:             if (had) g.add(Ui.label("الرصيد " + Model.fmt(bal.getOrDefault(c.code, 0L), c.decimals), 13, Ui.muted, false));
+826:             else {
+827:                 Ui.Field op = Ui.numeric("الموجود الآن (رصيد افتتاحي)");
+828:                 opens.put(c.code, op);
+829:                 g.add(op);
+830:             }
+831:             g.add(Ui.label(rateText(c.code, rates), 12, Ui.muted, false));
+832:         }
+833:         return g;
+834:     }
+835: 
+836:     Map<String, Long> openings(Map<String, JCheckBox> checks, Map<String, Ui.Field> opens, List<String> codes) {
+837:         Map<String, Long> openings = new LinkedHashMap<>();
+838:         for (Map.Entry<String, JCheckBox> e : checks.entrySet()) {
+839:             if (!e.getValue().isSelected()) continue;
+840:             codes.add(e.getKey());
+841:             Ui.Field op = opens.get(e.getKey());
+842:             if (op != null && !op.val().isEmpty()) openings.put(e.getKey(), Db.minor(op.val(), db.decimals(e.getKey())));
+843:         }
+844:         return openings;
+845:     }
+846: 
+847:     void setup(boolean first) {
+848:         CashBox.Config cfg = db.cashConfig();
+849:         Ui.Field name = Ui.field(CashBox.DEFAULT_NAME);
+850:         name.setText(cfg.on ? cfg.name : "");
+851:         Map<String, JCheckBox> checks = new LinkedHashMap<>();
+852:         Map<String, Ui.Field> opens = new LinkedHashMap<>();
+853:         JPanel g = currencyPanel(new HashSet<>(cfg.on ? cfg.currencies : new ArrayList<>()), cfg.on ? db.cashBalances(cfg.id) : new HashMap<>(), checks, opens);
+854:         JCheckBox strict = Ui.check("ربط هذا الصندوق بالمكاتب: لا يدخل ولا يخرج إلا لحساب مكتب أو عميل", cfg.strict);
+855:         JCheckBox internal = Ui.check("مع الربط: السماح بالمصاريف والبيع والشراء داخل الصندوق", cfg.allowInternal);
+856:         JPanel c = Ui.column();
+857:         c.add(Ui.labeled("اسم الصندوق", name));
+858:         c.add(Ui.gap(8));
+859:         c.add(Ui.row(Ui.label("العملات والرصيد الموجود الآن", 13, Ui.muted, true), Box.createHorizontalGlue(),
+860:                 Ui.ghost("تحديث الأسعار من الإنترنت", e -> Ui.busy(this, "جارٍ تحديث الأسعار…", p -> ExchangeRates.refresh(db), n -> Ui.toast("حُدّثت أسعار " + n + " عملة — افتح الإعدادات من جديد"))),
+861:                 Ui.ghost("+ عملة أخرى", e -> addCurrency())));
+862:         c.add(g);
+863:         c.add(Ui.gap(8));
+864:         c.add(strict);
+865:         c.add(internal);
+866:         c.add(Ui.para("لكل صندوق ربطه: مثلًا صندوق المحل مربوط بالمكاتب، وخزنة البيت حرة. الجرد مسموح دائمًا.", 12.5f, Ui.muted, 700));
+867:         JScrollPane sp = Ui.scroll(Ui.rtl(c));
+868:         sp.setPreferredSize(new Dimension(820, 560));
+869:         if (!Ui.form(this, cfg.on ? "إعدادات «" + cfg.name + "»" : "إعداد صندوق المكتب", sp, cfg.on ? "حفظ" : "إنشاء الصندوق")) return;
+870:         try {
+871:             List<String> codes = new ArrayList<>();
+872:             Map<String, Long> op = openings(checks, opens, codes);
+873:             if (codes.isEmpty()) throw new IllegalArgumentException("اختر عملة واحدة على الأقل");
+874:             db.cashSetup(cfg.id, name.val(), codes, op, strict.isSelected(), internal.isSelected());
+875:             app.changed();
+876:             refresh();
+877:         } catch (Exception e) {
+878:             Ui.error(this, e);
+879:         }
+880:     }
+881: 
+882:     void addCurrency() {
+883:         if (!can(Auth.Perm.CURRENCIES)) return;
+884:         Set<String> have = new TreeSet<>();
+885:         for (Model.Currency c : db.currencies(true)) have.add(c.code);
+886:         Set<String> codes = new TreeSet<>(db.rates().keySet());
+887:         codes.addAll(WorldCurrencies.ALL.keySet());
+888:         codes.removeAll(have);
+889:         List<String> list = new ArrayList<>();
+890:         for (String c : codes) if (c.matches("[A-Z]{3}")) list.add(c);
+891:         if (list.isEmpty()) {
+892:             Ui.info(this, "إضافة عملة", "كل العملات المعروفة مضافة. حدّث الأسعار من الإنترنت لتظهر عملات أكثر.");
+893:             return;
+894:         }

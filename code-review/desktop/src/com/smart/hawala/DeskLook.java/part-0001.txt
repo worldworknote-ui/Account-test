@@ -1,0 +1,60 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.widget.Button;
+5: import javax.swing.SwingUtilities;
+6: 
+7: /**
+8:  * 11.0: قسم «الكمبيوتر: الشكل والحجم» في شاشة «المظهر» (على الماك والويندوز فقط):
+9:  * الشكل (مثل الهاتف أو القديم)، والحجم في النافذة (تلقائي يتبع سحب طرف النافذة، أو عمود ثابت)، والتكبير، ومعالج الشكل.
+10:  * كلها إعدادات لهذا الجهاز وحده.
+11:  */
+12: public final class DeskLook {
+13:     private DeskLook() {}
+14: 
+15:     public static final String[] COLS = {"auto", "480", "600", "full"};
+16:     public static final String[] COL_LABELS = {"تلقائي", "عمود 480", "عمود 600", "كامل العرض"};
+17:     public static final String[] ZOOMS = {"85", "100", "115", "130", "150"};
+18:     public static final String[] ZOOM_LABELS = {"أصغر", "عادي", "أكبر", "كبير", "كبير جدًا"};
+19: 
+20:     public static void install() { Ui.deskDesignHook(DeskLook::section); }
+21: 
+22:     public static int indexOf(String[] a, String v) {
+23:         for (int i = 0; i < a.length; i++) if (a[i].equals(v)) return i;
+24:         return -1;
+25:     }
+26: 
+27:     static void section(MainActivity a) {
+28:         a.title("الكمبيوتر: الشكل والحجم");
+29:         a.seg(new String[]{"مثل الهاتف", "الشكل القديم"}, 0, i -> {
+30:             if (i != 1) return;
+31:             new AlertDialog.Builder(a)
+32:                     .setTitle("الانتقال إلى الشكل القديم؟")
+33:                     .setMessage("تُفتح واجهة الكمبيوتر السابقة (قائمة جانبية وجداول) بالبيانات نفسها. تعود إلى هذا الشكل من قائمة «عرض ← الشكل الجديد (مثل الهاتف)».")
+34:                     .setPositiveButton("انتقال", (d, w) -> SwingUtilities.invokeLater(() -> com.smart.hawala.desk.Main.switchUi("classic")))
+35:                     .setNegativeButton("إلغاء", (d, w) -> a.restyle("design"))
+36:                     .setOnCancelListener(d -> a.restyle("design"))
+37:                     .show();
+38:         });
+39:         a.hint("الشكل القديم: واجهة الكمبيوتر السابقة. البيانات نفسها في الشكلين.");
+40: 
+41:         String col = a.db.setting("desk_column", "auto");
+42:         int ci = indexOf(COLS, col);
+43:         a.seg(COL_LABELS, ci < 0 ? 0 : ci, i -> {
+44:             a.db.setSettingQuiet("desk_column", COLS[i]);
+45:             com.smart.hawala.desk.PhoneWindow.refresh();
+46:         });
+47:         a.hint("«تلقائي»: الشاشة تملأ النافذة، والأزرار والخانات بحجمها الطبيعي لا تكبر مع النافذة الكبيرة (كبّرها من «الحجم» تحت إن أردت). «عمود»: حجم ثابت وسط النافذة. «كامل العرض»: الشاشات العريضة بعمودين.");
+48: 
+49:         int zi = indexOf(ZOOMS, a.db.setting("desk_zoom", "100"));
+50:         a.seg(ZOOM_LABELS, zi < 0 ? 1 : zi, i -> {
+51:             a.db.setSettingQuiet("desk_zoom", ZOOMS[i]);
+52:             com.smart.hawala.desk.PhoneWindow.refresh();
+53:         });
+54:         a.hint("حجم النصوص والأزرار وكل شيء. بدقة أكبر (من 70٪ إلى 170٪) من معالج الشكل.");
+55: 
+56:         // 11.6: لا اختيار ثابت للمشاركة بعد الآن: القائمة تظهر في كل مرة
+57:         Button w = a.smallButton("معالج الشكل والحجم (مع معاينة)", a.primary, v -> com.smart.hawala.desk.LookWizard.open(false));
+58:         a.body.addView(w, a.lp(-1, 44, 6));
+59:     }
+60: }

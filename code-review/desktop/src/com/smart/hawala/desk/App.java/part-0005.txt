@@ -1,0 +1,208 @@
+706:             } else if (!(key.equals(current) && java.util.Objects.equals(arg, currentArg))) {
+707:                 // نماذج التسجيل تُحفظ بلا معطاها المؤقت (تعبئة/تعديل): الرجوع إليها يفتحها كما تُركت لا بإعادة التعبئة
+708:                 Object keepArg = currentArg instanceof TxView.Prefill || currentArg instanceof FxView.Edit || currentArg instanceof RecordView.Open ? null : currentArg;
+709:                 history.push(new Object[]{current, keepArg});
+710:                 while (history.size() > 40) history.removeLast();
+711:             }
+712:         }
+713:         currentArg = arg;
+714:         current = key;
+715:         slideNav();
+716:         try {
+717:             if (arg != null) v.open(arg);
+718:             else v.refresh();
+719:         } catch (Throwable t) {
+720:             Ui.error(frame, t);
+721:         }
+722:         ((CardLayout) content.getLayout()).show(content, key);
+723:         if (changed) v.enter();
+724:         for (NavItem n : nav.values()) n.repaint();
+725:         View shownView = views.get(current);
+726:         if (shownView != null) shownView.updateBack();
+727:     }
+728: 
+729:     final java.util.ArrayDeque<Object[]> history = new java.util.ArrayDeque<>();
+730:     Object currentArg;
+731:     boolean goingBack;
+732: 
+733:     /** 10.16: رجوع إلى الشاشة السابقة. */
+734:     void back() {
+735:         if (locked || history.isEmpty()) return;
+736:         Object[] h = history.pop();
+737:         goingBack = true;
+738:         try {
+739:             go((String) h[0], h[1]);
+740:         } finally {
+741:             goingBack = false;
+742:         }
+743:     }
+744: 
+745:     /** 10.16: تحديث الشاشة الحالية (F5). */
+746:     void refreshCurrent() {
+747:         View v = views.get(current);
+748:         if (v == null || locked) return;
+749:         try {
+750:             v.refresh();
+751:             Ui.toast("حُدّثت الشاشة");
+752:         } catch (Throwable t) {
+753:             Ui.error(frame, t);
+754:         }
+755:     }
+756: 
+757:     boolean allowed(String key) {
+758:         switch (key) {
+759:             case "backup": return can(Auth.Perm.BACKUP);
+760:             case "users": case "team": return can(Auth.Perm.USERS);
+761:             case "settings": return can(Auth.Perm.SETTINGS) || can(Auth.Perm.CURRENCIES);
+762:             case "tx": case "xfer": return can(Auth.Perm.TX_ADD);
+763:             case "fx": return can(Auth.Perm.TX_ADD) && can(Auth.Perm.TX_EDIT);
+764:             default: return true;
+765:         }
+766:     }
+767: 
+768:     /** بعد أي تغيير في البيانات: تحديث الشارات، وفحص النسخ التلقائي. */
+769:     /** 10.0: إخفاء المبالغ (العين). */
+770:     boolean hidden() { return "1".equals(db.setting("hide_amounts", "0")); }
+771: 
+772:     /** 10.18: قفل الآن (من البحث السريع والقائمة). */
+773:     void lockNow() {
+774:         if (db.usersEnabled()) lock();
+775:         else if (DeskLock.on(db)) DeskLock.lockNow(this);
+776:         else Ui.toast("عيّن كلمة سر للقفل من «الإعدادات ← قفل البرنامج»، أو فعّل نظام المستخدمين.");
+777:     }
+778: 
+779:     void toggleHidden() { db.setSettingQuiet("hide_amounts", hidden() ? "0" : "1"); }
+780: 
+781:     void changed() {
+782:         updateFoot();
+783:         DeskBackup.runIfDueAsync(this);
+784:     }
+785: 
+786:     /** يعيد بناء الشاشة الحالية (بعد استعادة أو تغيير الإعدادات). */
+787:     void reloadAll() {
+788:         for (View v : views.values()) content.remove(v);
+789:         views.clear();
+790:         Ui.applyColors(db);
+791:         buildSide();
+792:         frame.setTitle(appTitle());
+793:         go(locked ? "login" : "home");
+794:     }
+795: 
+796:     // ===================================================================================
+797:     // الصلاحيات والدخول
+798:     // ===================================================================================
+799: 
+800:     /** 10.2: ما لا يملك المستخدم صلاحيته لا يظهر في القائمة أصلًا (وخاصة الصندوق). */
+801:     boolean navAllowed(String k) {
+802:         switch (k) {
+803:             case "tx": return can(Auth.Perm.TX_ADD);
+804:             case "cash": case "clients": return can(Auth.Perm.CASH);
+805:             case "log": return can(Auth.Perm.VIEW) || can(Auth.Perm.TX_ADD);
+806:             case "offices": case "statement": case "balances": case "daily": case "builder": case "owner": case "reports": return can(Auth.Perm.VIEW);
+807:             case "backup": return can(Auth.Perm.BACKUP) || can(Auth.Perm.RESTORE);
+808:             case "sync": return can(Auth.Perm.SYNC) || SyncEngine.enabled(db);
+809:             case "health": case "settings": return can(Auth.Perm.SETTINGS);
+810:             case "users": return can(Auth.Perm.USERS);
+811:             // 10.5 (§7): «مكاتبي والتحقق» لمن خُصصت له مكاتب أو له صلاحية التحقق (مع نظام المستخدمين)
+812:             case "mine": return db.usersEnabled() && (can(Auth.Perm.VERIFY) || can(Auth.Perm.USERS) || !db.myOffices().isEmpty() || !db.myCheckOffices().isEmpty());
+813:             default: return true;
+814:         }
+815:     }
+816: 
+817:     boolean can(Auth.Perm p) {
+818:         return db.allowed(p);
+819:     }
+820: 
+821:     boolean require(Auth.Perm p) {
+822:         if (can(p)) return true;
+823:         Ui.toast("ليست لديك صلاحية لهذه العملية. اطلب من المدير.");
+824:         return false;
+825:     }
+826: 
+827:     void lock() {
+828:         locked = true;
+829:         SmartApp.currentUser = null;
+830:         Db.currentUserName = "المستخدم المحلي";
+831:         buildSide();
+832:         updateFoot();
+833:         go("login");
+834:     }
+835: 
+836:     void loggedIn(Model.User u) {
+837:         locked = false;
+838:         SmartApp.currentUser = u;
+839:         Db.currentUserName = u.name;
+840:         lastInput = Clock.now();
+841:         // 10.12: مظهر هذا المستخدم (وضعه وألوانه) لا مظهر من قبله
+842:         if (!Ui.lookSig(db).equals(Ui.appliedSig)) {
+843:             Ui.init(db);
+844:             for (Window w : Window.getWindows()) SwingUtilities.updateComponentTreeUI(w);
+845:             for (View v : views.values()) content.remove(v);
+846:             views.clear();
+847:         }
+848:         buildSide();
+849:         updateFoot();
+850:         go("home");
+851:         afterUnlock();
+852:     }
+853: 
+854:     void afterUnlock() {
+855:         new Thread(() -> {
+856:             try {
+857:                 Thread.sleep(1500);
+858:                 db.runHealthAuto();
+859:                 SwingUtilities.invokeLater(this::updateFoot);
+860:             } catch (Throwable ignored) {
+861:                 // يظهر في شاشة الاعتمادية
+862:             }
+863:             DeskBackup.runIfDueAsync(this);
+864:             com.smart.hawala.LicenseScreenFlags.refresh(ctx, db);   // 12.7: تأكيد الوقت إن لزم (خادم الترخيص مخفي)
+865:         }, "after-unlock").start();
+866:     }
+867: 
+868:     long lockAfterMs() {
+869:         long m = db.settingLong("desk_lock_min", 5);
+870:         return m <= 0 ? 0 : m * 60000L;
+871:     }
+872: 
+873:     void startTimers() {
+874:         // القفل بعد الخمول (عند وجود مستخدمين)
+875:         Timer idle = new Timer(15000, e -> {
+876:             long after = lockAfterMs();
+877:             if (!locked && db.usersEnabled() && after > 0 && Clock.now() - lastInput > after) lock();
+878:             else if (!locked && after > 0 && DeskLock.on(db) && Clock.now() - lastInput > after) DeskLock.lockNow(this);
+879:         });
+880:         idle.start();
+881:         timers.add(idle);
+882:         // 10.16: تذكيرات المكاتب والنسخ (كالهاتف): بعد دقيقتين من الفتح ثم كل 30 دقيقة
+883:         Timer remind = new Timer(30 * 60000, e -> DeskNotify.check(this));
+884:         remind.setInitialDelay(120000);
+885:         remind.start();
+886:         timers.add(remind);
+887:         // النسخ التلقائي: فحص كل 10 دقائق
+888:         Timer auto = new Timer(10 * 60000, e -> DeskBackup.runIfDueAsync(this));
+889:         auto.setInitialDelay(60000);
+890:         auto.start();
+891:         timers.add(auto);
+892:         // 10.0: المزامنة التلقائية كل دقيقة (حين تكون مفعّلة)
+893:         // 10.4: الفترة يختارها المستخدم من شاشة المزامنة (30 ثانية إلى 15 دقيقة)
+894:         Timer sync = new Timer(15000, e -> {
+895:             if (!locked && Clock.now() - SyncView.lastAuto >= SyncEngine.everySeconds(db) * 1000L) SyncView.auto(this);
+896:         });
+897:         // 10.1: كل عملية مسجّلة تجدول مزامنة بعد 4 ثوانٍ (المتتالية تُجمع في جولة واحدة)
+898:         final Timer soon = new Timer(4000, e -> {
+899:             if (!locked && "1".equals(db.setting("sync_after_change", "1"))) SyncView.auto(this);
+900:         });
+901:         soon.setRepeats(false);
+902:         Db.onLocalChange = () -> SwingUtilities.invokeLater(soon::restart);
+903:         sync.setInitialDelay(5000);
+904:         sync.start();
+905:         timers.add(sync);
+906:         timers.add(soon);
+907:     }
+908: 
+909:     private void listen(java.awt.event.AWTEventListener l, long mask) {
+910:         awt.add(l);
+911:         Toolkit.getDefaultToolkit().addAWTEventListener(l, mask);
+912:     }
+913: 

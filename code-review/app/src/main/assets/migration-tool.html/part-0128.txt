@@ -1,0 +1,140 @@
+1804:     var info = S.sheets.map(function (n) { return "«" + esc(n) + "»: " + dataRows(n) + " صف"; }).join(" • ");
+1805:     $("fileInfo").className = "msg ok";
+1806:     $("fileInfo").innerHTML = "✓ قُرئ الملف <b>" + esc(S.fileName) + "</b> — " + S.sheets.length + " ورقة: " + info;
+1807:     $("step1").classList.add("done");
+1808:     ["step2", "step3", "step4", "step5"].forEach(function (s) { $(s).classList.remove("off"); });
+1809:     // اقتراحات أولية
+1810:     var biggest = S.sheets.slice().sort(function (a, b) { return dataRows(b) - dataRows(a); })[0];
+1811:     var withDates = S.sheets.filter(function (n) {
+1812:       var hr = C.guessHeaderRow(S.rows[n]);
+1813:       var g = C.guessColumns(S.rows[n][hr] || []);
+1814:       return g.date !== undefined;
+1815:     });
+1816:     S.tx.sheets = withDates.length ? withDates.slice(0, withDates.length === S.sheets.length ? S.sheets.length : 1) : [biggest];
+1817:     S.tx.officeFrom = "column";
+1818:     var noDate = S.sheets.filter(function (n) { return withDates.indexOf(n) < 0; });
+1819:     S.open.sheet = noDate[0] || biggest;
+1820:     S.tx.enabled = withDates.length > 0;
+1821:     S.open.enabled = !S.tx.enabled || noDate.length > 0;
+1822:     $("openOn").checked = S.open.enabled;
+1823:     $("txOn").checked = S.tx.enabled;
+1824:     guessOpen(true);
+1825:     guessTx(true);
+1826:     renderAll();
+1827:   }
+1828: 
+1829:   // ===================================================================================
+1830:   // 2. الأقسام
+1831:   // ===================================================================================
+1832: 
+1833:   function guessOpen(reset) {
+1834:     var rows = S.rows[S.open.sheet] || [];
+1835:     if (reset) S.open.headerRow = C.guessHeaderRow(rows);
+1836:     var g = C.guessColumns(rows[S.open.headerRow] || []);
+1837:     var o = S.open;
+1838:     o.cols = { office: g.office !== undefined ? g.office : 0, phone: g.phone, currency: g.currency, amount: g.balance !== undefined ? g.balance : g.amount, debit: g.debit, credit: g.credit };
+1839:     // أعمدة بأسماء عملات = «عمود لكل عملة»
+1840:     var wide = [];
+1841:     (rows[o.headerRow] || []).forEach(function (c, i) {
+1842:       var code = C.guessCurrency(C.text(c));
+1843:       if (code && i !== o.cols.office) wide.push({ col: i, code: code });
+1844:     });
+1845:     o.wide = wide;
+1846:     if (wide.length >= 1 && g.currency === undefined) o.layout = "wide";
+1847:     else if (g.debit !== undefined && g.credit !== undefined) o.layout = "split";
+1848:     else o.layout = "single";
+1849:     o.currencyFrom = g.currency !== undefined ? "column" : "fixed";
+1850:   }
+1851: 
+1852:   function guessTx(reset) {
+1853:     var first = S.tx.sheets[0];
+1854:     var rows = S.rows[first] || [];
+1855:     if (reset) S.tx.headerRow = C.guessHeaderRow(rows);
+1856:     var g = C.guessColumns(rows[S.tx.headerRow] || []);
+1857:     var t = S.tx;
+1858:     t.cols = g;
+1859:     t.descCols = g.description !== undefined ? [g.description] : [];
+1860:     if (g.debit !== undefined && g.credit !== undefined) t.layout = "split";
+1861:     else if (g.type !== undefined) t.layout = "typed";
+1862:     else t.layout = "signed";
+1863:     t.currencyFrom = g.currency !== undefined ? "column" : "fixed";
+1864:     if (t.officeFrom !== "sheet" && g.office === undefined && S.tx.sheets.length > 1) t.officeFrom = "sheet";
+1865:     var dates = [];
+1866:     S.tx.sheets.forEach(function (n) { (S.rows[n] || []).slice(t.headerRow + 1, t.headerRow + 400).forEach(function (r) { if (g.date !== undefined && r[g.date]) dates.push(r[g.date]); }); });
+1867:     t.dateOrder = C.guessDateOrder(dates);
+1868:   }
+1869: 
+1870:   function preview(rows, hr, hi) {
+1871:     var w = Math.min(width(rows, hr), 14);
+1872:     var h = "<tr><th>#</th>";
+1873:     for (var c = 0; c < w; c++) h += "<th>" + colName(c) + "</th>";
+1874:     h += "</tr>";
+1875:     var start = Math.max(0, hr - 2), end = Math.min(rows.length, hr + 8);
+1876:     for (var r = start; r < end; r++) {
+1877:       var cls = r === hr ? "hdr" : r < hr ? "skipzone" : "";
+1878:       h += '<tr class="' + cls + '"><td>' + (r + 1) + "</td>";
+1879:       for (var k = 0; k < w; k++) {
+1880:         var cell = (rows[r] || [])[k];
+1881:         var t = C.text(cell);
+1882:         var isNum = cell && (cell.n !== undefined);
+1883:         h += "<td" + (isNum ? ' class="num"' : "") + (hi && hi.indexOf(k) >= 0 ? ' style="background:#FFF6DF"' : "") + ">" + esc(t.length > 40 ? t.slice(0, 40) + "…" : t) + "</td>";
+1884:       }
+1885:       h += "</tr>";
+1886:     }
+1887:     return '<div class="tablebox" style="max-height:260px"><table>' + h + "</table></div>";
+1888:   }
+1889: 
+1890:   function renderOpen() {
+1891:     var o = S.open, p = $("openPanel");
+1892:     p.classList.toggle("hidden", !o.enabled);
+1893:     if (!o.enabled || !S.sheets.length) return;
+1894:     var rows = S.rows[o.sheet] || [];
+1895:     var hr = o.headerRow;
+1896:     var html = '<div class="grid">' +
+1897:       '<label class="f">الورقة<select data-o="sheet">' + S.sheets.map(function (n) { return "<option" + (n === o.sheet ? " selected" : "") + ">" + esc(n) + "</option>"; }).join("") + "</select></label>" +
+1898:       '<label class="f">صف العناوين <small>رقم الصف الذي فيه أسماء الأعمدة</small><input type="number" min="1" data-o="headerRow" value="' + (hr + 1) + '"></label>' +
+1899:       '<label class="f">عمود اسم المكتب<select data-oc="office">' + colOptions(rows, hr, o.cols.office) + "</select></label>" +
+1900:       '<label class="f">عمود الهاتف <small>اختياري</small><select data-oc="phone">' + colOptions(rows, hr, o.cols.phone, true) + "</select></label>" +
+1901:       "</div>";
+1902:     html += "<h3>شكل الأرصدة في الورقة</h3>" + seg("olayout", [["single", "عمود رصيد واحد"], ["split", "عمودان: لنا / علينا"], ["wide", "عمود لكل عملة"]], o.layout);
+1903:     html += '<div class="grid" style="margin-top:10px">';
+1904:     if (o.layout === "single") html += '<label class="f">عمود الرصيد<select data-oc="amount">' + colOptions(rows, hr, o.cols.amount) + "</select></label>";
+1905:     if (o.layout === "split") {
+1906:       html += '<label class="f">عمود «لنا» <small>مدين / عليه</small><select data-oc="debit">' + colOptions(rows, hr, o.cols.debit) + "</select></label>";
+1907:       html += '<label class="f">عمود «علينا» <small>دائن / له</small><select data-oc="credit">' + colOptions(rows, hr, o.cols.credit) + "</select></label>";
+1908:     }
+1909:     if (o.layout !== "wide") {
+1910:       html += '<label class="f">العملة' + seg("ocurfrom", [["column", "من عمود"], ["fixed", "عملة واحدة"]], o.currencyFrom) + "</label>";
+1911:       html += o.currencyFrom === "column" ? '<label class="f">عمود العملة<select data-oc="currency">' + colOptions(rows, hr, o.cols.currency) + "</select></label>"
+1912:         : '<label class="f">العملة الثابتة<select data-o="fixedCurrency">' + codeOptions(o.fixedCurrency) + "</select></label>";
+1913:     }
+1914:     html += "</div>";
+1915:     if (o.layout === "wide") {
+1916:       html += '<p class="hint">حدّد عملة كل عمود رصيد، أو «تجاهل» للأعمدة الأخرى.</p><div class="grid">';
+1917:       var w = width(rows, hr);
+1918:       for (var c = 0; c < w; c++) {
+1919:         if (c === o.cols.office || c === o.cols.phone) continue;
+1920:         var cur = (o.wide.filter(function (x) { return x.col === c; })[0] || {}).code || "";
+1921:         html += '<label class="f">' + esc(colName(c) + " — " + C.text((rows[hr] || [])[c])) + '<select data-wide="' + c + '">' + codeOptions(cur, '<option value="">تجاهل هذا العمود</option>') + "</select></label>";
+1922:       }
+1923:       html += "</div>";
+1924:     }
+1925:     if (o.layout !== "split") html += "<h3>الرصيد الموجب في الملف يعني</h3>" + seg("opos", [["D", "لنا — المكتب مدين لنا"], ["C", "علينا — نحن مدينون للمكتب"]], o.positiveIs);
+1926:     html += '<div class="grid" style="margin-top:10px"><label class="f">تاريخ هذه الأرصدة <small>اتركه فارغًا: قبل أول حركة منقولة بيوم، أو اليوم</small><input type="date" data-o="date" value="' + esc(o.date) + '"></label></div>';
+1927:     html += "<h3>معاينة</h3>" + preview(rows, hr, [o.cols.office, o.cols.amount, o.cols.debit, o.cols.credit, o.cols.currency].concat(o.wide.map(function (x) { return x.col; })));
+1928:     p.innerHTML = html;
+1929:   }
+1930: 
+1931:   function renderTx() {
+1932:     var t = S.tx, p = $("txPanel");
+1933:     p.classList.toggle("hidden", !t.enabled);
+1934:     if (!t.enabled || !S.sheets.length) return;
+1935:     var rows = S.rows[t.sheets[0]] || [];
+1936:     var hr = t.headerRow;
+1937:     var html = "<h3>الأوراق</h3><div class=\"row\">" + S.sheets.map(function (n) {
+1938:       return '<label class="check" style="margin:0 0 0 14px"><input type="checkbox" data-sheet="' + esc(n) + '"' + (t.sheets.indexOf(n) >= 0 ? " checked" : "") + ">" + esc(n) + " <span class=\"hint\">(" + dataRows(n) + ")</span></label>";
+1939:     }).join("") + "</div>";
+1940:     if (t.sheets.length > 1) html += '<p class="hint">الأوراق المحددة يجب أن تكون بالأعمدة نفسها وبالترتيب نفسه.</p>';
+1941:     html += "<h3>اسم المكتب</h3>" + seg("tofrom", [["column", "من عمود في الجدول"], ["sheet", "اسم الورقة (كل ورقة مكتب)"]], t.officeFrom);
+1942:     html += '<div class="grid" style="margin-top:10px">' +
+1943:       '<label class="f">صف العناوين<input type="number" min="1" data-t="headerRow" value="' + (hr + 1) + '"></label>' +

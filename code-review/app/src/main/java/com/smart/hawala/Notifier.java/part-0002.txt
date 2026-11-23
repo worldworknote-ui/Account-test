@@ -1,0 +1,133 @@
+135:                         lines.isEmpty() ? "افتح «المزامنة» وراجع قسم «للمراجعة»." : join(lines, 3), MainActivity.ACTION_SYNC);
+136:             }
+137:             if (!r.news.isEmpty() && admin && !"0".equals(db.setting("notif_sync_devices", "1"))) {
+138:                 post(c, CH_ACTION, 3105, "أجهزة المزامنة", join(r.news, 3), MainActivity.ACTION_SYNC);
+139:             }
+140:         } catch (Throwable ignored) {
+141:             // الإشعار للتنبيه فقط
+142:         }
+143:     }
+144: 
+145:     /** 11.5: رقم جديد لكل إشعار من النوع نفسه (كان الرقم ثابتًا فيحلّ الإشعار الجديد محل القديم قبل أن يُرى). */
+146:     private static int seq;
+147: 
+148:     static synchronized int nextId(int base) {
+149:         seq = (seq + 1) % 15;
+150:         return base + seq;
+151:     }
+152: 
+153:     /** إشعار لم يُعرض لأن المستخدم أمام التطبيق: يبقى في سجل الإشعارات. */
+154:     private static void logOnly(String title, String text) {
+155:         try {
+156:             Db ldb = SmartApp.db;
+157:             if (ldb != null) ldb.logNotif(title, text);
+158:         } catch (Throwable ignored) {
+159:             // للمراجعة فقط
+160:         }
+161:     }
+162: 
+163:     private static String join(List<String> l, int max) {
+164:         StringBuilder b = new StringBuilder();
+165:         for (int i = 0; i < l.size() && i < max; i++) b.append(i == 0 ? "" : "\n").append(l.get(i));
+166:         if (l.size() > max) b.append("\nو").append(l.size() - max).append(" أخرى");
+167:         return b.toString();
+168:     }
+169: 
+170:     private static PendingIntent open(Context c, String action, int code) {
+171:         Intent i = new Intent(c, MainActivity.class);
+172:         if (action != null) i.setAction(action);
+173:         i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+174:         return PendingIntent.getActivity(c, code, i, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+175:     }
+176: 
+177:     private static void post(Context c, String channel, int id, String title, String text, String action) {
+178:         // 10.18: كل إشعار يُحفظ في سجل الإشعارات فلا يضيع بالضغط عليه
+179:         try {
+180:             Db ldb = SmartApp.db;
+181:             if (ldb != null) ldb.logNotif(title, text);
+182:         } catch (Throwable ignored) {
+183:             // السجل للمراجعة فقط
+184:         }
+185:         try {
+186:             channels(c);
+187:             NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+188:             if (nm == null) return;
+189:             Notification n = new Notification.Builder(c, channel)
+190:                     .setSmallIcon(R.drawable.ic_launcher_monochrome)
+191:                     .setContentTitle(title)
+192:                     .setContentText(text)
+193:                     .setStyle(new Notification.BigTextStyle().bigText(text))
+194:                     .setContentIntent(open(c, action, id))
+195:                     .setAutoCancel(true)
+196:                     .build();
+197:             nm.notify(id, n);
+198:         } catch (Throwable ignored) {
+199:             // بلا صلاحية إشعارات لا يظهر شيء؛ الحالة ظاهرة داخل التطبيق
+200:         }
+201:     }
+202: 
+203:     /** بعد نسخة تلقائية ناجحة. */
+204:     static void backupDone(Context c, Db db, String where, Map<String, Long> counts, boolean verified) {
+205:         if (!backupOn(db)) return;
+206:         String t = "حُفظت في: " + where + (verified ? " — وتحقق التطبيق منها" : "");
+207:         if (counts != null && counts.get("tx") != null) t += "\n" + counts.get("tx") + " حركة، " + (counts.get("offices") == null ? 0 : counts.get("offices")) + " مكتب.";
+208:         post(c, CH_BACKUP, ID_BACKUP_OK, "تم إنشاء نسخة احتياطية تلقائية ✓", t, null);
+209:     }
+210: 
+211:     static String names(List<Model.Office> l, int max) {
+212:         List<String> n = new ArrayList<>();
+213:         for (int i = 0; i < l.size() && i < max; i++) n.add(l.get(i).name);
+214:         String s = Model.join(n, "، ");
+215:         return l.size() > max ? s + " و" + (l.size() - max) + " غيرها" : s;
+216:     }
+217: 
+218:     /** داخل ساعات العمل المختارة؟ */
+219:     static boolean workingHour(Db db, long now) {
+220:         Calendar c = Model.cal();
+221:         c.setTimeInMillis(now);
+222:         int h = c.get(Calendar.HOUR_OF_DAY);
+223:         int from = hourFrom(db), to = hourTo(db);
+224:         return from < to ? h >= from && h < to : h >= from || h < to;
+225:     }
+226: 
+227:     /** فحص التذكيرات (من المهمة الدورية، ومن التطبيق عند فتحه). */
+228:     static void check(Context c, Db db) {
+229:         if (!on(db)) return;
+230:         long now = Clock.now();
+231:         if (!workingHour(db, now)) return;
+232:         String today = Db.today();
+233:         if (idleOn(db) && !today.equals(db.setting("notif_last_idle", ""))) {
+234:             List<Model.Office> idle = db.idleOffices(now);
+235:             if (!idle.isEmpty()) {
+236:                 post(c, CH_REMIND, ID_IDLE, idle.size() == 1 ? "لم تُسجَّل حركات لمكتب " + idle.get(0).name + " منذ يوم كامل"
+237:                                 : "لم تُسجَّل حركات لـ " + idle.size() + " مكاتب منذ يوم كامل",
+238:                         names(idle, 6) + "\nإن كان عندك حركات لم تُسجَّل فسجّلها الآن. (يمكن إيقاف هذا التنبيه لكل مكتب من صفحته)", MainActivity.ACTION_OFFICES);
+239:                 db.setSettingQuiet("notif_last_idle", today);
+240:             }
+241:         }
+242:         if (reconOn(db) && !today.equals(db.setting("notif_last_recon", ""))) {
+243:             int days = reconDays(db);
+244:             List<Model.Office> due = db.reconDue(now, days);
+245:             if (!due.isEmpty()) {
+246:                 post(c, CH_REMIND, ID_RECON, due.size() == 1 ? "لم تُرسل مطابقة رصيد لمكتب " + due.get(0).name + " منذ " + days + " أيام"
+247:                                 : due.size() + " مكاتب لم تُرسل لها مطابقة رصيد منذ " + days + " أيام",
+248:                         names(due, 6) + "\nأرسل المطابقة من صفحة المكتب ← «مطابقة رصيد».", MainActivity.ACTION_OFFICES);
+249:                 db.setSettingQuiet("notif_last_recon", today);
+250:             }
+251:         }
+252:     }
+253: 
+254:     /** المهمة الدورية (كل 3 ساعات تقريبًا). */
+255:     static void schedule(Context c) {
+256:         try {
+257:             JobScheduler js = (JobScheduler) c.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+258:             if (js == null || js.getPendingJob(JOB_ID) != null) return;
+259:             js.schedule(new JobInfo.Builder(JOB_ID, new ComponentName(c, ReminderJob.class))
+260:                     .setPeriodic(3L * 3600000L)
+261:                     .setPersisted(true)
+262:                     .build());
+263:         } catch (Throwable ignored) {
+264:             // بلا جدولة: يُفحص عند فتح التطبيق
+265:         }
+266:     }
+267: }

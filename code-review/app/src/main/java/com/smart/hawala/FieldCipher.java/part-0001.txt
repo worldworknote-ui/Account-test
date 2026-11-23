@@ -1,0 +1,88 @@
+1: package com.smart.hawala;
+2: 
+3: import java.nio.charset.StandardCharsets;
+4: import java.security.GeneralSecurityException;
+5: import java.security.SecureRandom;
+6: import java.util.Base64;
+7: import javax.crypto.Cipher;
+8: import javax.crypto.SecretKey;
+9: import javax.crypto.spec.GCMParameterSpec;
+10: import javax.crypto.spec.SecretKeySpec;
+11: 
+12: /**
+13:  * تشفير الحقول النصية بمفتاح بيانات (AES-256-GCM) يعمل داخل التطبيق، والمفتاح نفسه محفوظ مشفّرًا بمفتاح Android Keystore.
+14:  * السبب: كل عملية عبر Keystore تمر بخدمة النظام وتستغرق أجزاء من الثانية، فقراءة آلاف الحركات كانت تجمّد الشاشة؛
+15:  * بهذا المفتاح تصبح العملية بالميكروثانية مع بقاء المفتاح محميًا بالعتاد وهو مخزن.
+16:  * الصيغة: البايت الأول 0xCC (القديمة تبدأ بطول IV = 12) ثم IV من 12 بايت ثم النص المشفّر مع وسم 16 بايت، بترميز Base64.
+17:  * منطق بحت بلا أندرويد حتى يُختبر على الكمبيوتر.
+18:  */
+19: public final class FieldCipher {
+20:     public static final int V2 = 0xCC;
+21:     private static final int IV = 12;
+22:     private static final SecureRandom RNG = new SecureRandom();
+23: 
+24:     private FieldCipher() {}
+25: 
+26:     /**
+27:      * 12.6: مفتاح تشفير قاعدة البيانات كاملة (SQLCipher) مشتق من مفتاح البيانات نفسه (HMAC-SHA256)، فلا يُحفظ مفتاح ثانٍ
+28:      * ولا تنشأ طريقة جديدة لضياعه: القاعدة تُفتح حيث تُفك الحقول. الصيغة «x'…'» مفتاح خام 256 بت (بلا PBKDF2 بطيء).
+29:      */
+30:     public static String dbKey(SecretKey dek) {
+31:         if (dek == null) return null;
+32:         try {
+33:             javax.crypto.Mac m = javax.crypto.Mac.getInstance("HmacSHA256");
+34:             m.init(new SecretKeySpec(dek.getEncoded(), "HmacSHA256"));
+35:             byte[] k = m.doFinal("smart-accountant/sqlcipher/v1".getBytes(StandardCharsets.UTF_8));
+36:             StringBuilder sb = new StringBuilder("x'");
+37:             for (byte b : k) sb.append(String.format(java.util.Locale.US, "%02x", b & 0xff));
+38:             return sb.append('\'').toString();
+39:         } catch (GeneralSecurityException e) {
+40:             return null;
+41:         }
+42:     }
+43: 
+44:     public static SecretKey newKey() {
+45:         byte[] raw = new byte[32];
+46:         RNG.nextBytes(raw);
+47:         return new SecretKeySpec(raw, "AES");
+48:     }
+49: 
+50:     public static SecretKey key(byte[] raw) {
+51:         if (raw == null || raw.length != 32) throw new IllegalArgumentException("مفتاح غير صالح");
+52:         return new SecretKeySpec(raw, "AES");
+53:     }
+54: 
+55:     public static String encrypt(SecretKey k, String plain) throws GeneralSecurityException {
+56:         byte[] iv = new byte[IV];
+57:         RNG.nextBytes(iv);
+58:         Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+59:         c.init(Cipher.ENCRYPT_MODE, k, new GCMParameterSpec(128, iv));
+60:         byte[] ct = c.doFinal(plain.getBytes(StandardCharsets.UTF_8));
+61:         byte[] out = new byte[1 + IV + ct.length];
+62:         out[0] = (byte) V2;
+63:         System.arraycopy(iv, 0, out, 1, IV);
+64:         System.arraycopy(ct, 0, out, 1 + IV, ct.length);
+65:         return Base64.getEncoder().encodeToString(out);
+66:     }
+67: 
+68:     /** هل هذه البايتات (بعد فك Base64) بالصيغة الجديدة؟ */
+69:     public static boolean isV2(byte[] in) {
+70:         return in != null && in.length >= 1 + IV + 16 && (in[0] & 255) == V2;
+71:     }
+72: 
+73:     public static String decrypt(SecretKey k, byte[] in) throws GeneralSecurityException {
+74:         if (!isV2(in)) throw new GeneralSecurityException("ليست بالصيغة الجديدة");
+75:         Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+76:         c.init(Cipher.DECRYPT_MODE, k, new GCMParameterSpec(128, in, 1, IV));
+77:         return new String(c.doFinal(in, 1 + IV, in.length - 1 - IV), StandardCharsets.UTF_8);
+78:     }
+79: 
+80:     public static boolean isV2(String base64) {
+81:         if (base64 == null || base64.isEmpty()) return false;
+82:         try {
+83:             return isV2(Base64.getDecoder().decode(base64));
+84:         } catch (IllegalArgumentException e) {
+85:             return false;
+86:         }
+87:     }
+88: }

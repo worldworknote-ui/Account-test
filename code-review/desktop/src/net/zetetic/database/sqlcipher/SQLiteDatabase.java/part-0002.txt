@@ -1,0 +1,222 @@
+212:         } finally {
+213:             if (!ok) lock.unlock();
+214:         }
+215:     }
+216: 
+217:     public void beginTransactionNonExclusive() { beginTransaction(); }
+218: 
+219:     public void setTransactionSuccessful() {
+220:         if (depth == 0 || !lock.isHeldByCurrentThread()) throw new IllegalStateException("no transaction pending");
+221:         marks.set(depth - 1, true);
+222:     }
+223: 
+224:     public boolean inTransaction() { return depth > 0 && lock.isHeldByCurrentThread(); }
+225: 
+226:     public void endTransaction() {
+227:         if (depth == 0 || !lock.isHeldByCurrentThread()) throw new IllegalStateException("no transaction pending");
+228:         try {
+229:             if (!marks.remove(depth - 1)) failed = true;
+230:             depth--;
+231:             if (depth == 0) {
+232:                 try (Statement s = c.createStatement()) {
+233:                     s.execute(failed ? "ROLLBACK" : "COMMIT");
+234:                 } catch (SQLException e) {
+235:                     try (Statement s = c.createStatement()) {
+236:                         s.execute("ROLLBACK");
+237:                     } catch (SQLException ignored) {
+238:                         // انتهت أصلًا
+239:                     }
+240:                     throw new SQLiteException(e.getMessage(), e);
+241:                 }
+242:             }
+243:         } finally {
+244:             lock.unlock();
+245:         }
+246:     }
+247: 
+248:     // ---------------------------------------------------------------- التنفيذ
+249: 
+250:     private void track(String sql) {
+251:         String t = sql.trim().toUpperCase(java.util.Locale.ROOT);
+252:         if (t.startsWith("ATTACH") || t.startsWith("CREATE TEMP")) attached++;
+253:         else if (t.startsWith("DETACH") && attached > 0) attached--;
+254:     }
+255: 
+256:     public void execSQL(String sql) {
+257:         lock.lock();
+258:         track(sql);
+259:         try (Statement s = c.createStatement()) {
+260:             s.execute(sql);
+261:         } catch (SQLException e) {
+262:             throw wrap(e, sql);
+263:         } finally {
+264:             lock.unlock();
+265:         }
+266:     }
+267: 
+268:     public void execSQL(String sql, Object[] args) {
+269:         lock.lock();
+270:         track(sql);
+271:         try (PreparedStatement p = c.prepareStatement(sql)) {
+272:             bindObjects(p, args);
+273:             p.execute();
+274:         } catch (SQLException e) {
+275:             throw wrap(e, sql);
+276:         } finally {
+277:             lock.unlock();
+278:         }
+279:     }
+280: 
+281:     /** الوسائط نصوص كما في أندرويد (SQLite يحوّلها حسب نوع العمود عند المقارنة). */
+282:     public Cursor rawQuery(String sql, String[] args) {
+283:         if (useReader(sql)) {
+284:             if (Boolean.TRUE.equals(PREFER.get()) || !lock.tryLock()) return readerQuery(sql, args);
+285:         } else lock.lock();
+286:         try (PreparedStatement p = c.prepareStatement(sql)) {
+287:             if (args != null) for (int i = 0; i < args.length; i++) {
+288:                 if (args[i] == null) p.setNull(i + 1, java.sql.Types.NULL);
+289:                 else p.setString(i + 1, args[i]);
+290:             }
+291:             boolean has = p.execute();
+292:             if (!has) return new Cursor(new String[0], new ArrayList<>());
+293:             try (ResultSet rs = p.getResultSet()) {
+294:                 return read(rs);
+295:             }
+296:         } catch (SQLException e) {
+297:             throw wrap(e, sql);
+298:         } finally {
+299:             lock.unlock();
+300:         }
+301:     }
+302: 
+303:     private static Cursor read(ResultSet rs) throws SQLException {
+304:         ResultSetMetaData md = rs.getMetaData();
+305:         int n = md.getColumnCount();
+306:         String[] cols = new String[n];
+307:         for (int i = 0; i < n; i++) cols[i] = md.getColumnLabel(i + 1);
+308:         List<Object[]> rows = new ArrayList<>();
+309:         while (rs.next()) {
+310:             Object[] r = new Object[n];
+311:             for (int i = 0; i < n; i++) {
+312:                 Object o = rs.getObject(i + 1);
+313:                 if (o instanceof Integer || o instanceof Short || o instanceof Byte) o = ((Number) o).longValue();
+314:                 else if (o instanceof Float) o = ((Float) o).doubleValue();
+315:                 r[i] = o;
+316:             }
+317:             rows.add(r);
+318:         }
+319:         return new Cursor(cols, rows);
+320:     }
+321: 
+322:     public long insertOrThrow(String table, String nullColumnHack, ContentValues v) {
+323:         return insertWithOnConflictThrow(table, nullColumnHack, v, CONFLICT_NONE);
+324:     }
+325: 
+326:     public long insert(String table, String nullColumnHack, ContentValues v) {
+327:         try {
+328:             return insertOrThrow(table, nullColumnHack, v);
+329:         } catch (SQLiteException e) {
+330:             return -1;
+331:         }
+332:     }
+333: 
+334:     public long insertWithOnConflict(String table, String nullColumnHack, ContentValues v, int conflict) {
+335:         try {
+336:             return insertWithOnConflictThrow(table, nullColumnHack, v, conflict);
+337:         } catch (SQLiteException e) {
+338:             return -1;
+339:         }
+340:     }
+341: 
+342:     public long replace(String table, String nullColumnHack, ContentValues v) { return insertWithOnConflict(table, nullColumnHack, v, CONFLICT_REPLACE); }
+343: 
+344:     private long insertWithOnConflictThrow(String table, String nullColumnHack, ContentValues v, int conflict) {
+345:         StringBuilder sql = new StringBuilder("INSERT").append(CONFLICT[conflict]).append(" INTO ").append(table).append('(');
+346:         List<Object> vals = new ArrayList<>();
+347:         if (v == null || v.size() == 0) {
+348:             sql.append(nullColumnHack).append(") VALUES (NULL)");
+349:         } else {
+350:             int i = 0;
+351:             for (Map.Entry<String, Object> e : v.valueSet()) {
+352:                 if (i++ > 0) sql.append(',');
+353:                 sql.append(e.getKey());
+354:                 vals.add(e.getValue());
+355:             }
+356:             sql.append(") VALUES (");
+357:             for (int k = 0; k < vals.size(); k++) sql.append(k > 0 ? ",?" : "?");
+358:             sql.append(')');
+359:         }
+360:         lock.lock();
+361:         try (PreparedStatement p = c.prepareStatement(sql.toString())) {
+362:             bindObjects(p, vals.toArray());
+363:             p.executeUpdate();
+364:             try (Statement s = c.createStatement(); ResultSet rs = s.executeQuery("SELECT last_insert_rowid()")) {
+365:                 return rs.next() ? rs.getLong(1) : -1;
+366:             }
+367:         } catch (SQLException e) {
+368:             throw wrap(e, sql.toString());
+369:         } finally {
+370:             lock.unlock();
+371:         }
+372:     }
+373: 
+374:     public int update(String table, ContentValues v, String where, String[] args) {
+375:         StringBuilder sql = new StringBuilder("UPDATE ").append(table).append(" SET ");
+376:         List<Object> vals = new ArrayList<>();
+377:         int i = 0;
+378:         for (Map.Entry<String, Object> e : v.valueSet()) {
+379:             if (i++ > 0) sql.append(',');
+380:             sql.append(e.getKey()).append("=?");
+381:             vals.add(e.getValue());
+382:         }
+383:         if (where != null && !where.isEmpty()) sql.append(" WHERE ").append(where);
+384:         if (args != null) for (String a : args) vals.add(new TextArg(a));
+385:         return change(sql.toString(), vals.toArray());
+386:     }
+387: 
+388:     public int delete(String table, String where, String[] args) {
+389:         String sql = "DELETE FROM " + table + (where != null && !where.isEmpty() ? " WHERE " + where : "");
+390:         List<Object> vals = new ArrayList<>();
+391:         if (args != null) for (String a : args) vals.add(new TextArg(a));
+392:         return change(sql, vals.toArray());
+393:     }
+394: 
+395:     private int change(String sql, Object[] vals) {
+396:         lock.lock();
+397:         try (PreparedStatement p = c.prepareStatement(sql)) {
+398:             bindObjects(p, vals);
+399:             return p.executeUpdate();
+400:         } catch (SQLException e) {
+401:             throw wrap(e, sql);
+402:         } finally {
+403:             lock.unlock();
+404:         }
+405:     }
+406: 
+407:     /** وسيط شرط WHERE: نص كما في أندرويد. */
+408:     private static final class TextArg {
+409:         final String s;
+410: 
+411:         TextArg(String s) { this.s = s; }
+412:     }
+413: 
+414:     private static void bindObjects(PreparedStatement p, Object[] args) throws SQLException {
+415:         if (args == null) return;
+416:         for (int i = 0; i < args.length; i++) {
+417:             Object o = args[i];
+418:             int k = i + 1;
+419:             if (o == null) p.setNull(k, java.sql.Types.NULL);
+420:             else if (o instanceof TextArg) {
+421:                 if (((TextArg) o).s == null) p.setNull(k, java.sql.Types.NULL);
+422:                 else p.setString(k, ((TextArg) o).s);
+423:             } else if (o instanceof Long || o instanceof Integer || o instanceof Short || o instanceof Byte) p.setLong(k, ((Number) o).longValue());
+424:             else if (o instanceof Boolean) p.setLong(k, (Boolean) o ? 1 : 0);
+425:             else if (o instanceof Double || o instanceof Float) p.setDouble(k, ((Number) o).doubleValue());
+426:             else if (o instanceof byte[]) p.setBytes(k, (byte[]) o);
+427:             else p.setString(k, o.toString());
+428:         }
+429:     }
+430: 
+431:     private static SQLiteException wrap(SQLException e, String sql) {
+432:         String m = e.getMessage() == null ? "" : e.getMessage();
+433:         if (m.contains("CONSTRAINT")) return new SQLiteConstraintException(m);

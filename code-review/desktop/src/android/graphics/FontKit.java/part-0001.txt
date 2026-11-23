@@ -1,0 +1,82 @@
+1: package android.graphics;
+2: 
+3: import java.awt.Font;
+4: import java.awt.GraphicsEnvironment;
+5: import java.awt.font.TextAttribute;
+6: import java.text.AttributedString;
+7: import java.util.*;
+8: 
+9: /** الخط البديل للرموز: يقسّم النص إلى مقاطع، ولكل مقطع خط يحوي حروفه. */
+10: public final class FontKit {
+11:     private FontKit() {}
+12: 
+13:     private static Set<String> names;
+14:     private static List<Font> fallbacks;
+15: 
+16:     public static synchronized boolean has(String name) {
+17:         if (names == null) {
+18:             names = new HashSet<>();
+19:             try { names.addAll(Arrays.asList(GraphicsEnvironment.getLocalGraphicsEnvironment().getAvailableFontFamilyNames(Locale.ROOT))); }
+20:             catch (Throwable ignored) { }
+21:         }
+22:         return names.contains(name);
+23:     }
+24: 
+25:     static synchronized List<Font> fallbacks() {
+26:         if (fallbacks != null) return fallbacks;
+27:         List<Font> l = new ArrayList<>();
+28:         for (String fam : new String[]{"plex", "cairo", "kufi"}) l.add(Typeface.base(fam, false));
+29:         for (String n : new String[]{"Apple Symbols", "Segoe UI Symbol", "Segoe UI Emoji", "Arial Unicode MS", "Lucida Grande",
+30:                 "DejaVu Sans", "Noto Sans Symbols2", "Noto Sans Symbols", "Noto Sans", "Symbola", "Lucida Sans Unicode", "Segoe UI", "Arial"}) {
+31:             if (has(n)) l.add(new Font(n, Font.PLAIN, 1));
+32:         }
+33:         l.add(new Font(Font.DIALOG, Font.PLAIN, 1));
+34:         fallbacks = l;
+35:         return l;
+36:     }
+37: 
+38:     private static final Map<Long, Font> pick = new HashMap<>();
+39: 
+40:     /** خط يرسم المحرف cp (الأساسي إن أمكن). */
+41:     public static Font fontFor(Font primary, int cp) {
+42:         if (primary.canDisplay(cp) || cp < 0x20 || Character.getType(cp) == Character.FORMAT || cp == 0xFE0F) return primary;
+43:         long key = ((long) System.identityHashCode(primary) << 32) | cp;
+44:         synchronized (pick) {
+45:             Font f = pick.get(key);
+46:             if (f != null) return f;
+47:             f = primary;
+48:             for (Font b : fallbacks()) if (b.canDisplay(cp)) { f = b; break; }
+49:             pick.put(key, f);
+50:             return f;
+51:         }
+52:     }
+53: 
+54:     /** يضيف الخطوط إلى النص (مع البدائل) للمدى [s,e). size بالبكسل، والنمط العريض يُطلب من الخط البديل أيضًا. */
+55:     public static void apply(AttributedString as, String text, int s, int e, Font primary, float size, boolean bold) {
+56:         Font sized = primary.deriveFont(size);
+57:         int i = s;
+58:         while (i < e) {
+59:             int cp = text.codePointAt(i);
+60:             Font f = fontFor(primary, cp);
+61:             int j = i + Character.charCount(cp);
+62:             while (j < e) {
+63:                 int c2 = text.codePointAt(j);
+64:                 if (fontFor(primary, c2) != f) break;
+65:                 j += Character.charCount(c2);
+66:             }
+67:             Font use = f == primary ? sized : f.deriveFont(bold ? Font.BOLD : Font.PLAIN, size);
+68:             as.addAttribute(TextAttribute.FONT, use, i, j);
+69:             i = j;
+70:         }
+71:     }
+72: 
+73:     /** هل يحتاج النص خطًا بديلًا. */
+74:     public static boolean needsFallback(Font primary, String s) {
+75:         for (int i = 0; i < s.length(); ) {
+76:             int cp = s.codePointAt(i);
+77:             if (fontFor(primary, cp) != primary) return true;
+78:             i += Character.charCount(cp);
+79:         }
+80:         return false;
+81:     }
+82: }

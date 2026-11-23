@@ -1,0 +1,117 @@
+2163:       if (S.tx.currencyFrom === "column" && tc.currency === undefined) m.push("الحركات: اختر عمود العملة أو «عملة واحدة».");
+2164:     }
+2165:     return m;
+2166:   }
+2167: 
+2168:   function serialToDate(v) {
+2169:     var p = XLSX.SSF.parse_date_code(v);
+2170:     return p ? { y: p.y, m: p.m, d: p.d, H: p.H, M: p.M, S: p.S } : null;
+2171:   }
+2172: 
+2173:   function rand(n) { return crypto.getRandomValues(new Uint8Array(n)); }
+2174: 
+2175:   function analyze() {
+2176:     var miss = missingSetup();
+2177:     var box = $("review");
+2178:     S.result = null;
+2179:     if (miss.length) {
+2180:       box.innerHTML = '<div class="msg warn"><b>أكمل الإعداد:</b><ul>' + miss.map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") + "</ul></div>";
+2181:       updateMake();
+2182:       return;
+2183:     }
+2184:     var cfg = config();
+2185:     var stm = S.mode === "statements";
+2186:     var input = stm ? null : {
+2187:       openingSheets: S.open.enabled ? [{ name: S.open.sheet, rows: S.rows[S.open.sheet] }] : [],
+2188:       txSheets: S.tx.enabled ? S.tx.sheets.map(function (n) { return { name: n, rows: S.rows[n] }; }) : []
+2189:     };
+2190:     var model, T, rep;
+2191:     try {
+2192:       model = stm ? C.buildStatements(cfg, S.stmts, serialToDate) : C.build(cfg, input, serialToDate);
+2193:       T = C.tables(model, cfg, rand);
+2194:       rep = C.report(model, T, cfg);
+2195:       var unbalanced = C.checkBalanced(T);
+2196:       if (unbalanced.length) throw new Error("قيد غير متوازن — لا يجب أن يحدث، أرسل الملف للمطوّر");
+2197:     } catch (e) {
+2198:       box.innerHTML = '<div class="msg err">تعذر التحليل: ' + esc(e.message || e) + "</div>";
+2199:       updateMake();
+2200:       return;
+2201:     }
+2202:     S.result = { model: model, T: T, rep: rep, cfg: cfg };
+2203:     var html = "";
+2204:     if (stm) {
+2205:       var okF = model.files.filter(function (f) { return f.ok; });
+2206:       var lines = okF.reduce(function (a, f) { return a + (f.checked || 0); }, 0);
+2207:       var badF = model.files.length - okF.length;
+2208:       html += badF ? '<div class="msg err"><b>✗ ' + badF + " كشف من " + model.files.length + " لم يُنقل.</b> أسبابها في القائمة أدناه وفي جدول الخطوة 2. صحّحها (أو احذف الملف) ثم اختر الملفات مجددًا.</div>"
+2209:         : '<div class="msg ok"><b>✓ كل الكشوفات (' + okF.length + ") صحيحة:</b> " + lines.toLocaleString("en-US") + " رصيدًا في الكشوفات طابق الحساب سطرًا بسطر" +
+2210:           (okF.filter(function (f) { return f.footer; }).length ? "، و«اجمالي الرصيد» طابق في " + okF.filter(function (f) { return f.footer; }).length + " كشف." : ".") + "</div>";
+2211:     }
+2212:     html += '<div class="stats">' +
+2213:       stat(T.offices.length, "مكتب") + stat(T.tx.length, "حركة") + stat(T.opening_balances.length, "رصيد سابق") +
+2214:       stat(model.rowsRead, "صف مقروء") + stat(model.skipped.length, "صف متخطى") + stat(model.errors.length, "صف مرفوض", model.errors.length > 0) + "</div>";
+2215:     if (model.errors.length) {
+2216:       html += '<div class="msg err"><b>صفوف مرفوضة (' + model.errors.length + "):</b> لن تُنقل حتى تُصحَّح في الملف أو في الإعداد. صحّحها ثم اختر الملف مجددًا.<ul>" +
+2217:         model.errors.slice(0, 200).map(function (e) { return "<li>" + esc(e.sheet) + " — صف " + e.row + ": " + esc(e.msg) + "</li>"; }).join("") + "</ul></div>";
+2218:     }
+2219:     if (model.warnings.length) html += '<div class="msg warn"><b>ملاحظات:</b><ul>' + model.warnings.map(function (w) { return "<li>" + esc(w) + "</li>"; }).join("") + "</ul></div>";
+2220:     if (model.skipped.length) {
+2221:       var reasons = {};
+2222:       model.skipped.forEach(function (s) { reasons[s.reason] = (reasons[s.reason] || 0) + 1; });
+2223:       html += '<div class="msg info"><b>صفوف تُخطّيت (لا تؤثر على الأرصدة):</b> ' + Object.keys(reasons).map(function (r) { return esc(r) + " (" + reasons[r] + ")"; }).join("، ") +
+2224:         ' <a href="#" id="showSkipped">عرضها</a><ul class="hidden" id="skippedList">' + model.skipped.slice(0, 300).map(function (s) { return "<li>" + esc(s.sheet) + " — صف " + s.row + ": " + esc(s.reason) + "</li>"; }).join("") + "</ul></div>";
+2225:     }
+2226:     var checks = rep.rows.filter(function (r) { return r.match !== null; });
+2227:     var bad = checks.filter(function (r) { return !r.match; });
+2228:     if (checks.length) {
+2229:       if (!stm) html += bad.length ? '<div class="msg err"><b>✗ ' + bad.length + " رصيد لا يطابق عمود الرصيد في ملفك.</b> راجع اتجاه «لنا/علينا» أو الصفوف المرفوضة.</div>"
+2230:         : '<div class="msg ok"><b>✓ كل الأرصدة (' + checks.length + ") تطابق عمود الرصيد في ملفك.</b></div>";
+2231:       else if (bad.length) html += '<div class="msg err"><b>✗ ' + bad.length + " رصيد بعد النقل لا يطابق الكشف.</b> أرسل الكشوفات للمطوّر.</div>";
+2232:     }
+2233:     if (!stm) html += '<div class="row" style="margin:6px 0 10px"><label class="check" style="margin:0"><input type="checkbox" id="reverse"' + (S.reverse ? " checked" : "") +
+2234:       '> عكس اتجاه «لنا/علينا» في كل البيانات</label><span class="hint">استخدمه إن ظهرت كل الأرصدة معكوسة عن برنامجك.</span></div>';
+2235:     // جدول الأرصدة
+2236:     html += "<h3>أرصدة المكاتب بعد النقل</h3><div class=\"tablebox\"><table><tr><th>المكتب</th><th>العملة</th><th class=\"num\">رصيد سابق</th><th class=\"num\">حركات لنا</th><th class=\"num\">حركات علينا</th><th>الرصيد النهائي</th>" +
+2237:       (checks.length ? "<th>في ملفك</th><th></th>" : "") + "</tr>";
+2238:     rep.rows.forEach(function (r) {
+2239:       html += "<tr><td>" + esc(r.office) + '</td><td class="ltr">' + r.code + '</td><td class="num">' + bw(r.opening, r.dec) + '</td><td class="num">' + C.fmtMinor(r.debit, r.dec) +
+2240:         '</td><td class="num">' + C.fmtMinor(r.credit, r.dec) + "</td><td>" + balCell(r.balance, r.dec) + "</td>" +
+2241:         (checks.length ? "<td>" + (r.expected === null ? "" : balCell(r.expected, r.dec)) + "</td><td>" + (r.match === null ? "" : r.match ? '<span class="chip ok">مطابق</span>' : '<span class="chip bad">غير مطابق</span>') + "</td>" : "") + "</tr>";
+2242:     });
+2243:     html += "</table></div>";
+2244:     html += "<h3>الإجمالي لكل عملة</h3><div class=\"tablebox\"><table><tr><th>العملة</th><th class=\"num\">مجموع ما لنا</th><th>مكاتب</th><th class=\"num\">مجموع ما علينا</th><th>مكاتب</th><th>الصافي</th></tr>";
+2245:     rep.totals.forEach(function (t) {
+2246:       html += '<tr><td class="ltr">' + t.code + '</td><td class="num us">' + C.fmtMinor(t.receivable, t.dec) + "</td><td>" + t.nr + '</td><td class="num them">' + C.fmtMinor(t.payable, t.dec) +
+2247:         "</td><td>" + t.np + "</td><td>" + balCell(t.receivable - t.payable, t.dec) + "</td></tr>";
+2248:     });
+2249:     html += "</table></div>";
+2250:     // أسماء المكاتب
+2251:     html += "<h3>أسماء المكاتب في التطبيق</h3><p class=\"hint\">عدّل الاسم إن أردت؛ إعطاء مكتبين الاسم نفسه يدمجهما.</p><div class=\"tablebox\" style=\"max-height:300px\"><table><tr><th>الاسم في الملف</th><th>الاسم في التطبيق</th><th>حركات</th><th>أرصدة سابقة</th></tr>";
+2252:     model.offices.forEach(function (o) {
+2253:       Object.keys(o.variants).forEach(function (v, i) {
+2254:         var k = C.officeKey(v);
+2255:         html += "<tr><td>" + esc(v) + '</td><td><input type="text" data-rename="' + esc(k) + '" value="' + esc(S.rename[k] || o.name) + '"></td><td>' + (i === 0 ? o.tx : "") + "</td><td>" + (i === 0 ? o.openings : "") + "</td></tr>";
+2256:       });
+2257:     });
+2258:     html += "</table></div>";
+2259:     // عينة الحركات
+2260:     if (T.tx.length) {
+2261:       var names = {};
+2262:       T.offices.forEach(function (o) { names[o.id] = o.name; });
+2263:       var dec = {};
+2264:       T.currencies.forEach(function (c) { dec[c.code] = c.decimals; });
+2265:       html += "<h3>أول الحركات كما ستظهر</h3><div class=\"tablebox\" style=\"max-height:300px\"><table><tr><th>التاريخ</th><th>المكتب</th><th>النوع</th><th class=\"num\">المبلغ</th><th>المستفيد</th><th>البيان</th><th>الأجرة</th></tr>";
+2266:       T.tx.slice(0, 25).forEach(function (t) {
+2267:         var us = t.type.indexOf("لنا") >= 0;
+2268:         html += "<tr><td>" + C.fmtDate(t.created_at) + "</td><td>" + esc(names[t.office_id]) + '</td><td><span class="chip ' + (us ? "us" : "them") + '">' + (us ? "لنا" : "علينا") + '</span></td><td class="num">' +
+2269:           C.fmtMinor(BigInt(t.amount_minor), dec[t.currency]) + " " + t.currency + "</td><td>" + esc(t.person) + "</td><td>" + esc(String(t.description).slice(0, 50)) + "</td><td>" +
+2270:           (t.fee_minor ? esc(t.fee_type) + " " + C.fmtMinor(BigInt(t.fee_minor), dec[t.currency]) : "") + "</td></tr>";
+2271:       });
+2272:       html += "</table></div>";
+2273:     }
+2274:     box.innerHTML = html;
+2275:     var sk = $("showSkipped");
+2276:     if (sk) sk.onclick = function (e) { e.preventDefault(); $("skippedList").classList.toggle("hidden"); };
+2277:     $("step4").classList.add("done");
+2278:     if (stm) renderStmtTable();
+2279:     updateMake();

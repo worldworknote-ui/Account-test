@@ -1,0 +1,90 @@
+1: package android.graphics.drawable;
+2: 
+3: import android.content.res.ColorStateList;
+4: import android.graphics.*;
+5: 
+6: /** أثر اللمس: المحتوى، وفوقه عند الضغط دائرة تتسع بلون الأثر داخل شكل القناع (وتظليل خفيف عند مرور الفأرة). */
+7: public class RippleDrawable extends LayerDrawable {
+8:     public static final int RADIUS_AUTO = -1;
+9:     private ColorStateList color;
+10:     private final Drawable content, mask;
+11:     private boolean pressed, hovered, focused;
+12:     private long pressAt, releaseAt;
+13:     private float hx = -1, hy = -1;
+14:     private int maxRadius = RADIUS_AUTO;
+15: 
+16:     public RippleDrawable(ColorStateList color, Drawable content, Drawable mask) {
+17:         super(content == null ? new Drawable[0] : new Drawable[]{content});
+18:         this.color = color;
+19:         this.content = content;
+20:         this.mask = mask;
+21:         if (mask != null) mask.setCallback(this);
+22:     }
+23:     public void setColor(ColorStateList c) { color = c; invalidateSelf(); }
+24:     public void setRadius(int r) { maxRadius = r; }
+25:     @Override public void setHotspot(float x, float y) { hx = x; hy = y; }
+26:     @Override protected void onBoundsChange(Rect b) {
+27:         super.onBoundsChange(b);
+28:         if (mask != null) mask.setBounds(b);
+29:     }
+30:     @Override public boolean isStateful() { return true; }
+31:     @Override public boolean setState(int[] s) {
+32:         boolean ch = super.setState(s);
+33:         boolean p = has(s, android.R.attr.state_pressed), h = has(s, android.R.attr.state_hovered), f = has(s, android.R.attr.state_focused);
+34:         if (p != pressed) {
+35:             pressed = p;
+36:             if (p) pressAt = System.currentTimeMillis();
+37:             else releaseAt = System.currentTimeMillis();
+38:             ch = true;
+39:         }
+40:         if (h != hovered || f != focused) { hovered = h; focused = f; ch = true; }
+41:         return ch;
+42:     }
+43:     @Override public void jumpToCurrentState() { releaseAt = 0; }
+44:     @Override public java.awt.Shape outline() {
+45:         if (content != null) return content.outline();
+46:         return null;
+47:     }
+48: 
+49:     @Override public void draw(Canvas c) {
+50:         super.draw(c);
+51:         long now = System.currentTimeMillis();
+52:         int rc = color == null ? 0x22000000 : color.getDefaultColor();
+53:         float level = 0;
+54:         boolean anim = false;
+55:         float grow = 1f;
+56:         if (pressed) {
+57:             float t = Math.min(1f, (now - pressAt) / 220f);
+58:             level = 1f;
+59:             grow = 0.35f + 0.65f * (1 - (1 - t) * (1 - t));
+60:             anim = t < 1f;
+61:         } else if (releaseAt > 0 && now - releaseAt < 260) {
+62:             float t = (now - releaseAt) / 260f;
+63:             level = 1f - t;
+64:             anim = true;
+65:         }
+66:         if (hovered && level < 0.45f) { level = Math.max(level, 0.45f); grow = 1f; }
+67:         if (level <= 0.01f) return;
+68:         Rect b = getBounds();
+69:         if (b.isEmpty()) return;
+70:         java.awt.Graphics2D g = c.graphics();
+71:         java.awt.Shape old = g.getClip();
+72:         java.awt.Shape clip = mask != null ? mask.outline() : content != null ? content.outline() : null;
+73:         if (clip == null && mask == null && content == null) {
+74:             // أثر بلا حدود: دائرة حول المركز
+75:             float r = Math.max(b.width(), b.height()) * 0.6f;
+76:             clip = new java.awt.geom.Ellipse2D.Float(b.exactCenterX() - r, b.exactCenterY() - r, 2 * r, 2 * r);
+77:         }
+78:         if (clip == null) clip = new java.awt.geom.Rectangle2D.Float(b.left, b.top, b.width(), b.height());
+79:         g.clip(clip);
+80:         int a = Math.round(Color.alpha(rc) * level * c.alpha * 1.6f);
+81:         g.setPaint(new java.awt.Color(Color.red(rc), Color.green(rc), Color.blue(rc), Math.min(255, a)));
+82:         float cx = hx >= 0 ? hx : b.exactCenterX(), cy = hy >= 0 ? hy : b.exactCenterY();
+83:         float far = (float) Math.hypot(Math.max(cx - b.left, b.right - cx), Math.max(cy - b.top, b.bottom - cy));
+84:         if (maxRadius > 0) far = maxRadius;
+85:         float r = far * grow;
+86:         g.fill(new java.awt.geom.Ellipse2D.Float(cx - r, cy - r, 2 * r, 2 * r));
+87:         g.setClip(old);
+88:         if (anim) invalidateSelf();
+89:     }
+90: }

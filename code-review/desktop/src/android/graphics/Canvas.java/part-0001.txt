@@ -1,0 +1,178 @@
+1: package android.graphics;
+2: 
+3: import java.awt.*;
+4: import java.awt.font.TextLayout;
+5: import java.awt.geom.*;
+6: import java.awt.image.BufferedImage;
+7: import java.util.ArrayDeque;
+8: 
+9: /** لوحة الرسم فوق Graphics2D. */
+10: public class Canvas {
+11:     public static final int ALL_SAVE_FLAG = 0x1F;
+12:     public enum VertexMode { TRIANGLES }
+13:     public enum EdgeType { BW, AA }
+14: 
+15:     protected Graphics2D g;
+16:     private int width, height;
+17:     private Bitmap bitmap;
+18:     /** شفافية إضافية (شفافية العنصر وطبقاته). */
+19:     public float alpha = 1f;
+20: 
+21:     private static final class State {
+22:         AffineTransform t; Shape clip; float alpha;
+23:         State(AffineTransform t, Shape clip, float alpha) { this.t = t; this.clip = clip; this.alpha = alpha; }
+24:     }
+25:     private final ArrayDeque<State> stack = new ArrayDeque<>();
+26: 
+27:     public Canvas() {}
+28:     public Canvas(Bitmap b) { setBitmap(b); }
+29:     public Canvas(Graphics2D g, int w, int h) { attach(g, w, h); }
+30: 
+31:     public void attach(Graphics2D g, int w, int h) {
+32:         this.g = g;
+33:         width = w;
+34:         height = h;
+35:         hints(g);
+36:         stack.clear();
+37:         alpha = 1f;
+38:     }
+39: 
+40:     public static void hints(Graphics2D g) {
+41:         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+42:         g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+43:         g.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON);
+44:         g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+45:         g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+46:         g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+47:     }
+48: 
+49:     public void setBitmap(Bitmap b) {
+50:         bitmap = b;
+51:         if (b != null) attach(b.img.createGraphics(), b.getWidth(), b.getHeight());
+52:     }
+53: 
+54:     public Graphics2D graphics() { return g; }
+55:     public int getWidth() { return width; }
+56:     public int getHeight() { return height; }
+57:     public boolean isHardwareAccelerated() { return false; }
+58:     public void setDensity(int d) {}
+59:     public int getDensity() { return 160; }
+60: 
+61:     // ------------------------------------------------------------------ الحفظ والتحويل
+62:     public int save() {
+63:         stack.push(new State(g.getTransform(), g.getClip(), alpha));
+64:         return stack.size();
+65:     }
+66:     public int save(int flags) { return save(); }
+67:     public int saveLayerAlpha(RectF b, int a) { int n = save(); alpha *= a / 255f; return n; }
+68:     public int saveLayerAlpha(float l, float t, float r, float b, int a) { int n = save(); alpha *= a / 255f; return n; }
+69:     public int saveLayerAlpha(RectF b, int a, int flags) { return saveLayerAlpha(b, a); }
+70:     public int saveLayer(RectF b, Paint p) { int n = save(); if (p != null) alpha *= p.getAlpha() / 255f; return n; }
+71:     public int saveLayer(float l, float t, float r, float b, Paint p) { return saveLayer(null, p); }
+72:     public int saveLayer(RectF b, Paint p, int flags) { return saveLayer(b, p); }
+73:     public void restore() {
+74:         State s = stack.poll();
+75:         if (s == null) return;
+76:         g.setTransform(s.t);
+77:         g.setClip(s.clip);
+78:         alpha = s.alpha;
+79:     }
+80:     public int getSaveCount() { return stack.size() + 1; }
+81:     public void restoreToCount(int n) { while (stack.size() + 1 > n && !stack.isEmpty()) restore(); }
+82: 
+83:     public void translate(float dx, float dy) { g.translate(dx, dy); }
+84:     public void scale(float sx, float sy) { g.scale(sx, sy); }
+85:     public void scale(float sx, float sy, float px, float py) { g.translate(px, py); g.scale(sx, sy); g.translate(-px, -py); }
+86:     public void rotate(float d) { g.rotate(Math.toRadians(d)); }
+87:     public void rotate(float d, float px, float py) { g.rotate(Math.toRadians(d), px, py); }
+88:     public void skew(float sx, float sy) { g.shear(sx, sy); }
+89:     public void concat(Matrix m) { if (m != null) g.transform(m.t); }
+90:     public void setMatrix(Matrix m) { g.setTransform(m == null ? new AffineTransform() : m.t); }
+91: 
+92:     public boolean clipRect(float l, float t, float r, float b) { g.clip(new Rectangle2D.Float(l, t, Math.max(0, r - l), Math.max(0, b - t))); return true; }
+93:     public boolean clipRect(int l, int t, int r, int b) { return clipRect((float) l, (float) t, (float) r, (float) b); }
+94:     public boolean clipRect(RectF r) { return clipRect(r.left, r.top, r.right, r.bottom); }
+95:     public boolean clipRect(Rect r) { return clipRect(r.left, r.top, r.right, r.bottom); }
+96:     public boolean clipPath(Path p) { g.clip(p.p); return true; }
+97:     public boolean clipOutRect(float l, float t, float r, float b) {
+98:         Area a = new Area(g.getClip() == null ? new Rectangle(-100000, -100000, 200000, 200000) : g.getClip());
+99:         a.subtract(new Area(new Rectangle2D.Float(l, t, r - l, b - t)));
+100:         g.setClip(a);
+101:         return true;
+102:     }
+103:     public boolean clipOutPath(Path p) {
+104:         Area a = new Area(g.getClip() == null ? new Rectangle(-100000, -100000, 200000, 200000) : g.getClip());
+105:         a.subtract(new Area(p.p));
+106:         g.setClip(a);
+107:         return true;
+108:     }
+109:     public boolean getClipBounds(Rect r) {
+110:         Rectangle b = g.getClipBounds();
+111:         if (b == null) { r.set(0, 0, width, height); return true; }
+112:         r.set(b.x, b.y, b.x + b.width, b.y + b.height);
+113:         return !b.isEmpty();
+114:     }
+115:     public Rect getClipBounds() { Rect r = new Rect(); getClipBounds(r); return r; }
+116:     public boolean quickReject(float l, float t, float r, float b, EdgeType e) {
+117:         Rectangle c = g.getClipBounds();
+118:         return c != null && !c.intersects(l, t, r - l, b - t);
+119:     }
+120: 
+121:     // ------------------------------------------------------------------ الرسم
+122:     public void drawColor(int c) { fillAll(c); }
+123:     public void drawColor(int c, PorterDuff.Mode m) {
+124:         if (m == PorterDuff.Mode.CLEAR) {
+125:             Composite o = g.getComposite();
+126:             g.setComposite(AlphaComposite.Clear);
+127:             g.fill(clipOrAll());
+128:             g.setComposite(o);
+129:         } else fillAll(c);
+130:     }
+131:     public void drawRGB(int r, int gg, int b) { fillAll(Color.rgb(r, gg, b)); }
+132:     public void drawARGB(int a, int r, int gg, int b) { fillAll(Color.argb(a, r, gg, b)); }
+133:     public void drawPaint(Paint p) { shape(clipOrAll(), p); }
+134: 
+135:     private Shape clipOrAll() {
+136:         Shape c = g.getClip();
+137:         if (c != null) return c;
+138:         try { return g.getTransform().createInverse().createTransformedShape(new Rectangle(0, 0, Math.max(width, 4000), Math.max(height, 4000))); }
+139:         catch (Exception e) { return new Rectangle(0, 0, 4000, 4000); }
+140:     }
+141:     private void fillAll(int c) {
+142:         g.setPaint(new java.awt.Color(Color.red(c), Color.green(c), Color.blue(c), Math.round(Color.alpha(c) * alpha)));
+143:         g.fill(clipOrAll());
+144:     }
+145: 
+146:     public void drawRect(float l, float t, float r, float b, Paint p) { shape(new Rectangle2D.Float(l, t, r - l, b - t), p); }
+147:     public void drawRect(RectF r, Paint p) { drawRect(r.left, r.top, r.right, r.bottom, p); }
+148:     public void drawRect(Rect r, Paint p) { drawRect(r.left, r.top, r.right, r.bottom, p); }
+149:     public void drawRoundRect(RectF r, float rx, float ry, Paint p) { drawRoundRect(r.left, r.top, r.right, r.bottom, rx, ry, p); }
+150:     public void drawRoundRect(float l, float t, float r, float b, float rx, float ry, Paint p) {
+151:         shape(new RoundRectangle2D.Float(l, t, r - l, b - t, Math.min(2 * rx, r - l), Math.min(2 * ry, b - t)), p);
+152:     }
+153:     public void drawCircle(float cx, float cy, float rad, Paint p) { shape(new Ellipse2D.Float(cx - rad, cy - rad, 2 * rad, 2 * rad), p); }
+154:     public void drawOval(RectF r, Paint p) { shape(new Ellipse2D.Float(r.left, r.top, r.width(), r.height()), p); }
+155:     public void drawOval(float l, float t, float r, float b, Paint p) { shape(new Ellipse2D.Float(l, t, r - l, b - t), p); }
+156:     public void drawArc(RectF o, float start, float sweep, boolean useCenter, Paint p) {
+157:         drawArc(o.left, o.top, o.right, o.bottom, start, sweep, useCenter, p);
+158:     }
+159:     public void drawArc(float l, float t, float r, float b, float start, float sweep, boolean useCenter, Paint p) {
+160:         shape(new Arc2D.Float(l, t, r - l, b - t, -start, -sweep, useCenter ? Arc2D.PIE : Arc2D.OPEN), p);
+161:     }
+162:     public void drawPath(Path path, Paint p) { shape(path.p, p); }
+163:     public void drawLine(float x0, float y0, float x1, float y1, Paint p) {
+164:         Paint q = p;
+165:         if (p.style == Paint.Style.FILL) { q = new Paint(p); q.style = Paint.Style.STROKE; }
+166:         shape(new Line2D.Float(x0, y0, x1, y1), q);
+167:     }
+168:     public void drawLines(float[] pts, Paint p) {
+169:         for (int i = 0; i + 3 < pts.length; i += 4) drawLine(pts[i], pts[i + 1], pts[i + 2], pts[i + 3], p);
+170:     }
+171:     public void drawPoint(float x, float y, Paint p) {
+172:         float r = Math.max(0.5f, p.strokeWidth / 2);
+173:         Paint q = new Paint(p);
+174:         q.style = Paint.Style.FILL;
+175:         if (p.cap == Paint.Cap.ROUND) shape(new Ellipse2D.Float(x - r, y - r, 2 * r, 2 * r), q);
+176:         else shape(new Rectangle2D.Float(x - r, y - r, 2 * r, 2 * r), q);
+177:     }
+178: 

@@ -1,0 +1,161 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.List;
+5: 
+6: /**
+7:  * 12.2: يجد «الفقاعات» في صورة ما تحت إطار الالتقاط من شكلها، لا من أسطر النص: كل برامج المحادثة (واتساب، تلغرام…)
+8:  * ترسم الرسالة مستطيلًا بلون واحد مختلف عن الخلفية، فنبحث عن مناطق بلون واحد حوافها كاملة وعرضها أقل من عرض الإطار.
+9:  * هكذا تصير الرسالة كلها رقمًا واحدًا مهما كان فيها من أسطر وكلمات واسم ملف ووقت.
+10:  * <p>
+11:  * منطق بحت (مصفوفة بكسلات) بلا أندرويد ولا Swing حتى يُختبر.
+12:  */
+13: public final class BubbleShapes {
+14:     private BubbleShapes() {}
+15: 
+16:     /** مستطيل بإحداثيات الصورة الأصلية. */
+17:     public static final class Box {
+18:         public final int x, y, w, h;
+19:         /** 12.5: فقاعة صورة أو ملصق أو فيديو (حافة بلون الفقاعة وداخلها صورة): لا تُنقل ولا تُرقَّم. */
+20:         public boolean media;
+21: 
+22:         Box(int x, int y, int w, int h) {
+23:             this.x = x;
+24:             this.y = y;
+25:             this.w = w;
+26:             this.h = h;
+27:         }
+28: 
+29:         boolean contains(Box o) { return o.x >= x && o.y >= y && o.x + o.w <= x + w && o.y + o.h <= y + h; }
+30: 
+31:         @Override public String toString() { return x + "," + y + " " + w + "x" + h; }
+32:     }
+33: 
+34:     /**
+35:      * argb: بكسلات الصورة (صفًا صفًا)، w×h أبعادها، unit: حجم «البكسل المنطقي» في الصورة (2 على شاشات Retina وتكبير 200%).
+36:      * يعيد الفقاعات من الأعلى للأسفل.
+37:      */
+38:     public static List<Box> find(int[] argb, int w, int h, double unit) {
+39:         List<Box> out = new ArrayList<>();
+40:         if (argb == null || w < 20 || h < 20 || argb.length < w * h) return out;
+41:         // نصغّر الصورة لنحو بكسل منطقي واحد (أو أكثر للصور الكبيرة) — يكفي للألوان ويسرّع العمل
+42:         int step = (int) Math.max(1, Math.round(unit));
+43:         while (w / step > 900 || h / step > 1400) step++;
+44:         int sw = w / step, sh = h / step;
+45:         int[] px = new int[sw * sh];
+46:         for (int y = 0; y < sh; y++)
+47:             for (int x = 0; x < sw; x++) px[y * sw + x] = argb[(y * step + step / 2) * w + x * step + step / 2] & 0xFFFFFF;
+48: 
+49:         // 12.3: «لبّ» المنطقة: بكسل جيرانه الثمانية بلونه نفسه. الملء يمر على اللبّ فقط، فلا تنساب الفقاعة إلى الخلفية عبر خطوط
+50:         // الزخرفة الرفيعة الملاصقة لها حين يكون لونها قريبًا من لون الفقاعة (واتساب ماك الفاتح)
+51:         boolean[] core = new boolean[sw * sh];
+52:         for (int y = 0; y < sh; y++)
+53:             for (int x = 0; x < sw; x++) {
+54:                 int c = px[y * sw + x];
+55:                 boolean ok = true;
+56:                 for (int dy = -1; dy <= 1 && ok; dy++)
+57:                     for (int dx = -1; dx <= 1; dx++) {
+58:                         int xx = x + dx, yy = y + dy;
+59:                         if (xx < 0 || yy < 0 || xx >= sw || yy >= sh) continue;
+60:                         if (!near(px[yy * sw + xx], c)) { ok = false; break; }
+61:                     }
+62:                 core[y * sw + x] = ok;
+63:             }
+64:         int[] label = new int[sw * sh];
+65:         int[] stack = new int[sw * sh];
+66:         int next = 0;
+67:         int minW = 26, minH = 14, maxW = (int) (sw * 0.93);
+68:         List<int[]> cands = new ArrayList<>();
+69:         for (int i = 0; i < px.length; i++) {
+70:             if (label[i] != 0 || !core[i]) continue;
+71:             int seed = px[i];
+72:             int id = ++next;
+73:             // ملء بلون البذرة (لا بلون الجار حتى لا ينساب الملء على التدرجات)
+74:             int sp = 0, count = 0, x1 = sw, y1 = sh, x2 = -1, y2 = -1;
+75:             stack[sp++] = i;
+76:             label[i] = id;
+77:             while (sp > 0) {
+78:                 int p = stack[--sp];
+79:                 count++;
+80:                 int x = p % sw, y = p / sw;
+81:                 if (x < x1) x1 = x;
+82:                 if (x > x2) x2 = x;
+83:                 if (y < y1) y1 = y;
+84:                 if (y > y2) y2 = y;
+85:                 if (x > 0) sp = push(px, core, label, stack, sp, p - 1, seed, id);
+86:                 if (x < sw - 1) sp = push(px, core, label, stack, sp, p + 1, seed, id);
+87:                 if (y > 0) sp = push(px, core, label, stack, sp, p - sw, seed, id);
+88:                 if (y < sh - 1) sp = push(px, core, label, stack, sp, p + sw, seed, id);
+89:             }
+90:             // 12.5: حدود المنطقة بلا «تسرّب» بكسلات متفرقة (زخرفة بلون قريب تلامس الفقاعة): صفوف وأعمدة كثافتها أقل من ثلث الأكثف تُقصّ
+91:             if (DEBUG && count > 300) System.err.println("region seed=" + Integer.toHexString(seed) + " " + x1 + "," + y1 + "-" + x2 + "," + y2 + " count=" + count);
+92:             if (x2 - x1 >= minW && y2 - y1 >= minH) {
+93:                 int[] rows = new int[y2 - y1 + 1], cols = new int[x2 - x1 + 1];
+94:                 for (int yy = y1; yy <= y2; yy++)
+95:                     for (int xx = x1; xx <= x2; xx++)
+96:                         if (label[yy * sw + xx] == id) {
+97:                             rows[yy - y1]++;
+98:                             cols[xx - x1]++;
+99:                         }
+100:                 int mr = 0, mc = 0;
+101:                 for (int v : rows) mr = Math.max(mr, v);
+102:                 for (int v : cols) mc = Math.max(mc, v);
+103:                 int ny1 = y1, ny2 = y2, nx1 = x1, nx2 = x2;
+104:                 while (ny1 < ny2 && rows[ny1 - y1] * 3 < mr) ny1++;
+105:                 while (ny2 > ny1 && rows[ny2 - y1] * 3 < mr) ny2--;
+106:                 while (nx1 < nx2 && cols[nx1 - x1] * 3 < mc) nx1++;
+107:                 while (nx2 > nx1 && cols[nx2 - x1] * 3 < mc) nx2--;
+108:                 x1 = nx1;
+109:                 x2 = nx2;
+110:                 y1 = ny1;
+111:                 y2 = ny2;
+112:             }
+113:             int bw = x2 - x1 + 1, bh = y2 - y1 + 1;
+114:             if (DEBUG && bw >= minW && bh >= minH) System.err.println("cand " + x1 + "," + y1 + " " + bw + "x" + bh + " count=" + count + " edge=" + edgeCover(label, sw, sh, id, x1, y1, x2, y2));
+115:             if (bw < minW || bh < minH) continue;
+116:             // مناطق الخلفية تمتد من أعلى الإطار إلى أسفله أو تلمس ثلاث حواف. 12.5: الفقاعة العريضة في إطار ضيق تلمس اليمين واليسار معًا
+117:             // (كانت تُرفض فتضيع)، والمقصوصة بالتمرير تلمس الأعلى أو الأسفل
+118:             boolean tl = x1 == 0, tt = y1 == 0, tr = x2 == sw - 1, tb = y2 == sh - 1;
+119:             int touch = (tl ? 1 : 0) + (tt ? 1 : 0) + (tr ? 1 : 0) + (tb ? 1 : 0);
+120:             if ((tt && tb) || touch >= 3 || (tl && tr && bh > sh * 0.8)) continue;
+121:             // زاوية من الخلفية (تلمس حافتين متجاورتين) ليست فقاعة
+122:             if (touch == 2 && !(tl && tr)) continue;
+123:             if (edgeCover(label, sw, sh, id, x1, y1, x2, y2) < 0.7) continue;
+124:             boolean media = count < bw * bh * 0.22;
+125:             // صورة داخل فقاعة: إطار رفيع بلونها حول الصورة (كبيرة بما يكفي حتى لا تكون حرفًا أو أيقونة)
+126:             if (media && (bh < 60 || bw < 60 || count < (bw + bh) * 2)) continue;
+127:             cands.add(new int[]{x1, y1, bw, bh, id, media ? 1 : 0});
+128:         }
+129:         // فقاعة داخل فقاعة (اقتباس الرد، أيقونة الملف) تُترك: نأخذ الخارجية
+130:         List<Box> boxes = new ArrayList<>();
+131:         // اللبّ أصغر من الفقاعة ببكسل من كل جهة
+132:         for (int[] c : cands) {
+133:             int x0 = Math.max(0, c[0] - 1), y0 = Math.max(0, c[1] - 1);
+134:             int x1 = Math.min(sw, c[0] + c[2] + 1), y1 = Math.min(sh, c[1] + c[3] + 1);
+135:             Box bx = new Box(x0 * step, y0 * step, (x1 - x0) * step, (y1 - y0) * step);
+136:             bx.media = c[5] == 1;
+137:             boxes.add(bx);
+138:         }
+139:         for (Box b : boxes) {
+140:             boolean inner = false;
+141:             for (Box o : boxes) if (o != b && o.contains(b) && (o.w > b.w || o.h > b.h)) { inner = true; break; }
+142:             if (!inner) out.add(b);
+143:         }
+144:         out.sort((p, q) -> p.y != q.y ? Integer.compare(p.y, q.y) : Integer.compare(p.x, q.x));
+145:         return out;
+146:     }
+147: 
+148:     private static int push(int[] px, boolean[] core, int[] label, int[] stack, int sp, int q, int seed, int id) {
+149:         if (label[q] != 0 || !core[q] || !near(px[q], seed)) return sp;
+150:         label[q] = id;
+151:         stack[sp] = q;
+152:         return sp + 1;
+153:     }
+154: 
+155:     static final int TOL = 3;
+156:     static boolean DEBUG = Boolean.getBoolean("sa.shapes.debug");
+157: 
+158:     static boolean near(int a, int b) {
+159:         int dr = Math.abs(((a >> 16) & 255) - ((b >> 16) & 255));
+160:         int dg = Math.abs(((a >> 8) & 255) - ((b >> 8) & 255));
+161:         int db = Math.abs((a & 255) - (b & 255));

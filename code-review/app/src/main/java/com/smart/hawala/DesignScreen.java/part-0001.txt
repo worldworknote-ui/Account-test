@@ -1,0 +1,176 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.Activity;
+4: import android.app.AlertDialog;
+5: import android.content.Intent;
+6: import android.graphics.Bitmap;
+7: import android.graphics.Color;
+8: import android.graphics.drawable.GradientDrawable;
+9: import android.net.Uri;
+10: import android.text.InputType;
+11: import android.util.Base64;
+12: import android.view.Gravity;
+13: import android.view.View;
+14: import android.widget.CheckBox;
+15: import android.widget.EditText;
+16: import android.widget.LinearLayout;
+17: import android.widget.TextView;
+18: import java.io.ByteArrayOutputStream;
+19: import java.io.InputStream;
+20: import java.util.ArrayList;
+21: import java.util.List;
+22: import java.util.Locale;
+23: import java.util.Map;
+24: import java.util.Set;
+25: 
+26: /**
+27:  * المظهر: الوضع والخط والألوان، شكل الصفحة الرئيسية (حديثة أو كلاسيكية) وعناصرها، الاسم والرسالة والشعار، والاختصارات.
+28:  * كل تغيير يُحفظ فورًا ويظهر أثره مباشرة. «الافتراضي» يعيد شكل الإصدار 7.
+29:  */
+30: final class DesignScreen {
+31:     static final String[][] PALETTE = {
+32:             {"#0B6B53", "زمردي"}, {"#07513F", "أخضر داكن"}, {"#2E7D32", "أخضر"}, {"#00838F", "فيروزي"},
+33:             {"#1565C0", "أزرق"}, {"#0D47A1", "كحلي"}, {"#283593", "نيلي"}, {"#6A1B9A", "بنفسجي"},
+34:             {"#AD1457", "عنابي"}, {"#C62828", "أحمر"}, {"#E65100", "برتقالي"}, {"#C7922F", "ذهبي"},
+35:             {"#8D6E63", "بني فاتح"}, {"#5D4037", "بني"}, {"#455A64", "رمادي أزرق"}, {"#212121", "أسود"}
+36:     };
+37:     static final String[][] BG_PALETTE = {
+38:             {"#F7F4ED", "عاجي"}, {"#FFFFFF", "أبيض"}, {"#F1F5F9", "رمادي فاتح"}, {"#EEF7F2", "أخضر فاتح"},
+39:             {"#FFF8E7", "كريمي"}, {"#EEF3FB", "أزرق فاتح"}, {"#F7EEF3", "وردي فاتح"}, {"#ECEFF1", "فضي"}
+40:     };
+41:     /** 11.3: خلفيات الوضع الليلي (الأولى = تلقائي). */
+42:     static final String[][] NIGHT_PALETTE = {
+43:             {"#111316", "رمادي محايد"}, {"#0B1411", "أخضر داكن (الأصلي)"}, {"#0F141B", "كحلي داكن"}, {"#141414", "فحمي"},
+44:             {"#17141A", "بنفسجي داكن"}, {"#18130F", "بني داكن"}, {"#000000", "أسود"}
+45:     };
+46:     /** 11.3: ثيمات جاهزة مجرّبة في الوضعين: الاسم، الأساسي، الثانوي، الشريط العلوي، خلفية النهار، خلفية الليل. */
+47:     static final String[][] PRESETS = {
+48:             {"زمردي (الأصلي)", "#0B6B53", "#C7922F", "", "#F7F4ED", ""},
+49:             {"كحلي مصرفي", "#1F3A5F", "#C9A227", "#1F3A5F", "#F2F4F8", "#0F141B"},
+50:             {"فحمي نحاسي", "#2F3136", "#B87333", "#2F3136", "#F4F2EF", "#141414"},
+51:             {"عنابي ذهبي", "#7A1F3D", "#C7922F", "", "#FAF6F2", "#17141A"}
+52:     };
+53:     static final String[] FONT_KEYS = {"plex", "cairo", "kufi", "system"};
+54:     static final String[] FONT_NAMES = {"IBM Plex", "Cairo", "Noto Kufi", "خط الهاتف"};
+55:     static final String[] THEME_KEYS = {"light", "dark", "auto"};
+56: 
+57:     /** قيم شكل الإصدار 7 الافتراضية (الاسم والرسالة لا تتغير عند الاستعادة). */
+58:     static final String[][] DEFAULTS = {
+59:             {"primary_color", "#0B6B53"}, {"accent_color", "#C7922F"}, {"header_color", ""}, {"bg_color", "#F7F4ED"},
+60:             {"home_order", Db.DEFAULT_ORDER}, {"home_hidden", ""}, {"btn_colors", ""}, {"home_layout", "list"}, {"btn_size", "normal"},
+61:             {"home_logo_mode", "default"}, {"home_logo_size", "medium"}, {"home_style", "modern"}, {"app_font", "plex"}, {"theme_mode", "light"}
+62:     };
+63:     static final String[] RESET_KEYS = {"home_widgets", "hw_net_curs", "hw_rates_curs", "hw_offices_mode", "hw_offices_n", "hw_tx_n",
+64:             "hold_confirm", "page_motion", "btn_frames", "tab_style", "nav_prefs", "night_bg", "tab_tint"};
+65: 
+66:     /** 11.3: كل ما يُحفظ في «نمط» (الشكل كله، لا الاسم ولا الرسالة ولا صورة الشعار). */
+67:     static List<String> styleKeys() {
+68:         List<String> k = new ArrayList<>();
+69:         for (String[] kv : DEFAULTS) k.add(kv[0]);
+70:         for (String r : RESET_KEYS) if (!k.contains(r)) k.add(r);
+71:         k.add("haptics");
+72:         return k;
+73:     }
+74: 
+75:     interface ColorCb { void on(String hex); }
+76: 
+77:     private final MainActivity a;
+78:     /** صورة اختيرت وتنتظر الحفظ بعد العودة من معرض الصور. */
+79:     private boolean pickingLogo;
+80: 
+81:     DesignScreen(MainActivity a) { this.a = a; }
+82: 
+83:     private String get(String k, String def) { return a.db.setting(k, def); }
+84: 
+85:     private void put(String k, String v) {
+86:         a.db.setSettingQuiet(k, v);
+87:     }
+88: 
+89:     void show() {
+90:         // 10.12: المظهر لكل مستخدم وحده؛ الأجزاء المشتركة (الاسم والرسالة والشعار) لصاحب صلاحية التصميم فقط
+91:         render();
+92:     }
+93: 
+94:     private boolean shared() {
+95:         return a.can(Auth.Perm.DESIGN);
+96:     }
+97: 
+98:     private boolean perUser() {
+99:         return a.db.usersEnabled() && SmartApp.currentUser != null;
+100:     }
+101: 
+102:     // ===================================================================================
+103:     // منتقي الألوان: لوحة متدرجة + ألوان جاهزة
+104:     // ===================================================================================
+105: 
+106:     void paletteDialog(String title, String[][] palette, boolean allowDefault, final ColorCb cb) {
+107:         paletteDialog(title, palette, allowDefault, null, cb);
+108:     }
+109: 
+110:     void paletteDialog(String title, String[][] palette, boolean allowDefault, String current, final ColorCb cb) {
+111:         LinearLayout l = new LinearLayout(a);
+112:         l.setOrientation(LinearLayout.VERTICAL);
+113:         l.setPadding(a.dp(16), a.dp(8), a.dp(16), a.dp(4));
+114:         int init = Ui.parseColor(current, Ui.parseColor(palette[0][0], a.primary));
+115:         final ColorPicker picker = new ColorPicker(a, init);
+116:         // معاينة: اللون الحالي ← اللون الجديد، ورمزه
+117:         LinearLayout pr = a.row();
+118:         final View oldSw = new View(a);
+119:         GradientDrawable og = new GradientDrawable();
+120:         og.setColor(init);
+121:         og.setCornerRadii(new float[]{0, 0, a.dp(12), a.dp(12), a.dp(12), a.dp(12), 0, 0});
+122:         oldSw.setBackground(og);
+123:         final View newSw = new View(a);
+124:         final GradientDrawable ng = new GradientDrawable();
+125:         ng.setColor(init);
+126:         ng.setCornerRadii(new float[]{a.dp(12), a.dp(12), 0, 0, 0, 0, a.dp(12), a.dp(12)});
+127:         newSw.setBackground(ng);
+128:         pr.addView(newSw, new LinearLayout.LayoutParams(0, a.dp(44), 1));
+129:         pr.addView(oldSw, new LinearLayout.LayoutParams(0, a.dp(44), 1));
+130:         // 11.3: رمز اللون يُكتب أو يُلصق (#1F3A5F أو 1F3A5F)
+131:         final EditText hex = a.field("#RRGGBB");
+132:         hex.setText(hexOf(init));
+133:         hex.setTextSize(14);
+134:         hex.setGravity(Gravity.CENTER);
+135:         hex.setTextDirection(View.TEXT_DIRECTION_LTR);
+136:         hex.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+137:         hex.setSingleLine(true);
+138:         hex.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+139:         pr.addView(hex, new LinearLayout.LayoutParams(a.dp(110), a.dp(44)));
+140:         l.addView(pr, a.lp(-1, -2, 4));
+141:         l.addView(a.text("حرّك إصبعك على المربع لاختيار درجة اللون، وعلى الشريط لاختيار اللون نفسه.", 12, a.muted, false));
+142:         l.addView(picker, new LinearLayout.LayoutParams(-1, -2));
+143:         final int[] chosen = {init};
+144:         final boolean[] typing = {false};
+145:         picker.listener = c -> {
+146:             chosen[0] = c;
+147:             ng.setColor(c);
+148:             newSw.invalidate();
+149:             if (!typing[0]) hex.setText(hexOf(c));
+150:         };
+151:         hex.addTextChangedListener(Ui.watcher(() -> {
+152:             String t = hex.getText().toString().trim().replace("#", "").replace(" ", "");
+153:             if (!t.matches("[0-9A-Fa-f]{6}")) return;
+154:             int c = Color.parseColor("#" + t);
+155:             if (c == chosen[0]) return;
+156:             typing[0] = true;
+157:             picker.setColor(c);
+158:             picker.listener.changed(c);
+159:             typing[0] = false;
+160:         }));
+161:         l.addView(a.text("ألوان جاهزة", 13, a.ink, true));
+162:         Ui.Flow fl = a.flow();
+163:         for (final String[] p : palette) {
+164:             final int col = Color.parseColor(p[0]);
+165:             View sw = a.swatch(col, 34);
+166:             sw.setContentDescription(p[1]);
+167:             sw.setOnClickListener(v -> {
+168:                 picker.setColor(col);
+169:                 picker.listener.changed(col);
+170:             });
+171:             fl.addView(sw, new android.view.ViewGroup.LayoutParams(a.dp(34), a.dp(34)));
+172:         }
+173:         l.addView(fl, a.lp(-1, -2, 4));
+174:         android.widget.ScrollView sv = new android.widget.ScrollView(a);
+175:         sv.addView(l);
+176:         AlertDialog.Builder b = new AlertDialog.Builder(a).setTitle(title).setView(sv)

@@ -1,0 +1,130 @@
+171:             }
+172:             check(new HttpSyncFolder(base, null, "server-key-123").ping().contains("يعمل"), "الخادم يعمل ويقبل رمز الخادم");
+173:             boolean wrongKey = false;
+174:             try {
+175:                 new HttpSyncFolder(base, null, "wrong").ping();
+176:             } catch (Exception e) {
+177:                 wrongKey = e.getMessage().contains("غير صحيح");
+178:             }
+179:             check(wrongKey, "رمز الخادم الخاطئ يُكتشف عند الفحص");
+180:             HttpSyncFolder fa = new HttpSyncFolder(base, null, "server-key-123");
+181:             SyncEngine eA = new SyncEngine(A, fa);
+182:             eA.create("كلمة-سر-الخادم".toCharArray(), "المحل");
+183:             String vid = SyncEngine.status(A).vaultId;
+184:             String link = HttpSyncFolder.link(base, vid);
+185:             String[] pv = HttpSyncFolder.parseLink(link);
+186:             check(pv[0].equals(base) && pv[1].equals(vid), "رابط الانضمام يحمل العنوان ورمز الخزنة: " + link);
+187:             boolean opaque = true;
+188:             for (File f : new File(data, vid).listFiles()) {
+189:                 if (f.getName().startsWith(".") || f.getName().equals(SyncEngine.HEADER)) continue;
+190:                 if (new String(Files.readAllBytes(f.toPath()), "ISO-8859-1").contains("USD")) opaque = false;
+191:             }
+192:             check(opaque && new File(data, vid + "/.token").isFile(), "الخادم يحفظ ملفات مشفّرة وبصمة الرمز فقط");
+193:             Db B = SyncDbTest.dev("trB");
+194:             SyncEngine eB = new SyncEngine(B, new HttpSyncFolder(pv[0], pv[1], "server-key-123"));
+195:             eB.join("كلمة-سر-الخادم".toCharArray(), false, "البيت");
+196:             check(bal(A).equals(bal(B)), "الانضمام عبر الخادم بالأرصدة نفسها");
+197:             long t1 = B.addTx(SyncDbTest.tx(nour, false, 7000, "USD", "من البيت"), null);
+198:             A.addTx(SyncDbTest.tx(nour, true, 3000, "USD", "من المحل"), null);
+199:             long t0 = System.currentTimeMillis();
+200:             syncAll(eB, eA);
+201:             check(bal(A).equals(bal(B)) && A.tx(t1) != null, "الكتابة في الاتجاهين عبر الخادم (" + (System.currentTimeMillis() - t0) + " ms لـ 6 جولات)");
+202:             // 10.4: التنظيف على الخادم (DELETE)
+203:             for (int i = 0; i < 160; i++) {
+204:                 A.addTx(SyncDbTest.tx(nour, i % 2 == 0, 10 + i, "USD", "ح" + i), null);
+205:                 eA.sync();
+206:             }
+207:             syncAll(eB, eA);
+208:             int onServer = new File(data, vid).list((d, n) -> n.startsWith("p-")).length;
+209:             String gcs = eA.clean(true);
+210:             int afterGc = new File(data, vid).list((d, n) -> n.startsWith("p-")).length;
+211:             check(afterGc < onServer - 100 && bal(A).equals(bal(B)), "التنظيف على الخادم حذف الحزم القديمة (" + onServer + " ← " + afterGc + "): " + gcs);
+212:             // دخيل يعرف رمز الخزنة ورمز الخادم لكن لا يعرف كلمة السر: لا يقرأ ولا يكتب
+213:             HttpSyncFolder evil = new HttpSyncFolder(base, vid, "server-key-123");
+214:             boolean denied = false;
+215:             try {
+216:                 evil.list("p-");
+217:             } catch (Exception e) {
+218:                 denied = true;
+219:             }
+220:             boolean headerOpen = evil.read(SyncEngine.HEADER) != null;
+221:             check(denied && headerOpen, "بلا مفتاح الخزنة: لا قائمة ولا ملفات (الرأس وحده مقروء، وفيه المفتاح مغلّفًا فقط)");
+222:             HttpSyncFolder noKey = new HttpSyncFolder(base, vid, "");
+223:             boolean nk = false;
+224:             try {
+225:                 noKey.read(SyncEngine.HEADER);
+226:             } catch (Exception e) {
+227:                 nk = e.getMessage().contains("403");
+228:             }
+229:             check(nk, "بلا رمز الخادم يُرفض كل شيء");
+230: 
+231:             System.out.println("== 2) نقل خزنة قائمة: المجلد المشترك ← الخادم");
+232:             File shared = Files.createTempDirectory("sa-tr-folder").toFile();
+233:             Db X = SyncDbTest.dev("trX");
+234:             long xo = X.addOffice("مكتب س", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+235:             X.addTx(SyncDbTest.tx(xo, true, 1234, "USD", "أ"), null);
+236:             SyncEngine eX = new SyncEngine(X, new FileSyncFolder(shared));
+237:             eX.create("كلمة-سر-المجلد".toCharArray(), "س");
+238:             Db Y = SyncDbTest.dev("trY");
+239:             SyncEngine eY = new SyncEngine(Y, new FileSyncFolder(shared));
+240:             eY.join("كلمة-سر-المجلد".toCharArray(), false, "ص");
+241:             Y.addTx(SyncDbTest.tx(xo, false, 77, "USD", "ب"), null);
+242:             eY.sync();
+243:             // Y ينقل أولًا (فيه حزمة لم تصل X بعد)، ثم X
+244:             String xv = SyncEngine.status(X).vaultId;
+245:             int ny = new SyncEngine(Y, new FileSyncFolder(shared)).moveTo(new HttpSyncFolder(base, xv, "server-key-123"));
+246:             int nx = new SyncEngine(X, new FileSyncFolder(shared)).moveTo(new HttpSyncFolder(base, xv, "server-key-123"));
+247:             SyncEngine sX = new SyncEngine(X, new HttpSyncFolder(base, xv, "server-key-123")), sY = new SyncEngine(Y, new HttpSyncFolder(base, xv, "server-key-123"));
+248:             syncAll(sX, sY);
+249:             check(ny > 0 && nx == 0 && bal(X).equals(bal(Y)) && SyncEngine.status(X).lastError.isEmpty(), "نُقلت الخزنة (" + ny + " ملفًا) وأكمل كل جهاز من حيث كان: " + bal(X));
+250: 
+251:             System.out.println("== 2ب) 10.3: مكان مزامنة فارغ (نُقل المجلد دون ملفاته): الإصلاح");
+252:             File empty = Files.createTempDirectory("sa-tr-empty").toFile();
+253:             X.addTx(SyncDbTest.tx(xo, true, 500, "USD", "بعد النقل"), null);
+254:             SyncEngine xe = new SyncEngine(X, new FileSyncFolder(empty));
+255:             boolean missing = false;
+256:             try {
+257:                 xe.sync();
+258:             } catch (Exception e) {
+259:                 missing = SyncEngine.headerMissing(X);
+260:             }
+261:             check(missing, "الجهاز يكتشف أن المكان الجديد بلا ملفات (ولا يكتب فيه شيئًا من تلقاء نفسه)");
+262:             String rc0 = xe.repair(null);
+263:             Y.addTx(SyncDbTest.tx(xo, false, 33, "USD", "من ص"), null);
+264:             new SyncEngine(Y, new HttpSyncFolder(base, xv, "server-key-123")).moveTo(new FileSyncFolder(empty));
+265:             SyncEngine ye = new SyncEngine(Y, new FileSyncFolder(empty));
+266:             syncAll(xe, ye);
+267:             check(rc0.isEmpty() && !SyncEngine.headerMissing(X) && bal(X).equals(bal(Y)), "الإصلاح من النسخة المحلية للرأس، ثم الجهاز الآخر انتقل للمكان نفسه وتطابقا: " + bal(X));
+268:             File empty2 = Files.createTempDirectory("sa-tr-empty2").toFile();
+269:             X.getWritableDatabase().execSQL("DELETE FROM sync_meta WHERE k='header_copy'");
+270:             SyncEngine xe2 = new SyncEngine(X, new FileSyncFolder(empty2));
+271:             String rc1 = xe2.repair("كلمة-سر-جديدة".toCharArray());
+272:             Db Z = SyncDbTest.dev("trZ");
+273:             new SyncEngine(Z, new FileSyncFolder(empty2)).join("كلمة-سر-جديدة".toCharArray(), false, "ع");
+274:             check(!rc1.isEmpty() && bal(Z).equals(bal(X)), "بلا نسخة محلية: إصلاح بكلمة سر جديدة ورمز استرداد جديد، وجهاز جديد ينضم بها");
+275: 
+276:             System.out.println("== 3) Google Drive مباشرة (محاكي واجهة Drive v3)");
+277:             FakeDrive fd = new FakeDrive();
+278:             int dport = fd.start();
+279:             java.lang.reflect.Field api = DriveSyncFolder.class.getDeclaredField("api");
+280:             api.setAccessible(true);
+281:             api.set(null, "http://127.0.0.1:" + dport);
+282:             final int[] refreshes = {0};
+283:             DriveSyncFolder.Tokens toks = refresh -> {
+284:                 if (refresh) refreshes[0]++;
+285:                 return fd.valid();
+286:             };
+287:             Db D1 = SyncDbTest.dev("trD1");
+288:             long d1o = D1.addOffice("مكتب د", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+289:             byte[] big = new byte[5 * 1024 * 1024];
+290:             new Random(7).nextBytes(big);
+291:             for (int i = 0; i < 30; i++) D1.addTx(SyncDbTest.tx(d1o, i % 2 == 0, 1000 + i, "USD", "حركة " + i), i == 0 ? Arrays.asList(big) : null);
+292:             SyncEngine e1 = new SyncEngine(D1, new DriveSyncFolder(toks));
+293:             e1.create("كلمة-سر-درايف".toCharArray(), "هاتف 1");
+294:             check(fd.resumables >= 1, "اللقطة الكبيرة (صورة 5MB) رُفعت بالرفع المستأنف");
+295:             Db D2 = SyncDbTest.dev("trD2");
+296:             SyncEngine e2 = new SyncEngine(D2, new DriveSyncFolder(toks));
+297:             e2.join("كلمة-سر-درايف".toCharArray(), false, "هاتف 2");
+298:             check(bal(D1).equals(bal(D2)), "الانضمام عبر Drive بالأرصدة نفسها");
+299:             D2.addTx(SyncDbTest.tx(d1o, true, 999, "USD", "من هاتف 2"), null);
+300:             fd.expireAfter = 2;

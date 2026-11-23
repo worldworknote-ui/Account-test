@@ -1,0 +1,138 @@
+667:     void preview(final CashBox.Input x, final Runnable after) {
+668:         CashBox.Config cfg = a.db.cashBox(x.boxId);
+669:         Map<String, Integer> dec = a.db.decimalsMap();
+670:         Map<String, Long> bal = a.db.cashBalances(x.boxId);
+671:         List<String[]> rows = new ArrayList<>();
+672:         rows.add(new String[]{"العملية", opName(x)});
+673:         rows.add(new String[]{"الصندوق", cfg.name});
+674:         if (CashBox.EXCHANGE.equals(x.kind)) {
+675:             boolean buy = CashBox.BUY.equals(x.side);
+676:             rows.add(new String[]{buy ? "تشتري" : "تبيع", money(x.amount, x.currency)});
+677:             if (!Model.nz(x.rate).isEmpty()) rows.add(new String[]{"السعر", iso("1 " + x.currency + " = " + x.rate + " " + x.toCurrency)});
+678:             rows.add(new String[]{buy ? "وتدفع" : "وتستلم", money(x.toAmount, x.toCurrency)});
+679:             String mk = marketLine(x.currency, x.toCurrency, x.amount, x.toAmount, buy);
+680:             if (mk != null) rows.add(new String[]{"مقارنة بالسوق", mk});
+681:         } else {
+682:             rows.add(new String[]{x.dir() > 0 ? "يدخل الصندوق" : "يخرج من الصندوق", money(x.amount, x.currency)});
+683:         }
+684:         if (!Model.nz(x.category).isEmpty() && x.officeId == null && x.clientId == null) rows.add(new String[]{"البند", x.category});
+685:         if (x.officeId != null) {
+686:             Model.Office o = a.db.office(x.officeId);
+687:             rows.add(new String[]{"المكتب", o == null ? "#" + x.officeId : o.name});
+688:             rows.add(new String[]{"على المكتب", (CashBox.IN.equals(x.kind) ? "علينا " : "لنا ") + money(x.amount, x.currency)});
+689:         }
+690:         if (x.clientId != null) {
+691:             ClientBook.Client c = a.db.client(x.clientId);
+692:             rows.add(new String[]{"العميل", c == null ? "#" + x.clientId : c.name});
+693:             rows.add(new String[]{"على حسابه", (CashBox.IN.equals(x.kind) ? "علينا له " : "لنا عليه ") + money(x.clientAmount, x.clientCurrency)});
+694:             if (!x.clientCurrency.equals(x.currency))
+695:                 rows.add(new String[]{"السعر", iso("1 " + x.clientCurrency + " = " + ClientBook.rateOf(x.clientAmount, dec(dec, x.clientCurrency), x.amount, dec(dec, x.currency)) + " " + x.currency)});
+696:             Map<String, Long> cb = ClientBook.balances(a.db.clientMoves(x.clientId));
+697:             long before = cb.containsKey(x.clientCurrency) ? cb.get(x.clientCurrency) : 0;
+698:             long after2 = before + (CashBox.IN.equals(x.kind) ? -x.clientAmount : x.clientAmount);
+699:             rows.add(new String[]{"رصيده " + x.clientCurrency, sideText(before, x.clientCurrency) + " ← " + sideText(after2, x.clientCurrency)});
+700:         }
+701:         if (x.fee > 0) rows.add(new String[]{"الأجور", money(x.fee, x.currency) + " " + (CashBox.FEE_US.equals(x.feeSide) ? "لنا" : "علينا")
+702:                 + (x.officeId == null || x.feeInCash ? " — نقدًا في الصندوق" : " — على حساب المكتب")});
+703:         if (!Model.nz(x.party).isEmpty() && x.clientId == null) rows.add(new String[]{"الشخص", x.party});
+704:         if (!Model.nz(x.description).isEmpty()) rows.add(new String[]{"البيان", x.description});
+705:         rows.add(new String[]{"التاريخ", Model.date(x.when)});
+706:         rows.add(new String[]{null, "رصيد الصندوق قبل ← بعد"});
+707:         for (Map.Entry<String, Long> e : CashBox.changes(x).entrySet()) {
+708:             long b = bal.containsKey(e.getKey()) ? bal.get(e.getKey()) : 0;
+709:             rows.add(new String[]{e.getKey(), iso(Model.fmt(b, dec(dec, e.getKey()))) + " ← " + iso(Model.fmt(b + e.getValue(), dec(dec, e.getKey())))
+710:                     + "  (" + iso((e.getValue() >= 0 ? "+" : "−") + Model.fmt(Math.abs(e.getValue()), dec(dec, e.getKey()))) + ")"});
+711:         }
+712:         if (CashBox.TRANSFER.equals(x.kind) && x.toBox != null) {
+713:             CashBox.Config to = a.db.cashBox(x.toBox);
+714:             Map<String, Long> tb = a.db.cashBalances(x.toBox);
+715:             long b = tb.containsKey(x.currency) ? tb.get(x.currency) : 0;
+716:             rows.add(new String[]{null, "صندوق «" + to.name + "»"});
+717:             rows.add(new String[]{x.currency, iso(Model.fmt(b, dec(dec, x.currency))) + " ← " + iso(Model.fmt(b + x.amount, dec(dec, x.currency)))});
+718:         }
+719:         String warn = CashBox.negativeAfter(x, bal, dec);
+720:         confirmDialog("راجع قبل التسجيل", rows, warn, "تسجيل", () -> a.busy("جارٍ التسجيل…", p -> a.db.addCashMove(x), res -> {
+721:             a.toast("سُجّلت الحركة ✓");
+722:             after.run();
+723:         }));
+724:     }
+725: 
+726:     String sideText(long v, String cur) {
+727:         return v == 0 ? "صفر" : ClientBook.side(v) + " " + iso(Model.fmt(Math.abs(v), a.db.decimals(cur)) + " " + cur);
+728:     }
+729: 
+730:     /** سطر مقارنة سعرك بسعر السوق (أسعار الإنترنت أو اليدوية)، أو null بلا سعر. */
+731:     String marketLine(String cur, String counter, long amount, long counterAmount, boolean buy) {
+732:         BigDecimal mk = CashBox.crossRate(cur, counter, a.db.usdRates());
+733:         if (mk == null || amount <= 0 || counterAmount <= 0) return null;
+734:         int d1 = a.db.decimals(cur), d2 = a.db.decimals(counter);
+735:         BigDecimal mine = BigDecimal.valueOf(counterAmount, d2).divide(BigDecimal.valueOf(amount, d1), 10, RoundingMode.HALF_EVEN);
+736:         BigDecimal atMarket = BigDecimal.valueOf(amount, d1).multiply(mk);
+737:         BigDecimal diff = BigDecimal.valueOf(counterAmount, d2).subtract(atMarket);
+738:         if (buy) diff = diff.negate();
+739:         BigDecimal pct = mine.subtract(mk).multiply(BigDecimal.valueOf(100)).divide(mk, 2, RoundingMode.HALF_EVEN);
+740:         String sign = diff.signum() >= 0 ? "لصالحك ≈ " : "عليك ≈ ";
+741:         return "السوق " + iso("1 " + cur + " = " + mk.toPlainString() + " " + counter) + "\n" + sign
+742:                 + iso(diff.abs().setScale(Math.min(d2, 2), RoundingMode.HALF_EVEN).toPlainString() + " " + counter) + " (" + iso(pct.abs().toPlainString() + "%") + ")";
+743:     }
+744: 
+745:     // ===================================================================================
+746:     // التاريخ
+747:     // ===================================================================================
+748: 
+749:     private long when;
+750: 
+751:     Button dateButton(LinearLayout into) {
+752:         when = 0;
+753:         final Button b = a.smallButton("التاريخ: الآن", Color.rgb(130, 130, 130), null);
+754:         b.setOnClickListener(v -> {
+755:             final Calendar c = Model.cal();
+756:             new DatePickerDialog(a, (x, y, mo, d) -> new TimePickerDialog(a, (tp, h, mi) -> {
+757:                 Calendar t = Model.cal();
+758:                 t.set(y, mo, d, h, mi, 0);
+759:                 t.set(Calendar.MILLISECOND, 0);
+760:                 if (t.getTimeInMillis() > Clock.now()) {
+761:                     a.toast("لا يمكن اختيار وقت في المستقبل");
+762:                     return;
+763:                 }
+764:                 when = t.getTimeInMillis();
+765:                 b.setText("التاريخ: " + Model.date(when));
+766:             }, c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE), true).show(), c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH)).show();
+767:         });
+768:         (into == null ? a.body : into).addView(b, a.lp(-1, 42, 4));
+769:         return b;
+770:     }
+771: 
+772:     long now() { return when > 0 ? when : Clock.now(); }
+773: 
+774:     // ===================================================================================
+775:     // الاستلام والتسليم (بدون حساب، لحساب مكتب، أو لحساب عميل)
+776:     // ===================================================================================
+777: 
+778:     /** office أو client: محدد مسبقًا (من صفحة المكتب أو العميل) أو null. */
+779:     void form(final String kind, final Model.Office presetOffice, final ClientBook.Client presetClient) {
+780:         if (!a.require(Auth.Perm.CASH)) return;
+781:         if (!a.db.cashConfig().on) {
+782:             show();
+783:             return;
+784:         }
+785:         guard(() -> formImpl(kind, presetOffice, presetClient));
+786:     }
+787: 
+788:     void form(final String kind, final Model.Office preset) { form(kind, preset, null); }
+789: 
+790:     private void formImpl(final String kind, final Model.Office preset, final ClientBook.Client presetClient) {
+791:         final CashBox.Config cfg = a.db.cashConfig();
+792:         final boolean in = CashBox.IN.equals(kind);
+793:         final Runnable back = presetClient != null ? () -> clients.page(presetClient.id) : this::home;
+794:         screen(in ? "استلام إلى الصندوق" : "تسليم من الصندوق", back);
+795:         final Model.Office[] office = {preset};
+796:         final ClientBook.Client[] client = {presetClient};
+797:         final Map<String, Integer> dec = a.db.decimalsMap();
+798:         a.hint("الصندوق: " + cfg.name);
+799: 
+800:         a.add(a.label("الحساب"));
+801:         final String[] links = cfg.strict ? new String[]{"لحساب مكتب", "لحساب عميل"} : new String[]{"لحساب مكتب", "لحساب عميل", "بدون حساب"};
+802:         final Ui.Seg link = a.new Seg(links, null, preset != null ? 0 : presetClient != null ? 1 : cfg.strict ? 0 : 2, false);
+803:         a.body.addView(link.view, a.lp(-1, -2, 2));
+804:         final LinearLayout officeBox = new LinearLayout(a);

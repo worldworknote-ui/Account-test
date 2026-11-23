@@ -1,0 +1,36 @@
+605:                 sb.append(mt.valued ? "يدخل الميزان بالدولار" + (r == null ? " (لا سعر بعد)" : " — المستخدم: " + r.source) : "بالوزن فقط: خارج الميزان (غيّره من «العملات ← تعديل»)");
+606:             } else {
+607:                 if (r != null && r.online != null) sb.append("أونلاين: 1 USD = ").append(unitsPerUsd(r.online)).append(' ').append(c.code).append(" (").append(Model.date(r.onlineAt)).append(")\n");
+608:                 else sb.append("أونلاين: لا يوجد\n");
+609:                 if (r != null && r.manual != null) sb.append("يدوي: 1 USD = ").append(unitsPerUsd(r.manual)).append(' ').append(c.code).append(" (").append(Model.date(r.manualAt)).append(")\n");
+610:                 sb.append("المستخدم في التقويم: ").append(r == null ? "لا يوجد سعر" : r.source);
+611:             }
+612:             x.addView(a.text(sb.toString(), 14, a.dark, false));
+613:             if (!edit) continue;
+614:             final EditText in = a.field(mt != null ? "سعر 1 " + mt.u().shortName + " بالدولار؟" : "1 دولار = كم " + c.code + "؟");
+615:             Ui.numeric(in);
+616:             x.addView(in, a.lp(-1, 50, 4));
+617:             LinearLayout rr = a.row();
+618:             rr.addView(a.smallButton("حفظ السعر اليدوي", a.primary, v -> {
+619:                 try {
+620:                     // 10.5 (AUDIT-021): «34.250» سعر = أربعة وثلاثون وربع، لا 34250
+621:                     BigDecimal units = CashBox.rateDecimal(in.getText().toString());
+622:                     if (units == null) throw new Exception("السعر غير مفهوم: اكتبه مثل 34.25 أو 13500");
+623:                     if (units.signum() <= 0) throw new Exception("السعر يجب أن يكون أكبر من صفر");
+624:                     a.db.setManualRate(c.code, mt != null ? units : BigDecimal.ONE.divide(units, 16, RoundingMode.HALF_EVEN));
+625:                     a.toast("تم الحفظ");
+626:                     showRates(backTo);
+627:                 } catch (Exception e) {
+628:                     a.error(e instanceof NumberFormatException ? new NumberFormatException() : e);
+629:                 }
+630:             }), a.weight(46, 1, 3));
+631:             if (r != null && r.manual != null) {
+632:                 rr.addView(a.smallButton("إلغاء اليدوي", a.red, v -> {
+633:                     a.db.setManualRate(c.code, null);
+634:                     showRates(backTo);
+635:                 }), a.weight(46, 1, 3));
+636:             }
+637:             x.addView(rr);
+638:         }
+639:     }
+640: }

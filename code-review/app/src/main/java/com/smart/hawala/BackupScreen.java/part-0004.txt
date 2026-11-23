@@ -1,0 +1,122 @@
+421:                         a.db.deleteSetting("last_drive_backup");
+422:                     } else {
+423:                         releaseUri(a.db.setting("auto_backup_tree", ""));
+424:                         a.db.deleteSetting("auto_backup_tree");
+425:                         a.db.deleteSetting("auto_backup_error");
+426:                     }
+427:                     if (!AutoBackup.configured(a.db)) {
+428:                         a.db.setSetting("auto_backup_on", "0");
+429:                         AutoBackup.cancel(a);
+430:                         a.toast("أُوقف النسخ التلقائي لعدم وجود مكان للحفظ");
+431:                     }
+432:                     show();
+433:                 })
+434:                 .setNegativeButton("إلغاء", null).show();
+435:     }
+436: 
+437:     private void autoPassword(final boolean firstSetup) {
+438:         passwordDialog("كلمة مرور النسخ التلقائي",
+439:                 "ستُشفّر بها كل النسخ التلقائية. احفظها في مكان آمن؛ لا يمكن فتح النسخ بدونها.", "حفظ",
+440:                 pw -> {
+441:                     try {
+442:                         a.db.setSettingQuiet("auto_backup_pw", Crypto.enc(new String(pw)));
+443:                         a.db.audit("SETTING", "settings", 0, "auto_backup_pw");
+444:                     } finally {
+445:                         Arrays.fill(pw, '\0');
+446:                     }
+447:                     // 8.0 (ت7): كلمة المرور محفوظة داخل الهاتف فقط؛ إن ضاع الهاتف ونُسيت فلا قيمة لأي نسخة
+448:                     new AlertDialog.Builder(a).setTitle("احفظ كلمة المرور خارج الهاتف")
+449:                             .setMessage("اكتب كلمة مرور النسخ التلقائي على ورقة أو في مكان آمن بعيدًا عن هذا الهاتف.\n\n"
+450:                                     + "إن ضاع الهاتف أو تعطّل فهي الطريقة الوحيدة لفتح النسخ على هاتف آخر. "
+451:                                     + "سنُنشئ الآن نسخة تجريبية ونفتحها بها للتأكد.")
+452:                             .setCancelable(false)
+453:                             .setPositiveButton("كتبتها، تابع", (d2, w2) -> {
+454:                                 if (firstSetup) {
+455:                                     a.db.setSetting("auto_backup_on", "1");
+456:                                     if (a.db.setting("auto_backup_days", "").isEmpty()) a.db.setSettingQuiet("auto_backup_days", "1");
+457:                                     if (a.db.setting("auto_backup_keep", "").isEmpty()) a.db.setSettingQuiet("auto_backup_keep", "7");
+458:                                     AutoBackup.schedule(a);
+459:                                     askNotifications();
+460:                                 } else a.toast("تم تغيير كلمة مرور النسخ التلقائي");
+461:                                 show();
+462:                                 runAutoNow();
+463:                             }).show();
+464:                 });
+465:     }
+466: 
+467:     // ===================================================================================
+468:     // 10.14: رمز استرداد النسخ، وعرض كلمة مرور النسخ التلقائي للمدير
+469:     // ===================================================================================
+470: 
+471:     private void recoverySection() {
+472:         a.title("رمز استرداد النسخ");
+473:         final LinearLayout c = a.card();
+474:         final boolean on = BackupRecovery.on(a.db);
+475:         c.addView(a.text(on ? "✓ مفعّل منذ " + Model.date(BackupRecovery.createdAt(a.db)) + ". كل نسخة من هذا الجهاز (التلقائية واليدوية) تُفتح بكلمة مرورها أو بهذا الرمز."
+476:                 : "غير مفعّل. إن نسيت كلمة مرور النسخ فلا تُفتح النسخ أبدًا. فعّل رمز الاسترداد واحفظه على ورقة بعيدًا عن الهاتف: يفتح كل نسخة تُؤخذ بعده.", 14, on ? a.green : a.dark, on));
+477:         boolean admin = a.can(Auth.Perm.BACKUP) && (!a.db.usersEnabled() || (SmartApp.currentUser != null && Auth.isAdmin(SmartApp.currentUser)));
+478:         if (!admin) {
+479:             c.addView(a.text("للمدير وحده.", 12, a.muted, false));
+480:             return;
+481:         }
+482:         if (!on) c.addView(a.makeButton("إنشاء رمز استرداد النسخ", a.primary, v -> a.usersScreen.confirmAdmin("رمز استرداد النسخ", this::newBackupCode)), a.lp(-1, 46, 4));
+483:         else {
+484:             c.addView(a.smallButton("رمز جديد (يحل محل الحالي للنسخ القادمة)", a.accent, v -> a.confirm("رمز استرداد جديد",
+485:                     "النسخ القادمة تُفتح بالرمز الجديد. النسخ السابقة تبقى تُفتح بالرمز القديم وبكلمة مرورها، فاحتفظ بالقديم ما دمت تحتاج تلك النسخ.", "متابعة",
+486:                     () -> a.usersScreen.confirmAdmin("رمز استرداد النسخ", this::newBackupCode))), a.lp(-1, 44, 4));
+487:             c.addView(a.smallButton("إيقاف الرمز", a.red, v -> a.confirm("إيقاف رمز استرداد النسخ",
+488:                     "النسخ القادمة تُفتح بكلمة مرورها وحدها. النسخ السابقة تبقى تُفتح بالرمز القديم.", "إيقاف",
+489:                     () -> a.usersScreen.confirmAdmin("إيقاف رمز استرداد النسخ", () -> {
+490:                         BackupRecovery.disable(a.db);
+491:                         a.toast("أُوقف رمز استرداد النسخ");
+492:                         show();
+493:                     }))), a.lp(-1, 44, 4));
+494:         }
+495:         c.addView(a.text("الرمز لا يُحفظ على الهاتف ولا يظهر إلا مرة واحدة. النسخ المأخوذة بإصدار أقدم من 10.14، أو قبل تفعيل الرمز، تُفتح بكلمة مرورها فقط. "
+496:                 + "النسخ المأخوذة بعد تفعيله لا تفتحها الإصدارات الأقدم من 10.14.", 12, a.muted, false));
+497:     }
+498: 
+499:     private void newBackupCode() {
+500:         a.busy("جارٍ إنشاء الرمز…", p -> BackupRecovery.create(a.db), res -> {
+501:             final String code = (String) res;
+502:             new AlertDialog.Builder(a).setTitle("رمز استرداد النسخ — احفظه الآن")
+503:                     .setMessage("يفتح كل نسخة احتياطية تُؤخذ من الآن إن نسيت كلمة مرورها. يظهر مرة واحدة فقط: اكتبه على ورقة واحفظه بعيدًا عن هذا الهاتف.\n\n" + code)
+504:                     .setCancelable(false)
+505:                     .setPositiveButton("نسخ الرمز", (x, w) -> {
+506:                         copySecret("رمز استرداد النسخ", code);
+507:                         show();
+508:                     }).setNegativeButton("حفظته", (x, w) -> show()).show();
+509:         });
+510:     }
+511: 
+512:     /** نسخ نص سري إلى الحافظة (يُعلَّم «حساسًا» فلا يظهر في معاينة الحافظة على أندرويد 13 وما بعده). */
+513:     private void copySecret(String label, String text) {
+514:         android.content.ClipboardManager cm = (android.content.ClipboardManager) a.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+515:         if (cm == null) return;
+516:         android.content.ClipData clip = android.content.ClipData.newPlainText(label, text);
+517:         if (Build.VERSION.SDK_INT >= 24) {
+518:             android.os.PersistableBundle x = new android.os.PersistableBundle();
+519:             x.putBoolean("android.content.extra.IS_SENSITIVE", true);
+520:             clip.getDescription().setExtras(x);
+521:         }
+522:         cm.setPrimaryClip(clip);
+523:         a.toast("نُسخ. الصقه في مكان آمن ثم امسح الحافظة.");
+524:     }
+525: 
+526:     /** 10.14: نسيان كلمة مرور النسخ التلقائي: تُعرض للمدير بعد تأكيد رمزه (محفوظة مشفّرة بمفتاح هذا الجهاز)، ويُسجَّل العرض في السجل. */
+527:     private void revealAutoPassword() {
+528:         if (!a.require(Auth.Perm.BACKUP)) return;
+529:         if (a.db.usersEnabled() && (SmartApp.currentUser == null || !Auth.isAdmin(SmartApp.currentUser))) {
+530:             a.toast("عرض كلمة مرور النسخ للمدير وحده");
+531:             return;
+532:         }
+533:         a.usersScreen.confirmAdmin("عرض كلمة مرور النسخ التلقائي", () -> {
+534:             final String pw;
+535:             try {
+536:                 pw = Crypto.decStrict(a.db.setting("auto_backup_pw", ""));
+537:             } catch (Exception e) {
+538:                 new AlertDialog.Builder(a).setTitle("تعذر عرضها")
+539:                         .setMessage("لا يمكن فك كلمة المرور المحفوظة على هذا الهاتف (ربما نُقلت البيانات من هاتف آخر). عيّن كلمة جديدة؛ النسخ القديمة تُفتح بكلمتها القديمة أو برمز استرداد النسخ إن كان مفعّلًا حينها.")
+540:                         .setPositiveButton("تعيين كلمة جديدة", (x, y) -> autoPassword(false)).setNegativeButton("إغلاق", null).show();
+541:                 return;
+542:             }

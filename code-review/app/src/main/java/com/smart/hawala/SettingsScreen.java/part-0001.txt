@@ -1,0 +1,156 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.app.DatePickerDialog;
+5: import android.graphics.Color;
+6: import android.text.InputType;
+7: import android.view.View;
+8: import android.widget.CheckBox;
+9: import android.widget.EditText;
+10: import android.widget.LinearLayout;
+11: import android.widget.Spinner;
+12: import android.widget.TextView;
+13: import java.util.Calendar;
+14: import java.util.HashMap;
+15: import java.util.List;
+16: import java.util.Map;
+17: 
+18: /** الأمان وإقفال الفترة، سجل العمليات، وفحص البيانات. باقي الإعدادات في تبويب «المزيد» (MoreScreen). */
+19: final class SettingsScreen {
+20:     private final MainActivity a;
+21: 
+22:     SettingsScreen(MainActivity a) { this.a = a; }
+23: 
+24:     /** الإعدادات صارت مجمّعة في تبويب «المزيد». */
+25:     void show() { a.moreScreen.show(); }
+26: 
+27:     /** القفل والبصمة وإقفال الفترة المحاسبية. */
+28:     void showSecurity() {
+29:         if (!a.require(Auth.Perm.SETTINGS)) return;
+30:         a.here(this::showSecurity);
+31:         a.tabbedScreen("أمان المكتب وإقفال الفترة", a.moreScreen::show, "more");
+32:         a.hint("قفل التطبيق بالبصمة أو بكلمة سر صار لكل مستخدم على جهازه: «المزيد ← حسابي وجهازي ← قفل التطبيق». "
+33:                 + "واعتماد الحركات صار لكل مستخدم: «المستخدمون والصلاحيات ← حركاته تحتاج اعتماد».");
+34:         a.title("لقطات الشاشة");
+35:         final CheckBox secure = new CheckBox(a);
+36:         secure.setText("منع لقطات الشاشة وإخفاء التطبيق في قائمة التطبيقات الأخيرة");
+37:         secure.setTextColor(a.ink);
+38:         secure.setChecked(!"0".equals(a.db.setting("secure_screen", "1")));
+39:         secure.setOnCheckedChangeListener((b, c) -> {
+40:             a.db.setSetting("secure_screen", c ? "1" : "0");
+41:             a.applySecureScreen();
+42:         });
+43:         a.body.addView(secure);
+44:         a.hint("بطاقات الأرصدة والكشوف تُشارك من أزرار المشاركة داخل التطبيق، فلا حاجة إلى لقطات الشاشة.");
+45: 
+46:         // 10.18: الوقت الموحّد — توقيت المكتب لكل الأجهزة، وتصحيح ساعة الجهاز تلقائيًا
+47:         a.title("الوقت الموحّد");
+48:         for (String line : a.db.clockLines()) a.add(a.text(line, 14, a.ink, false));
+49:         a.hint("كل الأجهزة تعرض التواريخ وتحسب «اليوم» بتوقيت المكتب، ولو كان المحاسب في بلد آخر. وساعة كل جهاز تُصحَّح من وقت Google عند كل مزامنة (ويبقى التصحيح محفوظًا بلا إنترنت).");
+50:         if (a.can(Auth.Perm.SETTINGS)) a.button("تغيير توقيت المكتب…", a.accent, v -> {
+51:             final java.util.List<String> ids = new java.util.ArrayList<>();
+52:             ids.add("");
+53:             for (String[] z : Model.ZONES) ids.add(z[0]);
+54:             for (String id : java.util.TimeZone.getAvailableIDs()) if (id.contains("/") && !id.startsWith("Etc/") && !id.startsWith("SystemV/") && !ids.contains(id)) ids.add(id);
+55:             final java.util.List<String> labels = new java.util.ArrayList<>();
+56:             for (String id : ids) labels.add(Model.zoneLabel(id));
+57:             // قائمة مع خانة بحث: اكتب اسم المدينة فتظهر
+58:             final android.widget.EditText q = new android.widget.EditText(a);
+59:             q.setHint("ابحث: دمشق، Istanbul…");
+60:             final android.widget.ListView lv = new android.widget.ListView(a);
+61:             final java.util.List<Integer> shown = new java.util.ArrayList<>();
+62:             final android.widget.ArrayAdapter<String> ad = new android.widget.ArrayAdapter<>(a, android.R.layout.simple_list_item_1, new java.util.ArrayList<String>());
+63:             lv.setAdapter(ad);
+64:             final Runnable fill = () -> {
+65:                 String f = q.getText().toString().trim().toLowerCase(java.util.Locale.ROOT);
+66:                 shown.clear();
+67:                 ad.clear();
+68:                 for (int i = 0; i < ids.size(); i++) if (f.isEmpty() || labels.get(i).toLowerCase(java.util.Locale.ROOT).contains(f)) {
+69:                     shown.add(i);
+70:                     ad.add((ids.get(i).equals(Model.zoneId()) ? "✓ " : "") + labels.get(i));
+71:                 }
+72:                 ad.notifyDataSetChanged();
+73:             };
+74:             q.addTextChangedListener(Ui.watcher(fill));
+75:             fill.run();
+76:             android.widget.LinearLayout box = new android.widget.LinearLayout(a);
+77:             box.setOrientation(android.widget.LinearLayout.VERTICAL);
+78:             box.setPadding(a.dp(16), a.dp(6), a.dp(16), 0);
+79:             box.addView(q);
+80:             box.addView(lv, new android.widget.LinearLayout.LayoutParams(-1, a.dp(380)));
+81:             final AlertDialog dlg = new AlertDialog.Builder(a).setTitle("توقيت المكتب").setView(box).setNegativeButton("إلغاء", null).create();
+82:             lv.setOnItemClickListener((p, vw, pos, idd) -> {
+83:                 dlg.dismiss();
+84:                 try {
+85:                     a.db.setOfficeZone(ids.get(shown.get(pos)));
+86:                     a.toast("توقيت المكتب: " + Model.zoneLabel(Model.zoneId()));
+87:                     showSecurity();
+88:                 } catch (Exception e) {
+89:                     a.error(e);
+90:                 }
+91:             });
+92:             dlg.show();
+93:         });
+94: 
+95:         a.title("إقفال الفترة المحاسبية");
+96:         long lockBefore = a.db.settingLong("lock_before", 0);
+97:         a.add(a.text(lockBefore > 0 ? "الحركات المسجّلة قبل " + Model.day(lockBefore) + " مقفلة: لا يمكن إلغاؤها أو تعديلها أو تسجيل حركة بتاريخ قبلها." : "لا توجد فترة مقفلة.", 15, a.dark, false));
+98:         a.button("إقفال الحركات حتى تاريخ…", a.accent, v -> {
+99:             Calendar c = Model.cal();
+100:             DatePickerDialog dp = new DatePickerDialog(a, (x, y, m, d) -> {
+101:                 Calendar k = Model.cal();
+102:                 k.set(y, m, d);
+103:                 k.add(Calendar.DAY_OF_MONTH, 1);
+104:                 final long until = StatementScreen.startOfDay(k);
+105:                 new AlertDialog.Builder(a).setTitle("تأكيد الإقفال")
+106:                         .setMessage("ستُقفل كل الحركات حتى نهاية يوم " + Model.day(until - 1) + ". لن يمكن إلغاء أو تعديل أي حركة منها إلا بعد فك الإقفال.")
+107:                         .setPositiveButton("إقفال", (q, w) -> {
+108:                             a.db.setLockBefore(until);
+109:                             showSecurity();
+110:                         }).setNegativeButton("إلغاء", null).show();
+111:             }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH));
+112:             dp.getDatePicker().setMaxDate(Clock.now());
+113:             dp.show();
+114:         });
+115:         if (lockBefore > 0) {
+116:             a.button("فك إقفال الفترة", a.red, v -> new AlertDialog.Builder(a).setTitle("فك الإقفال")
+117:                     .setMessage("سيُسجَّل فك الإقفال في سجل العمليات. هل تريد المتابعة؟")
+118:                     .setPositiveButton("فك الإقفال", (q, w) -> {
+119:                         a.db.setLockBefore(0);
+120:                         showSecurity();
+121:                     }).setNegativeButton("إلغاء", null).show());
+122:         }
+123:     }
+124: 
+125:     // ===================================================================================
+126:     // سجل العمليات
+127:     // ===================================================================================
+128: 
+129:     static String actionName(String code) {
+130:         Map<String, String> m = new HashMap<>();
+131:         m.put("CREATE_TRANSACTION", "تسجيل حركة");
+132:         m.put(UsageScreen.ACTION, "جلسة استخدام");
+133:         m.put("EDIT_TRANSACTION", "تعديل حركة");
+134:         m.put("CANCEL_TRANSACTION", "إلغاء حركة");
+135:         m.put("CREATE_OFFICE", "إضافة مكتب");
+136:         m.put("UPDATE_OFFICE", "تعديل مكتب");
+137:         m.put("SAVE_CURRENCY", "حفظ عملة");
+138:         m.put("MANUAL_RATE", "سعر صرف يدوي");
+139:         m.put("SETTING", "تغيير إعداد");
+140:         m.put("EXPORT", "تصدير");
+141:         m.put("RESTORE", "استعادة نسخة");
+142:         m.put("REVERT_RESTORE", "تراجع عن استعادة");
+143:         m.put("ADD_USER", "إضافة مستخدم");
+144:         m.put("UPDATE_USER", "تعديل مستخدم");
+145:         m.put("RESET_PIN", "تغيير رمز");
+146:         m.put("DISABLE_USERS", "إيقاف نظام المستخدمين");
+147:         m.put("LOGIN", "دخول");
+148:         m.put("LOGIN_FAILED", "محاولة دخول فاشلة");
+149:         m.put("OPERATION_FAILED", "عملية فشلت");
+150:         m.put("MIGRATION", "نقل بيانات من برنامج سابق");
+151:         String v = m.get(code);
+152:         return v == null ? code : v;
+153:     }
+154: 
+155:     void showAudit() {
+156:         if (!a.require(Auth.Perm.AUDIT)) return;   // 11.6: صلاحية مستقلة يختارها المدير

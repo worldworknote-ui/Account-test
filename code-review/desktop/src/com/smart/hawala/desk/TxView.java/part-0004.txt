@@ -1,0 +1,168 @@
+587:             duplicate = null;
+588:             parseBox.removeAll();
+589:             parseBox.revalidate();
+590:             parseBox.repaint();
+591:             saveDraft();
+592:             return;
+593:         }
+594:         duplicate = duplicateOf(text);
+595:         // 9.0: المجانية: استخراج معلومات 20 رسالة يوميًا، ثم الإدخال اليدوي العادي
+596:         if (!db.waAllowed(text)) {
+597:             parsed = null;
+598:             parseBox.removeAll();
+599:             parseBox.add(Ui.gap(10));
+600:             parseBox.add(Ui.label("الإدخال اليدوي", 14, Ui.ink, true));
+601:             parseBox.add(Ui.para(Entitlements.waLimitMessage(db.waUsage()[1]), 13, Ui.muted, 520));
+602:             Ui.rtl(parseBox);
+603:             parseBox.revalidate();
+604:             parseBox.repaint();
+605:             saveDraft();
+606:             return;
+607:         }
+608:         parsed = MessageParser.parse(text, parserCurrencies(), MessageParser.aliasesFrom(db.setting("cur_aliases", "")));
+609:         updatePin();
+610:         renderParse();
+611:         saveDraft();
+612:     }
+613: 
+614:     void renderParse() {
+615:         parseBox.removeAll();
+616:         MessageParser.Result r = parsed;
+617:         if (r == null) return;
+618:         parseBox.add(Ui.gap(10));
+619:         parseBox.add(Ui.label("المعلومات المستخرجة", 14, Ui.primaryInk, true));
+620:         long[] wu = db.waUsage();
+621:         if (wu[1] != Entitlements.UNLIMITED) parseBox.add(Ui.label("النسخة المجانية: استُخدم " + wu[0] + " من " + wu[1] + " رسالة اليوم (تُحتسب عند الإضافة للحقول)", 12, Ui.muted, false));
+622:         if (duplicate != null) line(false, "! هذه الرسالة مسجّلة سابقًا: " + dupText(duplicate) + " — تأكد قبل التسجيل حتى لا تُسجَّل مرتين");
+623:         line(!r.person.isEmpty(), r.person.isEmpty() ? "المستفيد: لم يُستخرج — اكتبه بيدك" : "المستفيد: " + r.person);
+624:         line(!r.amount.isEmpty(), r.amount.isEmpty() ? "المبلغ: لم يُستخرج — اكتبه بيدك" : "المبلغ: " + r.amount
+625:                 + (r.amountText.isEmpty() || r.amountText.equals(r.amount) ? "" : "   (في الرسالة: «" + r.amountText + "»)"));
+626:         // 10.5: تفسير يحتاج مراجعة («50000 الف»، أو رقم ملتبس بعملة بثلاث منازل)
+627:         if (!r.amountNote.isEmpty()) line(false, "راجع المبلغ: " + r.amountNote);
+628:         if (r.currency != null) line(true, "العملة: " + r.currency);
+629:         else if (!r.currencyWord.isEmpty()) line(false, "العملة «" + r.currencyWord + "» غير مفعّلة لهذا المكتب — اخترها بيدك");
+630:         else if (!r.unknownWord.isEmpty()) {
+631:             // 10.18 (كالهاتف): كلمة عملة غير معروفة تُربط بعملتها من هنا مباشرة، فيفهمها البرنامج بعدها دائمًا
+632:             line(false, "العملة: لم أتعرّف على «" + r.unknownWord + "»");
+633:             final String word = r.unknownWord;
+634:             parseBox.add(Ui.flow(Ui.ghost("اربط «" + word + "» بعملة ليفهمها البرنامج دائمًا", e -> {
+635:                 try {
+636:                     List<String> codes = new ArrayList<>();
+637:                     for (Model.Currency c : db.currencies(false)) codes.add(c.code);
+638:                     int k = Ui.choose(this, "تعني أي عملة؟", "«" + word + "» تعني:", codes.toArray(new String[0]));
+639:                     if (k < 0) return;
+640:                     Map<String, List<String>> al = MessageParser.aliasesFrom(db.setting("cur_aliases", ""));
+641:                     al.computeIfAbsent(codes.get(k), z -> new ArrayList<>()).add(word);
+642:                     db.setSetting("cur_aliases", MessageParser.aliasesTo(al));
+643:                     Ui.toast("«" + word + "» = " + codes.get(k));
+644:                     previewParse();
+645:                 } catch (Exception ex) {
+646:                     Ui.error(this, ex);
+647:                 }
+648:             })));
+649:         } else line(false, "العملة: لم تُذكر — اخترها بيدك");
+650:         if (office.getSelectedItem() == null) line(false, "المكتب: لم يُختر بعد — اختره من النموذج");
+651:         if (r.net) line(true, "صافي (بدون خصم أجرة)");
+652:         if (!r.phone.isEmpty()) line(true, "الهاتف: " + r.phone);
+653:         if (!r.city.isEmpty()) line(true, "المدينة: " + r.city);
+654:         if (!r.sender.isEmpty()) line(true, "المرسل في نص الحوالة: " + r.sender);
+655:         if (!r.rajeRate.isEmpty()) line(true, "راجع (أجرة لنا): " + r.rajeRate + (r.rajePer == Model.PER_MILLE ? " بالألف" : "٪") + " من المبلغ");
+656:         else if (!r.rajeAmount.isEmpty()) line(true, "راجع (أجرة لنا): " + r.rajeAmount);
+657:         else if (r.raje) line(false, "ذُكر «راجع»" + (r.rajeHint.isEmpty() ? "" : " " + r.rajeHint) + " دون «بالمية/بالألف» أو عملة — حدّد الأجرة لنا بيدك");
+658:         if (!r.fee.isEmpty()) line(true, "ذُكرت أجرة: " + r.fee + " — لا تُضاف تلقائيًا، أضفها من «مع أجرة» إن لزم");
+659:         List<Component> bs = new ArrayList<>();
+660:         if (r.any()) bs.add(Ui.button(filled ? "✓ أُضيفت للحقول — إعادة الإضافة" : "↓  إضافة المعلومات للحقول", filled ? Ui.green : Ui.primary, e -> fillFromParse()));
+661:         if (License.current.ai() && "1".equals(db.setting("ai_on", "0"))) bs.add(Ui.ghost(AiExtract.BUTTON, e -> askAi()));
+662:         parseBox.add(Ui.gap(6));
+663:         parseBox.add(Ui.flow(bs.toArray(new Component[0])));
+664:         if (!r.any()) parseBox.add(Ui.label("لم أجد في الرسالة معلومات يمكن إضافتها؛ اكتب الحقول بيدك.", 13, Ui.red, true));
+665:         Ui.rtl(parseBox);
+666:         parseBox.revalidate();
+667:         parseBox.repaint();
+668:     }
+669: 
+670:     void line(boolean ok, String s) {
+671:         JLabel l = Ui.label((ok ? "✓ " : "× ") + s, 13.5f, ok ? Ui.green : Ui.red, false);
+672:         parseBox.add(l);
+673:     }
+674: 
+675:     void fillFromParse() {
+676:         MessageParser.Result r = parsed;
+677:         if (r == null) return;
+678:         if (!db.waUse(desc.getText())) {
+679:             previewParse();
+680:             return;
+681:         }
+682:         List<String> doneL = new ArrayList<>();
+683:         if (!r.person.isEmpty()) {
+684:             person.setText(r.person);
+685:             doneL.add("المستفيد");
+686:         }
+687:         if (!r.amount.isEmpty()) {
+688:             amount.setText(r.amount);
+689:             doneL.add("المبلغ");
+690:         }
+691:         if (!r.city.isEmpty() && dest.val().isEmpty()) {
+692:             dest.setText(r.city);
+693:             doneL.add("الوجهة");
+694:         }
+695:         if (r.currency != null && ((DefaultComboBoxModel<String>) currency.getModel()).getIndexOf(r.currency) >= 0) {
+696:             currency.setSelectedItem(r.currency);
+697:             doneL.add("العملة");
+698:         }
+699:         if (!r.rajeRate.isEmpty() || !r.rajeAmount.isEmpty()) {
+700:             // «راجع» = أجرة يدفعها المكتب لنا
+701:             feeMode.set(1);
+702:             feeSide.set(0);
+703:             if (!r.rajeRate.isEmpty()) {
+704:                 feeKind.set(1);
+705:                 ratePer.set(r.rajePer == Model.PER_MILLE ? 1 : 0);
+706:                 rate.setText(r.rajeRate);
+707:             } else {
+708:                 feeKind.set(0);
+709:                 if (currency.getSelectedItem() != null) feeCur.setSelectedItem(currency.getSelectedItem());
+710:                 fee.setText(r.rajeAmount);
+711:             }
+712:             applyFee();
+713:             doneL.add("الراجع (أجرة لنا)");
+714:         }
+715:         filled = true;
+716:         renderParse();
+717:         if (type.none()) type.setBorder(BorderFactory.createLineBorder(Ui.red));
+718:         updateSummary();
+719:         Ui.toast(doneL.isEmpty() ? "لا توجد معلومات يمكن إضافتها" : "أُضيف: " + Model.join(doneL, "، ") + ". اختر «لنا» أو «علينا».");
+720:     }
+721: 
+722:     void askAi() {
+723:         AiExtract.Config c = AiPrefs.config(db);
+724:         String problem = c.problem();
+725:         if (problem != null) {
+726:             Ui.toast(problem);
+727:             return;
+728:         }
+729:         String text = desc.getText();
+730:         List<MessageParser.Cur> curs = parserCurrencies();
+731:         Ui.busy(this, "جارٍ فهم الرسالة بالذكاء الاصطناعي…", p -> AiExtract.call(c, text, curs, MessageParser.aliasesFrom(db.setting("cur_aliases", ""))), res -> {
+732:             parsed = res;
+733:             filled = false;
+734:             renderParse();
+735:         });
+736:     }
+737: 
+738:     Map<String, Model.Tx> recentPrints() {
+739:         long now = Clock.now();
+740:         if (prints != null && now - printsAt < 300000L) return prints;
+741:         Map<String, Model.Tx> m = new HashMap<>();
+742:         try {
+743:             for (Model.Tx t : db.descriptionsSince(now - 120L * 86400000L)) {
+744:                 String fp = WaText.fingerprint(t.description);
+745:                 if (fp.length() >= 12 && !m.containsKey(fp)) m.put(fp, t);
+746:             }
+747:         } catch (Exception ignored) {
+748:             // مساعد فقط
+749:         }
+750:         prints = m;
+751:         printsAt = now;
+752:         return m;
+753:     }
+754: 

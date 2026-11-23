@@ -1,0 +1,151 @@
+1275:                                 + " باسم «" + c.getString(0) + "». كل عيار حساب واحد.");
+1276:                     if (fineness == 0 && !Metals.OTHER.equals(base))
+1277:                         throw new IllegalStateException("اختر العيار: عندك حساب " + Metals.baseName(base) + " آخر («" + c.getString(0) + "»)، والعيار يميّز بينهما");
+1278:                 }
+1279:             }
+1280:             ContentValues v = new ContentValues();
+1281:             v.put("name", name.trim());
+1282:             v.put("decimals", dec);
+1283:             v.put("active", active ? 1 : 0);
+1284:             v.put("kind", "METAL");
+1285:             v.put("metal", base);
+1286:             v.put("unit", unit);
+1287:             v.put("fineness", fineness);
+1288:             v.put("valued", valued ? 1 : 0);
+1289:             if (d.update("currencies", v, "code=?", new String[]{cc}) == 0) {
+1290:                 v.put("code", cc);
+1291:                 d.insertOrThrow("currencies", null, v);
+1292:             }
+1293:             audit(d, "SAVE_METAL", "currency", 0, cc + " " + Metals.baseName(base) + " " + Metals.purityLabel(base, fineness) + " " + Metals.unit(unit).name
+1294:                     + (valued ? " — يدخل التقويم بالدولار" : " — بالوزن فقط"));
+1295:             d.setTransactionSuccessful();
+1296:         } finally {
+1297:             d.endTransaction();
+1298:         }
+1299:         synchronized (this) { decimalsCache.remove(cc); }
+1300:         refreshMetals(d);
+1301:     }
+1302: 
+1303:     /** 10.11 (AUDIT-004): مستعملة في قيود المكاتب أو الحركات المعلّقة أو الصندوق أو حسابات العملاء. */
+1304:     public boolean currencyUsed(String code) {
+1305:         String q = "SELECT 1 FROM journal_lines WHERE currency=?1 UNION ALL SELECT 1 FROM tx WHERE currency=?1 OR fee_currency=?1"
+1306:                 + " UNION ALL SELECT 1 FROM cash_moves WHERE currency=?1 UNION ALL SELECT 1 FROM client_moves WHERE currency=?1 LIMIT 1";
+1307:         try (Cursor c = getReadableDatabase().rawQuery(q, new String[]{code})) {
+1308:             return c.moveToFirst();
+1309:         }
+1310:     }
+1311: 
+1312:     // ===================================================================================
+1313:     // الحركات
+1314:     // ===================================================================================
+1315: 
+1316:     public static final class TxInput {
+1317:         public long office;
+1318:         public String type, person = "", currency, feeType = FEE_NONE, feeCurrency, description = "", notes = "", service = "", dest = "";
+1319:         /** 12.4: نوع الحركة الخاصة (فارغ = عادية)، وهل تُحسب في الرصيد. */
+1320:         public String special = "";
+1321:         public boolean specialBal = true;
+1322:         /** ساقا تبديل العملة فقط (يملؤهما addFx). */
+1323:         String pairUuid, fxRate;
+1324:         public long amount, fee;
+1325:         public long when;
+1326:     }
+1327: 
+1328:     private void validate(TxInput in) {
+1329:         if (in.amount <= 0) throw new IllegalArgumentException("المبلغ يجب أن يكون أكبر من صفر");
+1330:         if (!TYPE_DEBIT.equals(in.type) && !TYPE_CREDIT.equals(in.type)) throw new IllegalArgumentException("نوع الحركة غير صالح");
+1331:         boolean hasFee = !FEE_NONE.equals(in.feeType);
+1332:         if (hasFee && (in.fee <= 0 || in.feeCurrency == null)) throw new IllegalArgumentException("اكتب مبلغ الأجرة وعملتها أو اختر «بدون أجرة»");
+1333:         if (hasFee && !FEE_US.equals(in.feeType) && !FEE_THEM.equals(in.feeType)) throw new IllegalArgumentException("نوع الأجرة غير صالح");
+1334:         Model.Office off = office(in.office);
+1335:         if (off == null) throw new IllegalArgumentException("المكتب غير موجود");
+1336:         if (!off.active) throw new IllegalArgumentException("المكتب «" + Model.nz(off.name) + "» موقوف. فعّله من قائمة المكاتب لتسجيل حركات عليه.");
+1337:         List<String> allowed = officeCurrencies(in.office);
+1338:         if (!allowed.contains(in.currency)) throw new IllegalArgumentException("العملة " + in.currency + " غير مفعّلة لهذا المكتب");
+1339:         if (hasFee && !allowed.contains(in.feeCurrency)) throw new IllegalArgumentException("عملة الأجرة " + in.feeCurrency + " غير مفعّلة لهذا المكتب");
+1340:         if (in.when > Clock.now() + 10 * 60000L) throw new IllegalArgumentException("لا يمكن تسجيل حركة بتاريخ في المستقبل");
+1341:         if (in.when <= 0) throw new IllegalArgumentException("تاريخ الحركة غير صالح");
+1342:         if (Model.nz(in.special).trim().length() > 40) throw new IllegalArgumentException("اسم نوع الحركة الخاصة طويل (40 حرفًا على الأكثر)");
+1343:     }
+1344: 
+1345:     private static boolean special(TxInput in) { return in != null && !Model.nz(in.special).trim().isEmpty(); }
+1346: 
+1347:     private List<File> writeImages(List<byte[]> images) throws IOException {
+1348:         List<File> written = new ArrayList<>();
+1349:         if (images == null || images.isEmpty()) return written;
+1350:         File dir = evidenceDir();
+1351:         if (!dir.exists() && !dir.mkdirs()) throw new IOException("تعذر إنشاء مجلد الصور");
+1352:         try {
+1353:             for (byte[] im : images) {
+1354:                 File f = new File(dir, UUID.randomUUID() + ".evd");
+1355:                 try (FileOutputStream o = new FileOutputStream(f)) {
+1356:                     o.write(Crypto.encBytes(im));
+1357:                     o.getFD().sync();
+1358:                 }
+1359:                 written.add(f);
+1360:             }
+1361:         } catch (IOException | RuntimeException e) {
+1362:             for (File f : written) f.delete();
+1363:             throw e;
+1364:         }
+1365:         return written;
+1366:     }
+1367: 
+1368:     private long insertTx(SQLiteDatabase d, TxInput in, Long replaces) { return insertTx(d, in, replaces, false); }
+1369: 
+1370:     /** pending: صف الحركة وحده بحالة PENDING، والقيود عند الاعتماد (postTx). */
+1371:     private long insertTx(SQLiteDatabase d, TxInput in, Long replaces, boolean pending) {
+1372:         boolean hasFee = !FEE_NONE.equals(in.feeType);
+1373:         ContentValues v = new ContentValues();
+1374:         v.put("uuid", UUID.randomUUID().toString());
+1375:         v.put("office_id", in.office);
+1376:         v.put("type", in.type);
+1377:         v.put("person", Crypto.enc(Model.nz(in.person)));
+1378:         v.put("amount_minor", in.amount);
+1379:         v.put("currency", in.currency);
+1380:         v.put("fee_type", in.feeType);
+1381:         v.put("fee_minor", hasFee ? in.fee : 0);
+1382:         v.put("fee_currency", hasFee ? in.feeCurrency : in.currency);
+1383:         v.put("description", Crypto.enc(Model.nz(in.description)));
+1384:         v.put("notes", Crypto.enc(Model.nz(in.notes)));
+1385:         v.put("created_at", in.when);
+1386:         v.put("user_name", Crypto.enc(currentUserName));
+1387:         Model.User me = SmartApp.currentUser;
+1388:         if (me != null && usersEnabled()) v.put("user_id", me.id);   // 10.5 (§7): رقم ثابت لمن أدخلها
+1389:         v.put("service", Model.nz(in.service).trim());
+1390:         v.put("dest", Crypto.enc(Model.nz(in.dest).trim()));
+1391:         if (in.pairUuid != null) {
+1392:             v.put("pair_uuid", in.pairUuid);
+1393:             v.put("fx_rate", in.fxRate);
+1394:         }
+1395:         if (replaces != null) v.put("replaces_id", replaces);
+1396:         // 12.4: الحركة الخاصة: نوعها، والمحسوبة في الرصيد تُرحَّل كالعادية، وغير المحسوبة بلا قيود (SPECIAL)
+1397:         boolean unposted = special(in) && !in.specialBal;
+1398:         if (special(in)) {
+1399:             v.put("special", in.special.trim());
+1400:             v.put("special_bal", in.specialBal ? 1 : 0);
+1401:         }
+1402:         if (pending) v.put("status", Model.STATUS_PENDING);
+1403:         else if (unposted) v.put("status", Model.STATUS_SPECIAL);
+1404:         long id = ins(d, "tx", v);
+1405:         if (!pending && !unposted) postTx(d, id, in);
+1406:         return id;
+1407:     }
+1408: 
+1409:     private void postTx(SQLiteDatabase d, long id, TxInput in) {
+1410:         boolean hasFee = !FEE_NONE.equals(in.feeType);
+1411:         postEntry(d, id, "PRINCIPAL", in.office, in.currency, TYPE_DEBIT.equals(in.type) ? in.amount : 0, TYPE_CREDIT.equals(in.type) ? in.amount : 0, in.when);
+1412:         if (hasFee) postEntry(d, id, "FEE", in.office, in.feeCurrency, FEE_US.equals(in.feeType) ? in.fee : 0, FEE_THEM.equals(in.feeType) ? in.fee : 0, in.when);
+1413:     }
+1414: 
+1415:     // ===================================================================================
+1416:     // الاعتماد المزدوج (ت4): الموظف يقترح المبلغ الكبير، والمحاسب أو المدير يعتمد
+1417:     // ===================================================================================
+1418: 
+1419:     public boolean approvalRequired(TxInput in) {
+1420:         Model.User u = SmartApp.currentUser;
+1421:         if (u == null || !usersEnabled()) return false;
+1422:         BigDecimal rate = usdRates().get(in.currency);
+1423:         // 10.3: الاعتماد قرار المدير لكل مستخدم («حركاته تحتاج اعتماد») أيًا كان المبلغ
+1424:         Model.User now = user(u.id);
+1425:         if (now != null) return Auth.needsReview(now);

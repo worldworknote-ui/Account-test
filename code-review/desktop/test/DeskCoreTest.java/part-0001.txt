@@ -1,0 +1,175 @@
+1: import android.content.Context;
+2: import com.smart.hawala.*;
+3: import java.io.File;
+4: import java.nio.charset.StandardCharsets;
+5: import java.nio.file.Files;
+6: import java.util.*;
+7: import org.json.JSONArray;
+8: import org.json.JSONObject;
+9: 
+10: /**
+11:  * نواة الماك: Db نفسه (من ملفات الهاتف) فوق sqlite-jdbc.
+12:  * 1) نسخ أداة النقل الاصطناعية A–D تُستعاد وأرصدتها كما في expect.json، وهوية الأرصدة سليمة.
+13:  * 2) عمليات كاملة على الماك (مكاتب، حركات بأجور ونسب، تعديل، إلغاء، تبديل عملة، دمج، رصيد سابق) ثم فحص الصحة.
+14:  * 3) نسخة من الماك ← استعادة في جهاز آخر (مجلد آخر بمفتاح آخر) ← الجداول والأرصدة متطابقة سطرًا بسطر.
+15:  * 4) (اختياري) ملف حقيقي \u200e.sba: الأرصدة الـ94 = المتوقعة، وهوية الأرصدة على 25,163 حركة.
+16:  * وسائط: tests/data [ملف_حقيقي.sba كلمة_المرور ملف_المتوقع.json]
+17:  */
+18: public class DeskCoreTest {
+19:     static int fails, passes;
+20: 
+21:     static void check(boolean c, String m) {
+22:         if (c) passes++;
+23:         else fails++;
+24:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+25:     }
+26: 
+27:     static File tmp(String n) throws Exception {
+28:         File d = Files.createTempDirectory("sa-desk-" + n).toFile();
+29:         d.deleteOnExit();
+30:         return d;
+31:     }
+32: 
+33:     /** جهاز جديد: مجلد بيانات + مفاتيح خاصة به. */
+34:     static Object[] device(String n) throws Exception {
+35:         File home = tmp(n);
+36:         SecretStore.fallback(new File(home, "keys"));
+37:         Context ctx = new Context(home);
+38:         resetCrypto();
+39:         Crypto.init(ctx);
+40:         Db db = new Db(ctx);
+41:         SmartApp.db = db;
+42:         SmartApp.ctx = ctx;
+43:         SmartApp.currentUser = null;
+44:         License.load(ctx, db);
+45:         return new Object[]{ctx, db};
+46:     }
+47: 
+48:     /** Crypto يحفظ المفتاح في حقل ثابت؛ لمحاكاة جهاز آخر نصفّره. */
+49:     static void resetCrypto() throws Exception {
+50:         java.lang.reflect.Field f = Crypto.class.getDeclaredField("dek");
+51:         f.setAccessible(true);
+52:         f.set(null, null);
+53:         Crypto.clearCache();
+54:     }
+55: 
+56:     static Map<String, Long> namedBalances(Db db) {
+57:         Map<String, Long> m = new TreeMap<>();
+58:         Map<Long, String> names = db.officeNames();
+59:         for (Map.Entry<Long, Map<String, Long>> e : db.officeBalances().entrySet())
+60:             for (Map.Entry<String, Long> b : e.getValue().entrySet()) if (b.getValue() != 0) m.merge(names.get(e.getKey()) + "|" + b.getKey(), b.getValue(), Long::sum);
+61:         return m;
+62:     }
+63: 
+64:     static boolean healthy(Db db, String label) {
+65:         boolean all = true;
+66:         for (Db.Check c : db.healthCheck(true)) {
+67:             if (!c.ok) {
+68:                 all = false;
+69:                 System.out.println("      ✗ " + c.title + ": " + c.detail);
+70:             }
+71:         }
+72:         check(all, label + ": فحص الصحة الكامل (سلامة الملف، الروابط، توازن القيود، رصيد كل مكتب = حركاته، تسلسل السجل)");
+73:         return all;
+74:     }
+75: 
+76:     static void restore(Context ctx, Db db, File f, String pw) throws Exception {
+77:         BackupManager.Prepared p = BackupManager.prepareRestore(ctx, f, pw.toCharArray(), m -> {});
+78:         BackupManager.applyRestore(ctx, db, p, m -> {});
+79:     }
+80: 
+81:     /** رخصة كاملة للاختبار (Grant بلا توقيع: لا تمر بالتحقق، تُبنى مباشرة كما يبنيها التحقق بعد نجاحه). */
+82:     static LicenseToken.Grant fullGrant() throws Exception {
+83:         Map<String, String> f = new HashMap<>();
+84:         f.put("ft", "all");
+85:         f.put("lid", "TEST-FULL");
+86:         f.put("uu", "29991231");
+87:         java.lang.reflect.Constructor<LicenseToken.Grant> c = LicenseToken.Grant.class.getDeclaredConstructor(Map.class);
+88:         c.setAccessible(true);
+89:         return c.newInstance(f);
+90:     }
+91: 
+92:     public static void main(String[] a) throws Exception {
+93:         System.setProperty("sa.secrets", "file");
+94:         File data = new File(a.length > 0 ? a[0] : "tests/data");
+95:         JSONObject expect = new JSONObject(new String(Files.readAllBytes(new File(data, "expect.json").toPath()), StandardCharsets.UTF_8));
+96: 
+97:         System.out.println("== 1) نسخ أداة النقل تُستعاد على الماك");
+98:         for (String k : new String[]{"A", "B", "C", "D"}) {
+99:             Object[] dv = device("m" + k);
+100:             Context ctx = (Context) dv[0];
+101:             Db db = (Db) dv[1];
+102:             JSONObject e = expect.getJSONObject(k);
+103:             restore(ctx, db, new File(data, k + ".sba"), e.getString("password"));
+104:             Map<String, Long> want = new TreeMap<>();
+105:             JSONArray bs = e.getJSONArray("balances");
+106:             for (int i = 0; i < bs.length(); i++) {
+107:                 JSONArray b = bs.getJSONArray(i);
+108:                 if (b.getLong(2) != 0) want.merge(b.getString(0) + "|" + b.getString(1), b.getLong(2), Long::sum);
+109:             }
+110:             Map<String, Long> got = namedBalances(db);
+111:             check(got.equals(want), k + ": " + db.offices().size() + " مكاتب و" + db.txCount() + " حركة، الأرصدة كما في الملف " + (got.equals(want) ? "" : got + " ≠ " + want));
+112:             healthy(db, k);
+113:             db.close();
+114:         }
+115: 
+116:         System.out.println("== 2) عمليات كاملة على الماك");
+117:         Object[] dv = device("ops");
+118:         Context ctx = (Context) dv[0];
+119:         Db db = (Db) dv[1];
+120:         List<String> usdEur = Arrays.asList("USD", "EUR");
+121:         long nour = db.addOffice("النور", "", "0933", "حلب", "", "", null, null, usdEur, new HashMap<>(), Arrays.asList(new Db.Opening("USD", "لنا", 100000)));
+122:         long amal = db.addOffice("الأمل", "", "", "", "", "", null, null, usdEur, new HashMap<>(), new ArrayList<>());
+123:         long amal2 = db.addOffice("مكتب الأمل", "", "", "", "", "", null, null, usdEur, new HashMap<>(), Arrays.asList(new Db.Opening("EUR", "علينا", 50000)));
+124:         long now = System.currentTimeMillis();
+125:         Db.TxInput t1 = new Db.TxInput();
+126:         t1.office = nour;
+127:         t1.type = Model.TYPE_DEBIT;
+128:         t1.amount = 1000000;
+129:         t1.currency = "USD";
+130:         t1.feeType = Model.FEE_US;
+131:         t1.fee = Model.feeFromRate(t1.amount, new java.math.BigDecimal("1"), Model.PER_CENT);   // «راجع 1%»
+132:         t1.feeCurrency = "USD";
+133:         t1.person = "سامر خليل";
+134:         t1.description = "حوالة";
+135:         t1.when = now - 3600000;
+136:         long id1 = db.addTx(t1, null);
+137:         Db.TxInput t2 = new Db.TxInput();
+138:         t2.office = nour;
+139:         t2.type = Model.TYPE_CREDIT;
+140:         t2.amount = 250000;
+141:         t2.currency = "EUR";
+142:         t2.feeType = Model.FEE_THEM;
+143:         t2.fee = 1500;
+144:         t2.feeCurrency = "EUR";
+145:         t2.when = now - 1800000;
+146:         long id2 = db.addTx(t2, Collections.singletonList("صورة وصل".getBytes(StandardCharsets.UTF_8)));
+147:         Db.TxInput t3 = new Db.TxInput();
+148:         t3.office = amal;
+149:         t3.type = Model.TYPE_DEBIT;
+150:         t3.amount = 77700;
+151:         t3.currency = "USD";
+152:         t3.when = now - 900000;
+153:         long id3 = db.addTx(t3, null);
+154:         check(db.balances(nour).get("USD") == 100000 + 1000000 + 10000 && db.balances(nour).get("EUR") == -250000 - 1500,
+155:                 "النور: رصيد سابق 1,000 + حوالة 10,000 لنا + راجع 1% (100) = 11,100 USD؛ و-2,515 EUR");
+156:         Db.TxInput t3b = new Db.TxInput();
+157:         t3b.office = amal;
+158:         t3b.type = Model.TYPE_DEBIT;
+159:         t3b.amount = 88800;
+160:         t3b.currency = "USD";
+161:         t3b.when = t3.when;
+162:         long id3b = db.editTx(id3, t3b, null, new HashSet<>(), "تصحيح المبلغ");
+163:         check(db.balances(amal).get("USD") == 88800, "تعديل حركة: قيد عكسي + حركة مصححة → 888");
+164:         db.cancelTx(id1, "إلغاء تجربة");
+165:         check(db.balances(nour).get("USD") == 100000, "إلغاء: يعود الرصيد إلى الرصيد السابق 1,000");
+166:         String[] fx = db.addFx(amal, "USD", 100000, "EUR", 92000, "0.92", "تبديل", now - 600000);
+167:         check(fx != null && db.balances(amal).get("USD") == 188800 && db.balances(amal).get("EUR") == -92000, "تبديل عملة: ساقان مرتبطتان");
+168:         Map<String, Long> before = new HashMap<>(db.balances(amal));
+169:         for (Map.Entry<String, Long> x : db.balances(amal2).entrySet()) before.merge(x.getKey(), x.getValue(), Long::sum);
+170:         db.mergeOffices(amal2, amal);
+171:         Map<String, Long> after = new HashMap<>(db.balances(amal));
+172:         after.values().removeIf(v -> v == 0);
+173:         before.values().removeIf(v -> v == 0);
+174:         check(after.equals(before) && db.office(amal2) == null, "دمج «مكتب الأمل» في «الأمل»: الرصيد = مجموع الرصيدين " + after);
+175:         check(Crypto.healthy(ctx), "التشفير بمفتاح سلسلة المفاتيح سليم");

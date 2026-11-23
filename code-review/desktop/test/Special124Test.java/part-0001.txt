@@ -1,0 +1,170 @@
+1: import android.content.Context;
+2: import android.database.Cursor;
+3: import com.smart.hawala.*;
+4: import java.io.File;
+5: import java.nio.file.Files;
+6: import java.util.*;
+7: 
+8: /**
+9:  * 12.4 على Db الحقيقي (sqlite-jdbc) وبيانات اصطناعية: الحركات الخاصة (محسوبة وغير محسوبة)، ظهورها في الكشف «معلّقة»،
+10:  * تحويلها لعادية بتاريخها أو بتاريخ اليوم، تعليم العادية خاصة، الإلغاء، الصلاحيات، الاعتماد، تحويل الأمانة والمجمّد لحركة،
+11:  * المزامنة بين جهازين، وترحيل قاعدة 10.4 إلى المخطط 12.
+12:  * الاستعمال: java Special124Test tests/data/db-10.4
+13:  */
+14: public class Special124Test {
+15:     static int fails, passes;
+16: 
+17:     static void check(boolean c, String m) {
+18:         if (c) passes++;
+19:         else fails++;
+20:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+21:     }
+22: 
+23:     static Db.TxInput tx(long office, boolean us, long amount, String cur, String person, long when) {
+24:         Db.TxInput t = new Db.TxInput();
+25:         t.office = office;
+26:         t.type = us ? Model.TYPE_DEBIT : Model.TYPE_CREDIT;
+27:         t.amount = amount;
+28:         t.currency = cur;
+29:         t.person = person;
+30:         t.when = when;
+31:         return t;
+32:     }
+33: 
+34:     static Db.TxInput sp(Db.TxInput t, String type, boolean bal) {
+35:         t.special = type;
+36:         t.specialBal = bal;
+37:         return t;
+38:     }
+39: 
+40:     static Db.TxInput copy(Model.Tx t) {
+41:         Db.TxInput in = tx(t.officeId, Model.TYPE_DEBIT.equals(t.type), t.amount, t.currency, t.person, t.createdAt);
+42:         in.feeType = t.feeType;
+43:         in.fee = t.fee;
+44:         in.feeCurrency = t.feeCurrency;
+45:         in.description = t.description;
+46:         in.notes = t.notes;
+47:         in.service = t.service;
+48:         in.dest = t.dest;
+49:         return in;
+50:     }
+51: 
+52:     static boolean throwsMsg(Runnable r, String part) {
+53:         try {
+54:             r.run();
+55:             return false;
+56:         } catch (RuntimeException e) {
+57:             String all = "";
+58:             for (Throwable t = e; t != null; t = t.getCause()) all += t.getMessage() + " | ";
+59:             if (part != null && !all.contains(part)) System.out.println("      رسالة: " + all);
+60:             return part == null || all.contains(part);
+61:         }
+62:     }
+63: 
+64:     interface Io { void run() throws Exception; }
+65: 
+66:     static Runnable io(Io r) {
+67:         return () -> {
+68:             try {
+69:                 r.run();
+70:             } catch (RuntimeException e) {
+71:                 throw e;
+72:             } catch (Exception e) {
+73:                 throw new RuntimeException(e.getMessage(), e);
+74:             }
+75:         };
+76:     }
+77: 
+78:     static void as(Db db, long uid) {
+79:         SmartApp.currentUser = uid == 0 ? null : db.user(uid);
+80:         Db.currentUserName = SmartApp.currentUser == null ? "" : SmartApp.currentUser.name;
+81:     }
+82: 
+83:     static int count(Db db, String sql) {
+84:         try (Cursor c = db.getReadableDatabase().rawQuery(sql, null)) {
+85:             c.moveToFirst();
+86:             return c.getInt(0);
+87:         }
+88:     }
+89: 
+90:     static long bal(Db db, long office, String cur) { return db.balances(office).getOrDefault(cur, 0L); }
+91: 
+92:     static void syncAll(SyncEngine... es) throws Exception {
+93:         for (int round = 0; round < 3; round++) for (SyncEngine e : es) e.sync();
+94:     }
+95: 
+96:     public static void main(String[] a) throws Exception {
+97:         System.setProperty("sa.secrets", "file");
+98:         Object[] first = DeskCoreTest.device("s124A");
+99:         Db A = (Db) first[1];
+100:         License.current = Entitlements.of(DeskCoreTest.fullGrant(), BuildInfo.BUILD_DATE);
+101:         List<String> ue = Arrays.asList("USD", "EUR", "TRY");
+102:         long off = A.addOffice("تجربة", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+103:         long other = A.addOffice("الأمل", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+104:         long now = Clock.now();
+105:         long t3 = now - 3 * 86_400_000L;
+106: 
+107:         System.out.println("== 1) خاصة لا تُحسب في الرصيد");
+108:         long base = A.addTx(tx(off, true, 100000, "USD", "عادية", t3), null);
+109:         long sNo = A.addTx(sp(tx(off, true, 50000, "USD", "أبو خالد", t3), "ناقصة أجور", false), null);
+110:         Model.Tx s1 = A.tx(sNo);
+111:         check(Model.STATUS_SPECIAL.equals(s1.status) && s1.isSpecial() && s1.isUnposted() && "ناقصة أجور".equals(s1.special), "محفوظة «خاصة» بنوعها، بلا قيود");
+112:         check(bal(A, off, "USD") == 100000, "الرصيد لا يتغير: " + bal(A, off, "USD"));
+113:         check(count(A, "SELECT COUNT(*) FROM journal_entries WHERE tx_id=" + sNo) == 0, "لا قيد لها");
+114:         boolean inStmt = false;
+115:         for (Model.Line l : A.statementLines(off, 0, Long.MAX_VALUE)) if (l.txId != null && l.txId == sNo) inStmt = true;
+116:         check(!inStmt, "ولا تظهر في الكشف");
+117:         check(A.specials(off).size() == 1 && A.specials(null).size() == 1, "تظهر في قائمة الخاصة للمكتب");
+118: 
+119:         System.out.println("== 2) خاصة تُحسب في الرصيد (معلّقة في الكشف والمطابقة)");
+120:         long sYes = A.addTx(sp(tx(off, false, 20000, "USD", "سامي", t3), "تحتاج مراجعة", true), null);
+121:         Model.Tx s2 = A.tx(sYes);
+122:         check(s2.isActive() && s2.isSpecial() && s2.specialBal, "نشطة ومعلَّمة");
+123:         check(bal(A, off, "USD") == 80000, "تدخل الرصيد: " + bal(A, off, "USD"));
+124:         String mark = null;
+125:         for (Model.Line l : A.statementLines(off, 0, Long.MAX_VALUE)) if (l.txId != null && l.txId == sYes) mark = l.special;
+126:         check("تحتاج مراجعة".equals(mark), "سطر الكشف يحمل نوعها");
+127:         Reports.StatementInput si = new Reports.StatementInput();
+128:         si.officeName = "تجربة";
+129:         si.lines = A.statementLines(off, 0, Long.MAX_VALUE);
+130:         si.fullBalance = A.balances(off);
+131:         si.opening = new HashMap<>();
+132:         si.decimals = A.decimalsMap();
+133:         si.periodLabel = "الكل";
+134:         Report rep = Reports.statement(si, ExportStyle.from(new HashMap<>()));
+135:         boolean marked = false;
+136:         for (Report.Section sec : rep.sections) for (Report.Row row : sec.rows) for (Object c : row.cells) if (String.valueOf(c).contains("معلّقة: تحتاج مراجعة")) marked = true;
+137:         check(marked, "الكشف المصدَّر: «معلّقة: تحتاج مراجعة»");
+138:         check(A.specials(off).size() == 2, "قائمة الخاصة: اثنتان");
+139: 
+140:         System.out.println("== 3) تحويل غير المحسوبة لعادية مع الأجور، بتاريخ اليوم");
+141:         Db.TxInput c1 = copy(s1);
+142:         c1.feeType = Model.FEE_US;
+143:         c1.fee = 1000;
+144:         c1.feeCurrency = "USD";
+145:         c1.when = Clock.now();
+146:         long n1 = A.editTx(sNo, c1, null, null, "");
+147:         check(Model.STATUS_CONVERTED.equals(A.tx(sNo).status) && A.tx(n1).isActive() && !A.tx(n1).isSpecial() && A.tx(n1).replacesId == sNo, "القديمة «حُوّلت» والجديدة عادية مرتبطة بها");
+148:         check(bal(A, off, "USD") == 80000 + 50000 + 1000, "الرصيد = المبلغ + الأجرة: " + bal(A, off, "USD"));
+149:         check(count(A, "SELECT COUNT(*) FROM journal_entries WHERE tx_id=" + sNo + " AND kind='REVERSAL'") == 0, "لا قيد عكسي لما لم يُرحَّل");
+150:         check(Model.day(A.tx(n1).createdAt).equals(Model.day(Clock.now())), "بتاريخ اليوم");
+151:         check(throwsMsg(io(() -> A.editTx(sNo, copy(s1), null, null, "")), null), "المحوّلة لا تُحوَّل مرة ثانية");
+152: 
+153:         System.out.println("== 4) تحويل المحسوبة كما هي (بتاريخها): العلامة وحدها تُرفع");
+154:         long entriesBefore = count(A, "SELECT COUNT(*) FROM journal_entries");
+155:         long n2 = A.editTx(sYes, copy(s2), null, null, "");
+156:         check(n2 == sYes && !A.tx(sYes).isSpecial() && A.tx(sYes).isActive(), "الحركة نفسها صارت عادية");
+157:         check(count(A, "SELECT COUNT(*) FROM journal_entries") == entriesBefore && bal(A, off, "USD") == 131000, "لا قيود جديدة والرصيد كما هو: " + bal(A, off, "USD"));
+158: 
+159:         System.out.println("== 5) محسوبة ثم إضافة أجرتها: قيد عكسي وحركة عادية");
+160:         long s3 = A.addTx(sp(tx(off, true, 30000, "EUR", "نور", t3), "بانتظار التنفيذ", true), null);
+161:         Db.TxInput c3 = copy(A.tx(s3));
+162:         c3.feeType = Model.FEE_THEM;
+163:         c3.fee = 500;
+164:         c3.feeCurrency = "EUR";
+165:         long n3 = A.editTx(s3, c3, null, null, "");
+166:         check(n3 != s3 && "CANCELLED".equals(A.tx(s3).status) && !A.tx(n3).isSpecial() && A.tx(n3).createdAt == t3, "القديمة أُلغيت بقيد عكسي والجديدة عادية بتاريخها الأصلي");
+167:         check(bal(A, off, "EUR") == 30000 - 500, "الرصيد = المبلغ − أجرتهم: " + bal(A, off, "EUR"));
+168: 
+169:         System.out.println("== 6) تعليم حركة عادية كخاصة، وتغيير حسابها في الرصيد");
+170:         Db.TxInput m = sp(copy(A.tx(base)), "عليها مشاكل", true);

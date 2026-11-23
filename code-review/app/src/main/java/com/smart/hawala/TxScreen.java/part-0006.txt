@@ -1,0 +1,166 @@
+816:         hd.addView(form.specialSw, new LinearLayout.LayoutParams(-2, -2));
+817:         c.addView(hd);
+818:         form.specialBody = new LinearLayout(a);
+819:         form.specialBody.setOrientation(LinearLayout.VERTICAL);
+820:         form.specialBody.addView(a.label("النوع"));
+821:         form.specialTypes = a.flow();
+822:         form.specialBody.addView(form.specialTypes, a.lp(-1, -2, 2));
+823:         form.specialBody.addView(a.label("في الرصيد"));
+824:         form.specialBal = a.new Seg(new String[]{"تُحسب في الرصيد", "لا تُحسب في الرصيد"}, null, -1, false);
+825:         form.specialBal.listener = i -> updateSummary();
+826:         form.specialBody.addView(form.specialBal.view, a.lp(-1, -2, 2));
+827:         form.specialBody.addView(a.text("المحسوبة تدخل الرصيد وتظهر في الكشف والمطابقة بعلامة «معلّقة». غير المحسوبة لا تدخل الرصيد ولا الكشف حتى تُحوَّل لحركة عادية.", 12, a.muted, false));
+828:         form.specialBody.setVisibility(View.GONE);
+829:         c.addView(form.specialBody, a.lp(-1, -2, 4));
+830:         form.specialSw.setOnCheckedChangeListener((b, on) -> {
+831:             if (f != form) return;
+832:             form.specialOn = on;
+833:             form.specialBody.setVisibility(on ? View.VISIBLE : View.GONE);
+834:             if (form.saveBtn != null && editing == null && fromHold == null) form.saveBtn.setText(on ? "تسجيل كحركة خاصة" : "تسجيل الحركة");
+835:             updateSummary();
+836:         });
+837:         hd.setOnClickListener(v -> form.specialSw.toggle());
+838:         renderSpecialTypes();
+839:         a.body.addView(c, a.lp(-1, -2, 8));
+840:     }
+841: 
+842:     private void renderSpecialTypes() {
+843:         final Form form = f;
+844:         if (form == null || form.specialTypes == null) return;
+845:         form.specialTypes.removeAllViews();
+846:         List<String> types = a.db.specialTypes();
+847:         if (!form.specialType.isEmpty() && !types.contains(form.specialType)) types.add(form.specialType);
+848:         for (final String x : types) {
+849:             View p = a.pill(x, x.equals(form.specialType), v -> {
+850:                 form.specialType = x;
+851:                 renderSpecialTypes();
+852:                 updateSummary();
+853:             });
+854:             p.setOnLongClickListener(v -> {
+855:                 a.confirm("حذف النوع «" + x + "»", "يُحذف من القائمة فقط؛ الحركات المسجّلة به تبقى كما هي.", "حذف", () -> {
+856:                     try {
+857:                         a.db.editSpecialType(x, true);
+858:                         if (x.equals(form.specialType)) form.specialType = "";
+859:                         renderSpecialTypes();
+860:                     } catch (Exception e) {
+861:                         a.error(e);
+862:                     }
+863:                 });
+864:                 return true;
+865:             });
+866:             form.specialTypes.addView(p);
+867:         }
+868:         form.specialTypes.addView(a.pill("+ نوع جديد", false, v -> {
+869:             final EditText e = a.field("مثل: عليها مشاكل، بانتظار الإيصال");
+870:             new AlertDialog.Builder(a).setTitle("نوع حركة خاصة").setView(e).setPositiveButton("إضافة", (d, w) -> {
+871:                 try {
+872:                     a.db.editSpecialType(e.getText().toString(), false);
+873:                     form.specialType = e.getText().toString().trim();
+874:                     renderSpecialTypes();
+875:                     updateSummary();
+876:                 } catch (Exception ex) {
+877:                     a.error(ex);
+878:                 }
+879:             }).setNegativeButton("إلغاء", null).show();
+880:         }));
+881:     }
+882: 
+883:     /** 12.0: ينقل عناصر الصفحة من from إلى to (متتالية) إلى بطاقة مستديرة في مكانها. */
+884:     private LinearLayout wrapCard(View from, View to, int fill, int stroke) {
+885:         int i0 = a.body.indexOfChild(from), i1 = a.body.indexOfChild(to);
+886:         if (i0 < 0 || i1 < i0) return null;
+887:         LinearLayout c = new LinearLayout(a);
+888:         c.setOrientation(LinearLayout.VERTICAL);
+889:         c.setPadding(a.dp(14), a.dp(8), a.dp(14), a.dp(12));
+890:         c.setBackground(a.round(fill, stroke, 18));
+891:         List<View> vs = new ArrayList<>();
+892:         for (int i = i0; i <= i1; i++) vs.add(a.body.getChildAt(i));
+893:         for (View v : vs) {
+894:             ViewGroup.LayoutParams lp = v.getLayoutParams();
+895:             a.body.removeView(v);
+896:             c.addView(v, lp);
+897:         }
+898:         a.body.addView(c, i0, a.lp(-1, -2, 5));
+899:         return c;
+900:     }
+901: 
+902:     /** لون بطاقة الحركة حسب النوع: «لنا» أخضر و«علينا» أحمر (كقص العملات)، ومحايد قبل الاختيار. */
+903:     private void tintTxCard() {
+904:         if (f == null || f.txCard == null || f.type == null) return;
+905:         int sel = f.type.selected;
+906:         int fill = sel == 0 ? a.creditBg : sel == 1 ? a.debitBg : a.surface;
+907:         int stroke = sel == 0 ? Ui.mix(a.creditBg, a.green, 0.45f) : sel == 1 ? Ui.mix(a.debitBg, a.red, 0.45f) : a.cardStroke;
+908:         f.txCard.setBackground(a.round(fill, stroke, 18));
+909:     }
+910: 
+911:     // ===================================================================================
+912:     // الأجرة كنسبة من المبلغ الأصلي
+913:     // ===================================================================================
+914: 
+915:     /** الأجرة مفعّلة وطريقتها «نسبة من المبلغ». */
+916:     private boolean feeByRate() {
+917:         return f != null && f.feeKind != null && f.feeMode != null && f.feeMode.selected == 1 && f.feeKind.selected == 1;
+918:     }
+919: 
+920:     private int ratePer(Form form) { return form.ratePer != null && form.ratePer.selected == 1 ? Model.PER_MILLE : Model.PER_CENT; }
+921: 
+922:     /** الأجرة المحسوبة بالوحدة الصغرى لعملة المبلغ، أو null إن نقص شيء (النسبة أو المبلغ أو العملة). نفس الدالة للعرض وللتسجيل. */
+923:     private Long rateFeeMinor(Form form) {
+924:         if (form == null || form.cur == null || form.cur.none()) return null;
+925:         java.math.BigDecimal r = Model.parseRate(form.rate.getText().toString());
+926:         int per = ratePer(form);
+927:         if (r == null || r.compareTo(java.math.BigDecimal.valueOf(per)) > 0) return null;
+928:         try {
+929:             long amt = Db.minor(form.amount.getText().toString(), a.db.decimals(form.cur.label()));
+930:             return amt > 0 ? Model.feeFromRate(amt, r, per) : null;
+931:         } catch (Exception e) {
+932:             return null;
+933:         }
+934:     }
+935: 
+936:     private void applyFeeKind() { applyFeeKind(f); }
+937: 
+938:     private void applyFeeKind(Form form) {
+939:         if (form == null || form.feeKind == null) return;
+940:         boolean byRate = form.feeKind.selected == 1;
+941:         form.rateBox.setVisibility(byRate ? View.VISIBLE : View.GONE);
+942:         form.fee.setEnabled(!byRate);
+943:         form.fee.setHint(byRate ? "الأجرة المحسوبة تظهر هنا" : "مبلغ الأجرة");
+944:         form.feeCurLabel.setText(byRate ? "عملة الأجرة: عملة المبلغ نفسها" : "عملة الأجرة (تتبع عملة المبلغ تلقائيًا)");
+945:         form.feeCurHolder.setVisibility(byRate ? View.GONE : View.VISIBLE);
+946:         if (byRate) {
+947:             if (form.feeMode != null && form.feeMode.selected == 1 && form.summary != null) form.rate.requestFocus();
+948:             recalcFee();
+949:         } else updateSummary();
+950:     }
+951: 
+952:     /** يحسب الأجرة من النسبة ويعرض طريقة الحساب تحت الخانة، ويكتب الناتج في خانة الأجرة (غير قابلة للتعديل في هذا الوضع). */
+953:     private void recalcFee() {
+954:         final Form form = f;
+955:         if (form == null || form.feeKind == null) return;
+956:         if (form.feeKind.selected != 1) {
+957:             updateSummary();
+958:             return;
+959:         }
+960:         if (form.feeCur != null && form.cur != null && !form.cur.none() && form.feeCur.selected != form.cur.selected) form.feeCur.set(form.cur.selected, false);
+961:         String rt = form.rate.getText().toString().trim();
+962:         java.math.BigDecimal r = Model.parseRate(rt);
+963:         int per = ratePer(form);
+964:         String cur = form.cur == null ? null : form.cur.label();
+965:         String amtText = form.amount.getText().toString().trim();
+966:         String msg, value = "";
+967:         int color = a.muted;
+968:         if (rt.isEmpty()) msg = per == Model.PER_MILLE ? "اكتب النسبة بالألف، مثل 1.5" : "اكتب النسبة بالمئة، مثل 1";
+969:         else if (r == null) {
+970:             msg = "✗ النسبة غير صحيحة: اكتب رقمًا مثل 1 أو 1.5";
+971:             color = a.red;
+972:         } else if (r.compareTo(java.math.BigDecimal.valueOf(per)) > 0) {
+973:             msg = "✗ النسبة أكبر من المبلغ نفسه";
+974:             color = a.red;
+975:         } else if (cur == null) msg = "اختر عملة المبلغ لتُحسب الأجرة";
+976:         else if (amtText.isEmpty()) msg = "اكتب المبلغ لتُحسب الأجرة";
+977:         else {
+978:             int d = a.db.decimals(cur);
+979:             long amt;
+980:             try {
+981:                 amt = Db.minor(amtText, d);

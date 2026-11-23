@@ -1,0 +1,172 @@
+1: package com.smart.hawala;
+2: 
+3: import java.awt.*;
+4: import java.util.ArrayList;
+5: import java.util.List;
+6: import javax.swing.*;
+7: 
+8: /**
+9:  * 12.2: نافذة «التجميع» الصغيرة على ويندوز وماك، فوق كل النوافذ: كل رسالة تنسخها من واتساب تظهر فورًا برقمها
+10:  * (1، 2، 3…) وجزء من نصها، ثم «نقل» ينقلها كلها إلى البرنامج ويرجعك إليه.
+11:  */
+12: public final class DeskCollect implements WaMove.CollectView {
+13:     static final String TITLE = "تجميع الرسائل";
+14:     private JFrame f;
+15:     private JPanel list;
+16:     private JLabel head;
+17:     private JButton move;
+18:     private Runnable onMove, onStop;
+19:     private Point at;
+20: 
+21:     /** للتجارب. */
+22:     static DeskCollect last;
+23: 
+24:     DeskCollect() { last = this; }
+25: 
+26:     @Override public void show(List<WaText.Msg> collected, Runnable move, Runnable stop) {
+27:         final List<WaText.Msg> l = new ArrayList<>(collected);
+28:         Runnable r = () -> {
+29:             onMove = move;
+30:             onStop = stop;
+31:             if (f == null || !f.isDisplayable()) build();
+32:             fill(l);
+33:             if (!f.isVisible()) {
+34:                 f.setVisible(true);
+35:                 f.toFront();
+36:             }
+37:         };
+38:         if (SwingUtilities.isEventDispatchThread()) r.run();
+39:         else SwingUtilities.invokeLater(r);
+40:     }
+41: 
+42:     @Override public void close() {
+43:         Runnable r = () -> {
+44:             if (f != null) {
+45:                 at = f.getLocation();
+46:                 f.dispose();
+47:             }
+48:             f = null;
+49:         };
+50:         if (SwingUtilities.isEventDispatchThread()) r.run();
+51:         else SwingUtilities.invokeLater(r);
+52:     }
+53: 
+54:     /** للتجارب. */
+55:     JFrame frame() { return f; }
+56: 
+57:     JButton moveButton() { return move; }
+58: 
+59:     int rows() { return list == null ? 0 : list.getComponentCount(); }
+60: 
+61:     private void build() {
+62:         f = new JFrame(TITLE);
+63:         f.setAlwaysOnTop(true);
+64:         f.setAutoRequestFocus(false);
+65:         f.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
+66:         f.addWindowListener(new java.awt.event.WindowAdapter() {
+67:             @Override public void windowClosing(java.awt.event.WindowEvent e) { stop(); }
+68:         });
+69:         JPanel root = new JPanel(new BorderLayout(0, 6));
+70:         root.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+71:         root.setComponentOrientation(ComponentOrientation.RIGHT_TO_LEFT);
+72:         head = new JLabel("", SwingConstants.RIGHT);
+73:         head.setFont(head.getFont().deriveFont(Font.BOLD, 13f));
+74:         root.add(head, BorderLayout.NORTH);
+75:         list = new JPanel();
+76:         list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
+77:         list.setComponentOrientation(ComponentOrientation.RIGHT_TO_LEFT);
+78:         JPanel wrap = new JPanel(new BorderLayout());
+79:         wrap.add(list, BorderLayout.NORTH);
+80:         JScrollPane sp = new JScrollPane(wrap);
+81:         sp.setBorder(BorderFactory.createLineBorder(new Color(0xDD, 0xDD, 0xDD)));
+82:         sp.getVerticalScrollBar().setUnitIncrement(16);
+83:         root.add(sp, BorderLayout.CENTER);
+84:         JPanel btns = new JPanel(new GridLayout(1, 2, 8, 0));
+85:         btns.setComponentOrientation(ComponentOrientation.RIGHT_TO_LEFT);
+86:         move = new JButton("نقل");
+87:         move.setFont(move.getFont().deriveFont(Font.BOLD, 14f));
+88:         move.setBackground(DeskCapture.ACCENT);
+89:         move.setForeground(Color.WHITE);
+90:         move.addActionListener(e -> doMove());
+91:         JButton stop = new JButton("إيقاف التجميع");
+92:         stop.addActionListener(e -> stop());
+93:         btns.add(move);
+94:         btns.add(stop);
+95:         root.add(btns, BorderLayout.SOUTH);
+96:         f.setContentPane(root);
+97:         f.setSize(320, 380);
+98:         if (at != null) f.setLocation(at);
+99:         else {
+100:             Rectangle b = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
+101:             f.setLocation(b.x + 30, b.y + Math.max(30, (b.height - 380) / 2));
+102:         }
+103:     }
+104: 
+105:     private void fill(List<WaText.Msg> l) {
+106:         list.removeAll();
+107:         head.setText(l.isEmpty() ? "<html><div dir='rtl'>انسخ الرسائل من واتساب واحدة تلو الأخرى (Ctrl+C أو ⌘C)، فتظهر هنا مرقّمة.</div></html>"
+108:                 : "جُمعت " + l.size() + (l.size() == 1 ? " رسالة" : " رسائل") + " • انسخ غيرها أو اضغط «نقل»");
+109:         int i = 1;
+110:         for (WaText.Msg m : l) {
+111:             JPanel row = new JPanel(new BorderLayout(8, 0));
+112:             row.setComponentOrientation(ComponentOrientation.RIGHT_TO_LEFT);
+113:             row.setBorder(BorderFactory.createEmptyBorder(5, 4, 5, 4));
+114:             JLabel n = new JLabel(String.valueOf(i++), SwingConstants.CENTER);
+115:             n.setOpaque(true);
+116:             n.setBackground(DeskCapture.ACCENT);
+117:             n.setForeground(Color.WHITE);
+118:             n.setFont(n.getFont().deriveFont(Font.BOLD, 13f));
+119:             n.setPreferredSize(new Dimension(26, 26));
+120:             row.add(n, BorderLayout.LINE_START);
+121:             String t = m.body.replace('\n', ' ').trim();
+122:             JLabel s = new JLabel(t.length() > 48 ? t.substring(0, 48) + "…" : t, SwingConstants.RIGHT);
+123:             s.setToolTipText("<html><div dir='rtl' style='width:260px'>" + esc(m.body).replace("\n", "<br>") + "</div></html>");
+124:             row.add(s, BorderLayout.CENTER);
+125:             row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 36));
+126:             list.add(row);
+127:         }
+128:         move.setText(l.isEmpty() ? "نقل" : "نقل (" + l.size() + ")");
+129:         move.setEnabled(!l.isEmpty());
+130:         list.revalidate();
+131:         list.repaint();
+132:     }
+133: 
+134:     private static String esc(String s) { return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"); }
+135: 
+136:     private void doMove() {
+137:         Runnable m = onMove;
+138:         close();
+139:         if (m != null) m.run();
+140:         backToApp();
+141:     }
+142: 
+143:     private void stop() {
+144:         Runnable s = onStop;
+145:         close();
+146:         if (s != null) s.run();
+147:     }
+148: 
+149:     /** يرجع إلى نافذة البرنامج الرئيسية بعد «نقل». */
+150:     static void backToApp() {
+151:         try {
+152:             if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.APP_REQUEST_FOREGROUND))
+153:                 Desktop.getDesktop().requestForeground(true);
+154:         } catch (Throwable ignored) {
+155:             // ليس كل نظام يدعمه
+156:         }
+157:         Frame main = com.smart.hawala.desk.PhoneWindow.frame();
+158:         if (main != null && main.isVisible()) {
+159:             if ((main.getExtendedState() & Frame.ICONIFIED) != 0) main.setExtendedState(main.getExtendedState() & ~Frame.ICONIFIED);
+160:             main.toFront();
+161:             main.requestFocus();
+162:             return;
+163:         }
+164:         for (Frame fr : Frame.getFrames()) {
+165:             if (!fr.isVisible() || DeskCapture.TITLE.equals(fr.getTitle()) || TITLE.equals(fr.getTitle())) continue;
+166:             if ((fr.getExtendedState() & Frame.ICONIFIED) != 0) fr.setExtendedState(fr.getExtendedState() & ~Frame.ICONIFIED);
+167:             fr.toFront();
+168:             fr.requestFocus();
+169:             break;
+170:         }
+171:     }
+172: }

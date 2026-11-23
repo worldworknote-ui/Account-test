@@ -1,0 +1,169 @@
+1: package android.widget;
+2: 
+3: import android.content.Context;
+4: import android.graphics.*;
+5: import android.graphics.drawable.GradientDrawable;
+6: import android.view.*;
+7: import java.util.Calendar;
+8: 
+9: /** تقويم Material: رأس بالتاريخ المختار، والتنقل بين الأشهر، وشبكة الأيام. */
+10: public class DatePicker extends FrameLayout {
+11:     public interface OnDateChangedListener { void onDateChanged(DatePicker v, int y, int m, int d); }
+12:     private int year, month, day, viewY, viewM;
+13:     private long min = Long.MIN_VALUE, max = Long.MAX_VALUE;
+14:     private OnDateChangedListener listener;
+15:     private final LinearLayout box;
+16:     private final float dp;
+17:     private final int accent, fg, muted, bg;
+18:     private int firstDay = Calendar.SATURDAY;
+19:     private static final String[] MONTHS = {"كانون الثاني", "شباط", "آذار", "نيسان", "أيار", "حزيران", "تموز", "آب", "أيلول", "تشرين الأول", "تشرين الثاني", "كانون الأول"};
+20:     private static final String[] DAYS = {"ح", "ن", "ث", "ر", "خ", "ج", "س"};
+21: 
+22:     public DatePicker(Context c) {
+23:         super(c);
+24:         dp = c.getResources().getDisplayMetrics().density;
+25:         android.app.Activity a = c instanceof android.app.Activity ? (android.app.Activity) c : null;
+26:         accent = a == null ? 0xFF0B6B53 : a.themeAccent();
+27:         fg = a == null ? 0xDE000000 : a.themeTextColor();
+28:         muted = a == null ? 0x8A000000 : a.themeSecondaryText();
+29:         bg = a == null ? 0xFFFFFFFF : a.themeDialogBg();
+30:         box = new LinearLayout(c);
+31:         box.setOrientation(LinearLayout.VERTICAL);
+32:         addView(box, new FrameLayout.LayoutParams(-1, -2));
+33:         Calendar k = Calendar.getInstance();
+34:         init(k.get(Calendar.YEAR), k.get(Calendar.MONTH), k.get(Calendar.DAY_OF_MONTH), null);
+35:     }
+36: 
+37:     public void init(int y, int m, int d, OnDateChangedListener l) { year = y; month = m; day = d; viewY = y; viewM = m; listener = l; rebuild(); }
+38:     public void updateDate(int y, int m, int d) { year = y; month = m; day = d; viewY = y; viewM = m; rebuild(); }
+39:     public int getYear() { return year; }
+40:     public int getMonth() { return month; }
+41:     public int getDayOfMonth() { return day; }
+42:     public void setMinDate(long t) { min = t; rebuild(); }
+43:     public void setMaxDate(long t) { max = t; rebuild(); }
+44:     public long getMinDate() { return min; }
+45:     public long getMaxDate() { return max; }
+46:     public void setFirstDayOfWeek(int f) { firstDay = f; rebuild(); }
+47:     public void setOnDateChangedListener(OnDateChangedListener l) { listener = l; }
+48:     public void setCalendarViewShown(boolean s) {}
+49:     public void setSpinnersShown(boolean s) {}
+50: 
+51:     private int px(float v) { return Math.round(v * dp); }
+52:     private TextView tv(String s, float size, int color, boolean bold) {
+53:         TextView t = new TextView(getContext());
+54:         t.setText(s);
+55:         t.setTextSize(size);
+56:         t.setTextColor(color);
+57:         t.setGravity(Gravity.CENTER);
+58:         if (bold) t.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+59:         return t;
+60:     }
+61:     private boolean allowed(int y, int m, int d) {
+62:         Calendar k = Calendar.getInstance();
+63:         k.clear();
+64:         k.set(y, m, d, 12, 0);
+65:         long t = k.getTimeInMillis();
+66:         Calendar a = Calendar.getInstance(); a.setTimeInMillis(min == Long.MIN_VALUE ? Long.MIN_VALUE / 2 : min);
+67:         Calendar b = Calendar.getInstance(); b.setTimeInMillis(max == Long.MAX_VALUE ? Long.MAX_VALUE / 2 : max);
+68:         a.set(Calendar.HOUR_OF_DAY, 0); a.set(Calendar.MINUTE, 0);
+69:         b.set(Calendar.HOUR_OF_DAY, 23); b.set(Calendar.MINUTE, 59);
+70:         return (min == Long.MIN_VALUE || t >= a.getTimeInMillis()) && (max == Long.MAX_VALUE || t <= b.getTimeInMillis());
+71:     }
+72: 
+73:     private void rebuild() {
+74:         box.removeAllViews();
+75:         // الرأس
+76:         LinearLayout head = new LinearLayout(getContext());
+77:         head.setOrientation(LinearLayout.VERTICAL);
+78:         head.setBackgroundColor(accent);
+79:         head.setPadding(px(24), px(16), px(24), px(16));
+80:         TextView hy = tv(String.valueOf(year), 16, 0xB3FFFFFF, false);
+81:         hy.setGravity(Gravity.START);
+82:         head.addView(hy, new LinearLayout.LayoutParams(-1, -2));
+83:         Calendar sel = Calendar.getInstance();
+84:         sel.clear();
+85:         sel.set(year, month, day);
+86:         String[] wd = {"الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"};
+87:         TextView hd = tv(wd[sel.get(Calendar.DAY_OF_WEEK) - 1] + "، " + day + " " + MONTHS[month], 26, 0xFFFFFFFF, true);
+88:         hd.setGravity(Gravity.START);
+89:         head.addView(hd, new LinearLayout.LayoutParams(-1, -2));
+90:         box.addView(head, new LinearLayout.LayoutParams(-1, -2));
+91:         // التنقل
+92:         LinearLayout nav = new LinearLayout(getContext());
+93:         nav.setGravity(Gravity.CENTER_VERTICAL);
+94:         nav.setPadding(px(8), px(8), px(8), 0);
+95:         TextView prev = tv("‹", 26, fg, true), next = tv("›", 26, fg, true);
+96:         TextView mt = tv(MONTHS[viewM] + " " + viewY, 15, fg, true);
+97:         for (TextView b : new TextView[]{prev, next}) {
+98:             b.setClickable(true);
+99:             GradientDrawable g = new GradientDrawable(); g.setShape(GradientDrawable.OVAL); g.setColor(0xFFFFFFFF);
+100:             b.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22000000), null, null));
+101:         }
+102:         // في الواجهة العربية: السابق على اليمين
+103:         prev.setOnClickListener(v -> { viewM--; if (viewM < 0) { viewM = 11; viewY--; } rebuild(); });
+104:         next.setOnClickListener(v -> { viewM++; if (viewM > 11) { viewM = 0; viewY++; } rebuild(); });
+105:         mt.setClickable(true);
+106:         mt.setOnClickListener(v -> pickYear());
+107:         nav.addView(prev, new LinearLayout.LayoutParams(px(44), px(44)));
+108:         nav.addView(mt, new LinearLayout.LayoutParams(0, -2, 1));
+109:         nav.addView(next, new LinearLayout.LayoutParams(px(44), px(44)));
+110:         box.addView(nav, new LinearLayout.LayoutParams(-1, -2));
+111:         // أيام الأسبوع
+112:         LinearLayout wk = new LinearLayout(getContext());
+113:         wk.setPadding(px(8), 0, px(8), 0);
+114:         for (int i = 0; i < 7; i++) {
+115:             int dow = (firstDay - 1 + i) % 7;
+116:             wk.addView(tv(DAYS[dow], 12, muted, false), new LinearLayout.LayoutParams(0, px(32), 1));
+117:         }
+118:         box.addView(wk, new LinearLayout.LayoutParams(-1, -2));
+119:         Calendar k = Calendar.getInstance();
+120:         k.clear();
+121:         k.set(viewY, viewM, 1);
+122:         int offset = (k.get(Calendar.DAY_OF_WEEK) - firstDay + 7) % 7;
+123:         int days = k.getActualMaximum(Calendar.DAY_OF_MONTH);
+124:         Calendar today = Calendar.getInstance();
+125:         int cell = 0;
+126:         LinearLayout row = null;
+127:         for (int i = 0; i < 42; i++) {
+128:             if (i % 7 == 0) {
+129:                 if (i >= offset + days) break;
+130:                 row = new LinearLayout(getContext());
+131:                 row.setPadding(px(8), 0, px(8), 0);
+132:                 box.addView(row, new LinearLayout.LayoutParams(-1, px(40)));
+133:             }
+134:             int dnum = i - offset + 1;
+135:             if (dnum < 1 || dnum > days) { row.addView(new View(getContext()), new LinearLayout.LayoutParams(0, -1, 1)); continue; }
+136:             boolean isSel = viewY == year && viewM == month && dnum == day;
+137:             boolean isToday = viewY == today.get(Calendar.YEAR) && viewM == today.get(Calendar.MONTH) && dnum == today.get(Calendar.DAY_OF_MONTH);
+138:             boolean ok = allowed(viewY, viewM, dnum);
+139:             TextView t = tv(String.valueOf(dnum), 14, isSel ? 0xFFFFFFFF : !ok ? (muted & 0x00FFFFFF) | 0x50000000 : isToday ? accent : fg, isSel || isToday);
+140:             if (isSel) {
+141:                 GradientDrawable g = new GradientDrawable();
+142:                 g.setShape(GradientDrawable.OVAL);
+143:                 g.setColor(accent);
+144:                 t.setBackground(new android.graphics.drawable.InsetDrawable(g, px(2)));
+145:             } else if (ok) {
+146:                 t.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22000000), null, null));
+147:             }
+148:             if (ok) {
+149:                 final int dd = dnum;
+150:                 t.setClickable(true);
+151:                 t.setOnClickListener(v -> {
+152:                     year = viewY; month = viewM; day = dd;
+153:                     if (listener != null) listener.onDateChanged(this, year, month, day);
+154:                     rebuild();
+155:                 });
+156:             }
+157:             FrameLayout c = new FrameLayout(getContext());
+158:             c.addView(t, new FrameLayout.LayoutParams(px(38), px(38), Gravity.CENTER));
+159:             row.addView(c, new LinearLayout.LayoutParams(0, -1, 1));
+160:             cell++;
+161:         }
+162:         box.addView(new View(getContext()), new LinearLayout.LayoutParams(-1, px(8)));
+163:     }
+164: 
+165:     /** اختيار السنة (نقرة على اسم الشهر). */
+166:     private void pickYear() {
+167:         int now = Calendar.getInstance().get(Calendar.YEAR);
+168:         final String[] ys = new String[30];
+169:         for (int i = 0; i < 30; i++) ys[i] = String.valueOf(now + 2 - i);

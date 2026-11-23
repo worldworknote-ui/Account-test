@@ -1,0 +1,106 @@
+783:             boolean isAdmin = !a.db.usersEnabled() || (SmartApp.currentUser != null && Auth.isAdmin(SmartApp.currentUser));
+784:             final boolean renameOnly = !me && !actions && isAdmin, canRm = removable;
+785:             // 11.5: كل جهاز له صفحته: سجله (ما وصل منه وأخطاؤه) وآخر ظهور بالساعة، وإجراءاته
+786:             final String fLine = line;
+787:             final boolean fActions = actions, fRename = renameOnly, fRm = canRm, fMe = me;
+788:             a.groupRow(dg, R.drawable.ic_phone, me ? a.green : late ? a.red : a.primaryInk, m.optString("name") + (me ? "  (هذا الجهاز)" : ""), line,
+789:                     "السجل", v -> deviceScreen(mm, fLine, fMe, fActions, fRename, fRm));
+790:         }
+791:         if (!st.note.isEmpty()) a.hint(st.note);
+792:         boolean anyLate = false;
+793:         for (JSONObject p : st.peers.values()) if (p.optLong("have") < p.optLong("announced") && "missing".equals(p.optString("state"))) anyLate = true;
+794:         if (anyLate && !prov.isEmpty() && !prov.equals("ذاكرة الهاتف")) {
+795:             a.notice(R.drawable.ic_info, "بعض الحزم موجودة في " + prov + " لكن لم تظهر على هذا الهاتف بعد. تطبيق " + prov
+796:                     + " يحدّث المجلد على الهاتف كل فترة: افتح تطبيقه لحظة ثم ارجع واضغط «مزامنة الآن». إن تكرر التأخير فاستخدم مجلدًا تزامنه FolderSync أو Syncthing (أسرع).", false, null, null);
+797:         }
+798:         if (st.members.isEmpty()) a.groupRow(dg, R.drawable.ic_info, a.muted, "اضغط «مزامنة الآن» لتظهر الأجهزة", null, null, null);
+799: 
+800:         int dups = SyncEngine.duplicates(a.db).size();
+801:         if (dups > 0) a.notice(R.drawable.ic_warn, dups + " زوج حركات قد يكون مكررًا (سُجّل من جهازين)", true, "مراجعة", v -> showDuplicates());
+802:         // 11.6: «للمراجعة» وسجل التنبيهات لمن يملك «سجل الإشعارات»
+803:         final List<String[]> cs = a.can(Auth.Perm.NOTIFS) ? SyncEngine.conflicts(a.db) : new java.util.ArrayList<String[]>();
+804:         if (a.can(Auth.Perm.NOTIFS)) a.section("للمراجعة (" + cs.size() + ")", cs.size() > 1 ? "تمت للكل" : null, cs.size() > 1 ? v -> a.confirm("تمت للكل", "تُعلَّم كل التنبيهات الـ" + cs.size()
+805:                 + " كمُراجَعة وتختفي من هنا ومن الصفحة الرئيسية. (الحركات المكررة لها مراجعتها الخاصة.)", "تمت", () -> {
+806:             SyncEngine.resolveAll(a.db);
+807:             show();
+808:         }) : null);
+809:         // 10.18: ما عُلّم «تمت» لا يضيع: يبقى في سجل الإشعارات
+810:         if (a.can(Auth.Perm.NOTIFS)) a.body.addView(a.smallButton("سجل تنبيهات المزامنة والإشعارات", a.accent, v -> a.notifScreen.showLog(1)), a.lp(-2, 40, 2));
+811:         if (cs.isEmpty() && a.can(Auth.Perm.NOTIFS)) a.hint("لا تعارضات. التعارض يحدث نادرًا: تعديل الحركة نفسها من جهازين، أو حركة لمكتب حذفه جهاز آخر، أو حركة بتاريخ داخل فترة مقفلة.");
+812:         LinearLayout cg = a.group();
+813:         for (final String[] c : cs) {
+814:             a.groupRow(cg, SyncStore.isNotice(c[2]) ? R.drawable.ic_info : R.drawable.ic_warn, SyncStore.isNotice(c[2]) ? a.primaryInk : a.red, SyncStore.kindName(c[2]), c[5] + "\n" + Model.date(Long.parseLong(c[1])), "تمت", v -> {
+815:                 SyncEngine.resolveConflict(a.db, Long.parseLong(c[0]));
+816:                 show();
+817:             });
+818:         }
+819: 
+820:         List<JSONObject> hist = SyncEngine.history(a.db);
+821:         if (!hist.isEmpty() && devs) {
+822:             a.section("آخر الجولات", "مسح السجلات", v -> a.confirm("مسح سجلات المزامنة", "يُمسح «آخر الجولات» وسجل كل جهاز على هذا الجهاز فقط. لا يمس البيانات ولا ملفات المزامنة.",
+823:                     "مسح", () -> {
+824:                         SyncEngine.clearDevLog(a.db, "");
+825:                         show();
+826:                     }));
+827:             LinearLayout hg = a.group();
+828:             int n = 0;
+829:             for (JSONObject x : hist) {
+830:                 if (n++ >= 6) break;
+831:                 boolean bad = x.has("e");
+832:                 a.groupRow(hg, bad ? R.drawable.ic_warn : R.drawable.ic_check2, bad ? a.red : a.green, MainActivity.agoAt(x.optLong("at")),
+833:                         x.optString("t") + (bad ? "\n" + x.optString("e") : ""), null, null);
+834:             }
+835:         }
+836: 
+837:         a.section("التلقائي على هذا الجهاز", null, null);
+838:         LinearLayout ag = a.group();
+839:         final boolean paused = SyncEngine.paused(a.db);
+840:         a.groupRow(ag, R.drawable.ic_sync, paused ? a.red : a.green, paused ? "المزامنة التلقائية موقوفة مؤقتًا" : "المزامنة التلقائية تعمل",
+841:                 paused ? "لا ترسل ولا تستلم إلا بزر «مزامنة الآن». التغييرات تُحفظ وتُرسل عند الاستئناف." : "تعمل في الخلفية؛ أوقفها مؤقتًا إن كنت على اتصال محدود",
+842:                 paused ? "استئناف" : "إيقاف مؤقت", v -> {
+843:                     a.db.setSettingQuiet("sync_paused", paused ? "0" : "1");
+844:                     SyncJob.schedule(a, paused, "1".equals(a.db.setting("sync_wifi", "0")));
+845:                     show();
+846:                 });
+847:         final boolean on = "1".equals(a.db.setting("sync_after_change", "1"));
+848:         a.groupRow(ag, R.drawable.ic_upload, a.primaryInk, "مزامنة بعد كل حركة", on ? "مفعّلة: تُرسل التغييرات خلال ثوانٍ من حفظها" : "متوقفة: على الفترة المحددة وعند الفتح فقط",
+849:                 on ? "إيقاف" : "تفعيل", v -> {
+850:                     a.db.setSettingQuiet("sync_after_change", on ? "0" : "1");
+851:                     show();
+852:                 });
+853:         final int every = SyncEngine.everySeconds(a.db);
+854:         a.groupRow(ag, R.drawable.ic_clock, a.primaryInk, "كل كم والتطبيق مفتوح", everyName(every) + " • في الخلفية كل 15 دقيقة تقريبًا (أقل ما يسمح به أندرويد)", "تغيير", v -> {
+855:             final int[] secs = {30, 90, 300, 900};
+856:             String[] names = new String[secs.length];
+857:             for (int i = 0; i < secs.length; i++) names[i] = everyName(secs[i]);
+858:             new AlertDialog.Builder(a).setTitle("المزامنة التلقائية كل").setItems(names, (d, w) -> {
+859:                 a.db.setSettingQuiet("sync_every", "" + secs[w]);
+860:                 onResume();
+861:                 show();
+862:             }).show();
+863:         });
+864:         final boolean wifi = "1".equals(a.db.setting("sync_wifi", "0"));
+865:         a.groupRow(ag, R.drawable.ic_phone, a.primaryInk, "عبر الواي فاي فقط", wifi ? "مفعّل: لا مزامنة تلقائية على بيانات الجوال (زر «مزامنة الآن» يعمل دائمًا)"
+866:                 : "متوقف: تعمل على الواي فاي وبيانات الجوال", wifi ? "إيقاف" : "تفعيل", v -> {
+867:                     a.db.setSettingQuiet("sync_wifi", wifi ? "0" : "1");
+868:                     SyncJob.schedule(a, !SyncEngine.paused(a.db), !wifi);
+869:                     show();
+870:                 });
+871: 
+872:         a.section("مكان المزامنة وحجمه", null, null);
+873:         LinearLayout pg = a.group();
+874:         a.groupRow(pg, R.drawable.ic_db, a.primaryInk, "الحجم وعدد الملفات", "اضغط «عرض» لقراءة المكان الآن", "عرض", v -> showUsage());
+875:         final SyncFolder cur = folder(a, a.db);
+876:         boolean canClean = cur != null && cur.canDelete();
+877:         a.groupRow(pg, R.drawable.ic_trash, a.primaryInk, "التنظيف التلقائي",
+878:                 (canClean ? "يحذف كل جهاز حزمه القديمة بعد أن تصل إلى كل الأجهزة، ولقطاته القديمة، والصور التي لم يعد يشير إليها شيء. لا يمس بياناتك."
+879:                         : "هذه الطريقة لا تسمح بحذف الملفات.") + (st.lastClean.isEmpty() ? "" : "\nآخر تنظيف: " + st.lastClean),
+880:                 canClean && a.can(Auth.Perm.SYNC) ? "تنظيف الآن" : null, canClean && a.can(Auth.Perm.SYNC) ? v -> a.busy("جارٍ التنظيف…", p -> new SyncEngine(a.db, folder(a, a.db)).clean(true), res -> {
+881:                     String r = (String) res;
+882:                     a.toast(r.isEmpty() ? "لا شيء قديم يُحذف الآن" : r);
+883:                     show();
+884:                 }) : null);
+885:         // 11.3: إعادة الدخول بالحساب نفسه لكل مستخدم (لا تغيّر الحساب ولا أي إعداد): كانت للمدير وحده، فإن انتهت صلاحية دخول
+886:         // جهاز موظف توقفت مزامنته ولا يصل إليه حتى ترقيته إلى مدير (لأن الترقية نفسها تصل بالمزامنة).
+887:         if ("drive".equals(k)) {
+888:             final String acct0 = a.db.setting("drive_account", "");

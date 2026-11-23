@@ -1,0 +1,54 @@
+1: package android.hardware.biometrics;
+2: 
+3: /** 11.2: على الكمبيوتر = تحقق النظام (Touch ID أو كلمة سر الماك، أو Windows Hello)؛ إن لم يوجد قفل: «لا قفل» (14). */
+4: public class BiometricPrompt {
+5:     public static final int BIOMETRIC_ERROR_USER_CANCELED = 10, BIOMETRIC_ERROR_CANCELED = 5, BIOMETRIC_ERROR_HW_NOT_PRESENT = 12, BIOMETRIC_ERROR_NO_BIOMETRICS = 11,
+6:             BIOMETRIC_ERROR_HW_UNAVAILABLE = 1, BIOMETRIC_ERROR_LOCKOUT = 7, BIOMETRIC_ERROR_LOCKOUT_PERMANENT = 9, BIOMETRIC_ERROR_TIMEOUT = 3,
+7:             BIOMETRIC_ERROR_NO_DEVICE_CREDENTIAL = 14, AUTHENTICATION_RESULT_TYPE_BIOMETRIC = 2;
+8:     public static class AuthenticationResult { public int getAuthenticationType() { return 1; } public CryptoObject getCryptoObject() { return null; } }
+9:     public static class CryptoObject { public CryptoObject(javax.crypto.Cipher c) {} public CryptoObject(java.security.Signature s) {} }
+10:     public abstract static class AuthenticationCallback {
+11:         public void onAuthenticationError(int code, CharSequence msg) {}
+12:         public void onAuthenticationSucceeded(AuthenticationResult r) {}
+13:         public void onAuthenticationFailed() {}
+14:         public void onAuthenticationHelp(int code, CharSequence msg) {}
+15:     }
+16:     private final String title;
+17:     private BiometricPrompt(String title) { this.title = title; }
+18:     /** 11.5: تحقق واحد في كل مرة (كان كل ضغط على «فتح التطبيق» يفتح نافذة تحقق جديدة خلف البرنامج). */
+19:     private static final java.util.concurrent.atomic.AtomicBoolean running = new java.util.concurrent.atomic.AtomicBoolean();
+20: 
+21:     public void authenticate(android.os.CancellationSignal s, java.util.concurrent.Executor e, AuthenticationCallback cb) {
+22:         if (!running.compareAndSet(false, true)) {
+23:             e.execute(() -> cb.onAuthenticationError(BIOMETRIC_ERROR_HW_UNAVAILABLE, "نافذة التحقق مفتوحة الآن: ابحث عنها في شريط المهام، أو انتظر قليلًا ثم اضغط «فتح التطبيق»."));
+24:             return;
+25:         }
+26:         Thread t = new Thread(() -> {
+27:             int r;
+28:             try {
+29:                 r = SystemAuth.verify(title == null ? "" : title);
+30:             } finally {
+31:                 running.set(false);
+32:             }
+33:             if (s != null && s.isCanceled()) return;
+34:             if (r == 0) e.execute(() -> cb.onAuthenticationSucceeded(new AuthenticationResult()));
+35:             else if (r == 2) e.execute(() -> cb.onAuthenticationError(BIOMETRIC_ERROR_NO_DEVICE_CREDENTIAL, "لا يوجد قفل للجهاز"));
+36:             else e.execute(() -> cb.onAuthenticationError(BIOMETRIC_ERROR_USER_CANCELED, "أُلغي التحقق"));
+37:         }, "system-auth");
+38:         t.setDaemon(true);
+39:         t.start();
+40:     }
+41:     public void authenticate(CryptoObject c, android.os.CancellationSignal s, java.util.concurrent.Executor e, AuthenticationCallback cb) { authenticate(s, e, cb); }
+42:     public static class Builder {
+43:         private String title;
+44:         public Builder(android.content.Context c) {}
+45:         public Builder setTitle(CharSequence t) { title = t == null ? null : t.toString(); return this; }
+46:         public Builder setSubtitle(CharSequence t) { return this; }
+47:         public Builder setDescription(CharSequence t) { return this; }
+48:         public Builder setNegativeButton(CharSequence t, java.util.concurrent.Executor e, android.content.DialogInterface.OnClickListener l) { return this; }
+49:         public Builder setAllowedAuthenticators(int a) { return this; }
+50:         public Builder setDeviceCredentialAllowed(boolean b) { return this; }
+51:         public Builder setConfirmationRequired(boolean b) { return this; }
+52:         public BiometricPrompt build() { return new BiometricPrompt(title); }
+53:     }
+54: }

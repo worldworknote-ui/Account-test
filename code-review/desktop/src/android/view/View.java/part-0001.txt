@@ -1,0 +1,141 @@
+1: package android.view;
+2: 
+3: import android.animation.StateListAnimator;
+4: import android.content.Context;
+5: import android.graphics.*;
+6: import android.graphics.Outline;
+7: import android.graphics.drawable.ColorDrawable;
+8: import android.graphics.drawable.Drawable;
+9: import android.os.Handler;
+10: import android.os.Looper;
+11: import java.util.ArrayList;
+12: import java.util.List;
+13: 
+14: /**
+15:  * العنصر الأساسي في واجهة أندرويد — نسخة الكمبيوتر: القياس والتخطيط والرسم واللمس (بالفأرة) كما في أندرويد،
+16:  * فتعمل شاشات تطبيق الهاتف نفسها على Swing دون تعديل.
+17:  */
+18: public class View implements Drawable.Callback {
+19:     public static final int VISIBLE = 0, INVISIBLE = 4, GONE = 8;
+20:     public static final int NO_ID = -1;
+21:     public static final int LAYOUT_DIRECTION_LTR = 0, LAYOUT_DIRECTION_RTL = 1, LAYOUT_DIRECTION_INHERIT = 2, LAYOUT_DIRECTION_LOCALE = 3;
+22:     public static final int TEXT_DIRECTION_INHERIT = 0, TEXT_DIRECTION_FIRST_STRONG = 1, TEXT_DIRECTION_ANY_RTL = 2, TEXT_DIRECTION_LTR = 3,
+23:             TEXT_DIRECTION_RTL = 4, TEXT_DIRECTION_LOCALE = 5, TEXT_DIRECTION_FIRST_STRONG_LTR = 6, TEXT_DIRECTION_FIRST_STRONG_RTL = 7;
+24:     public static final int TEXT_ALIGNMENT_INHERIT = 0, TEXT_ALIGNMENT_GRAVITY = 1, TEXT_ALIGNMENT_TEXT_START = 2, TEXT_ALIGNMENT_TEXT_END = 3,
+25:             TEXT_ALIGNMENT_CENTER = 4, TEXT_ALIGNMENT_VIEW_START = 5, TEXT_ALIGNMENT_VIEW_END = 6;
+26:     public static final int LAYER_TYPE_NONE = 0, LAYER_TYPE_SOFTWARE = 1, LAYER_TYPE_HARDWARE = 2;
+27:     public static final int IMPORTANT_FOR_ACCESSIBILITY_AUTO = 0, IMPORTANT_FOR_ACCESSIBILITY_YES = 1, IMPORTANT_FOR_ACCESSIBILITY_NO = 2,
+28:             IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS = 4;
+29:     public static final int ACCESSIBILITY_LIVE_REGION_NONE = 0, ACCESSIBILITY_LIVE_REGION_POLITE = 1, ACCESSIBILITY_LIVE_REGION_ASSERTIVE = 2;
+30:     public static final int SYSTEM_UI_FLAG_VISIBLE = 0, SYSTEM_UI_FLAG_LIGHT_STATUS_BAR = 0x2000, SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR = 0x10,
+31:             SYSTEM_UI_FLAG_LAYOUT_STABLE = 0x100, SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN = 0x400, SYSTEM_UI_FLAG_HIDE_NAVIGATION = 2, SYSTEM_UI_FLAG_FULLSCREEN = 4,
+32:             SYSTEM_UI_FLAG_IMMERSIVE_STICKY = 0x1000, SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION = 0x200;
+33:     public static final int OVER_SCROLL_ALWAYS = 0, OVER_SCROLL_IF_CONTENT_SCROLLS = 1, OVER_SCROLL_NEVER = 2;
+34:     public static final int SCROLLBARS_INSIDE_OVERLAY = 0, SCROLLBARS_OUTSIDE_OVERLAY = 0x02000000;
+35:     public static final int FOCUS_DOWN = 130, FOCUS_UP = 33, FOCUS_FORWARD = 2, FOCUS_BACKWARD = 1, FOCUS_LEFT = 17, FOCUS_RIGHT = 66;
+36:     public static final int FOCUSABLE = 1, NOT_FOCUSABLE = 0, FOCUSABLE_AUTO = 16;
+37:     public static final int HAPTIC_FEEDBACK_ENABLED = 1;
+38:     public static final int MEASURED_STATE_TOO_SMALL = 0x01000000, MEASURED_SIZE_MASK = 0x00ffffff, MEASURED_STATE_MASK = 0xff000000;
+39:     public static final int DRAWING_CACHE_QUALITY_AUTO = 0, AUTOFILL_TYPE_NONE = 0, IMPORTANT_FOR_AUTOFILL_NO = 2, IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS = 8;
+40:     public static final int[] EMPTY_STATE_SET = {};
+41:     public static final int[] PRESSED_STATE_SET = {android.R.attr.state_pressed};
+42:     public static final int[] ENABLED_STATE_SET = {android.R.attr.state_enabled};
+43: 
+44:     public static final android.util.Property<View, Float> ALPHA = prop("alpha"), TRANSLATION_X = prop("translationX"), TRANSLATION_Y = prop("translationY"),
+45:             TRANSLATION_Z = prop("translationZ"), SCALE_X = prop("scaleX"), SCALE_Y = prop("scaleY"), ROTATION = prop("rotation"), X = prop("x"), Y = prop("y");
+46: 
+47:     private static android.util.Property<View, Float> prop(final String n) {
+48:         return new android.util.Property<View, Float>(Float.class, n) {
+49:             @Override public Float get(View v) { return android.animation.ObjectAnimator.getFloat(v, n); }
+50:             @Override public void set(View v, Float f) { android.animation.ObjectAnimator.setFloat(v, n, f); }
+51:         };
+52:     }
+53: 
+54:     // ------------------------------------------------------------------ واجهات المستمعين
+55:     public interface OnClickListener { void onClick(View v); }
+56:     public interface OnLongClickListener { boolean onLongClick(View v); }
+57:     public interface OnTouchListener { boolean onTouch(View v, MotionEvent e); }
+58:     public interface OnFocusChangeListener { void onFocusChange(View v, boolean has); }
+59:     public interface OnLayoutChangeListener { void onLayoutChange(View v, int l, int t, int r, int b, int ol, int ot, int or, int ob); }
+60:     public interface OnAttachStateChangeListener { void onViewAttachedToWindow(View v); void onViewDetachedFromWindow(View v); }
+61:     public interface OnKeyListener { boolean onKey(View v, int code, KeyEvent e); }
+62:     public interface OnScrollChangeListener { void onScrollChange(View v, int x, int y, int ox, int oy); }
+63:     public interface OnHoverListener { boolean onHover(View v, MotionEvent e); }
+64:     public interface OnGenericMotionListener { boolean onGenericMotion(View v, MotionEvent e); }
+65:     public interface OnSystemUiVisibilityChangeListener { void onSystemUiVisibilityChange(int v); }
+66:     public interface OnCreateContextMenuListener { void onCreateContextMenu(ContextMenu m, View v, ContextMenu.ContextMenuInfo i); }
+67:     public interface OnApplyWindowInsetsListener { WindowInsets onApplyWindowInsets(View v, WindowInsets i); }
+68:     public interface OnDragListener { boolean onDrag(View v, DragEvent e); }
+69: 
+70:     /** مواصفات القياس كما في أندرويد. */
+71:     public static class MeasureSpec {
+72:         public static final int UNSPECIFIED = 0, EXACTLY = 0x40000000, AT_MOST = 0x80000000;
+73:         private static final int MODE_MASK = 0xC0000000;
+74:         public static int makeMeasureSpec(int size, int mode) { return (Math.max(0, size) & ~MODE_MASK) | (mode & MODE_MASK); }
+75:         public static int getMode(int spec) { return spec & MODE_MASK; }
+76:         public static int getSize(int spec) { return spec & ~MODE_MASK; }
+77:         public static String toString(int s) { return (getMode(s) == EXACTLY ? "EXACTLY " : getMode(s) == AT_MOST ? "AT_MOST " : "UNSPECIFIED ") + getSize(s); }
+78:     }
+79: 
+80:     // ------------------------------------------------------------------ الحالة
+81:     protected final Context mContext;
+82:     ViewParent parent;
+83:     AttachInfo attachInfo;
+84:     private int id = NO_ID;
+85:     private Object tag;
+86:     private android.util.SparseArray<Object> keyedTags;
+87:     protected int mLeft, mTop, mRight, mBottom;
+88:     private int measuredW, measuredH;
+89:     private int oldWSpec = -1, oldHSpec = -1;
+90:     boolean layoutRequested = true;
+91:     protected int mPaddingLeft, mPaddingTop, mPaddingRight, mPaddingBottom;
+92:     private int padStart = Integer.MIN_VALUE, padEnd = Integer.MIN_VALUE;
+93:     private int minW, minH;
+94:     private ViewGroup.LayoutParams params;
+95:     private int visibility = VISIBLE;
+96:     private boolean enabled = true, clickable, longClickable, focusable, focusableInTouch, pressed, selected, activated, hovered, focused;
+97:     private Drawable background, foreground;
+98:     private float alpha = 1f, tx, ty, tz, sx = 1f, sy = 1f, rot, rotX, rotY, px = Float.NaN, py = Float.NaN, elevation;
+99:     private int layoutDir = LAYOUT_DIRECTION_INHERIT, textDir = TEXT_DIRECTION_INHERIT, textAlign = TEXT_ALIGNMENT_GRAVITY;
+100:     private boolean clipToOutline;
+101:     private ViewOutlineProvider outlineProvider = ViewOutlineProvider.BACKGROUND;
+102:     OnClickListener onClick;
+103:     OnLongClickListener onLongClick;
+104:     OnTouchListener onTouch;
+105:     private OnFocusChangeListener onFocus;
+106:     private List<OnLayoutChangeListener> layoutListeners;
+107:     private List<OnAttachStateChangeListener> attachListeners;
+108:     private OnKeyListener onKey;
+109:     private OnScrollChangeListener onScrollChange;
+110:     private OnHoverListener onHover;
+111:     private CharSequence description, tooltip;
+112:     private StateListAnimator stateAnimator;
+113:     protected int mScrollX, mScrollY;
+114:     private ViewPropertyAnimator animator;
+115:     private ViewTreeObserver floatingObserver;
+116:     private boolean willNotDraw;
+117:     private boolean hapticEnabled = true, soundEnabled = true;
+118:     private boolean keepScreenOn;
+119:     private Rect clipBounds;
+120:     private boolean saveEnabled = true;
+121:     private boolean verticalScrollBar = true, horizontalScrollBar = true;
+122:     private boolean duplicateParentState;
+123:     private int minimumHeightRes;
+124: 
+125:     public View(Context c) {
+126:         mContext = c;
+127:     }
+128:     public View(Context c, android.util.AttributeSet a) { this(c); }
+129:     public View(Context c, android.util.AttributeSet a, int s) { this(c); }
+130: 
+131:     public final Context getContext() { return mContext; }
+132:     public android.content.res.Resources getResources() { return mContext == null ? android.content.res.Resources.getSystem() : mContext.getResources(); }
+133: 
+134:     // ------------------------------------------------------------------ الهوية والوسوم
+135:     public int getId() { return id; }
+136:     public void setId(int id) { this.id = id; }
+137:     public Object getTag() { return tag; }
+138:     public void setTag(Object t) { tag = t; }
+139:     public Object getTag(int key) { return keyedTags == null ? null : keyedTags.get(key); }
+140:     public void setTag(int key, Object t) { if (keyedTags == null) keyedTags = new android.util.SparseArray<>(); keyedTags.put(key, t); }
+141:     public static int generateViewId() { return ++nextId; }

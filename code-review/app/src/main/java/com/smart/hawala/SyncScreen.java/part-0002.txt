@@ -1,0 +1,144 @@
+192:     /** زر «مزامنة الآن» السريع (الشريط العلوي أو شاشة الدخول): جولة فورية ثم نتيجتها في سطر واحد. */
+193:     void now(final Runnable after) {
+194:         if (a.db == null || !SyncEngine.enabled(a.db)) {
+195:             a.toast("المزامنة غير مفعّلة على هذا الجهاز");
+196:             return;
+197:         }
+198:         if (!License.current.sync()) {
+199:             a.toast("المزامنة ميزة في النسخة المدفوعة");
+200:             return;
+201:         }
+202:         if (running) {
+203:             a.toast("المزامنة جارية الآن…");
+204:             return;
+205:         }
+206:         final SyncFolder f = folder(a, a.db);
+207:         if (f == null) {
+208:             a.toast("اختر مجلد المزامنة من «المزيد ← المزامنة»");
+209:             return;
+210:         }
+211:         running = true;
+212:         a.toast("جارٍ المزامنة…");
+213:         final int serial = pauseSerial;
+214:         new Thread(() -> {
+215:             SyncEngine.Result r = null;
+216:             Throwable err = null;
+217:             try {
+218:                 r = syncWithRetry(a.db, f);
+219:             } catch (Throwable t) {
+220:                 err = t;
+221:             } finally {
+222:                 running = false;
+223:                 lastRun = SystemClock.elapsedRealtime();
+224:             }
+225:             final SyncEngine.Result res = r;
+226:             final Throwable e = err;
+227:             final boolean left = serial != pauseSerial || inBackground;
+228:             a.runOnUiThread(() -> {
+229:                 if (e != null) {
+230:                     // 12.7: تُرك التطبيق أثناء الجولة: لا رسالة خطأ عند العودة؛ تُعاد الجولة بصمت
+231:                     if (left) {
+232:                         retryOnResume = true;
+233:                         if (!inBackground) retryIfPending();
+234:                         return;
+235:                     }
+236:                     a.toast("تعذرت المزامنة: " + Ui.friendly(e));
+237:                     return;
+238:                 }
+239:                 String extra = res.errors.isEmpty() ? (res.note.isEmpty() ? "" : "\n" + res.note) : "\n" + res.errors.get(0);
+240:                 a.toast("✓ " + res.summary() + extra);
+241:                 if (after != null) after.run();
+242:                 else if (res.received > 0) a.afterSync(res);
+243:             });
+244:         }, "sync-now").start();
+245:     }
+246: 
+247:     /** 10.1: بعد كل تغيير محلي: مزامنة خلال ثوانٍ (تُجمع التغييرات المتتالية في جولة واحدة). */
+248:     private final Runnable soon = () -> auto(true);
+249: 
+250:     void syncSoon() {
+251:         if (a.db == null || !SyncEngine.enabled(a.db) || !"1".equals(a.db.setting("sync_after_change", "1"))) return;
+252:         handler.removeCallbacks(soon);
+253:         handler.postDelayed(soon, 4000);
+254:     }
+255: 
+256:     // ===================================================================================
+257:     // الشاشة
+258:     // ===================================================================================
+259: 
+260:     void show() {
+261:         a.here(this::show);
+262:         a.tabbedScreen("المزامنة بين الأجهزة", a.moreScreen::show, "more");
+263:         SyncEngine.Status st = SyncEngine.status(a.db);
+264:         if (!License.current.sync()) {
+265:             LinearLayout c = a.card();
+266:             c.addView(a.text("ميزة في النسخة المدفوعة", 17, a.primaryInk, true));
+267:             c.addView(a.text("المزامنة تجعل بياناتك واحدة على كل أجهزتك: الهاتف والماك والويندوز. كل جهاز يسجّل ويعدّل، وتصل التغييرات للبقية "
+268:                     + "مشفّرة بالكامل عبر مجلد سحابي تختاره. بياناتك على هذا الجهاز تعمل كما هي دون مزامنة.", 14, a.ink, false));
+269:             c.addView(a.makeButton("الترخيص", a.primary, v -> a.openLicense()), a.lp(-1, 48, 6));
+270:             if (!st.enabled) return;
+271:         }
+272:         if (!st.enabled) {
+273:             intro(st);
+274:             return;
+275:         }
+276:         status(st);
+277:     }
+278: 
+279:     private void intro(SyncEngine.Status st) {
+280:         if (!st.leftReason.isEmpty()) a.notice(R.drawable.ic_info, "المزامنة متوقفة على هذا الجهاز: " + st.leftReason + ". انضم من جديد للمتابعة.", false, null, null);
+281:         LinearLayout c = a.card();
+282:         c.addView(a.text("كيف تعمل؟", 17, a.primaryInk, true));
+283:         c.addView(a.text("• بياناتك تبقى على كل جهاز وتعمل دون إنترنت.\n"
+284:                 + "• كل جهاز يرسل تغييراته كملفات مشفّرة ويستلم تغييرات الأجهزة الأخرى. تنتقل الحركات الجديدة فقط.\n"
+285:                 + "• الناقل (Google أو خادمك أو المجلد) لا يرى شيئًا: لا أسماء ولا مبالغ. المفتاح من كلمة سر المزامنة التي تختارها.\n"
+286:                 + "• القيود لا تُحذف ولا تتكرر: الإلغاء نفسه من جهازين يُحسب مرة واحدة، وتعديل الحركة نفسها من جهازين يُبقي الأسبق ويعرض الآخر للمراجعة.", 14, a.ink, false));
+287:         if (!a.can(Auth.Perm.SYNC)) {
+288:             a.hint("إعداد المزامنة لمن يملك صلاحية «إدارة المزامنة».");
+289:             return;
+290:         }
+291:         a.section("اختر طريقة المزامنة (الطريقة نفسها على كل الأجهزة)", null, null);
+292:         final String kind = transport(a.db);
+293:         LinearLayout g = a.group();
+294:         a.groupRow(g, R.drawable.ic_upload, "drive".equals(kind) ? a.green : a.primaryInk, "\u200FGoogle Drive مباشرة — الأسهل",
+295:                 "التطبيق يتصل بحساب Google نفسه على كل جهاز، في مجلد مخفي خاص به. تصل التغييرات خلال ثوانٍ دون فتح تطبيق Drive.",
+296:                 "drive".equals(kind) ? "✓" : "اختيار", v -> choose("drive"));
+297:         a.groupRow(g, R.drawable.ic_db, "server".equals(kind) ? a.green : a.primaryInk, "خادم المزامنة الخاص بك — الأسرع",
+298:                 "خادم تملكه (مرفق مع التطبيق). تحكم كامل وسرعة فورية، ويحتاج استضافة.", "server".equals(kind) ? "✓" : "اختيار", v -> choose("server"));
+299:         a.groupRow(g, R.drawable.ic_doc, "folder".equals(kind) ? a.green : a.primaryInk, "مجلد مشترك",
+300:                 "مجلد في Drive أو تزامنه FolderSync أو Syncthing. قد يتأخر وصول التغييرات حتى يحدّث تطبيق المزامنة المجلد.",
+301:                 "folder".equals(kind) ? "✓" : "اختيار", v -> choose("folder"));
+302:         a.button("شرح مفصّل لطريقة «" + ("drive".equals(kind) ? "Google Drive" : "server".equals(kind) ? "خادمك" : "المجلد المشترك") + "»", Color.rgb(120, 120, 120),
+303:                 v -> help(kind, this::show));
+304:         if (!License.current.sync()) return;
+305:         if ("drive".equals(kind)) introDrive();
+306:         else if ("server".equals(kind)) introServer();
+307:         else introFolder();
+308:     }
+309: 
+310:     private void choose(String kind) {
+311:         a.db.setSettingQuiet("sync_transport", kind);
+312:         show();
+313:     }
+314: 
+315:     /** بعد اختيار الناقل وتجهيزه: إنشاء الخزنة أو الانضمام إليها. */
+316:     private void createOrJoin(final String what) {
+317:         a.busy("جارٍ الاتصال بـ" + what + "…", p -> new SyncEngine(a.db, folder(a, a.db)).vaultExists(), res -> {
+318:             boolean exists = (Boolean) res;
+319:             if (exists) {
+320:                 a.notice(R.drawable.ic_check, "في " + what + " خزنة مزامنة: انضم إليها بكلمة سرها.", false, null, null);
+321:                 a.button("الانضمام إلى المزامنة", a.primary, v -> joinDialog());
+322:             } else {
+323:                 a.notice(R.drawable.ic_info, "لا خزنة بعد في " + what + ": أنشئ المزامنة من الجهاز الذي فيه بياناتك الكاملة (مرة واحدة)، ثم انضم من الأجهزة الأخرى.", false, null, null);
+324:                 a.button("إنشاء المزامنة من بيانات هذا الجهاز", a.primary, v -> createDialog());
+325:             }
+326:         });
+327:     }
+328: 
+329:     private void introDrive() {
+330:         LinearLayout h = a.card();
+331:         h.addView(a.text("\u200FGoogle Drive مباشرة", 16, a.primaryInk, true));
+332:         h.addView(a.text("سجّل الدخول بحساب Google نفسه على كل جهاز (الهاتف والماك والويندوز). يطلب التطبيق صلاحية «مجلد التطبيق» فقط: "
+333:                 + "لا يرى ملفاتك في Drive ولا تظهر ملفاته لك. الملفات مشفّرة قبل أن تغادر الجهاز.", 13, a.dark, false));
+334:         final boolean ok = "1".equals(a.db.setting("sync_drive_ok", ""));
+335:         final String acct = a.db.setting("drive_account", "");

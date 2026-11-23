@@ -1,0 +1,141 @@
+1: package android.app;
+2: 
+3: import java.io.BufferedReader;
+4: import java.io.File;
+5: import java.io.InputStreamReader;
+6: import java.nio.charset.StandardCharsets;
+7: import java.util.ArrayList;
+8: import java.util.List;
+9: import java.util.function.Consumer;
+10: 
+11: /**
+12:  * 11.3 (تجريبي): قائمة المشاركة الخاصة بالنظام، فيصل الملف إلى واتساب (أو غيره) مباشرة دون لصق:
+13:  * <ul>
+14:  * <li>ويندوز 10/11: نافذة «مشاركة» (DataTransferManager) عبر PowerShell المدمج في النظام.</li>
+15:  * <li>ماك: قائمة المشاركة (NSSharingServicePicker) عبر osascript المدمج في النظام.</li>
+16:  * </ul>
+17:  * تعمل في عملية منفصلة، فإن فشلت لا يتأثر البرنامج، ويُبلَّغ المتصل لينتقل إلى «نسخ ثم لصق». لا يُنزَّل شيء ولا يُثبَّت.
+18:  */
+19: public final class SystemShare {
+20:     private SystemShare() {}
+21: 
+22:     static final String OS = System.getProperty("os.name", "").toLowerCase();
+23:     static final boolean MAC = OS.contains("mac"), WIN = OS.contains("win");
+24: 
+25:     public static boolean supported() { return MAC || WIN; }
+26: 
+27:     /**
+28:      * يفتح قائمة المشاركة. result: true = ظهرت القائمة، false = تعذّرت (يُستدعى على خيط الواجهة).
+29:      * x,y: موضع القائمة على الشاشة (وسط نافذة البرنامج).
+30:      */
+31:     public static void share(List<File> files, String text, int x, int y, Consumer<Boolean> result) {
+32:         if (!supported()) {
+33:             post(result, false);
+34:             return;
+35:         }
+36:         String[] cmd = MAC ? mac(files, text, x, y) : win(files, text, x, y);
+37:         Thread t = new Thread(() -> {
+38:             boolean shown = false;
+39:             try {
+40:                 Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
+41:                 long until = System.currentTimeMillis() + 15000;
+42:                 try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+43:                     String line;
+44:                     while ((line = r.readLine()) != null) {
+45:                         if (line.contains("SA_SHOWN")) {
+46:                             shown = true;
+47:                             post(result, true);
+48:                             break;
+49:                         }
+50:                         if (line.contains("SA_FAIL") || System.currentTimeMillis() > until) break;
+51:                     }
+52:                 }
+53:                 if (!shown) {
+54:                     p.destroy();
+55:                     post(result, false);
+56:                 }
+57:             } catch (Exception e) {
+58:                 if (!shown) post(result, false);
+59:             }
+60:         }, "system-share");
+61:         t.setDaemon(true);
+62:         t.start();
+63:     }
+64: 
+65:     static void post(Consumer<Boolean> c, boolean v) { javax.swing.SwingUtilities.invokeLater(() -> c.accept(v)); }
+66: 
+67:     // ------------------------------------------------------------------ ماك
+68:     static String[] mac(List<File> files, String text, int x, int y) {
+69:         String js = "ObjC.import('AppKit');"
+70:                 + "var done=false,keep=[];"
+71:                 + "ObjC.registerSubclass({name:'SAShareDelegate',protocols:['NSSharingServicePickerDelegate','NSSharingServiceDelegate'],methods:{"
+72:                 + "'sharingServicePicker:didChooseSharingService:':{types:['void',['id','id']],implementation:function(p,s){if(s.isNil()){done=true;}else{var d=$.SAShareDelegate.alloc.init;keep.push(d);s.delegate=d;}}},"
+73:                 + "'sharingService:didShareItems:':{types:['void',['id','id']],implementation:function(s,i){done=true;}},"
+74:                 + "'sharingService:didFailToShareItems:error:':{types:['void',['id','id','id']],implementation:function(s,i,e){done=true;}}"
+75:                 + "}});"
+76:                 + "function run(argv){"
+77:                 + "var app=$.NSApplication.sharedApplication;app.setActivationPolicy(1);"
+78:                 + "var x=parseInt(argv[0]),y=parseInt(argv[1]),text=argv[2];"
+79:                 + "var scr=$.NSScreen.mainScreen.frame;"
+80:                 + "var w=$.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(x,scr.size.height-y,2,2),0,2,false);"
+81:                 + "w.setLevel(3);w.makeKeyAndOrderFront(null);app.activateIgnoringOtherApps(true);"
+82:                 + "var items=[];for(var k=3;k<argv.length;k++){items.push($.NSURL.fileURLWithPath(argv[k]));}"
+83:                 + "if(text.length>0){items.push($(text));}"
+84:                 + "var picker=$.NSSharingServicePicker.alloc.initWithItems($(items));"
+85:                 + "var pd=$.SAShareDelegate.alloc.init;keep.push(pd);picker.delegate=pd;"
+86:                 + "picker.showRelativeToRectOfViewPreferredEdge(w.contentView.bounds,w.contentView,1);"
+87:                 + "console.log('SA_SHOWN');"
+88:                 + "var n=0;while(!done&&n<6000){var ev=app.nextEventMatchingMaskUntilDateInModeDequeue(-1,$.NSDate.dateWithTimeIntervalSinceNow(0.1),$.NSDefaultRunLoopMode,true);"
+89:                 + "if(!ev.isNil()){app.sendEvent(ev);}n++;}"
+90:                 + "return 'SA_END';}";
+91:         List<String> c = new ArrayList<>();
+92:         c.add("/usr/bin/osascript");
+93:         c.add("-l");
+94:         c.add("JavaScript");
+95:         c.add("-e");
+96:         c.add(js);
+97:         c.add(String.valueOf(x));
+98:         c.add(String.valueOf(y));
+99:         c.add(text == null ? "" : text);
+100:         for (File f : files) c.add(f.getAbsolutePath());
+101:         return c.toArray(new String[0]);
+102:     }
+103: 
+104:     // ------------------------------------------------------------------ ويندوز
+105:     static String psq(String s) { return "'" + (s == null ? "" : s).replace("'", "''") + "'"; }
+106: 
+107:     static String[] win(List<File> files, String text, int x, int y) {
+108:         StringBuilder paths = new StringBuilder("@(");
+109:         for (int i = 0; i < files.size(); i++) paths.append(i == 0 ? "" : ",").append(psq(files.get(i).getAbsolutePath()));
+110:         paths.append(")");
+111:         String cls = "Windows.ApplicationModel.DataTransfer.DataTransferManager";
+112:         String ps = "$ErrorActionPreference='Stop';"
+113:                 + "try{"
+114:                 + "Add-Type -AssemblyName System.Windows.Forms;Add-Type -AssemblyName System.Runtime.WindowsRuntime;"
+115:                 + "$null=[Windows.ApplicationModel.DataTransfer.DataTransferManager,Windows.ApplicationModel.DataTransfer,ContentType=WindowsRuntime];"
+116:                 + "$null=[Windows.Storage.StorageFile,Windows.Storage,ContentType=WindowsRuntime];"
+117:                 + "Add-Type -TypeDefinition @'\n"
+118:                 + "using System; using System.Runtime.InteropServices;\n"
+119:                 + "[ComImport, Guid(\"3A3DCD6C-3EAB-43DC-BCDE-45671CE800C8\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+120:                 + "public interface ISaDtmInterop { IntPtr GetForWindow(IntPtr hwnd, [In] ref Guid riid); void ShowShareUIForWindow(IntPtr hwnd); }\n"
+121:                 + "public static class SaShare {\n"
+122:                 + "  [DllImport(\"combase.dll\")] static extern int WindowsCreateString([MarshalAs(UnmanagedType.LPWStr)] string s, int len, out IntPtr h);\n"
+123:                 + "  [DllImport(\"combase.dll\")] static extern int RoGetActivationFactory(IntPtr cls, [In] ref Guid iid, out IntPtr f);\n"
+124:                 + "  public static ISaDtmInterop Interop() { IntPtr h; WindowsCreateString(\"" + cls + "\", " + cls.length() + ", out h);\n"
+125:                 + "    Guid g = typeof(ISaDtmInterop).GUID; IntPtr f; Marshal.ThrowExceptionForHR(RoGetActivationFactory(h, ref g, out f));\n"
+126:                 + "    return (ISaDtmInterop)Marshal.GetObjectForIUnknown(f); }\n"
+127:                 + "  public static object ForWindow(ISaDtmInterop i, IntPtr hwnd) { Guid g = new Guid(\"A5CAEE9B-8708-49D1-8D36-67D25A8DA00C\"); return Marshal.GetObjectForIUnknown(i.GetForWindow(hwnd, ref g)); }\n"
+128:                 + "}\n"
+129:                 + "'@;"
+130:                 + "$m=([System.WindowsRuntimeSystemExtensions].GetMethods()|?{$_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'})[0];"
+131:                 + "function Aw($o,$t){$k=$m.MakeGenericMethod($t).Invoke($null,@($o));$k.Wait(-1)|Out-Null;$k.Result};"
+132:                 + "$paths=" + paths + ";$text=" + psq(text) + ";"
+133:                 + "$items=New-Object 'System.Collections.Generic.List[Windows.Storage.IStorageItem]';"
+134:                 + "foreach($p in $paths){$items.Add((Aw ([Windows.Storage.StorageFile]::GetFileFromPathAsync($p)) ([Windows.Storage.StorageFile])))};"
+135:                 + "$f=New-Object System.Windows.Forms.Form;$f.ShowInTaskbar=$false;$f.FormBorderStyle='None';$f.Opacity=0.01;"
+136:                 + "$f.StartPosition='Manual';$f.Location=New-Object System.Drawing.Point(" + x + "," + y + ");$f.Size=New-Object System.Drawing.Size(2,2);$f.TopMost=$true;"
+137:                 + "$f.Show();[System.Windows.Forms.Application]::DoEvents();"
+138:                 + "$i=[SaShare]::Interop();$dtm=[SaShare]::ForWindow($i,$f.Handle);"
+139:                 + "$script:chosen=$null;"
+140:                 + "$dtm.add_DataRequested({param($s,$e);$r=$e.Request;$r.Data.Properties.Title='المحاسب الذكي';"
+141:                 + "if($text.Length -gt 0){$r.Data.SetText($text)};if($items.Count -gt 0){$r.Data.SetStorageItems($items)}});"

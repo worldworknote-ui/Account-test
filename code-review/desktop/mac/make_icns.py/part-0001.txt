@@ -1,0 +1,14 @@
+1: #!/usr/bin/env python3
+2: """يبني AppIcon.icns من صور PNG (بلا أدوات الماك): make_icns.py <مجلد الصور> <الملف الناتج>"""
+3: import struct, sys, os
+4: d, out = sys.argv[1], sys.argv[2]
+5: # النوع ← المقاس بالبكسل (صيغ PNG المدعومة منذ macOS 10.7)
+6: types = [(b"icp4", 16), (b"icp5", 32), (b"icp6", 64), (b"ic07", 128), (b"ic08", 256), (b"ic09", 512), (b"ic10", 1024),
+7:          (b"ic11", 32), (b"ic12", 64), (b"ic13", 256), (b"ic14", 512)]
+8: chunks = []
+9: for t, s in types:
+10:     data = open(os.path.join(d, "icon_%d.png" % s), "rb").read()
+11:     chunks.append(t + struct.pack(">I", len(data) + 8) + data)
+12: body = b"".join(chunks)
+13: open(out, "wb").write(b"icns" + struct.pack(">I", len(body) + 8) + body)
+14: print("icns", len(body) + 8)

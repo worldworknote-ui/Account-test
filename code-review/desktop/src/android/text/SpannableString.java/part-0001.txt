@@ -1,0 +1,25 @@
+1: package android.text;
+2: 
+3: public class SpannableString implements Spannable {
+4:     private final String text;
+5:     final SpanStore spans;
+6:     public SpannableString(CharSequence s) {
+7:         text = s.toString();
+8:         spans = s instanceof SpannableString ? ((SpannableString) s).spans.copy(0, text.length())
+9:                 : s instanceof SpannableStringBuilder ? ((SpannableStringBuilder) s).spans.copy(0, text.length()) : new SpanStore();
+10:     }
+11:     public static SpannableString valueOf(CharSequence s) { return s instanceof SpannableString ? (SpannableString) s : new SpannableString(s); }
+12:     @Override public void setSpan(Object w, int s, int e, int f) { spans.set(w, s, e, f); }
+13:     @Override public void removeSpan(Object w) { spans.remove(w); }
+14:     @Override public <T> T[] getSpans(int s, int e, Class<T> t) { return spans.get(s, e, t); }
+15:     @Override public int getSpanStart(Object w) { SpanStore.S x = spans.find(w); return x == null ? -1 : x.start; }
+16:     @Override public int getSpanEnd(Object w) { SpanStore.S x = spans.find(w); return x == null ? -1 : x.end; }
+17:     @Override public int getSpanFlags(Object w) { SpanStore.S x = spans.find(w); return x == null ? 0 : x.flags; }
+18:     @Override public int nextSpanTransition(int s, int l, Class t) { return spans.next(s, l, t); }
+19:     @Override public int length() { return text.length(); }
+20:     @Override public char charAt(int i) { return text.charAt(i); }
+21:     @Override public CharSequence subSequence(int s, int e) { SpannableString r = new SpannableString(text.substring(s, e)); r.spans.list.addAll(spans.copy(s, e).list); return r; }
+22:     @Override public String toString() { return text; }
+23:     @Override public boolean equals(Object o) { return o instanceof CharSequence && text.equals(o.toString()); }
+24:     @Override public int hashCode() { return text.hashCode(); }
+25: }

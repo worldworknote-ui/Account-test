@@ -1,0 +1,157 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.math.BigDecimal;
+6: import java.util.*;
+7: import java.util.List;
+8: import javax.swing.*;
+9: import javax.swing.table.DefaultTableModel;
+10: 
+11: /**
+12:  * الإعدادات (المحفوظة في البيانات نفسها، فتنتقل مع النسخة الاحتياطية بين الهاتف والماك): اسم المكتب والترحيب والألوان،
+13:  * العملات ومنازلها، أسعار الصرف، كلمات العملات العامية، تأكيد الحركة، الاعتماد المزدوج، إقفال الفترة، رسالة المطابقة،
+14:  * رمز الدولة لواتساب، والفهم بالذكاء الاصطناعي (النسخة الكاملة).
+15:  */
+16: final class SettingsView extends View {
+17:     SettingsView(App app) {
+18:         super(app, "الإعدادات");
+19:     }
+20: 
+21:     /** 10.16: إيقاف تذكير الخمول أو تذكير المطابقة لمكاتب بعينها (كالهاتف: notif_idle_off / notif_recon_off). */
+22:     void officeNotifs() {
+23:         java.util.List<Model.Office> offs = new java.util.ArrayList<>();
+24:         for (Model.Office o : db.offices()) if (o.active) offs.add(o);
+25:         if (offs.isEmpty()) {
+26:             Ui.toast("لا مكاتب بعد");
+27:             return;
+28:         }
+29:         JPanel g = new JPanel(new GridLayout(0, 3, 10, 2));
+30:         g.setOpaque(false);
+31:         g.add(Ui.label("المكتب", 13, Ui.muted, true));
+32:         g.add(Ui.label("تذكير الخمول", 13, Ui.muted, true));
+33:         g.add(Ui.label("تذكير المطابقة", 13, Ui.muted, true));
+34:         final java.util.List<JCheckBox[]> boxes = new java.util.ArrayList<>();
+35:         for (Model.Office o : offs) {
+36:             JCheckBox i = Ui.check("", db.officeNotif("notif_idle_off", o.id)), r = Ui.check("", db.officeNotif("notif_recon_off", o.id));
+37:             boxes.add(new JCheckBox[]{i, r});
+38:             g.add(Ui.label(o.name, 14, Ui.ink, false));
+39:             g.add(i);
+40:             g.add(r);
+41:         }
+42:         JScrollPane sp = new JScrollPane(Ui.rtl(g));
+43:         sp.setBorder(null);
+44:         sp.setPreferredSize(new Dimension(520, Math.min(480, 40 + offs.size() * 30)));
+45:         if (!Ui.form(this, "تذكيرات المكاتب (أزل العلامة لإيقاف التذكير لمكتب)", sp, "حفظ")) return;
+46:         for (int k = 0; k < offs.size(); k++) {
+47:             db.setOfficeNotif("notif_idle_off", offs.get(k).id, boxes.get(k)[0].isSelected());
+48:             db.setOfficeNotif("notif_recon_off", offs.get(k).id, boxes.get(k)[1].isSelected());
+49:         }
+50:         Ui.toast("حُفظت تذكيرات المكاتب");
+51:     }
+52: 
+53:     @Override void refresh() {
+54:         clear();
+55:         int w = textWidth();
+56: 
+57:         // المكتب والمظهر
+58:         if (can(Auth.Perm.SETTINGS) || can(Auth.Perm.DESIGN)) {
+59:             Ui.Card c = Ui.card();
+60:             c.add(Ui.heading("المكتب والمظهر"));
+61:             Ui.Field office = Ui.field("اسم مكتبك (يظهر في التقارير والكشوف)"), title = Ui.field("اسم البرنامج في الأعلى"), welcome = Ui.field("رسالة الترحيب في الرئيسية");
+62:             Ui.Field issuer = Ui.field("عنوان/هاتف تحت اسم مكتبك في التقارير"), footer = Ui.field("تذييل التقارير");
+63:             office.setText(db.setting("office_name", ""));
+64:             title.setText(db.setting("app_title", ""));
+65:             welcome.setText(db.setting("welcome", ""));
+66:             issuer.setText(db.setting("st_issuer_info", ""));
+67:             footer.setText(db.setting("st_footer", ""));
+68:             JPanel g = new JPanel(new GridLayout(0, 2, 12, 8));
+69:             g.setOpaque(false);
+70:             g.setAlignmentX(Component.RIGHT_ALIGNMENT);
+71:             g.add(Ui.labeled("اسم المكتب", office));
+72:             g.add(Ui.labeled("اسم البرنامج", title));
+73:             g.add(Ui.labeled("رسالة الترحيب", welcome));
+74:             g.add(Ui.labeled("معلومات المكتب في التقارير", issuer));
+75:             g.add(Ui.labeled("تذييل التقارير", footer));
+76:             c.add(g);
+77:             c.add(Ui.gap(8));
+78:             JPanel colors = Ui.flow(colorBtn("اللون الأساسي", "primary_color", Ui.primary), colorBtn("لون التمييز", "accent_color", Ui.accent),
+79:                     colorBtn("لون الخلفية", "bg_color", Ui.bg), Ui.ghost("الألوان الافتراضية", e -> {
+80:                         for (String k : new String[]{"primary_color", "accent_color", "bg_color"}) db.deleteSetting(k);
+81:                         app.reloadAll();
+82:                     }));
+83:             c.add(colors);
+84:             c.add(Ui.gap(8));
+85:             c.add(Ui.flow(Ui.primary("حفظ", e -> {
+86:                 db.setSetting("office_name", office.val());
+87:                 db.setSetting("app_title", title.val());
+88:                 db.setSetting("welcome", welcome.val());
+89:                 db.setSetting("st_issuer_info", issuer.val());
+90:                 db.setSetting("st_footer", footer.val());
+91:                 Ui.toast("حُفظت الإعدادات");
+92:                 app.reloadAll();
+93:                 app.go("settings");
+94:             })));
+95:             add(c);
+96:             space(12);
+97:         }
+98: 
+99:         // العملات
+100:         Ui.Card cc = Ui.card();
+101:         cc.add(Ui.heading("العملات"));
+102:         DefaultTableModel m = new DefaultTableModel(new Object[]{"الرمز", "الاسم", "المنازل العشرية", "مفعّلة", "سعر الدولار للوحدة"}, 0) {
+103:             @Override public boolean isCellEditable(int r, int c) { return false; }
+104:         };
+105:         Map<String, Db.Rate> rates = db.rates();
+106:         List<Model.Currency> curs = db.currencies(true);
+107:         for (Model.Currency c : curs) {
+108:             Db.Rate r = rates.get(c.code);
+109:             m.addRow(new Object[]{c.code, c.name, c.decimals, c.active ? "نعم" : "لا", r == null || r.usd == null ? "—" : r.usd.stripTrailingZeros().toPlainString() + (r.manual != null ? " (يدوي)" : "")});
+110:         }
+111:         JTable t = Ui.table(m);
+112:         Ui.widths(t, 80, 220, 110, 70, 180);
+113:         JScrollPane sp = Ui.tableBox(t);
+114:         sp.setPreferredSize(new Dimension(700, Math.min(10, curs.size()) * 32 + 36));
+115:         sp.setMaximumSize(new Dimension(Integer.MAX_VALUE, sp.getPreferredSize().height));
+116:         cc.add(sp);
+117:         cc.add(Ui.gap(8));
+118:         cc.add(Ui.flow(Ui.primary("عملة جديدة…", e -> currency(null)), Ui.ghost("تعديل المحددة…", e -> {
+119:             int r = t.getSelectedRow();
+120:             if (r >= 0) currency(curs.get(t.convertRowIndexToModel(r)));
+121:             else Ui.toast("اختر عملة من الجدول");
+122:         }), Ui.ghost("سعر الصرف للمحددة…", e -> {
+123:             int r = t.getSelectedRow();
+124:             if (r >= 0) rate(curs.get(t.convertRowIndexToModel(r)).code);
+125:             else Ui.toast("اختر عملة من الجدول");
+126:         })));
+127:         cc.add(Ui.para("أسعار الصرف تُستعمل لتقويم الحدود بالدولار وفرق العملة التقديري والاعتماد المزدوج فقط؛ لا تغيّر أي رصيد.", 12.5f, Ui.muted, w));
+128:         add(cc);
+129:         space(12);
+130: 
+131:         // كلمات العملات
+132:         Ui.Card aw = Ui.card();
+133:         aw.add(Ui.heading("كلمات العملات العامية (لفهم الرسائل)"));
+134:         Map<String, List<String>> aliases = MessageParser.aliasesFrom(db.setting("cur_aliases", ""));
+135:         StringBuilder sb = new StringBuilder();
+136:         for (Map.Entry<String, List<String>> e : aliases.entrySet()) sb.append(e.getKey()).append(": ").append(Model.join(e.getValue(), "، ")).append("\n");
+137:         aw.add(Ui.para(sb.length() == 0 ? "لا توجد كلمات مضافة. مثال: «يوز» = USDT." : sb.toString().trim(), 13.5f, Ui.ink, w));
+138:         aw.add(Ui.flow(Ui.ghost("إضافة كلمة…", e -> alias(aliases)), Ui.ghost("حذف كلمة…", e -> removeAlias(aliases))));
+139:         add(aw);
+140:         space(12);
+141: 
+142:         // 10.18: الوقت الموحّد — توقيت المكتب لكل الأجهزة، وتصحيح ساعة الجهاز تلقائيًا
+143:         {
+144:             Ui.Card ck = Ui.card();
+145:             ck.add(Ui.heading("الوقت الموحّد"));
+146:             for (String line : db.clockLines()) ck.add(Ui.para(line, 13.5f, Ui.ink, w));
+147:             ck.add(Ui.para("كل الأجهزة تعرض التواريخ وتحسب «اليوم» بتوقيت المكتب، ولو كان المحاسب في بلد آخر. وساعة كل جهاز تُصحَّح من وقت Google عند كل مزامنة "
+148:                     + "(ويبقى التصحيح محفوظًا عند العمل بلا إنترنت)، فلا تُسجَّل حركة بوقت خاطئ بسبب ساعة جهاز غير مضبوطة.", 12.5f, Ui.muted, w));
+149:             if (can(Auth.Perm.SETTINGS)) ck.add(Ui.flow(Ui.ghost("تغيير توقيت المكتب…", e -> pickZone())));
+150:             add(ck);
+151:             space(12);
+152:         }
+153: 
+154:         // الحركات
+155:         if (can(Auth.Perm.SETTINGS)) {
+156:             Ui.Card tx = Ui.card();
+157:             tx.add(Ui.heading("الحركات"));

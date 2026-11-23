@@ -1,0 +1,174 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import android.content.Context;
+4: import com.smart.hawala.*;
+5: import java.awt.*;
+6: import java.awt.geom.*;
+7: import java.awt.image.BufferedImage;
+8: import java.io.File;
+9: import java.io.FileOutputStream;
+10: import java.io.PrintWriter;
+11: import java.io.RandomAccessFile;
+12: import java.io.StringWriter;
+13: import java.nio.channels.FileLock;
+14: import java.nio.charset.StandardCharsets;
+15: import java.util.Date;
+16: import javax.swing.*;
+17: 
+18: /**
+19:  * تشغيل «المحاسب الذكي» على الماك: مجلد البيانات في ~/Library/Application Support/SmartAccountant،
+20:  * ومفتاح التشفير في سلسلة المفاتيح، ثم قاعدة البيانات نفسها التي في الهاتف (Db) والترخيص، ثم النافذة.
+21:  */
+22: public final class Main {
+23:     private Main() {}
+24: 
+25:     static File home;
+26:     private static FileLock instanceLock;
+27: 
+28:     public static void main(String[] args) {
+29:         System.setProperty("apple.laf.useScreenMenuBar", "true");
+30:         System.setProperty("apple.awt.application.name", "المحاسب الذكي");
+31:         System.setProperty("apple.awt.application.appearance", "NSAppearanceNameAqua");
+32:         System.setProperty("awt.useSystemAAFontSettings", "on");
+33:         System.setProperty("swing.aatext", "true");
+34:         // 11.5: اتصال Google والخادم يمر بإعدادات الوكيل (Proxy/VPN) في النظام كما يفعل المتصفح؛ بدونها كان
+35:         // الاتصال يُقطع أثناء المصافحة («Remote host terminated the handshake») في الشبكات التي تحتاج الوكيل.
+36:         if (System.getProperty("java.net.useSystemProxies") == null) System.setProperty("java.net.useSystemProxies", "true");
+37:         Thread.setDefaultUncaughtExceptionHandler((t, e) -> log(e));
+38:         // الأرقام والتواريخ بالأرقام اللاتينية كما في تطبيق الهاتف (حتى لو كانت لغة الماك عربية)
+39:         java.util.Locale.setDefault(java.util.Locale.Category.FORMAT, java.util.Locale.US);
+40:         // 10.4: سمة FlatLaf الحديثة من البداية (حتى نوافذ ما قبل فتح البيانات)، ثم بلون المكتب ووضعه بعد فتحها
+41:         SwingUtilities.invokeLater(() -> {
+42:             Ui.loadFonts();
+43:             Ui.applyColors(null);
+44:             Ui.setupLaf();
+45:             start();
+46:         });
+47:     }
+48: 
+49:     /** للتجارب: الخطوط والمظهر كما عند التشغيل. */
+50:     public static void lafForTests() {
+51:         Ui.loadFonts();
+52:         Ui.applyColors(null);
+53:         Ui.setupLaf();
+54:     }
+55: 
+56:     static void start() {
+57:         Ui.loadFonts();
+58:         Ui.applyColors(null);
+59:         home = Context.defaultHome();
+60:         if (!singleInstance()) {
+61:             Ui.message(null, "البرنامج مفتوح", "«المحاسب الذكي» مفتوح أصلًا في نافذة أخرى على هذا الجهاز.", JOptionPane.INFORMATION_MESSAGE);
+62:             System.exit(0);
+63:             return;
+64:         }
+65:         Context ctx = new Context(home);
+66:         SmartApp.ctx = ctx;
+67:         Crypto.init(ctx);
+68:         if (!Crypto.fast()) {
+69:             if (!keyMissing(ctx)) {
+70:                 System.exit(0);
+71:                 return;
+72:             }
+73:         }
+74:         Db db;
+75:         // 12.7: أول تشفير لقاعدة قديمة: نافذة تقدم واضحة بدل نافذة لا تظهر (التشفير على هذا الخيط، والنافذة ترسم على خيط الواجهة)
+76:         javax.swing.JDialog enc = null;
+77:         if (Db.needsEncryption(ctx)) {
+78:             final javax.swing.JDialog[] box = {null};
+79:             try {
+80:                 SwingUtilities.invokeAndWait(() -> {
+81:                     javax.swing.JDialog d = new javax.swing.JDialog((java.awt.Frame) null, "المحاسب الذكي", false);
+82:                     javax.swing.JPanel p = new javax.swing.JPanel(new java.awt.BorderLayout(0, 12));
+83:                     p.setBorder(javax.swing.BorderFactory.createEmptyBorder(22, 26, 22, 26));
+84:                     javax.swing.JLabel l = new javax.swing.JLabel("<html><div dir='rtl' style='text-align:right;width:330px'>جارٍ تشفير بيانات المحاسب لأول مرة…<br><br>"
+85:                             + "يحدث مرة واحدة فقط وقد يستغرق دقيقة مع البيانات الكبيرة. بياناتك تبقى كما هي، وإن أُغلق البرنامج الآن يُعاد التشفير بأمان في الفتح التالي.</div></html>");
+86:                     l.setHorizontalAlignment(javax.swing.SwingConstants.RIGHT);
+87:                     javax.swing.JProgressBar bar = new javax.swing.JProgressBar();
+88:                     bar.setIndeterminate(true);
+89:                     p.add(l, java.awt.BorderLayout.CENTER);
+90:                     p.add(bar, java.awt.BorderLayout.SOUTH);
+91:                     d.setContentPane(p);
+92:                     d.setDefaultCloseOperation(javax.swing.WindowConstants.DO_NOTHING_ON_CLOSE);
+93:                     d.pack();
+94:                     d.setLocationRelativeTo(null);
+95:                     d.setVisible(true);
+96:                     box[0] = d;
+97:                 });
+98:             } catch (Exception ignored) {
+99:                 // بلا نافذة: يكمل التشفير
+100:             }
+101:             enc = box[0];
+102:         }
+103:         try {
+104:             db = new Db(ctx);
+105:             db.getWritableDatabase();
+106:             if (enc != null) {
+107:                 final javax.swing.JDialog e = enc;
+108:                 SwingUtilities.invokeLater(e::dispose);
+109:             }
+110:         } catch (Throwable t) {
+111:             log(t);
+112:             Ui.message(null, "تعذر فتح البيانات", "تعذر فتح قاعدة البيانات:\n" + Ui.friendly(t) + "\n\nالمجلد: " + home.getAbsolutePath(), JOptionPane.ERROR_MESSAGE);
+113:             System.exit(1);
+114:             return;
+115:         }
+116:         SmartApp.db = db;
+117:         License.load(ctx, db);
+118:         Ui.init(db);
+119:         // 10.16: قفل البرنامج بكلمة سر (بلا نظام مستخدمين): تُطلب قبل ظهور أي بيانات
+120:         if (DeskLock.on(db) && !DeskLock.ask(null, db)) {
+121:             System.exit(0);
+122:             return;
+123:         }
+124:         // 11.0: شاشات الهاتف نفسها (طبقة أندرويد فوق Swing)؛ الشكل القديم خيار من الإعدادات أو معالج الشكل
+125:         if ("classic".equals(db.setting("desk_ui", "phone"))) new App(ctx, db).show();
+126:         else PhoneWindow.open(ctx, db);
+127:         // أول تشغيل لهذا الإصدار على هذا الجهاز: معالج الشكل مع معاينة حية في نافذة البرنامج
+128:         if (!"done".equals(db.setting("desk_wizard", "")) && !Boolean.getBoolean("sa.noWizard"))
+129:             SwingUtilities.invokeLater(() -> LookWizard.open(true));
+130:     }
+131: 
+132:     /** 11.0: التبديل بين شكل الهاتف (phone) والشكل القديم (classic) دون إغلاق البرنامج؛ البيانات تبقى مفتوحة. */
+133:     public static void switchUi(String ui) {
+134:         Db db = SmartApp.db;
+135:         Context ctx = SmartApp.ctx;
+136:         if (db == null || ctx == null) return;
+137:         boolean classic = "classic".equals(ui);
+138:         if (classic == (App.frame != null && !PhoneWindow.isOpen())) return;
+139:         db.setSettingQuiet("desk_ui", classic ? "classic" : "phone");
+140:         try {
+141:             if (classic) {
+142:                 PhoneWindow.close();
+143:                 Ui.init(db);
+144:                 new App(ctx, db).show();
+145:             } else {
+146:                 if (App.instance != null) App.instance.stop();
+147:                 if (App.frame != null) App.frame.dispose();
+148:                 App.frame = null;
+149:                 PhoneWindow.open(ctx, db);
+150:             }
+151:         } catch (Throwable t) {
+152:             log(t);
+153:             Ui.message(null, "تعذر تغيير الشكل", Ui.friendly(t), JOptionPane.ERROR_MESSAGE);
+154:         }
+155:     }
+156: 
+157:     /** بعد التراجع إلى نسخة أمان: قاعدة جديدة، فتُبنى النافذة من جديد. */
+158:     static void restart(App old, Db fresh) { restart(old, fresh, "عادت البيانات إلى نسخة الأمان"); }
+159: 
+160:     static void restart(App old, Db fresh, String msg) {
+161:         SmartApp.db = fresh;
+162:         SmartApp.currentUser = null;
+163:         Db.currentUserName = "المستخدم المحلي";
+164:         License.load(old.ctx, fresh);
+165:         Ui.init(fresh);
+166:         if (App.frame != null) App.frame.dispose();
+167:         new App(old.ctx, fresh).show();
+168:         Ui.toast(msg);
+169:     }
+170: 
+171:     /** المفتاح مفقود والقاعدة موجودة: لا مفتاح جديد بصمت. الخيار: استعادة نسخة احتياطية بمفتاح جديد، أو الخروج. */
+172:     static boolean keyMissing(Context ctx) {
+173:         int r = Ui.choose(null, "مفتاح التشفير غير متاح",
+174:                 "بيانات البرنامج موجودة على هذا الجهاز لكن مفتاح تشفيرها غير موجود في «سلسلة المفاتيح» لهذا المستخدم.\n\n"

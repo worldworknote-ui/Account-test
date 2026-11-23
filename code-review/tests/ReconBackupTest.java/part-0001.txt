@@ -1,0 +1,30 @@
+1: import com.smart.hawala.*;
+2: import org.json.*;
+3: import java.util.*;
+4: public class ReconBackupTest {
+5:   static int fails = 0;
+6:   static void check(boolean c, String m) { System.out.println((c ? "  PASS " : "  FAIL ") + m); if (!c) fails++; }
+7:   static BackupFormat.Parsed base() throws Exception {
+8:     BackupFormat.Parsed p = new BackupFormat.Parsed();
+9:     p.tables.put("currencies", new ArrayList<>(Arrays.asList(new JSONObject().put("code","USD").put("name","d").put("decimals",2).put("active",1))));
+10:     p.tables.put("offices", new ArrayList<>(Arrays.asList(new JSONObject().put("id",1).put("name","a").put("active",1))));
+11:     p.tables.put("tx", new ArrayList<JSONObject>()); p.tables.put("journal_entries", new ArrayList<JSONObject>()); p.tables.put("journal_lines", new ArrayList<JSONObject>());
+12:     return p;
+13:   }
+14:   public static void main(String[] a) throws Exception {
+15:     BackupFormat.Parsed p = base();
+16:     p.tables.put("reconciliations", new ArrayList<>(Arrays.asList(new JSONObject().put("id",1).put("office_id",1).put("created_at",5).put("cutoff_entry",0).put("status","SENT"))));
+17:     p.tables.put("reconciliation_lines", new ArrayList<>(Arrays.asList(new JSONObject().put("id",1).put("recon_id",1).put("currency","USD").put("balance_minor",100))));
+18:     check(BackupFormat.validate(p).ok(), "valid reconciliation rows accepted");
+19:     BackupFormat.Parsed q = base();
+20:     q.tables.put("reconciliations", new ArrayList<>(Arrays.asList(new JSONObject().put("id",1).put("office_id",9).put("created_at",5).put("cutoff_entry",0).put("status","SENT"))));
+21:     check(!BackupFormat.validate(q).ok(), "reconciliation for a missing office rejected");
+22:     BackupFormat.Parsed r = base();
+23:     r.tables.put("reconciliation_lines", new ArrayList<>(Arrays.asList(new JSONObject().put("id",1).put("recon_id",4).put("currency","USD").put("balance_minor",1))));
+24:     check(!BackupFormat.validate(r).ok(), "orphan reconciliation line rejected");
+25:     check(BackupFormat.validate(base()).ok(), "older backup without reconciliation tables still valid");
+26:     check(Arrays.asList(BackupFormat.TABLES).indexOf("reconciliations") > Arrays.asList(BackupFormat.TABLES).indexOf("offices")
+27:         && Arrays.asList(BackupFormat.TABLES).indexOf("reconciliation_lines") > Arrays.asList(BackupFormat.TABLES).indexOf("reconciliations"), "restore order: parents first");
+28:     System.out.println(fails == 0 ? "ALL PASS" : fails + " FAILED"); System.exit(fails == 0 ? 0 : 1);
+29:   }
+30: }

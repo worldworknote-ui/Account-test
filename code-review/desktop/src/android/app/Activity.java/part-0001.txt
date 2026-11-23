@@ -1,0 +1,190 @@
+1: package android.app;
+2: 
+3: import android.content.Context;
+4: import android.content.Intent;
+5: import android.content.res.Configuration;
+6: import android.os.Bundle;
+7: import android.view.*;
+8: import android.widget.FrameLayout;
+9: import java.util.ArrayList;
+10: import java.util.List;
+11: 
+12: /**
+13:  * شاشة أندرويد على الكمبيوتر: نافذتها الجذرية في عمود الهاتف، ودورة الحياة (onCreate/onResume/...)، والسمة،
+14:  * وفتح الملفات والمشاركة عبر Platform، وإعادة الإنشاء (recreate) كما في أندرويد.
+15:  */
+16: public class Activity extends Context {
+17:     public static final int RESULT_OK = -1, RESULT_CANCELED = 0, RESULT_FIRST_USER = 1;
+18:     private static final List<Activity> live = new ArrayList<>();
+19: 
+20:     private final FrameLayout decor;
+21:     private final Window window;
+22:     private ViewRootImpl root;
+23:     private Intent intent = new Intent(Intent.ACTION_MAIN);
+24:     private boolean finishing, destroyed, resumed;
+25:     private boolean night;
+26:     private int themeRes;
+27:     final List<Dialog> dialogs = new ArrayList<>();
+28:     /** تستدعيه نافذة الكمبيوتر حين تتغير ألوان الأشرطة (لون ما حول العمود). */
+29:     public static Runnable onBarsChanged;
+30: 
+31:     public Activity() {
+32:         super();
+33:         decor = new FrameLayout(this);
+34:         window = new Window(decor);
+35:         window.onChange = () -> { if (onBarsChanged != null) onBarsChanged.run(); };
+36:     }
+37: 
+38:     // ------------------------------------------------------------------ التشغيل
+39:     /** يشغّل شاشة جديدة من هذا الصنف (أول شاشة في البرنامج). */
+40:     public static <T extends Activity> T launch(Class<T> cls, Bundle saved) {
+41:         try {
+42:             T a = cls.getDeclaredConstructor().newInstance();
+43:             ((Activity) a).attachWindow();
+44:             a.onCreate(saved);
+45:             a.onPostCreate(saved);
+46:             a.onStart();
+47:             a.onResume();
+48:             ((Activity) a).resumed = true;
+49:             a.onPostResume();
+50:             return a;
+51:         } catch (RuntimeException e) {
+52:             throw e;
+53:         } catch (Exception e) {
+54:             throw new RuntimeException(e);
+55:         }
+56:     }
+57:     private void attachWindow() {
+58:         live.add(this);
+59:         root = WindowStack.add(decor, ViewRootImpl.LAYER_APP);
+60:         root.onBack = this::backKey;
+61:         root.keyHook = this::shortcutKey;
+62:     }
+63:     private void backKey() {
+64:         for (int i = dialogs.size() - 1; i >= 0; i--) { Dialog d = dialogs.get(i); if (d.isShowing()) { d.backPressed(); return; } }
+65:         onBackPressed();
+66:     }
+67:     /** اختصارات لوحة المفاتيح (تُعرّف في الشاشة المشتقة). */
+68:     protected boolean shortcutKey(java.awt.event.KeyEvent e) { return false; }
+69:     public static List<Activity> live() { return new ArrayList<>(live); }
+70:     public ViewRootImpl rootImpl() { return root; }
+71: 
+72:     // ------------------------------------------------------------------ دورة الحياة
+73:     protected void onCreate(Bundle b) {}
+74:     protected void onPostCreate(Bundle b) {}
+75:     protected void onStart() {}
+76:     protected void onRestart() {}
+77:     protected void onResume() {}
+78:     protected void onPostResume() {}
+79:     protected void onPause() {}
+80:     protected void onStop() {}
+81:     protected void onDestroy() {}
+82:     protected void onSaveInstanceState(Bundle b) {}
+83:     protected void onRestoreInstanceState(Bundle b) {}
+84:     protected void onNewIntent(Intent i) {}
+85:     protected void onActivityResult(int code, int result, Intent data) {}
+86:     public void onRequestPermissionsResult(int code, String[] perms, int[] results) {}
+87:     public void onConfigurationChanged(Configuration c) {}
+88:     public void onWindowFocusChanged(boolean has) {}
+89:     public void onUserInteraction() {}
+90:     public void onTrimMemory(int level) {}
+91:     public void onLowMemory() {}
+92:     public boolean onKeyDown(int code, KeyEvent e) { return false; }
+93:     public boolean onKeyUp(int code, KeyEvent e) { return false; }
+94:     public boolean dispatchKeyEvent(KeyEvent e) { return false; }
+95:     public boolean dispatchTouchEvent(MotionEvent e) { return false; }
+96: 
+97:     /** تفعيل/إيقاف الشاشة مع النافذة (تصغير وإظهار). */
+98:     public void pauseFromWindow() { if (resumed && !destroyed) { resumed = false; onPause(); onStop(); } }
+99:     public void resumeFromWindow() { if (!resumed && !destroyed) { onRestart(); onStart(); onResume(); resumed = true; onPostResume(); } }
+100:     /** إغلاق البرنامج. */
+101:     public void destroyFromWindow() {
+102:         if (destroyed) return;
+103:         if (resumed) { onPause(); onStop(); resumed = false; }
+104:         destroyed = true;
+105:         onDestroy();
+106:         live.remove(this);
+107:     }
+108: 
+109:     /** 11.5: النافذة أمام المستخدم الآن (ليست مصغّرة ولا خلف برنامج آخر). */
+110:     public boolean hasWindowFocus() {
+111:         java.awt.Frame f = Platform.frame;
+112:         return f != null && f.isActive() && (f.getExtendedState() & java.awt.Frame.ICONIFIED) == 0;
+113:     }
+114: 
+115:     public void onBackPressed() { finish(); }
+116:     public void finish() {
+117:         // على الكمبيوتر: الشاشة الرئيسية لا تُغلق بالرجوع، بل تُصغَّر النافذة كما يعود الهاتف للشاشة الرئيسية
+118:         if (Platform.onFinish != null) Platform.onFinish.run();
+119:     }
+120:     public void finishAffinity() { finish(); }
+121:     public void finishAndRemoveTask() { finish(); }
+122:     public boolean moveTaskToBack(boolean nonRoot) { if (Platform.onFinish != null) Platform.onFinish.run(); return true; }
+123:     public boolean isFinishing() { return finishing; }
+124:     public boolean isDestroyed() { return destroyed; }
+125:     public boolean isChangingConfigurations() { return false; }
+126:     public boolean isTaskRoot() { return true; }
+127: 
+128:     /** إعادة إنشاء الشاشة (بعد تغيير السمة أو الخط) كما في أندرويد: كائن جديد بالحالة المحفوظة. */
+129:     public void recreate() {
+130:         javax.swing.SwingUtilities.invokeLater(() -> {
+131:             Bundle saved = new Bundle();
+132:             onSaveInstanceState(saved);
+133:             for (Dialog d : new ArrayList<>(dialogs)) d.dismiss();
+134:             if (resumed) { onPause(); onStop(); resumed = false; }
+135:             finishing = true;
+136:             destroyed = true;
+137:             onDestroy();
+138:             live.remove(this);
+139:             WindowStack.remove(root);
+140:             Activity fresh = launch(getClass(), saved);
+141:             fresh.intent = intent;
+142:             if (Platform.onRecreate != null) Platform.onRecreate.accept(fresh);
+143:         });
+144:     }
+145: 
+146:     static void configChanged() {
+147:         for (Activity a : new ArrayList<>(live)) if (!a.destroyed) a.onConfigurationChanged(a.getResources().getConfiguration());
+148:     }
+149: 
+150:     // ------------------------------------------------------------------ النافذة والمحتوى
+151:     public Window getWindow() { return window; }
+152:     public void setContentView(View v) {
+153:         decor.removeAllViews();
+154:         decor.addView(v, new FrameLayout.LayoutParams(-1, -1));
+155:     }
+156:     public void setContentView(View v, ViewGroup.LayoutParams p) { setContentView(v); }
+157:     public void addContentView(View v, ViewGroup.LayoutParams p) { decor.addView(v, p); }
+158:     public <T extends View> T findViewById(int id) { return decor.findViewById(id); }
+159:     public View getCurrentFocus() { return root == null ? null : root.getFocused(); }
+160:     public WindowManager getWindowManager() { return (WindowManager) getSystemService(WINDOW_SERVICE); }
+161:     public LayoutInflater getLayoutInflater() { return LayoutInflater.from(this); }
+162:     public void setRequestedOrientation(int o) {}
+163:     public void setTitle(CharSequence t) {}
+164:     public void setTaskDescription(Object d) {}
+165:     public void runOnUiThread(Runnable r) {
+166:         if (javax.swing.SwingUtilities.isEventDispatchThread()) r.run();
+167:         else javax.swing.SwingUtilities.invokeLater(r);
+168:     }
+169:     public final Application getApplication() { return Application.INSTANCE; }
+170:     public void overridePendingTransition(int a, int b) {}
+171:     public void reportFullyDrawn() {}
+172:     public void setShowWhenLocked(boolean s) {}
+173:     public void setTurnScreenOn(boolean t) {}
+174:     public void invalidateOptionsMenu() {}
+175:     public void setFinishOnTouchOutside(boolean f) {}
+176:     public ComponentCaller getCaller() { return null; }
+177:     public static class ComponentCaller {}
+178: 
+179:     // ------------------------------------------------------------------ السمة
+180:     @Override public void setTheme(int res) {
+181:         themeRes = res;
+182:         String[] n = names(res);
+183:         night = n != null && n[1].contains("Dark");
+184:     }
+185:     private static String[] names(int id) {
+186:         try { return new String[]{"style", RES.getResourceEntryName(id)}; } catch (Exception e) { return null; }
+187:     }
+188:     public boolean themeNight() { return night; }
+189:     public int themeAccent() { return night ? 0xFF5CCBA3 : 0xFF0B6B53; }
+190:     public int themeTextColor() { return night ? 0xFFFFFFFF : 0xDE000000; }

@@ -1,0 +1,156 @@
+2524:     for (var r0 = t.first; r0 <= t.last && !firstDate && roles.date !== undefined; r0++) firstDate = validDate(t.rows[r0], roles.date, order, serialToDate);
+2525:     var sheetAccount = roles.account === undefined ? clean(t.sheetAccount || "") : null;
+2526:     var pos = (cfg.positiveIs && cfg.positiveIs[t.id]) || "D";
+2527:     var log = roles.balance !== undefined ? [] : null;
+2528:     var seen = {};
+2529:     function currencyOf(row) {
+2530:       if (roles.currency === undefined) return { code: (cfg.fixedCurrency && cfg.fixedCurrency[t.id]) || t.sheetCurrency || cfg.defaultCurrency || "USD" };
+2531:       var ct = text(row[roles.currency]);
+2532:       if (!ct) return { bad: "noCurrency" };
+2533:       var cd = (cfg.curMap && cfg.curMap[key(ct)]) || guessCur(ct);
+2534:       if (cd === "__skip") return { bad: "excludedCur" };
+2535:       if (!cd) return { bad: "badCurrency" };
+2536:       return { code: cd };
+2537:     }
+2538:     for (var r = t.first; r <= t.last; r++) {
+2539:       var row = t.rows[r] || [];
+2540:       if (!rowSig(row).any) continue;
+2541:       if (isHeaderRepeat(t, row)) continue;
+2542:       var acc = roles.account !== undefined ? text(row[roles.account]) : sheetAccount || "";
+2543:       var curT = roles.currency !== undefined ? text(row[roles.currency]) : "";
+2544:       var dirT = roles.direction !== undefined ? text(row[roles.direction]) : "";
+2545:       var desc = roles.description !== undefined ? text(row[roles.description]) : "";
+2546:       var label = rowLabelIn(t, row);
+2547:       var isOpening = OPEN_RE.test(desc) || OPEN_RE.test(label);
+2548:       var rowDate = roles.date !== undefined ? validDate(row, roles.date, order, serialToDate) : null;
+2549:       // صف مجموع بلا تاريخ («المجموع»، «الإجمالي»، «Total»): ليس حركة
+2550:       if (!rowDate && (C.TOTAL_RE.test(label) || C.TOTAL_RE.test(desc) || (roles.account !== undefined && C.TOTAL_RE.test(acc)))) {
+2551:         model.skipped.push({ sheet: t.label, row: r + 1, reason: "صف مجموع" });
+2552:         model.totalsSkipped++;
+2553:         stat.totals++;
+2554:         continue;
+2555:       }
+2556:       // المبالغ واتجاهاتها
+2557:       var parts = [], bad = null;
+2558:       if (roles.debit !== undefined && roles.credit !== undefined) {
+2559:         [["D", roles.debit], ["C", roles.credit]].forEach(function (x) {
+2560:           var p = C.parseAmount(row[x[1]]);
+2561:           if (p.empty || (p.ok && p.zero)) return;
+2562:           if (!p.ok) { bad = "badAmount"; return; }
+2563:           parts.push({ dir: p.neg ? (x[0] === "D" ? "C" : "D") : x[0], p: p });
+2564:         });
+2565:       } else if (roles.amount !== undefined) {
+2566:         var pa = C.parseAmount(row[roles.amount]);
+2567:         if (!pa.empty && !(pa.ok && pa.zero)) {
+2568:           if (!pa.ok) bad = "badAmount";
+2569:           else if (roles.direction !== undefined) {
+2570:             var dm = dirT ? (cfg.dirMap && cfg.dirMap[key(dirT)]) || guessDir(dirT) : null;
+2571:             if (!dirT) bad = "noDir";
+2572:             else if (dm === "X") bad = "excludedDir";
+2573:             else if (dm !== "D" && dm !== "C") bad = "badDir";
+2574:             // مبلغ سالب مع اتجاه: كما تجمعه معادلات Excel (يطرح)، أي عكس الاتجاه
+2575:             else parts.push({ dir: pa.neg ? (dm === "D" ? "C" : "D") : dm, p: pa });
+2576:           } else parts.push({ dir: pa.neg ? (pos === "D" ? "C" : "D") : pos, p: pa });
+2577:         } else if (pa.ok && pa.zero) bad = "zero";
+2578:       }
+2579:       // الأجرة: تتبع الحركة في التطبيق (قيد أجرة مستقل) وتدخل في الرصيد، إلا إن اختار المستخدم «لا تُحسب»
+2580:       var feeP = null, feeText = roles.fee !== undefined ? text(row[roles.fee]) : "";
+2581:       var feeDir = (cfg.feeDir && cfg.feeDir[t.id]) || "D";
+2582:       if (feeText && feeDir !== "X") {
+2583:         var fp = C.parseAmount(row[roles.fee]);
+2584:         if (!fp.ok) bad = bad && bad !== "zero" ? bad : "badFee";
+2585:         else if (!fp.zero) feeP = fp;
+2586:       }
+2587:       // صف أجرة فقط (بلا مبلغ أصل): الأجرة نفسها حركة باتجاهها
+2588:       if (feeP && !parts.length && (!bad || bad === "zero")) { parts.push({ dir: feeP.neg ? flip(feeDir) : feeDir, p: feeP }); feeP = null; bad = null; }
+2589:       var hasAny = parts.length > 0 || bad;
+2590:       if (!hasAny) {
+2591:         // صف رصيد فقط (رصيد منقول/سابق بلا مبلغ): للتحقق ولاستنتاج الرصيد السابق، لا يغيّر شيئًا وحده
+2592:         if (log && clean(acc) && text(row[roles.balance])) {
+2593:           var cb = currencyOf(row);
+2594:           var bm = cb.code ? balanceMinor(row[roles.balance], curDef(cfg, cb.code).dec) : null;
+2595:           if (bm !== null) {
+2596:             log.push({ r: r, acc: acc, code: cb.code, delta: 0n, bal: bm, when: rowDate ? C.epoch(rowDate, 12) : null, only: true });
+2597:             seen[key(acc) + "|" + cb.code] = true;
+2598:             stat.balanceOnly++;
+2599:             continue;
+2600:           }
+2601:         }
+2602:         // صف بلا مبلغ: فارغ (رقم قيد أو تاريخ أو بيان فقط) أو ناقص
+2603:         if ((roles.account !== undefined && acc) || curT || dirT) { issue(model, "noAmount", t, r, row); stat.excluded++; }
+2604:         else { model.emptyRows++; stat.empty++; }
+2605:         continue;
+2606:       }
+2607:       stat.rows++;
+2608:       model.rowsRead++;
+2609:       if (bad && bad !== "zero") { issue(model, bad, t, r, row); stat.excluded++; continue; }
+2610:       if (bad === "zero") { model.skipped.push({ sheet: t.label, row: r + 1, reason: REASONS.zero }); continue; }
+2611:       if (!clean(acc)) { issue(model, "noAccount", t, r, row); stat.excluded++; continue; }
+2612:       var cc = currencyOf(row);
+2613:       if (cc.bad) { issue(model, cc.bad, t, r, row); stat.excluded++; continue; }
+2614:       var code = cc.code;
+2615:       var def = curDef(cfg, code);
+2616:       var made = [];
+2617:       for (var k = 0; k < parts.length; k++) {
+2618:         var m = C.toMinor(parts[k].p, def.dec);
+2619:         if (m === null) { made = null; break; }
+2620:         made.push({ dir: parts[k].dir, minor: m });
+2621:       }
+2622:       var feeMinor = null;
+2623:       if (made && feeP) { feeMinor = C.toMinor(feeP, def.dec); if (feeMinor === null) made = null; }
+2624:       if (!made) { issue(model, "decimals", t, r, row); stat.excluded++; continue; }
+2625:       var feeD = feeP ? (feeP.neg ? flip(feeDir) : feeDir) : "D";
+2626:       // التاريخ
+2627:       var dt = rowDate;
+2628:       var filled = false;
+2629:       if (!dt) {
+2630:         dt = prevDate || firstDate;
+2631:         filled = true;
+2632:       }
+2633:       if (!dt) {
+2634:         dt = { y: new Date(cfg.now).getFullYear(), m: new Date(cfg.now).getMonth() + 1, d: new Date(cfg.now).getDate(), H: 12, M: 0, S: 0, hasTime: false };
+2635:       }
+2636:       prevDate = dt;
+2637:       var when = C.epoch(dt, 12);
+2638:       if (when > cfg.now + 10 * 60000) { issue(model, "future", t, r, row); stat.excluded++; continue; }
+2639:       if (filled) { issue(model, "filledDate", t, r, row, true); stat.filled++; model.filledDates++; }
+2640:       var oi = officeOf(model, cfg, acc, "");
+2641:       var gk = key(acc) + "|" + code;
+2642:       if (isOpening && seen[gk]) model.midOpenings.push({ sheet: t.label, row: r + 1, office: model.offices[oi].name });
+2643:       seen[gk] = true;
+2644:       var notes = [];
+2645:       if (roles.ref !== undefined && text(row[roles.ref])) notes.push("رقم القيد في الملف: " + text(row[roles.ref]));
+2646:       (roles.notes || []).forEach(function (c) { var v = text(row[c]); if (v) notes.push(t.names[c - t.c0] + ": " + v); });
+2647:       if (feeText && feeDir === "X") notes.push(t.names[roles.fee - t.c0] + " (لم تُحسب في الرصيد): " + feeText);
+2648:       notes.push("منقولة من: " + t.label + " — صف " + (r + 1) + (filled ? " (التاريخ من الصف السابق)" : ""));
+2649:       if (roles.phone !== undefined && !model.offices[oi].phone) model.offices[oi].phone = text(row[roles.phone]);
+2650:       if (made.length === 2) model.both++;
+2651:       var delta = 0n, feeLeft = feeMinor;
+2652:       made.forEach(function (x) {
+2653:         var signed = x.dir === "D" ? x.minor : -x.minor;
+2654:         var fee = 0n;
+2655:         if (feeLeft !== null) { fee = feeLeft; feeLeft = null; }
+2656:         var feeSigned = fee === 0n ? 0n : (feeD === "D" ? fee : -fee);
+2657:         if (isOpening) {
+2658:           signed += feeSigned;
+2659:           fee = 0n;
+2660:           feeSigned = 0n;
+2661:           if (signed !== 0n) {
+2662:             model.openings.push({ office: oi, code: code, minor: signed, when: when - 60000, src: { sheet: t.label, row: r + 1, tid: t.id } });
+2663:             model.offices[oi].openings++;
+2664:           }
+2665:         } else {
+2666:           model.txs.push({ office: oi, when: when, dir: x.dir, minor: x.minor, code: code, person: "", desc: desc, notes: notes.join(" • "),
+2667:             fee: fee, feeDir: feeD, src: { sheet: t.label, row: r + 1, tid: t.id }, seq: model.txs.length });
+2668:           model.offices[oi].tx++;
+2669:         }
+2670:         delta += signed + feeSigned;
+2671:         addDirect(model, t, oi, code, signed + feeSigned);
+2672:       });
+2673:       if (log) log.push({ r: r, acc: acc, code: code, delta: delta, bal: text(row[roles.balance]) ? balanceMinor(row[roles.balance], def.dec) : null, when: when });
+2674:       stat.imported++;
+2675:     }
+2676:     if (log) model.balanceLogs.push({ t: t, log: log });
+2677:   }
+2678: 
+2679:   /**

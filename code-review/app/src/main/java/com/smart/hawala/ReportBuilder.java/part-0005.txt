@@ -1,0 +1,177 @@
+619:             }
+620:         }
+621:         // الأرصدة السابقة المسجّلة داخل الفترة تظهر في موضعها الزمني
+622:         List<OwnerReports.Opening> ops = new ArrayList<>();
+623:         if (running) {
+624:             long o = s.offices.iterator().next();
+625:             for (OwnerReports.Opening op : d.openings)
+626:                 if (op.office == o && op.when >= res.from && op.when < res.to && (s.currencies.isEmpty() || s.currencies.contains(op.currency))) ops.add(op);
+627:             ops.sort(Comparator.comparingLong(op -> op.when));
+628:         }
+629:         int oi = 0;
+630:         int n = 0;
+631:         for (Model.Tx x : res.rows) {
+632:             while (oi < ops.size() && ops.get(oi).when <= x.createdAt) openingRow(t, d, ops.get(oi++), bal, s.status != S_ACTIVE);
+633:             int dc = dec(d, x.currency);
+634:             List<Object> cells = new ArrayList<>();
+635:             cells.add(new Report.DateV(x.createdAt));
+636:             if (!oneOffice) cells.add(name(d, x.officeId));
+637:             cells.add(isDebit(x) ? new Report.Money(x.amount, dc) : "");
+638:             cells.add(isDebit(x) ? "" : new Report.Money(x.amount, dc));
+639:             cells.add(x.currency);
+640:             cells.add(x.hasFee() ? (Model.FEE_US.equals(x.feeType) ? "لنا " : "علينا ") + Model.fmt(x.fee, dec(d, x.feeCurrency)) + " " + x.feeCurrency : "");
+641:             cells.add(Model.nz(x.person));
+642:             cells.add(Model.nz(x.description));
+643:             String sd = Model.nz(x.service) + (Model.nz(x.service).isEmpty() || Model.nz(x.dest).isEmpty() ? "" : " · ") + Model.nz(x.dest);
+644:             cells.add(sd);
+645:             if (s.status != S_ACTIVE) cells.add(statusName(x));
+646:             if (running) {
+647:                 String k = x.officeId + "|" + x.currency;
+648:                 if (x.isActive()) {
+649:                     bal.merge(k, isDebit(x) ? x.amount : -x.amount, Long::sum);
+650:                     if (x.hasFee()) {
+651:                         String fk = x.officeId + "|" + x.feeCurrency;
+652:                         bal.merge(fk, Model.FEE_US.equals(x.feeType) ? x.fee : -x.fee, Long::sum);
+653:                     }
+654:                 }
+655:                 cells.add(new Report.Bal(bal.getOrDefault(k, 0L), dc));
+656:             }
+657:             t.row(x.isActive() ? (n++ % 2 == 1 ? Report.SHADED : Report.NORMAL) : Report.MUTED, cells.toArray());
+658:         }
+659:         while (oi < ops.size()) openingRow(t, d, ops.get(oi++), bal, s.status != S_ACTIVE);
+660:         if (res.rows.isEmpty()) t.note = "لا توجد حركات تطابق الاختيارات.";
+661:         else if (running) t.note = "الرصيد المتراكم بعملة كل سطر، ويشمل أجرة الحوالة إن كانت بالعملة نفسها.";
+662:     }
+663: 
+664:     static void openingRow(Report.Section t, Data d, OwnerReports.Opening op, Map<String, Long> bal, boolean statusCol) {
+665:         int dc = dec(d, op.currency);
+666:         String k = op.office + "|" + op.currency;
+667:         bal.merge(k, op.signed, Long::sum);
+668:         List<Object> cells = new ArrayList<>();
+669:         cells.add(new Report.DateV(op.when));
+670:         cells.add(op.signed > 0 ? new Report.Money(op.signed, dc) : "");
+671:         cells.add(op.signed > 0 ? "" : new Report.Money(-op.signed, dc));
+672:         cells.add(op.currency);
+673:         cells.add("");
+674:         cells.add("");
+675:         cells.add("رصيد سابق");
+676:         cells.add("");
+677:         if (statusCol) cells.add("");
+678:         cells.add(new Report.Bal(bal.getOrDefault(k, 0L), dc));
+679:         t.row(Report.SHADED, cells.toArray());
+680:     }
+681: 
+682:     static String statusName(Model.Tx t) {
+683:         if (t.isActive()) return "نشطة";
+684:         if (t.isPending()) return "بانتظار الاعتماد";
+685:         if (t.isRejected()) return "مرفوضة";
+686:         if ("CANCELLED".equals(t.status)) return "ملغاة";
+687:         return Model.nz(t.status);
+688:     }
+689: 
+690:     static String fmt(Data d, String c, long v) { return Model.fmt(v, dec(d, c)); }
+691: 
+692:     /** نسبة التغيّر بين فترتين: «+25%»، «−10%»، «جديد»، «—». */
+693:     public static String change(long now, long before) {
+694:         if (before == 0) return now == 0 ? "—" : "جديد";
+695:         BigDecimal p = BigDecimal.valueOf(now - before).multiply(BigDecimal.valueOf(100)).divide(BigDecimal.valueOf(Math.abs(before)), 0, RoundingMode.HALF_UP);
+696:         return (p.signum() > 0 ? "+" : p.signum() < 0 ? "−" : "") + p.abs().toPlainString() + "%";
+697:     }
+698: 
+699:     /** CSV (UTF-8 مع BOM ليفتحه Excel بالعربية): كل قسم جدول، بقيم رقمية خام. */
+700:     public static String csv(Report r) {
+701:         StringBuilder b = new StringBuilder("\uFEFF");
+702:         for (Report.Section s : r.sections) {
+703:             if (s.cols.isEmpty()) continue;
+704:             b.append(q(s.heading)).append("\r\n");
+705:             List<String> h = new ArrayList<>();
+706:             for (Report.Col c : s.cols) h.add(q(c.title));
+707:             b.append(Model.join(h, ",")).append("\r\n");
+708:             for (Report.Row row : s.rows) {
+709:                 List<String> cells = new ArrayList<>();
+710:                 for (int i = 0; i < s.cols.size(); i++) {
+711:                     Object v = i < row.cells.length ? row.cells[i] : "";
+712:                     if (v instanceof Report.Money) cells.add(BigDecimal.valueOf(((Report.Money) v).v, ((Report.Money) v).dec).toPlainString());
+713:                     else if (v instanceof Report.Bal) cells.add(BigDecimal.valueOf(((Report.Bal) v).v, ((Report.Bal) v).dec).toPlainString());
+714:                     else if (v instanceof Report.DateV) cells.add(Model.day(((Report.DateV) v).t));
+715:                     else cells.add(q(Report.text(v)));
+716:                 }
+717:                 b.append(Model.join(cells, ",")).append("\r\n");
+718:             }
+719:             b.append("\r\n");
+720:         }
+721:         return b.toString();
+722:     }
+723: 
+724:     static String q(String s) {
+725:         String v = s == null ? "" : s.replace("\u2066", "").replace("\u2069", "");
+726:         if (v.contains(",") || v.contains("\"") || v.contains("\n") || v.startsWith("=") || v.startsWith("+") || v.startsWith("-") || v.startsWith("@"))
+727:             v = "\"" + (v.startsWith("=") || v.startsWith("+") || v.startsWith("@") ? "'" : "") + v.replace("\"", "\"\"") + "\"";
+728:         return v;
+729:     }
+730: 
+731:     // ===================================================================================
+732:     // 9.0: الفترات السريعة والقوالب الجاهزة (مشتركة بين الهاتف والماك)
+733:     // ===================================================================================
+734: 
+735:     public static final String[] PERIODS = {"اليوم", "أمس", "آخر 7 أيام", "هذا الشهر", "الشهر الماضي", "آخر 3 أشهر", "آخر 12 شهرًا", "هذه السنة", "كل الفترات", "مخصصة…"};
+736:     public static final int P_TODAY = 0, P_YESTERDAY = 1, P_WEEK = 2, P_MONTH = 3, P_LAST_MONTH = 4, P_3M = 5, P_12M = 6, P_YEAR = 7, P_ALL = 8, P_CUSTOM = 9;
+737: 
+738:     public static long startOfDay(long t) {
+739:         Calendar c = Model.cal();
+740:         c.setTimeInMillis(t);
+741:         c.set(Calendar.HOUR_OF_DAY, 0);
+742:         c.set(Calendar.MINUTE, 0);
+743:         c.set(Calendar.SECOND, 0);
+744:         c.set(Calendar.MILLISECOND, 0);
+745:         return c.getTimeInMillis();
+746:     }
+747: 
+748:     public static long addDays(long t, int d) {
+749:         Calendar c = Model.cal();
+750:         c.setTimeInMillis(t);
+751:         c.add(Calendar.DAY_OF_MONTH, d);
+752:         return c.getTimeInMillis();
+753:     }
+754: 
+755:     public static long addMonths(long t, int m) {
+756:         Calendar c = Model.cal();
+757:         c.setTimeInMillis(t);
+758:         c.add(Calendar.MONTH, m);
+759:         return c.getTimeInMillis();
+760:     }
+761: 
+762:     public static long startOfMonth(long t) {
+763:         Calendar c = Model.cal();
+764:         c.setTimeInMillis(startOfDay(t));
+765:         c.set(Calendar.DAY_OF_MONTH, 1);
+766:         return c.getTimeInMillis();
+767:     }
+768: 
+769:     /** فترة سريعة [من، إلى)؛ «كل الفترات» و«مخصصة» = {0، 0}. */
+770:     public static long[] period(int i, long now) {
+771:         long today = startOfDay(now), tomorrow = addDays(today, 1);
+772:         switch (i) {
+773:             case P_TODAY: return new long[]{today, tomorrow};
+774:             case P_YESTERDAY: return new long[]{addDays(today, -1), today};
+775:             case P_WEEK: return new long[]{addDays(today, -6), tomorrow};
+776:             case P_MONTH: return new long[]{startOfMonth(today), tomorrow};
+777:             case P_LAST_MONTH: return new long[]{addMonths(startOfMonth(today), -1), startOfMonth(today)};
+778:             case P_3M: return new long[]{addMonths(today, -3), tomorrow};
+779:             case P_12M: return new long[]{addMonths(today, -12), tomorrow};
+780:             case P_YEAR: {
+781:                 Calendar c = Model.cal();
+782:                 c.setTimeInMillis(today);
+783:                 c.set(Calendar.DAY_OF_YEAR, 1);
+784:                 return new long[]{c.getTimeInMillis(), tomorrow};
+785:             }
+786:             default: return new long[]{0, 0};
+787:         }
+788:     }
+789: 
+790:     /** قالب جاهز: الاسم، والفترة السريعة المقترحة، والمواصفات. */
+791:     public static final class Preset {
+792:         public final String name, hint;
+793:         public final int period;
+794:         public final Spec spec;
+795: 

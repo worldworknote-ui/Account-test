@@ -1,0 +1,37 @@
+192:     private static boolean headless() { return GraphicsEnvironment.isHeadless(); }
+193: 
+194:     // ------------------------------------------------------------------ المشاركة
+195:     /** المشاركة على الكمبيوتر: الملفات تُحفظ نسخة منها أو تُفتح؛ النص يُنسخ أو يُرسل عبر واتساب. */
+196:     static void share(Context ctx, Intent i) throws Exception {
+197:         List<Uri> files = new ArrayList<>();
+198:         Object s = i.getExtras() == null ? null : i.getExtras().get(Intent.EXTRA_STREAM);
+199:         if (s instanceof Uri) files.add((Uri) s);
+200:         else if (s instanceof List) for (Object o : (List<?>) s) if (o instanceof Uri) files.add((Uri) o);
+201:         final CharSequence text = i.getCharSequenceExtra(Intent.EXTRA_TEXT) != null ? i.getCharSequenceExtra(Intent.EXTRA_TEXT) : i.getStringExtra(Intent.EXTRA_TEXT);
+202:         List<File> fs = new ArrayList<>();
+203:         for (Uri u : files) {
+204:             File f = u.file();
+205:             if (f == null || !f.isFile()) throw new java.io.FileNotFoundException("الملف غير موجود: " + (f == null ? u : f.getName()));
+206:             fs.add(f);
+207:         }
+208:         if (fs.isEmpty() && text == null) return;
+209:         ShareSheet.share(ctx, fs, text, i.getStringExtra(Intent.EXTRA_SUBJECT));
+210:     }
+211: 
+212:     /** يفتح رابط ويب في المتصفح؛ false إن تعذّر. */
+213:     public static boolean browseQuiet(String url) {
+214:         try {
+215:             Desktop.getDesktop().browse(new java.net.URI(url));
+216:             return true;
+217:         } catch (Exception e) {
+218:             return false;
+219:         }
+220:     }
+221: 
+222:     public static void reveal(File f) throws Exception {
+223:         String os = System.getProperty("os.name", "").toLowerCase();
+224:         if (os.contains("mac")) new ProcessBuilder("open", "-R", f.getAbsolutePath()).start();
+225:         else if (os.contains("win")) new ProcessBuilder("explorer.exe", "/select,", f.getAbsolutePath()).start();
+226:         else Desktop.getDesktop().open(f.getParentFile());
+227:     }
+228: }

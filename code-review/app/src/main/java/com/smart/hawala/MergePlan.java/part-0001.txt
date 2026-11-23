@@ -1,0 +1,180 @@
+1: package com.smart.hawala;
+2: 
+3: import java.math.BigInteger;
+4: import java.util.ArrayList;
+5: import java.util.HashMap;
+6: import java.util.HashSet;
+7: import java.util.LinkedHashMap;
+8: import java.util.List;
+9: import java.util.Map;
+10: import java.util.Set;
+11: import java.util.TreeMap;
+12: import org.json.JSONObject;
+13: 
+14: /**
+15:  * خطة «إضافة ملف النقل إلى البيانات الحالية» بدل استبدالها. منطق بحت بلا أندرويد حتى يُختبر على الكمبيوتر.
+16:  * تقرأ جداول ملف أداة النقل، وتطابق مكاتبه بمكاتب التطبيق بالاسم، وتحوّل المبالغ إلى منازل عملات التطبيق،
+17:  * وتحسب لكل مكتب وعملة: الرصيد الحالي، وما سيُضاف (من قيود الملف نفسها)، والرصيد بعد الإضافة.
+18:  * لا تكتب شيئًا: الكتابة في Db.mergeMigration التي تتحقق بعدها أن كل رصيد تغيّر بالمقدار المتوقع تمامًا.
+19:  */
+20: public final class MergePlan {
+21: 
+22:     /** حالة التطبيق الحالية اللازمة للتخطيط. */
+23:     public static final class Existing {
+24:         public final Map<Long, String> offices = new LinkedHashMap<>();
+25:         public final Map<String, Integer> decimals = new HashMap<>();
+26:         /** «رقم المكتب|العملة» ← الرصيد (موجب = لنا). */
+27:         public final Map<String, Long> balances = new HashMap<>();
+28:         public final Set<String> uuids = new HashSet<>();
+29:         public final Set<String> mergedFiles = new HashSet<>();
+30:         public long lockBefore;
+31:     }
+32: 
+33:     public static final class Office {
+34:         public long fileId;
+35:         public String name = "", phone = "", notes = "";
+36:         /** مكتب التطبيق الذي يُضاف إليه، أو null = مكتب جديد. */
+37:         public Long targetId;
+38:         public String targetName = "";
+39:         /** مطابقة بعد توحيد الهمزات والتاء المربوطة والمسافات، لا بالكتابة نفسها. */
+40:         public boolean approximate;
+41:         public final Set<String> codes = new java.util.TreeSet<>();
+42:     }
+43: 
+44:     public static final class NewCurrency {
+45:         public String code, name;
+46:         public int decimals;
+47:     }
+48: 
+49:     public static final class Opening {
+50:         public long fileOffice, when;
+51:         public String code;
+52:         /** موجب = لنا، بمنازل عملة التطبيق. */
+53:         public long signed;
+54:     }
+55: 
+56:     public static final class Tx {
+57:         public String uuid, type, person, currency, feeType, feeCurrency, description, notes, userName;
+58:         public long fileOffice, amount, fee, when, fileId;
+59:     }
+60: 
+61:     /** سطر في المعاينة: مكتب وعملة. */
+62:     public static final class Row {
+63:         public long fileOffice;
+64:         public String office, code;
+65:         public boolean isNew, approximate;
+66:         public int decimals;
+67:         public long current, added, after, txCount;
+68:     }
+69: 
+70:     public final List<String> errors = new ArrayList<>();
+71:     public final List<String> warnings = new ArrayList<>();
+72:     public final Map<Long, Office> offices = new LinkedHashMap<>();
+73:     public final List<NewCurrency> newCurrencies = new ArrayList<>();
+74:     public final List<Opening> openings = new ArrayList<>();
+75:     public final List<Tx> txs = new ArrayList<>();
+76:     public final List<Row> rows = new ArrayList<>();
+77:     /** «مكتب الملف|العملة» ← صافي قيود الملف لحساب المكتب (مدين − دائن) بمنازل التطبيق. */
+78:     public final Map<String, Long> expected = new TreeMap<>();
+79:     public String fingerprint = "";
+80:     public int newOffices, matchedOffices;
+81: 
+82:     public boolean ok() { return errors.isEmpty(); }
+83: 
+84:     /** 9.0: مكاتب جديدة استُبعدت باختيار المستخدم (حد النسخة المجانية). */
+85:     public int droppedOffices;
+86: 
+87:     /**
+88:      * 10.16: «اعتماد رصيد الملف» بدل جمعه: للمكتب الموجود يُلغى رصيده الحالي بقيد تسوية ثم تُضاف أرصدة الملف وحركاته،
+89:      * فيصبح رصيده = رصيد الملف تمامًا (لا رصيد قديم + رصيد جديد). لا يُحذف شيء من الدفتر؛ العملات غير الواردة في الملف لا تُمس.
+90:      */
+91:     public boolean adopt;
+92: 
+93:     public void setAdopt(boolean on) {
+94:         adopt = on;
+95:         for (Row r : rows) r.after = on && !r.isNew ? r.added : r.current + r.added;
+96:     }
+97: 
+98:     /** كم سطرًا (مكتب موجود + عملة) عليه رصيد حالي سيتأثر بخيار الاعتماد. */
+99:     public int adoptable() {
+100:         int n = 0;
+101:         for (Row r : rows) if (!r.isNew && r.current != 0) n++;
+102:         return n;
+103:     }
+104: 
+105:     private MergePlan() {}
+106: 
+107:     /** المكاتب الجديدة في الملف (التي ستأخذ مكانًا في التطبيق). */
+108:     public List<Office> newOfficeList() {
+109:         List<Office> l = new ArrayList<>();
+110:         for (Office o : offices.values()) if (o.targetId == null) l.add(o);
+111:         return l;
+112:     }
+113: 
+114:     /**
+115:      * 9.0: النسخة المجانية: يُبقي من المكاتب الجديدة ما اختاره المستخدم فقط، مع حركاتها وأرصدتها السابقة كاملة.
+116:      * المكاتب الموجودة في التطبيق (تُضاف إليها الأرصدة) لا تأخذ مكانًا فتبقى كلها. المتوقع بعد الإضافة يُحسب للباقي فقط.
+117:      */
+118:     public void keepNew(Set<Long> keep) {
+119:         final Set<Long> drop = new HashSet<>();
+120:         for (Office o : offices.values()) if (o.targetId == null && !keep.contains(o.fileId)) drop.add(o.fileId);
+121:         if (drop.isEmpty()) return;
+122:         offices.keySet().removeAll(drop);
+123:         txs.removeIf(x -> drop.contains(x.fileOffice));
+124:         openings.removeIf(o -> drop.contains(o.fileOffice));
+125:         expected.keySet().removeIf(k -> drop.contains(Long.parseLong(k.split("\\|", 2)[0])));
+126:         rows.removeIf(r -> drop.contains(r.fileOffice));
+127:         newOffices -= drop.size();
+128:         droppedOffices += drop.size();
+129:         if (txs.isEmpty() && openings.isEmpty()) errors.add("لم يبقَ في الاختيار أرصدة ولا حركات.");
+130:     }
+131: 
+132:     // ===================================================================================
+133:     // توحيد الأسماء
+134:     // ===================================================================================
+135: 
+136:     static String exactKey(String s) {
+137:         if (s == null) return "";
+138:         StringBuilder b = new StringBuilder();
+139:         for (char ch : s.trim().toCharArray()) {
+140:             if (ch == 'ـ' || (ch >= 'ً' && ch <= 'ْ') || ch == '\u200E' || ch == '\u200F') continue;
+141:             b.append(Character.isWhitespace(ch) ? ' ' : Character.toLowerCase(ch));
+142:         }
+143:         return b.toString().replaceAll(" +", " ").trim();
+144:     }
+145: 
+146:     static String looseKey(String s) {
+147:         return exactKey(s).replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا').replace('ٱ', 'ا')
+148:                 .replace('ة', 'ه').replace('ى', 'ي').replace('ؤ', 'و').replace('ئ', 'ي').replace(" ", "");
+149:     }
+150: 
+151:     // ===================================================================================
+152:     // تحويل المنازل العشرية
+153:     // ===================================================================================
+154: 
+155:     /** يحوّل مبلغًا من منازل الملف إلى منازل التطبيق؛ null إن لم يكن ممكنًا دون تقريب. */
+156:     static Long convert(long minor, int from, int to) {
+157:         if (from == to) return minor;
+158:         BigInteger v = BigInteger.valueOf(minor);
+159:         if (to > from) {
+160:             BigInteger r = v.multiply(BigInteger.TEN.pow(to - from));
+161:             return r.bitLength() < 63 ? r.longValue() : null;
+162:         }
+163:         BigInteger[] qr = v.divideAndRemainder(BigInteger.TEN.pow(from - to));
+164:         return qr[1].signum() == 0 ? qr[0].longValue() : null;
+165:     }
+166: 
+167:     // ===================================================================================
+168:     // البناء
+169:     // ===================================================================================
+170: 
+171:     public static MergePlan build(Map<String, List<JSONObject>> tables, JSONObject manifest, Existing ex) {
+172:         MergePlan p = new MergePlan();
+173:         if (manifest == null || !"migration".equals(manifest.optString("source"))) {
+174:             p.errors.add("هذا الملف ليس من أداة النقل؛ الإضافة متاحة لملفات أداة النقل فقط. النسخ الاحتياطية العادية تُستعاد استعادة كاملة.");
+175:             return p;
+176:         }
+177:         List<JSONObject> txRows = list(tables, "tx");
+178:         List<JSONObject> entries = list(tables, "journal_entries");
+179:         List<JSONObject> lines = list(tables, "journal_lines");
+180:         if (!list(tables, "reconciliations").isEmpty() || tables.containsKey("users") && !list(tables, "users").isEmpty()) {

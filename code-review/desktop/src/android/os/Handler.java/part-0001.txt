@@ -1,0 +1,86 @@
+1: package android.os;
+2: 
+3: import java.util.*;
+4: 
+5: /** ينفّذ الأعمال على خيط الواجهة (فورًا أو بعد مهلة)، مع إمكان إلغائها. */
+6: public class Handler {
+7:     public interface Callback { boolean handleMessage(Message m); }
+8: 
+9:     private static final class Task implements java.awt.event.ActionListener {
+10:         final Runnable r; final Object token; final Handler h; javax.swing.Timer timer; boolean cancelled;
+11:         Task(Handler h, Runnable r, Object token) { this.h = h; this.r = r; this.token = token; }
+12:         @Override public void actionPerformed(java.awt.event.ActionEvent e) { fire(); }
+13:         void fire() {
+14:             synchronized (h.tasks) { h.tasks.remove(this); }
+15:             if (cancelled) return;
+16:             try { r.run(); } catch (Throwable t) { Thread.getDefaultUncaughtExceptionHandler().uncaughtException(Thread.currentThread(), t); }
+17:         }
+18:     }
+19: 
+20:     final List<Task> tasks = new ArrayList<>();
+21:     private final Callback cb;
+22: 
+23:     public Handler() { this.cb = null; }
+24:     public Handler(Looper l) { this.cb = null; }
+25:     public Handler(Looper l, Callback cb) { this.cb = cb; }
+26:     public Handler(Callback cb) { this.cb = cb; }
+27: 
+28:     public final Looper getLooper() { return Looper.getMainLooper(); }
+29: 
+30:     public final boolean post(Runnable r) { return postDelayed(r, 0); }
+31:     public final boolean postAtFrontOfQueue(Runnable r) { return post(r); }
+32:     public final boolean postDelayed(Runnable r, long ms) { return postDelayed(r, null, ms); }
+33:     public final boolean postDelayed(Runnable r, Object token, long ms) {
+34:         if (r == null) return false;
+35:         final Task t = new Task(this, r, token);
+36:         synchronized (tasks) { tasks.add(t); }
+37:         if (ms <= 0) {
+38:             javax.swing.SwingUtilities.invokeLater(t::fire);
+39:         } else {
+40:             javax.swing.SwingUtilities.invokeLater(() -> {
+41:                 if (t.cancelled) return;
+42:                 t.timer = new javax.swing.Timer((int) Math.min(Integer.MAX_VALUE, ms), t);
+43:                 t.timer.setRepeats(false);
+44:                 t.timer.start();
+45:             });
+46:         }
+47:         return true;
+48:     }
+49:     public final boolean postAtTime(Runnable r, long uptime) { return postDelayed(r, uptime - SystemClock.uptimeMillis()); }
+50:     public final boolean postAtTime(Runnable r, Object token, long uptime) { return postDelayed(r, token, uptime - SystemClock.uptimeMillis()); }
+51: 
+52:     public final void removeCallbacks(Runnable r) {
+53:         synchronized (tasks) {
+54:             for (Iterator<Task> it = tasks.iterator(); it.hasNext(); ) {
+55:                 Task t = it.next();
+56:                 if (t.r == r) { t.cancelled = true; if (t.timer != null) t.timer.stop(); it.remove(); }
+57:             }
+58:         }
+59:     }
+60:     public final void removeCallbacks(Runnable r, Object token) { removeCallbacks(r); }
+61:     public final void removeCallbacksAndMessages(Object token) {
+62:         synchronized (tasks) {
+63:             for (Iterator<Task> it = tasks.iterator(); it.hasNext(); ) {
+64:                 Task t = it.next();
+65:                 if (token == null || t.token == token) { t.cancelled = true; if (t.timer != null) t.timer.stop(); it.remove(); }
+66:             }
+67:         }
+68:     }
+69:     public final boolean hasCallbacks(Runnable r) { synchronized (tasks) { for (Task t : tasks) if (t.r == r) return true; } return false; }
+70: 
+71:     // ---- الرسائل (قليلة الاستعمال)
+72:     public void handleMessage(Message m) {}
+73:     public final boolean sendEmptyMessage(int what) { return sendEmptyMessageDelayed(what, 0); }
+74:     public final boolean sendEmptyMessageDelayed(int what, long ms) {
+75:         Message m = Message.obtain(); m.what = what; return sendMessageDelayed(m, ms);
+76:     }
+77:     public final boolean sendMessage(Message m) { return sendMessageDelayed(m, 0); }
+78:     public final boolean sendMessageDelayed(Message m, long ms) {
+79:         m.target = this;
+80:         return postDelayed(() -> { if (cb == null || !cb.handleMessage(m)) handleMessage(m); }, m, ms);
+81:     }
+82:     public final Message obtainMessage(int what) { Message m = Message.obtain(); m.what = what; m.target = this; return m; }
+83:     public final Message obtainMessage(int what, Object o) { Message m = obtainMessage(what); m.obj = o; return m; }
+84:     public final void removeMessages(int what) {}
+85:     public final boolean hasMessages(int what) { return false; }
+86: }

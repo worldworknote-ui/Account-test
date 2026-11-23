@@ -1,0 +1,148 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.util.Map;
+6: import javax.swing.*;
+7: import javax.swing.event.DocumentEvent;
+8: import javax.swing.event.DocumentListener;
+9: 
+10: /**
+11:  * 10.16: مصمم رسالة مطابقة الرصيد على الكمبيوتر (كان على الهاتف وحده): كل نصوص القالب، شكل سطر العملة، ما يظهر وما يُخفى،
+12:  * مع معاينة حية. القالب نفسه (مفاتيح rc_*) فيُنقل بين الأجهزة.
+13:  */
+14: final class ReconDesign {
+15:     private ReconDesign() {}
+16: 
+17:     static void open(Component parent, Db db, Runnable after) {
+18:         final Reconcile.Template t = Reconcile.Template.from(db.settings(Reconcile.Template.KEYS));
+19:         final Ui.Field greet = f(t.greeting), ttl = f(t.title), orn = f(t.ornament), sal = f(t.salutation), hon = f(t.honorific), foot = f(t.footer),
+20:                 plus = f(t.plusWord), minus = f(t.minusWord), zeroWord = f(t.zeroWord), line = f(t.lineFormat), mPlus = f(t.markPlus), mMinus = f(t.markMinus),
+21:                 mZero = f(t.markZero), dateLabel = f(t.dateLabel), officeMark = f(t.officeMark), sep = f(t.separator), empty = f(t.emptyText);
+22:         final JCheckBox bold = Ui.check("خط عريض للمبالغ والعنوان", t.bold), boldName = Ui.check("خط عريض لاسم العملة أيضًا", t.boldName),
+23:                 issuer = Ui.check("إظهار اسم مكتبك في آخر الرسالة", t.showIssuer), code = Ui.check("رمز العملة بجانب اسمها (USD…)", t.showCode),
+24:                 zero = Ui.check("تحديد العملات ذات الرصيد الصفري افتراضيًا", t.showZero), trim = Ui.check("حذف الأصفار العشرية (59,450 بدل 59,450.00)", t.trimZeros),
+25:                 gap = Ui.check("سطر فارغ بين كل عملة وأخرى", t.gap), showDate = Ui.check("إظهار سطر التاريخ", t.showDate),
+26:                 showOffice = Ui.check("إظهار سطر اسم المكتب", t.showOffice), showSep = Ui.check("إظهار الخط الفاصل", t.showSeparator);
+27:         String[] names = new String[Reconcile.LINE_PRESETS.length + 1];
+28:         names[0] = "شكل جاهز…";
+29:         for (int i = 0; i < Reconcile.LINE_PRESETS.length; i++) names[i + 1] = Reconcile.LINE_PRESETS[i][0];
+30:         final JComboBox<String> preset = Ui.combo(names);
+31:         // 10.16: موضع «لنا/لكم» من الرقم، ولونهما
+32:         final JComboBox<String> pos = Ui.combo(Reconcile.WORD_POS);
+33:         pos.setSelectedIndex(Reconcile.wordPos(t.lineFormat));
+34:         String[] cn = new String[Reconcile.COLORS.length];
+35:         for (int i = 0; i < cn.length; i++) cn[i] = Reconcile.COLORS[i][2] + "  " + Reconcile.COLORS[i][0];
+36:         final JComboBox<String> cPlus = Ui.combo(cn), cMinus = Ui.combo(cn);
+37:         cPlus.setSelectedIndex(Math.max(0, Reconcile.colorIndex(t.colorPlus)));
+38:         cMinus.setSelectedIndex(Reconcile.colorIndex(t.colorMinus) < 0 ? 1 : Reconcile.colorIndex(t.colorMinus));
+39:         final JCheckBox colored = Ui.check("تلوين «لنا» و«لكم»", t.colored);
+40: 
+41:         JPanel g = new JPanel(new GridLayout(0, 2, 12, 6));
+42:         g.setOpaque(false);
+43:         g.add(Ui.labeled("التحية", greet));
+44:         g.add(Ui.labeled("العنوان", ttl));
+45:         g.add(Ui.labeled("زخرفة حول العنوان", orn));
+46:         g.add(Ui.labeled("الخاتمة", foot));
+47:         g.add(Ui.labeled("قبل اسم المكتب", sal));
+48:         g.add(Ui.labeled("بعد اسم المكتب", hon));
+49:         g.add(Ui.labeled("كلمة الرصيد لنا", plus));
+50:         g.add(Ui.labeled("كلمة الرصيد علينا", minus));
+51:         g.add(Ui.labeled("كلمة الرصيد الصفري", zeroWord));
+52:         g.add(Ui.labeled("النص عند عدم وجود أرصدة", empty));
+53:         g.add(Ui.labeled("قبل التاريخ", dateLabel));
+54:         g.add(Ui.labeled("قبل المكتب", officeMark));
+55:         g.add(Ui.labeled("علامة «لنا»", mPlus));
+56:         g.add(Ui.labeled("علامة «لكم»", mMinus));
+57:         g.add(Ui.labeled("علامة الصفر", mZero));
+58:         g.add(Ui.labeled("الخط الفاصل", sep));
+59: 
+60:         JPanel left = Ui.column();
+61:         left.add(g);
+62:         left.add(Ui.gap(8));
+63:         left.add(Ui.label("شكل سطر العملة", 14, Ui.primaryInk, true));
+64:         left.add(Ui.para(Reconcile.LINE_HELP, 12.5f, Ui.muted, 520));
+65:         left.add(Ui.row(line, preset));
+66:         left.add(Ui.gap(6));
+67:         JPanel pg = new JPanel(new GridLayout(0, 3, 12, 6));
+68:         pg.setOpaque(false);
+69:         pg.add(Ui.labeled("موضع «لنا / لكم»", pos));
+70:         pg.add(Ui.labeled("لون «لنا»", cPlus));
+71:         pg.add(Ui.labeled("لون «لكم»", cMinus));
+72:         left.add(pg);
+73:         left.add(Ui.para("واتساب لا يلوّن النص: اللون فيه هو الدائرة قبل السطر، وفي المعاينة هنا وفي صورة المطابقة على الهاتف يُلوَّن الرقم والكلمة.", 12.5f, Ui.muted, 520));
+74:         left.add(Ui.gap(4));
+75:         JPanel cg = new JPanel(new GridLayout(0, 2, 12, 2));
+76:         cg.setOpaque(false);
+77:         final JCheckBox[] cks = {trim, gap, bold, boldName, showDate, showOffice, showSep, issuer, code, zero, colored};
+78:         for (JCheckBox c : cks) cg.add(c);
+79:         left.add(cg);
+80: 
+81:         final JTextPane preview = new JTextPane();
+82:         preview.setEditable(false);
+83:         preview.setFont(new Font(Font.DIALOG, Font.PLAIN, 14));
+84:         preview.setBackground(Ui.surface);
+85:         preview.setForeground(Ui.ink);
+86:         preview.applyComponentOrientation(Ui.RTL);
+87:         JScrollPane ps = new JScrollPane(preview);
+88:         ps.setPreferredSize(new Dimension(330, 430));
+89:         JPanel right = Ui.column();
+90:         right.add(Ui.label("المعاينة", 14, Ui.primaryInk, true));
+91:         right.add(ps);
+92:         right.add(Ui.gap(6));
+93:         final Runnable[] readRef = new Runnable[1];
+94:         right.add(Ui.flow(Ui.ghost("معاينة صورة المطابقة", e -> {
+95:             if (readRef[0] != null) readRef[0].run();
+96:             java.awt.image.BufferedImage im = ReconImage.render(t, "كاش شام", db.setting("office_name", ""), Clock.now(), Reconcile.sampleRows(), Ui.primary);
+97:             Image sc = im.getScaledInstance(480, -1, Image.SCALE_SMOOTH);
+98:             JScrollPane isp = new JScrollPane(new JLabel(new ImageIcon(sc)));
+99:             isp.setPreferredSize(new Dimension(510, Math.min(640, im.getHeight() * 480 / im.getWidth() + 20)));
+100:             JOptionPane.showMessageDialog(Ui.win(parent), isp, "صورة المطابقة", JOptionPane.PLAIN_MESSAGE);
+101:         })));
+102: 
+103:         final Runnable read = () -> {
+104:             t.greeting = greet.val();
+105:             t.title = ttl.val().isEmpty() ? "مطابقة رصيد" : ttl.val();
+106:             t.ornament = orn.val();
+107:             t.salutation = sal.val();
+108:             t.honorific = hon.val();
+109:             t.footer = foot.val();
+110:             t.plusWord = plus.val().isEmpty() ? "لنا" : plus.val();
+111:             t.minusWord = minus.val().isEmpty() ? "لكم" : minus.val();
+112:             t.zeroWord = zeroWord.val();
+113:             t.lineFormat = Reconcile.validLine(line.getText());
+114:             t.markPlus = mPlus.val();
+115:             t.markMinus = mMinus.val();
+116:             t.markZero = mZero.val();
+117:             t.dateLabel = dateLabel.val();
+118:             t.officeMark = officeMark.val();
+119:             t.separator = sep.val();
+120:             t.emptyText = empty.val().isEmpty() ? new Reconcile.Template().emptyText : empty.val();
+121:             t.bold = bold.isSelected();
+122:             t.boldName = boldName.isSelected();
+123:             t.showIssuer = issuer.isSelected();
+124:             t.showCode = code.isSelected();
+125:             t.showZero = zero.isSelected();
+126:             t.trimZeros = trim.isSelected();
+127:             t.colored = colored.isSelected();
+128:             t.colorPlus = Reconcile.COLORS[cPlus.getSelectedIndex()][1];
+129:             t.colorMinus = Reconcile.COLORS[cMinus.getSelectedIndex()][1];
+130:             t.gap = gap.isSelected();
+131:             t.showDate = showDate.isSelected();
+132:             t.showOffice = showOffice.isSelected();
+133:             t.showSeparator = showSep.isSelected();
+134:         };
+135:         readRef[0] = read;
+136:         final Runnable upd = () -> {
+137:             read.run();
+138:             // المعاينة: النص كما يُرسل، مع تلوين أسطر العملات بلوني «لنا» و«لكم» (للإيضاح؛ واتساب يعرض الدائرة الملوّنة)
+139:             java.util.List<Reconcile.Row> rows = Reconcile.sampleRows();
+140:             String txt = Reconcile.text(t, "كاش شام", db.setting("office_name", ""), Clock.now(), rows);
+141:             preview.setText(txt);
+142:             javax.swing.text.StyledDocument doc = preview.getStyledDocument();
+143:             javax.swing.text.SimpleAttributeSet base = new javax.swing.text.SimpleAttributeSet();
+144:             javax.swing.text.StyleConstants.setForeground(base, Ui.ink);
+145:             javax.swing.text.StyleConstants.setAlignment(base, javax.swing.text.StyleConstants.ALIGN_RIGHT);
+146:             doc.setParagraphAttributes(0, doc.getLength(), base, false);
+147:             doc.setCharacterAttributes(0, doc.getLength(), base, true);
+148:             if (t.colored) for (Reconcile.Row r : rows) {

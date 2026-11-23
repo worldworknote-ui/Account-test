@@ -1,0 +1,145 @@
+2303:                 folder.delete(keys.fileName("p-", me + ":" + q));
+2304:                 packets++;
+2305:                 if (q % 100 == 0) SyncStore.setMeta(d, "gc_seq", "" + q);
+2306:             }
+2307:             if (upTo > from) SyncStore.setMeta(d, "gc_seq", "" + upTo);
+2308:             // 2) لقطاتي القديمة (تبقى آخر اثنتين)
+2309:             long snapNo = lng(SyncStore.meta(d, "snap_no")), sg = lng(SyncStore.meta(d, "snap_gc"));
+2310:             for (long n = sg + 1; n <= snapNo - 2; n++) {
+2311:                 folder.delete(keys.fileName("s-", me + ":" + n));
+2312:                 snaps++;
+2313:             }
+2314:             if (snapNo - 2 > sg) SyncStore.setMeta(d, "snap_gc", "" + (snapNo - 2));
+2315:             // 3) ملفات الأجهزة التي خرجت بإعادة التعيين بعد أن تصل حزمها للجميع (الجهاز الرئيسي فقط)
+2316:             if (SyncStore.founder(d)) packets += purgeRetired(keys, members, me);
+2317:             // 4) الصور بلا مرجع (الجهاز الرئيسي فقط، مرة في اليوم، وحين يكون قد استلم كل شيء)
+2318:             if (SyncStore.founder(d) && (force || now - lng(SyncStore.meta(d, "gc_blobs_at")) > 24L * 3600 * 1000)) blobs = cleanBlobs(keys, members, me);
+2319:         } catch (HttpSyncFolder.OldServer e) {
+2320:             SyncStore.setMeta(d, "gc_at", "" + now);
+2321:             SyncStore.setMeta(d, "gc_note", e.getMessage());
+2322:             return e.getMessage();
+2323:         }
+2324:         SyncStore.setMeta(d, "gc_at", "" + now);
+2325:         String out = packets + snaps + blobs == 0 ? "" : "حُذف " + packets + " حزمة قديمة و" + snaps + " لقطة قديمة و" + blobs + " صورة بلا مرجع";
+2326:         String held = limit < lng(SyncStore.meta(d, "my_seq")) - SNAPSHOT_EVERY && !why.isEmpty() ? "ينتظر بعض الحذف استلام «" + why + "»" : "";
+2327:         String note = Model.date(now) + ": " + (out.isEmpty() ? "لا شيء يُحذف" : out) + (held.isEmpty() ? "" : " • " + held);
+2328:         SyncStore.setMeta(d, "gc_note", note);
+2329:         if (!out.isEmpty()) db.audit("SYNC_CLEAN", "sync", 0, out);
+2330:         return out;
+2331:     }
+2332: 
+2333:     /**
+2334:      * 10.4: يحذف ملفات جهاز خرج (بإعادة التعيين أو أزاله المدير) حين تكون كل الأجهزة النشطة قد استلمت حزمه حتى آخرها (upTo).
+2335:      * 10.5 (AUDIT-001): وبشرط أن تشملها لقطة الجهاز الرئيسي (يكتب لقطة جديدة إن لزم)؛ والمنضم الجديد يختار لقطة تشمل ما حُذف
+2336:      * (انظر {@link #covers}) فلا يبدأ من لقطة أقدم تحتاج حزمًا لم تعد موجودة.
+2337:      */
+2338:     int purgeRetired(SyncCrypto.Keys keys, Map<String, JSONObject> members, String me) throws Exception {
+2339:         Map<String, JSONObject> removed = removedMap();
+2340:         int n = 0;
+2341:         boolean changed = false, snapped = false;
+2342:         Map<String, Long> mine = SyncStore.cursors(db.getReadableDatabase());
+2343:         for (JSONObject x : removed.values()) {
+2344:             if (!x.has("upTo")) continue;   // إزالة 10.4: حُذفت ملفاته يومها
+2345:             long upTo = x.optLong("upTo", 0), done = purgedTo(x);
+2346:             if (done >= upTo) continue;
+2347:             String dev = x.optString("dev");
+2348:             boolean all = (mine.containsKey(dev) ? mine.get(dev) : 0) >= upTo;
+2349:             for (JSONObject m : members.values()) {
+2350:                 if (m.optString("dev").equals(me)) continue;
+2351:                 JSONObject c = m.optJSONObject("cursors");
+2352:                 if (c == null || c.optLong(dev, 0) < upTo) all = false;
+2353:             }
+2354:             if (!all) continue;
+2355:             if (snapCur(SyncStore.meta(db.getReadableDatabase(), "snap"), dev) < upTo) {
+2356:                 if (snapped) continue;
+2357:                 writeSnapshot();   // لقطة الرئيسي تشمل حزمه الآن: منها يبدأ أي منضم جديد
+2358:                 snapped = true;
+2359:                 if (snapCur(SyncStore.meta(db.getReadableDatabase(), "snap"), dev) < upTo) continue;
+2360:             }
+2361:             for (long q = Math.max(1, done + 1); q <= upTo; q++) folder.delete(keys.fileName("p-", dev + ":" + q));
+2362:             if (done < 0) {
+2363:                 for (long q = 1; q <= x.optLong("snaps", 0) + 1; q++) folder.delete(keys.fileName("s-", dev + ":" + q));
+2364:                 if (!x.optString("snapName").isEmpty()) folder.delete(x.optString("snapName"));
+2365:                 folder.delete(keys.fileName("m-", "member:" + dev));
+2366:             }
+2367:             n += (int) (upTo - Math.max(0, done));
+2368:             x.put("purgedTo", upTo);
+2369:             x.put("purged", true);
+2370:             changed = true;
+2371:         }
+2372:         if (changed) {
+2373:             saveRemoved(removed);
+2374:             writeMember();
+2375:         }
+2376:         return n;
+2377:     }
+2378: 
+2379:     /** يحذف الصور التي لا يشير إليها شيء منذ أسبوع. يرجع عدد المحذوف. */
+2380:     int cleanBlobs(SyncCrypto.Keys keys, Map<String, JSONObject> members, String me) throws Exception {
+2381:         SQLiteDatabase d = db.getWritableDatabase();
+2382:         Map<String, Long> cur = SyncStore.cursors(d);
+2383:         for (JSONObject m : members.values()) {
+2384:             String dev = m.optString("dev");
+2385:             if (dev.equals(me)) continue;
+2386:             Long have = cur.get(dev);
+2387:             if ((have == null ? 0 : have) < m.optLong("seq")) return 0;   // لم يستلم كل شيء بعد
+2388:         }
+2389:         Map<String, long[]> st = folder.stat("a-");
+2390:         if (st == null || st.isEmpty()) return 0;
+2391:         Set<String> used = new HashSet<>();
+2392:         try (Cursor c = d.rawQuery("SELECT id,path FROM attachments", null)) {
+2393:             while (c.moveToNext()) {
+2394:                 String sha = c.getString(1) == null ? null : SyncStore.blobSha(d, c.getLong(0), db.attachmentFile(c.getString(1)));
+2395:                 if (sha != null) used.add(blobName(keys, sha));
+2396:             }
+2397:         }
+2398:         // صور تشير إليها لقطات الأجهزة الأخرى (قد ينضم جهاز من إحداها)
+2399:         for (JSONObject m : members.values()) {
+2400:             JSONObject sp = m.optJSONObject("snap");
+2401:             if (sp == null) continue;
+2402:             if (m.optString("dev").equals(me)) continue;
+2403:             byte[] sealed = folder.read(sp.optString("name"));
+2404:             if (sealed == null) return 0;   // لم تصل: لا نحذف شيئًا هذه المرة
+2405:             JSONObject snap = new JSONObject(new String(keys.openFile("s", sp.optString("name"), sealed), StandardCharsets.UTF_8));
+2406:             JSONArray at = snap.optJSONArray("atts");
+2407:             if (at != null) for (int i = 0; i < at.length(); i++) used.add(at.getJSONObject(i).optString("ref"));
+2408:         }
+2409:         long now = Clock.now();
+2410:         int n = 0;
+2411:         for (Map.Entry<String, long[]> e : st.entrySet()) {
+2412:             if (used.contains(e.getKey())) continue;
+2413:             long mt = e.getValue()[1];
+2414:             if (mt <= 0 || now - mt < BLOB_GRACE_MS) continue;
+2415:             folder.delete(e.getKey());
+2416:             if (++n >= CLEAN_MAX) break;
+2417:         }
+2418:         SyncStore.setMeta(d, "gc_blobs_at", "" + now);
+2419:         return n;
+2420:     }
+2421: 
+2422:     /**
+2423:      * يزيل جهازًا من المزامنة (ضاع أو لم يعد يُستخدم): لا يعود يمنع التنظيف، وإن عاد يخرج من المزامنة تلقائيًا
+2424:      * (بياناته تبقى عليه، ويمكنه الانضمام من جديد). لا يُزال الجهاز الرئيسي ولا هذا الجهاز.
+2425:      * <p>10.5 (AUDIT-001): لا يُحذف شيء لحظة الإزالة. يُسجَّل «آخر حزمة» له الموجودة في المكان (upTo): كل جهاز يكمل استلام حزمه
+2426:      * حتى upTo بالضبط ثم يتوقف (فلا يضيع ما أرسله قبل إزالته، ولا يُقبل منه شيء بعدها)، ولا يُحذف مؤشره فتبقى مقارنة البصمات
+2427:      * صحيحة. حزمه وبطاقته ولقطاته يحذفها الجهاز الرئيسي في التنظيف بعد أن تصل حزمه إلى كل الأجهزة وتشملها لقطاتها.
+2428:      * يرجع upTo.
+2429:      */
+2430:     public long removeDevice(String dev) throws Exception {
+2431:         VAULT.lock();
+2432:         try {
+2433:             return removeDeviceLocked(dev);
+2434:         } finally {
+2435:             VAULT.unlock();
+2436:         }
+2437:     }
+2438: 
+2439:     private long removeDeviceLocked(String dev) throws Exception {
+2440:         db.require(Auth.Perm.SYNC);
+2441:         SyncCrypto.Keys keys = keys();
+2442:         SQLiteDatabase d = db.getWritableDatabase();
+2443:         String me = SyncStore.meta(d, "device");
+2444:         if (dev.equals(me)) throw new IllegalArgumentException("لإخراج هذا الجهاز استعمل «إيقاف المزامنة على هذا الجهاز»");
+2445:         if (dev.equals(SyncStore.meta(d, "founder"))) throw new IllegalArgumentException("لا يُزال الجهاز الرئيسي من المزامنة. انقل دور الجهاز الرئيسي إلى جهاز آخر أولًا.");
+2446:         Map<String, JSONObject> all = readMembersRaw(keys);
+2447:         JSONObject m = all.get(dev);

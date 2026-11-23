@@ -1,0 +1,101 @@
+1: package android.app;
+2: 
+3: import android.view.*;
+4: import android.view.TextOverlay;
+5: import java.awt.*;
+6: import java.util.ArrayList;
+7: import java.util.List;
+8: import javax.swing.*;
+9: 
+10: /**
+11:  * كومة نوافذ أندرويد داخل عمود «الهاتف» في نافذة الكمبيوتر: الشاشة، ثم الحوارات والقوائم والإشعارات فوقها.
+12:  * عرض العمود من الإعدادات (480 / 600 / بعرض النافذة) وتكبير الواجهة كذلك.
+13:  */
+14: public final class WindowStack {
+15:     private WindowStack() {}
+16: 
+17:     private static JLayeredPane host;
+18:     private static final List<ViewRootImpl> roots = new ArrayList<>();
+19: 
+20:     /** لوحة الطبقات (عمود الهاتف). */
+21:     public static synchronized JLayeredPane host() {
+22:         if (host == null) {
+23:             host = new JLayeredPane() {
+24:                 @Override public void doLayout() { relayout(); }
+25:                 @Override public void setBounds(int x, int y, int w, int h) { super.setBounds(x, y, w, h); relayout(); }
+26:             };
+27:             host.setOpaque(false);
+28:             host.setLayout(null);
+29:         }
+30:         return host;
+31:     }
+32: 
+33:     public static ViewRootImpl add(View v, int layer) {
+34:         ViewRootImpl r = new ViewRootImpl(v, layer);
+35:         JLayeredPane h = host();
+36:         h.add(r.pane, Integer.valueOf(layer));
+37:         h.moveToFront(r.pane);
+38:         r.pane.setBounds(0, 0, h.getWidth(), h.getHeight());
+39:         roots.add(r);
+40:         r.requestLayout();
+41:         h.repaint();
+42:         // نافذة الحوار تأخذ لوحة المفاتيح (كما في أندرويد)، والإشعار العابر لا يأخذها
+43:         if (layer >= ViewRootImpl.LAYER_DIALOG && layer < ViewRootImpl.LAYER_TOAST) {
+44:             SwingUtilities.invokeLater(() -> { if (roots.contains(r) && TextOverlay.active(r) == null) r.pane.requestFocusInWindow(); });
+45:         }
+46:         return r;
+47:     }
+48: 
+49:     public static void remove(ViewRootImpl r) {
+50:         if (r == null || !roots.remove(r)) return;
+51:         r.detach();
+52:         JLayeredPane h = host();
+53:         h.remove(r.pane);
+54:         h.repaint();
+55:         // التركيز يعود للنافذة التي تحتها
+56:         ViewRootImpl top = top();
+57:         if (top != null) SwingUtilities.invokeLater(() -> {
+58:             View f = top.getFocused();
+59:             if (f != null && f.onCheckIsTextEditor()) top.setFocused(f);
+60:             else top.pane.requestFocusInWindow();
+61:         });
+62:     }
+63: 
+64:     public static List<ViewRootImpl> roots() { return new ArrayList<>(roots); }
+65: 
+66:     /** النافذة العليا التي تستقبل اللمس. */
+67:     public static ViewRootImpl top() {
+68:         ViewRootImpl best = null;
+69:         for (ViewRootImpl r : roots) if (r.layer() < ViewRootImpl.LAYER_TOAST && (best == null || r.layer() >= best.layer())) best = r;
+70:         return best;
+71:     }
+72: 
+73:     /** 11.0: تغيّر المقياس العام: تخطيط جديد لكل النوافذ (والحجم المنطقي يتغيّر). */
+74:     public static void rescale(float s) {
+75:         if (s == android.view.ViewRootImpl.scale()) return;
+76:         android.view.ViewRootImpl.setScale(s);
+77:         relayout();
+78:     }
+79: 
+80:     static void relayout() {
+81:         if (host == null) return;
+82:         int pw = host.getWidth(), ph = host.getHeight();
+83:         float sc = android.view.ViewRootImpl.scale();
+84:         int w = Math.round(pw / sc), h = Math.round(ph / sc);
+85:         android.content.res.Resources res = android.content.Context.RES;
+86:         float d = res.getDisplayMetrics().density;
+87:         res.getDisplayMetrics().widthPixels = w;
+88:         res.getDisplayMetrics().heightPixels = h;
+89:         int wdp = Math.round(w / d), hdp = Math.round(h / d);
+90:         boolean changed = res.getConfiguration().screenWidthDp != wdp || res.getConfiguration().screenHeightDp != hdp;
+91:         res.getConfiguration().screenWidthDp = wdp;
+92:         res.getConfiguration().screenHeightDp = hdp;
+93:         res.getConfiguration().smallestScreenWidthDp = Math.min(wdp, hdp);
+94:         res.getConfiguration().orientation = w > h ? android.content.res.Configuration.ORIENTATION_LANDSCAPE : android.content.res.Configuration.ORIENTATION_PORTRAIT;
+95:         for (ViewRootImpl r : roots) {
+96:             r.pane.setBounds(0, 0, pw, ph);
+97:             r.requestLayout();
+98:         }
+99:         if (changed) Activity.configChanged();
+100:     }
+101: }

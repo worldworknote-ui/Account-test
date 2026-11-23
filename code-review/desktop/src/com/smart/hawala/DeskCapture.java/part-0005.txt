@@ -1,0 +1,191 @@
+770:     // ===================================================================================
+771:     // «حدد النافذة»: طبقة شفافة فوق الشاشة كلها
+772:     // ===================================================================================
+773: 
+774:     static final class Picker extends JWindow {
+775:         final Win win;
+776:         Point from, to;
+777: 
+778:         Picker(Win win) {
+779:             super(win);
+780:             this.win = win;
+781:             setAlwaysOnTop(true);
+782:             Rectangle sc = screens();
+783:             setBounds(sc);
+784:             boolean translucent = false;
+785:             try {
+786:                 GraphicsDevice gd = GraphicsEnvironment.getLocalGraphicsEnvironment().getDefaultScreenDevice();
+787:                 if (gd.isWindowTranslucencySupported(GraphicsDevice.WindowTranslucency.PERPIXEL_TRANSLUCENT)) {
+788:                     setBackground(new Color(0, 0, 0, 0));
+789:                     translucent = true;
+790:                 }
+791:             } catch (Throwable ignored) {
+792:                 translucent = false;
+793:             }
+794:             if (!translucent) try { setOpacity(0.35f); } catch (Throwable ignored) { /* بلا شفافية */ }
+795:             final boolean see = translucent;
+796:             JPanel p = new JPanel() {
+797:                 @Override protected void paintComponent(Graphics g0) {
+798:                     Graphics2D g = (Graphics2D) g0.create();
+799:                     g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+800:                     g.setComposite(AlphaComposite.Src);
+801:                     g.setColor(see ? new Color(0, 0, 0, 70) : Color.DARK_GRAY);
+802:                     g.fillRect(0, 0, getWidth(), getHeight());
+803:                     if (from != null && to != null) {
+804:                         Rectangle r = rect();
+805:                         r.translate(-getX(), -getY());
+806:                         g.setColor(see ? new Color(255, 255, 255, 40) : Color.GRAY);
+807:                         g.fillRect(r.x, r.y, r.width, r.height);
+808:                         g.setComposite(AlphaComposite.SrcOver);
+809:                         g.setColor(ACCENT);
+810:                         g.setStroke(new BasicStroke(4));
+811:                         g.drawRect(r.x, r.y, r.width, r.height);
+812:                     }
+813:                     g.setComposite(AlphaComposite.SrcOver);
+814:                     String t1 = "اضغط على نافذة واتساب لتحديدها كلها";
+815:                     String t2 = "أو اسحب بالماوس مستطيلًا فوق الرسائل  •  Esc للإلغاء";
+816:                     Rectangle b = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
+817:                     g.setFont(getFont().deriveFont(Font.BOLD, 20f));
+818:                     FontMetrics fm = g.getFontMetrics();
+819:                     int w = Math.max(fm.stringWidth(t1), g.getFontMetrics(getFont().deriveFont(15f)).stringWidth(t2)) + 48;
+820:                     int x = b.x - Picker.this.getX() + (b.width - w) / 2, y = b.y - Picker.this.getY() + 40;
+821:                     g.setColor(ACCENT);
+822:                     g.fillRoundRect(x, y, w, 76, 18, 18);
+823:                     g.setColor(Color.WHITE);
+824:                     g.drawString(t1, x + (w - fm.stringWidth(t1)) / 2, y + 32);
+825:                     g.setFont(getFont().deriveFont(15f));
+826:                     FontMetrics f2 = g.getFontMetrics();
+827:                     g.drawString(t2, x + (w - f2.stringWidth(t2)) / 2, y + 60);
+828:                     g.dispose();
+829:                 }
+830:             };
+831:             p.setOpaque(false);
+832:             p.setCursor(Cursor.getPredefinedCursor(Cursor.CROSSHAIR_CURSOR));
+833:             MouseAdapter ma = new MouseAdapter() {
+834:                 @Override public void mousePressed(MouseEvent e) {
+835:                     from = e.getLocationOnScreen();
+836:                     to = from;
+837:                 }
+838: 
+839:                 @Override public void mouseDragged(MouseEvent e) {
+840:                     to = e.getLocationOnScreen();
+841:                     repaint();
+842:                 }
+843: 
+844:                 @Override public void mouseReleased(MouseEvent e) {
+845:                     to = e.getLocationOnScreen();
+846:                     if (from == null) return;
+847:                     Rectangle r = rect();
+848:                     if (r.width >= 40 && r.height >= 40) done(r);
+849:                     else clicked(from);
+850:                 }
+851:             };
+852:             p.addMouseListener(ma);
+853:             p.addMouseMotionListener(ma);
+854:             setContentPane(p);
+855:             getRootPane().registerKeyboardAction(e -> {
+856:                 dispose();
+857:                 win.say("أُلغي التحديد.");
+858:             }, KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), JComponent.WHEN_IN_FOCUSED_WINDOW);
+859:         }
+860: 
+861:         Rectangle rect() {
+862:             return new Rectangle(Math.min(from.x, to.x), Math.min(from.y, to.y), Math.abs(from.x - to.x), Math.abs(from.y - to.y));
+863:         }
+864: 
+865:         void begin() {
+866:             win.say("حدد نافذة واتساب…");
+867:             setVisible(true);
+868:             toFront();
+869:             requestFocus();
+870:         }
+871: 
+872:         void done(Rectangle r) {
+873:             dispose();
+874:             win.around(r);
+875:             win.read();
+876:         }
+877: 
+878:         /** كبسة: النافذة التي تحت الماوس (بعد إخفاء الطبقة). */
+879:         void clicked(final Point at) {
+880:             setVisible(false);
+881:             win.say("أبحث عن النافذة…");
+882:             final double scale = scaleOf(win);
+883:             final Rectangle bar = win.getBounds();
+884:             new Thread(() -> {
+885:                 Rectangle w = null;
+886:                 String err = null;
+887:                 try {
+888:                     Thread.sleep(120);
+889:                     w = Reader.windowAt(at, scale, bar);
+890:                 } catch (Throwable t) {
+891:                     err = t.getMessage();
+892:                 }
+893:                 final Rectangle fw = w;
+894:                 final String fe = err;
+895:                 SwingUtilities.invokeLater(() -> {
+896:                     dispose();
+897:                     if (fw == null) {
+898:                         win.say(fe != null ? fe : "لم أعرف النافذة هنا. اضغط «حدد النافذة» واسحب مستطيلًا فوق الرسائل.");
+899:                         return;
+900:                     }
+901:                     win.around(fw);
+902:                     win.read();
+903:                 });
+904:             }, "capture-pick").start();
+905:         }
+906:     }
+907: 
+908:     // ===================================================================================
+909:     // أدوات
+910:     // ===================================================================================
+911: 
+912:     /** كل الشاشات معًا. */
+913:     static Rectangle screens() {
+914:         Rectangle all = null;
+915:         try {
+916:             for (GraphicsDevice d : GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices()) {
+917:                 Rectangle b = d.getDefaultConfiguration().getBounds();
+918:                 all = all == null ? new Rectangle(b) : all.union(b);
+919:             }
+920:         } catch (Throwable ignored) {
+921:             all = null;
+922:         }
+923:         return all == null ? new Rectangle(0, 0, 1920, 1080) : all;
+924:     }
+925: 
+926:     /**
+927:      * بصمة صغيرة لصورة ما تحت الإطار: متوسط الإضاءة في خلايا 8×8 بكسل، والخلايا تحت الأرقام صفر.
+928:      */
+929:     static int[] signature(BufferedImage img, Rectangle in, List<Rectangle> mask) {
+930:         int cell = 8;
+931:         int cw = Math.max(1, img.getWidth() / cell), ch = Math.max(1, img.getHeight() / cell);
+932:         double kx = img.getWidth() / (double) Math.max(1, in.width), ky = img.getHeight() / (double) Math.max(1, in.height);
+933:         int[] sig = new int[cw * ch];
+934:         for (int cy = 0; cy < ch; cy++) {
+935:             for (int cx = 0; cx < cw; cx++) {
+936:                 int x0 = cx * cell, y0 = cy * cell;
+937:                 boolean masked = false;
+938:                 for (Rectangle m : mask) {
+939:                     int mx = (int) ((m.x - in.x) * kx), my = (int) ((m.y - in.y) * ky), mw = (int) (m.width * kx) + 1, mh = (int) (m.height * ky) + 1;
+940:                     if (x0 + cell > mx && x0 < mx + mw && y0 + cell > my && y0 < my + mh) { masked = true; break; }
+941:                 }
+942:                 if (masked) continue;
+943:                 long s = 0;
+944:                 int n = 0;
+945:                 for (int y = y0; y < y0 + cell && y < img.getHeight(); y += 2)
+946:                     for (int x = x0; x < x0 + cell && x < img.getWidth(); x += 2) {
+947:                         int p = img.getRGB(x, y);
+948:                         s += ((p >> 16) & 255) * 3 + ((p >> 8) & 255) * 6 + (p & 255);
+949:                         n++;
+950:                     }
+951:                 sig[cy * cw + cx] = n == 0 ? 0 : (int) (s / (n * 10));
+952:             }
+953:         }
+954:         return sig;
+955:     }
+956: 
+957:     /** تغيّر حقيقي (تمرير، رسالة جديدة): خلايا كثيرة تغيّرت، لا وميض المؤشر أو «يكتب…». */
+958:     static boolean changed(int[] a, int[] b) {
+959:         if (a == null || b == null || a.length != b.length) return true;
+960:         int n = 0;

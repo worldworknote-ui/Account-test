@@ -1,0 +1,39 @@
+1: package com.smart.hawala;
+2: 
+3: /**
+4:  * متى يحين النسخ التلقائي (منطق بحت يُختبر على الكمبيوتر).
+5:  * المجانية: يوميًا على الأكثر. الكاملة: حتى كل 6 ساعات، وأيضًا بعد عدد من الحركات منذ آخر نسخة.
+6:  */
+7: public final class BackupPolicy {
+8:     private BackupPolicy() {}
+9: 
+10:     /** خيارات التكرار بالساعات كما تظهر في شاشة النسخ (الأقل من حد النسخة لا يظهر). */
+11:     public static final long[] HOURS = {6, 24, 72, 168};
+12: 
+13:     /** الفاصل بالساعات: الإعداد بالساعات، أو الأيام القديمة × 24، مرفوعًا إلى الحد الأدنى المسموح. */
+14:     public static long intervalHours(long hoursSetting, long daysSetting, int minHours) {
+15:         long h = hoursSetting > 0 ? hoursSetting : Math.max(1, daysSetting) * 24;
+16:         return Math.max(Math.max(1, minHours), h);
+17:     }
+18: 
+19:     /**
+20:      * عدد الحركات الذي يستدعي نسخة: 0 = لا (المجانية دائمًا). الإعداد السالب/غير المحدد = الافتراضي المسموح،
+21:      * و0 = أوقفه المستخدم، وما دون الحد المسموح يُرفع إليه حتى لا يتكرر النسخ مع كل حركة.
+22:      */
+23:     public static int everyTx(long setting, int allowed) {
+24:         if (allowed <= 0 || setting == 0) return 0;
+25:         if (setting < 0) return allowed;
+26:         return (int) Math.min(100000, Math.max(allowed, setting));
+27:     }
+28: 
+29:     /**
+30:      * هل حان النسخ؟ بالوقت (مع هامش نصف ساعة حتى لا يفوت الموعد بفارق دقائق جدولة النظام)، أو بعدد الحركات
+31:      * (مع 10 دقائق على الأقل بين نسختين). ساعة هاتف رجعت إلى الوراء أكثر من ساعة تعني أن الموعد غير معروف: يُنسخ.
+32:      */
+33:     public static boolean due(long now, long last, long intervalHours, long txSince, int everyTx) {
+34:         if (last <= 0) return true;
+35:         if (now < last - 3600000L) return true;
+36:         if (now - last >= intervalHours * 3600000L - 30 * 60000L) return true;
+37:         return everyTx > 0 && txSince >= everyTx && now - last >= 10 * 60000L;
+38:     }
+39: }

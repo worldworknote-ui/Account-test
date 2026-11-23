@@ -1,0 +1,135 @@
+1698:             d.setTransactionSuccessful();
+1699:             written.clear();
+1700:             return id;
+1701:         } finally {
+1702:             d.endTransaction();
+1703:             for (File f : written) f.delete();
+1704:         }
+1705:     }
+1706: 
+1707:     /**
+1708:      * تعديل حركة: قيد عكسي يلغي الحركة القديمة بكامل أثرها، ثم حركة مصححة مرتبطة بها (replaces_id)،
+1709:      * وتنتقل الصور التي لم تُحذف إلى الحركة الجديدة. كل ذلك في معاملة واحدة.
+1710:      */
+1711:     public long editTx(long oldId, TxInput in, List<byte[]> newImages, Set<Long> removedAttachments, String reason) throws IOException {
+1712:         Model.Tx before0 = tx(oldId);
+1713:         // 12.4: الحركة الخاصة تُعدَّل وتُحوَّل بصلاحية «الحركات الخاصة» (والخاصة غير المحسوبة بلا قيد يُعكس)
+1714:         if (before0 != null && (before0.isSpecial() || special(in))) return replaceSpecial(oldId, in, newImages, removedAttachments, reason);
+1715:         require(Auth.Perm.TX_EDIT);
+1716:         Model.Tx before = before0;
+1717:         if (before != null && before.isLinked()) throw new IllegalStateException("هذه ساق من عملية مترابطة (" + (before.isTransfer() ? "تحويل بين مكتبين" : "تبديل عملة")
+1718:                 + "): ألغِ العملية كلها ثم سجّلها من جديد بالقيم الصحيحة.");
+1719:         validate(in);
+1720:         List<File> written = writeImages(newImages);
+1721:         SQLiteDatabase d = getWritableDatabase();
+1722:         long now = Clock.now();
+1723:         d.beginTransaction();
+1724:         try {
+1725:             reverseTx(d, oldId, now);
+1726:             checkLock(d, in.when, "التاريخ الجديد يقع داخل فترة محاسبية مقفلة");
+1727:             long id = insertTx(d, in, oldId);
+1728:             StringBuilder keep = new StringBuilder("UPDATE attachments SET tx_id=" + id + " WHERE tx_id=" + oldId);
+1729:             if (removedAttachments != null && !removedAttachments.isEmpty()) {
+1730:                 keep.append(" AND id NOT IN (");
+1731:                 boolean first = true;
+1732:                 for (Long a : removedAttachments) {
+1733:                     if (!first) keep.append(',');
+1734:                     keep.append(a.longValue());
+1735:                     first = false;
+1736:                 }
+1737:                 keep.append(')');
+1738:             }
+1739:             d.execSQL(keep.toString());
+1740:             linkImages(d, id, written, now);
+1741:             // 10.5 (AUDIT-017): الحركة المسجّلة من الصندوق تُصحَّح مع حركة صندوقها في المعاملة نفسها (بدل منع التصحيح)
+1742:             String cash = relinkCash(d, oldId, id, in);
+1743:             // 10.5 (§7): تعديل المبلغ أو العملة أو الاتجاه أو المكتب يُبطل التحقق السابق (يبقى في تاريخ الحركة القديمة)؛
+1744:             // وتعديل غيرها (الاسم، البيان…) ينقل التحقق إلى الحركة المصححة
+1745:             if (before != null && keyChanged(before, in)) voidChecks(d, oldId, "عُدّلت الحركة: " + keyDiff(before, in));
+1746:             else carryChecks(d, oldId, id);
+1747:             audit(d, "EDIT_TRANSACTION", "tx", oldId, "new=" + id + (reason == null || reason.isEmpty() ? "" : " — " + reason) + (cash == null ? "" : " — " + cash));
+1748:             d.setTransactionSuccessful();
+1749:             written.clear();
+1750:             return id;
+1751:         } finally {
+1752:             d.endTransaction();
+1753:             for (File f : written) f.delete();
+1754:         }
+1755:     }
+1756: 
+1757:     /**
+1758:      * 8.0: تبديل عملة مع مكتب: ساقان في معاملة واحدة، «لنا» بعملة و«علينا» بأخرى، مربوطتان برقم واحد وبسعر التبديل،
+1759:      * فيظهر في التقارير ربح فرق العملة وصافي المركز. للمحاسب والمدير (يغيّر رصيد عملتين معًا).
+1760:      */
+1761:     /** 10.5: ساقا التبديل كما تُسجَّلان («لنا» بعملة البيع و«علينا» بعملة الشراء) — للمعاينة والتسجيل بالقواعد نفسها. */
+1762:     public TxInput[] fxLegs(long office, String usCur, long usAmount, String themCur, long themAmount, String rate, String description, long when) {
+1763:         if (usCur.equals(themCur)) throw new IllegalArgumentException("التبديل بين عملتين مختلفتين");
+1764:         TxInput a = new TxInput(), b = new TxInput();
+1765:         for (TxInput x : new TxInput[]{a, b}) {
+1766:             x.office = office;
+1767:             x.description = description == null ? "" : description;
+1768:             x.when = when;
+1769:             x.service = "تبديل عملة";
+1770:             x.fxRate = rate;
+1771:         }
+1772:         a.type = TYPE_DEBIT;
+1773:         a.currency = usCur;
+1774:         a.amount = usAmount;
+1775:         b.type = TYPE_CREDIT;
+1776:         b.currency = themCur;
+1777:         b.amount = themAmount;
+1778:         return new TxInput[]{a, b};
+1779:     }
+1780: 
+1781:     /**
+1782:      * 10.8: قص العملات مقاصةً: العملة المباعة تُخصم من رصيدنا لدى المكتب (ساق «علينا»)، والمشتراة تُضاف إليه (ساق «لنا»).
+1783:      * يُسمح بعبور الصفر؛ لا حركة صندوق. rate = كم من عملة الشراء لكل 1 من عملة البيع (للعرض والتقارير).
+1784:      */
+1785:     public TxInput[] fxNetLegs(long office, String sellCur, long sellAmount, String buyCur, long buyAmount, String rate, String description, long when) {
+1786:         return fxLegs(office, buyCur, buyAmount, sellCur, sellAmount, rate, description, when);
+1787:     }
+1788: 
+1789:     public String[] addFxNet(long office, String sellCur, long sellAmount, String buyCur, long buyAmount, String rate, String description, long when) {
+1790:         return addFx(office, buyCur, buyAmount, sellCur, sellAmount, rate, description, when);
+1791:     }
+1792: 
+1793:     /**
+1794:      * 10.18: تعديل قص عملات: تُعكس الساقان القديمتان معًا وتُسجَّل ساقان مصحّحتان (كل ساق تحل محل نظيرتها: replaces_id) في معاملة واحدة،
+1795:      * فلا يبقى نصف عملية في الأرصدة. المكتب لا يتغير. التحقق السابق يُبطَل (تغيّرت القيم). العملية المعلّقة تُرفض وتُسجَّل من جديد.
+1796:      * legId: أي ساق من الساقين. يرجع رقمي الساقين الجديدتين.
+1797:      */
+1798:     public String[] editFxNet(long legId, String sellCur, long sellAmount, String buyCur, long buyAmount, String rate, String description, long when, String reason) {
+1799:         require(Auth.Perm.TX_ADD);
+1800:         require(Auth.Perm.TX_EDIT);
+1801:         SQLiteDatabase d = getWritableDatabase();
+1802:         long now = Clock.now();
+1803:         d.beginTransaction();
+1804:         try {
+1805:             Model.Tx t = txOn(d, legId);
+1806:             if (t == null || !t.isFx()) throw new IllegalStateException("هذه ليست حركة قص عملات");
+1807:             if (t.isPending()) throw new IllegalStateException("العملية بانتظار الاعتماد: ارفضها ثم سجّلها من جديد بالقيم الصحيحة.");
+1808:             if (!t.isActive()) throw new IllegalStateException("هذه العملية ملغاة أو معدّلة من قبل");
+1809:             List<Model.Tx> old = new ArrayList<>();
+1810:             old.add(t);
+1811:             try (Cursor c = d.rawQuery("SELECT " + TX_COLS + " FROM tx WHERE pair_uuid=? AND id<>" + t.id, new String[]{t.pairUuid})) {
+1812:                 while (c.moveToNext()) old.add(readTxRaw(c));
+1813:             }
+1814:             if (old.size() != 2) throw new IllegalStateException("ساقا العملية غير مكتملتين؛ ألغِها وسجّلها من جديد.");
+1815:             for (Model.Tx x : old) if (!x.isActive()) throw new IllegalStateException("إحدى ساقي العملية ليست نشطة؛ ألغِها وسجّلها من جديد.");
+1816:             TxInput[] legs = fxNetLegs(t.officeId, sellCur, sellAmount, buyCur, buyAmount, rate, description, when);
+1817:             String pair = UUID.randomUUID().toString();
+1818:             for (TxInput x : legs) {
+1819:                 x.pairUuid = pair;
+1820:                 validate(x);
+1821:             }
+1822:             checkLock(d, when, "التاريخ الجديد يقع داخل فترة محاسبية مقفلة");
+1823:             String[] ids = new String[2];
+1824:             for (Model.Tx x : old) reverseTx(d, x.id, now);
+1825:             for (int i = 0; i < 2; i++) {
+1826:                 // كل ساق جديدة تحل محل الساق القديمة بالاتجاه نفسه («لنا» محل «لنا»)
+1827:                 Model.Tx match = old.get(0).type.equals(legs[i].type) ? old.get(0) : old.get(1);
+1828:                 long id = insertTx(d, legs[i], match.id);
+1829:                 d.execSQL("UPDATE attachments SET tx_id=" + id + " WHERE tx_id=" + match.id);
+1830:                 voidChecks(d, match.id, "عُدّل قص العملات");
+1831:                 ids[i] = "" + id;
+1832:             }

@@ -1,0 +1,147 @@
+5209:         String me = SyncStore.meta(d, "device");
+5210:         List<Object[]> rows = new ArrayList<>();
+5211:         try (Cursor c = d.rawQuery("SELECT created_at,action,entity,entity_id,user_name,reason FROM audit_logs WHERE action<>'LOGIN_SESSION' ORDER BY id DESC LIMIT " + limit, null)) {
+5212:             while (c.moveToNext()) rows.add(new Object[]{c.isNull(0) ? 0L : c.getLong(0), Model.nz(c.getString(1)), Model.nz(c.getString(2)),
+5213:                     c.isNull(3) ? "" : "" + c.getLong(3), shown(Model.nz(Crypto.dec(c.getString(4)))), Model.nz(Crypto.dec(c.getString(5))), ""});
+5214:         }
+5215:         boolean others = false;
+5216:         // خارج المزامنة لا يُعرف أيّ أسطر السجل المشترك كانت لهذا الجهاز: يُعرض سجله وحده (فلا تتكرر أسطره)
+5217:         if (me != null) try (Cursor c = d.rawQuery("SELECT created_at,action,entity,entity_id,user_name,reason,dev_name FROM audit_feed WHERE dev IS NOT NULL AND dev<>? AND action<>'LOGIN_SESSION' "
+5218:                 + "ORDER BY created_at DESC LIMIT " + limit, new String[]{me == null ? "" : me})) {
+5219:             while (c.moveToNext()) {
+5220:                 others = true;
+5221:                 rows.add(new Object[]{c.getLong(0), Model.nz(c.getString(1)), Model.nz(c.getString(2)), c.isNull(3) ? "" : "" + c.getLong(3),
+5222:                         shown(Model.nz(Crypto.dec(c.getString(4)))), Model.nz(Crypto.dec(c.getString(5))), Model.nz(c.getString(6)).isEmpty() ? "جهاز آخر" : c.getString(6)});
+5223:             }
+5224:         }
+5225:         if (others) {
+5226:             java.util.Collections.sort(rows, (x, y) -> Long.compare((Long) y[0], (Long) x[0]));
+5227:             String mine = Model.nz(SyncStore.meta(d, "device_name"));
+5228:             for (Object[] r : rows) if (((String) r[6]).isEmpty()) r[6] = mine.isEmpty() ? "هذا الجهاز" : mine + " (هذا الجهاز)";
+5229:         }
+5230:         List<String[]> a = new ArrayList<>();
+5231:         for (int i = 0; i < rows.size() && i < limit; i++) {
+5232:             Object[] r = rows.get(i);
+5233:             a.add(new String[]{Model.date((Long) r[0]), (String) r[1], (String) r[2], (String) r[3], (String) r[4], (String) r[5], (String) r[6]});
+5234:         }
+5235:         return a;
+5236:     }
+5237: 
+5238:     /**
+5239:      * 11.5: جلسات الاستخدام منذ وقت معيّن من كل الأجهزة: {نهاية الجلسة، مدتها بالثواني، المستخدم، الجهاز}، الأحدث أولًا.
+5240:      * أسطر هذا الجهاز من سجله، وأسطر الأجهزة الأخرى مما وصل بالمزامنة (السجل المشترك).
+5241:      */
+5242:     public List<Object[]> usageSessions(long since) {
+5243:         requireAdmin("سجل الاستخدام للمدير وحده");   // 11.6
+5244:         SQLiteDatabase d = getReadableDatabase();
+5245:         String me = SyncStore.meta(d, "device");
+5246:         String mine = Model.nz(SyncStore.meta(d, "device_name"));
+5247:         String here = mine.isEmpty() ? "هذا الجهاز" : mine;
+5248:         List<Object[]> rows = new ArrayList<>();
+5249:         try (Cursor c = d.rawQuery("SELECT created_at,entity_id,user_name FROM audit_logs WHERE action=? AND created_at>=?", new String[]{UsageScreen.ACTION, "" + since})) {
+5250:             while (c.moveToNext()) rows.add(new Object[]{c.getLong(0), c.isNull(1) ? 0L : c.getLong(1), shown(Model.nz(Crypto.dec(c.getString(2)))), here});
+5251:         }
+5252:         if (me != null) try (Cursor c = d.rawQuery("SELECT created_at,entity_id,user_name,dev_name FROM audit_feed WHERE action=? AND created_at>=? AND dev IS NOT NULL AND dev<>?",
+5253:                 new String[]{UsageScreen.ACTION, "" + since, me})) {
+5254:             while (c.moveToNext()) rows.add(new Object[]{c.getLong(0), c.isNull(1) ? 0L : c.getLong(1), shown(Model.nz(Crypto.dec(c.getString(2)))),
+5255:                     Model.nz(c.getString(3)).isEmpty() ? "جهاز آخر" : c.getString(3)});
+5256:         }
+5257:         java.util.Collections.sort(rows, (x, y) -> Long.compare((Long) y[0], (Long) x[0]));
+5258:         return rows;
+5259:     }
+5260: 
+5261:     /** 12.7: عدد الحركات التي أدخلها كل مستخدم منذ since (للمدير، بجانب وقت عمله). المفتاح اسم المستخدم الحقيقي؛ "" = بلا نظام مستخدمين. */
+5262:     public Map<String, Long> txCountsByUser(long since) {
+5263:         requireAdmin("سجل الاستخدام للمدير وحده");
+5264:         Map<String, Long> m = new HashMap<>();
+5265:         Map<Long, String> names = new HashMap<>();
+5266:         for (Model.User u : users(true)) names.put(u.id, u.name);
+5267:         try (Cursor c = getReadableDatabase().rawQuery("SELECT user_id,user_name,COUNT(*) FROM tx WHERE created_at>=? GROUP BY user_id,user_name", new String[]{"" + since})) {
+5268:             while (c.moveToNext()) {
+5269:                 String n = c.isNull(0) ? null : names.get(c.getLong(0));
+5270:                 if (n == null) n = c.isNull(1) ? "" : Model.nz(Crypto.dec(c.getString(1)));
+5271:                 m.merge(n, c.getLong(2), Long::sum);
+5272:             }
+5273:         }
+5274:         return m;
+5275:     }
+5276: 
+5277:     public Map<String, Long> counts() {
+5278:         Map<String, Long> m = new LinkedHashMap<>();
+5279:         SQLiteDatabase d = getReadableDatabase();
+5280:         String[] q = {"offices", "tx", "attachments", "currencies"};
+5281:         for (String x : q) {
+5282:             try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM " + x, null)) {
+5283:                 m.put(x, c.moveToFirst() ? c.getLong(0) : 0L);
+5284:             }
+5285:         }
+5286:         return m;
+5287:     }
+5288: 
+5289:     // ===================================================================================
+5290:     // النسخة الاحتياطية: مصدر البيانات
+5291:     // ===================================================================================
+5292: 
+5293:     public BackupFormat.Source backupSource() { return backupSource(null); }
+5294: 
+5295:     /**
+5296:      * 12.7: نسخة من ملف القاعدة (والـ WAL) للقراءة في الخلفية. تُستدعى داخل معاملة كتابة يملكها الخيط نفسه، فلا تتغير
+5297:      * البيانات أثناء النسخ (ثوانٍ قليلة بدل إبقاء المعاملة مفتوحة طوال بناء اللقطة). null إن تعذّر النسخ.
+5298:      */
+5299:     public File copyForRead(String tag) {
+5300:         File src = ctx.getDatabasePath(NAME);
+5301:         File dst = new File(ctx.getCacheDir() != null ? ctx.getCacheDir() : src.getParentFile(), "read-" + tag + "-" + System.nanoTime() + ".db");
+5302:         try {
+5303:             copyFile(src, dst);
+5304:             File wal = new File(src.getPath() + "-wal");
+5305:             if (wal.isFile() && wal.length() > 0) copyFile(wal, new File(dst.getPath() + "-wal"));
+5306:             return dst;
+5307:         } catch (Throwable t) {
+5308:             DbCipher.deleteDb(dst);
+5309:             return null;
+5310:         }
+5311:     }
+5312: 
+5313:     /** 12.7: يفتح نسخة copyForRead بمفتاح القاعدة نفسها. */
+5314:     public SQLiteDatabase openReadCopy(File f) {
+5315:         File main = ctx.getDatabasePath(NAME);
+5316:         String key = DbCipher.isPlain(main) ? "" : Crypto.dbKey();
+5317:         return DbCipher.openFile(f, key == null ? "" : key);
+5318:     }
+5319: 
+5320:     /** 12.7: عدّ الجداول من اتصال محدد (نسخة للقراءة) أو من القاعدة. */
+5321:     private Map<String, Long> counts(SQLiteDatabase d) {
+5322:         Map<String, Long> m = new LinkedHashMap<>();
+5323:         for (String x : new String[]{"offices", "tx", "attachments", "currencies"}) {
+5324:             try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM " + x, null)) {
+5325:                 m.put(x, c.moveToFirst() ? c.getLong(0) : 0L);
+5326:             }
+5327:         }
+5328:         return m;
+5329:     }
+5330: 
+5331:     /** 12.7: مصدر النسخة من اتصال محدد (null = القاعدة نفسها). */
+5332:     public BackupFormat.Source backupSource(final SQLiteDatabase from) {
+5333:         return new BackupFormat.Source() {
+5334:             int unreadable;
+5335: 
+5336:             SQLiteDatabase db() { return from != null ? from : getReadableDatabase(); }
+5337: 
+5338:             @Override public Map<String, Long> counts() { return from == null ? Db.this.counts() : Db.this.counts(from); }
+5339: 
+5340:             @Override public void rows(String table, BackupFormat.RowSink sink) throws Exception {
+5341:                 List<String> sensitive = SENSITIVE.get(table);
+5342:                 SQLiteDatabase d = db();
+5343:                 try (Cursor c = d.rawQuery("SELECT * FROM " + table, null)) {
+5344:                     int n = c.getColumnCount();
+5345:                     while (c.moveToNext()) {
+5346:                         JSONObject r = new JSONObject();
+5347:                         for (int i = 0; i < n; i++) {
+5348:                             String col = c.getColumnName(i);
+5349:                             int type = c.getType(i);
+5350:                             if (type == Cursor.FIELD_TYPE_NULL) r.put(col, JSONObject.NULL);
+5351:                             else if (type == Cursor.FIELD_TYPE_INTEGER) r.put(col, c.getLong(i));
+5352:                             else if (type == Cursor.FIELD_TYPE_FLOAT) r.put(col, c.getDouble(i));
+5353:                             else if (type == Cursor.FIELD_TYPE_BLOB) continue;
+5354:                             else {
+5355:                                 String s = c.getString(i);

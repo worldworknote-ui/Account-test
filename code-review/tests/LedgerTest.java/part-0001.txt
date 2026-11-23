@@ -1,0 +1,50 @@
+1: import com.smart.hawala.*;
+2: import java.math.BigDecimal;
+3: import java.util.*;
+4: 
+5: public class LedgerTest {
+6:   static int fails = 0;
+7:   static void check(boolean c, String m) { System.out.println((c ? "  PASS " : "  FAIL ") + m); if (!c) fails++; }
+8:   static Map<String, Long> m(Object... kv) { Map<String, Long> r = new TreeMap<>(); for (int i = 0; i < kv.length; i += 2) r.put((String) kv[i], ((Number) kv[i+1]).longValue()); return r; }
+9:   public static void main(String[] a) {
+10:     System.out.println("1) review example: office A owes us 1,000 USD, we owe office B 700 USD");
+11:     Map<Long, Map<String, Long>> ob = new LinkedHashMap<>();
+12:     ob.put(1L, m("USD", 100000));   // minor units (cents)
+13:     ob.put(2L, m("USD", -70000));
+14:     Map<String, Ledger.CurrencyTotal> t = Ledger.totals(ob);
+15:     check(t.get("USD").receivable == 100000, "مجموع لنا = 1,000.00 (got " + t.get("USD").receivable + ")");
+16:     check(t.get("USD").payable == 70000, "مجموع علينا = 700.00 (got " + t.get("USD").payable + ")");
+17:     check(t.get("USD").net() == 30000, "الصافي = 300 shown separately");
+18:     check(t.get("USD").officesReceivable == 1 && t.get("USD").officesPayable == 1, "office counts 1/1");
+19: 
+20:     System.out.println("2) multi-currency, zero balances ignored");
+21:     ob.put(3L, m("SYP", 13000000, "USD", 0));
+22:     ob.put(4L, m("SYP", -2600000, "EUR", 5000));
+23:     t = Ledger.totals(ob);
+24:     check(t.get("SYP").receivable == 13000000 && t.get("SYP").payable == 2600000, "SYP لنا/علينا separate");
+25:     check(t.get("USD").officesReceivable == 1, "zero balance office not counted");
+26: 
+27:     System.out.println("3) USD valuation keeps لنا and علينا separate (no abs-sum mixing)");
+28:     Map<String, BigDecimal> rates = new HashMap<>();
+29:     rates.put("SYP", BigDecimal.ONE.divide(new BigDecimal("13000"), 16, java.math.RoundingMode.HALF_EVEN));
+30:     Map<String, Integer> dec = new HashMap<>(); dec.put("USD", 2); dec.put("SYP", 0); dec.put("EUR", 2);
+31:     Ledger.Valuation v = Ledger.value(t, rates, dec);
+32:     // لنا: 1000 USD + 13,000,000 SYP (=1000 USD) = 2000 ; علينا: 700 USD + 2,600,000 SYP (=200 USD) = 900
+33:     check(v.receivableUsd.compareTo(new BigDecimal("2000.00")) == 0, "لنا ≈ 2000.00 USD (got " + v.receivableUsd + ")");
+34:     check(v.payableUsd.compareTo(new BigDecimal("900.00")) == 0, "علينا ≈ 900.00 USD (got " + v.payableUsd + ")");
+35:     check(v.missingRates.contains("EUR"), "EUR without rate reported, not silently used: " + v.missingRates);
+36: 
+37:     System.out.println("4) per-office valuation (for USD limits)");
+38:     Ledger.Valuation ov = Ledger.valueOffice(m("USD", 50000, "SYP", -1300000), rates, dec);
+39:     check(ov.receivableUsd.compareTo(new BigDecimal("500.00")) == 0 && ov.payableUsd.compareTo(new BigDecimal("100.00")) == 0, "office: لنا 500 / علينا 100 (no netting)");
+40: 
+41:     System.out.println("5) limit checks per side");
+42:     check(Ledger.check("USD", 120000, 100000L, null) != null, "لنا above لنا-limit -> alert");
+43:     check(Ledger.check("USD", -120000, 100000L, null) == null, "علينا not checked against لنا-limit");
+44:     check(Ledger.check("USD", -120000, null, 100000L) != null, "علينا above علينا-limit -> alert");
+45:     check(Ledger.check("USD", 90000, 100000L, 100000L) == null, "under limit -> no alert");
+46: 
+47:     System.out.println(fails == 0 ? "ALL LEDGER TESTS PASSED" : (fails + " FAILURE(S)"));
+48:     System.exit(fails == 0 ? 0 : 1);
+49:   }
+50: }

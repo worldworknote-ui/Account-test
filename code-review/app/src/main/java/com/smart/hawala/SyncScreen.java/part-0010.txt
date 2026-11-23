@@ -1,0 +1,141 @@
+1266:                 if (!s1.equals(p2.getText().toString())) {
+1267:                     p2.setError("غير متطابقة");
+1268:                     return;
+1269:                 }
+1270:                 d.dismiss();
+1271:                 a.busy("جارٍ حفظ كلمة السر الجديدة…", p -> {
+1272:                     new SyncEngine(a.db, folder(a, a.db)).resetPassword(s1.toCharArray());
+1273:                     return null;
+1274:                 }, res -> a.toast("عُيّنت كلمة سر المزامنة الجديدة ✓"));
+1275:             }));
+1276:             d.show();
+1277:         });
+1278:     }
+1279: 
+1280:     private void wipeDialog() {
+1281:         LinearLayout l = new LinearLayout(a);
+1282:         l.setOrientation(LinearLayout.VERTICAL);
+1283:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+1284:         l.addView(a.text("تُحذف كل ملفات المزامنة المشفّرة من «" + kindName(a.db) + "». قبل الحذف تُحفظ نسخة أمان من بيانات هذا الجهاز. "
+1285:                 + "كل الأجهزة (وهذا الجهاز) تخرج من المزامنة وتبقى بياناتها كما هي، ثم يمكنك إنشاء مزامنة جديدة.", 13, a.red, true));
+1286:         final Ui.Seg how = a.new Seg(new String[]{"كلمة السر", "رمز الاسترداد"}, null, 0, false);
+1287:         l.addView(how.view, a.lp(-1, -2, 2));
+1288:         final EditText pw = secret(l, "كلمة سر المزامنة أو رمز الاسترداد");
+1289:         final EditText word = a.field("اكتب: حذف");
+1290:         l.addView(word, a.lp(-1, 50, 3));
+1291:         final AlertDialog d = new AlertDialog.Builder(a).setTitle("حذف ملفات المزامنة").setView(l).setPositiveButton("حذف", null).setNegativeButton("إلغاء", null).create();
+1292:         d.setOnShowListener(x -> d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+1293:             if (!"حذف".equals(word.getText().toString().trim())) {
+1294:                 word.setError("اكتب كلمة «حذف» للتأكيد");
+1295:                 return;
+1296:             }
+1297:             final String sec = pw.getText().toString();
+1298:             if (sec.trim().isEmpty()) {
+1299:                 pw.setError("مطلوبة");
+1300:                 return;
+1301:             }
+1302:             d.dismiss();
+1303:             final boolean rc = how.selected == 1;
+1304:             a.usersScreen.confirmAdmin("حذف ملفات المزامنة", () -> a.busy("جارٍ حفظ نسخة أمان وحذف ملفات المزامنة…",
+1305:                     p -> new SyncEngine(a.db, folder(a, a.db)).wipe(a, sec.toCharArray(), rc), res -> new AlertDialog.Builder(a).setTitle("حُذفت ملفات المزامنة ✓")
+1306:                             .setMessage("حُذف " + res + " ملفًا. خرج هذا الجهاز من المزامنة وبياناته كما هي، وستخرج الأجهزة الأخرى في جولتها التالية. "
+1307:                                     + "حُفظت نسخة أمان من بيانات هذا الجهاز قبل الحذف. يمكنك الآن إنشاء مزامنة جديدة (في هذا المكان أو بحساب آخر).")
+1308:                             .setPositiveButton("حسنًا", (dd, w) -> show()).show()));
+1309:         }));
+1310:         d.show();
+1311:     }
+1312: 
+1313:     private void changeTransport() {
+1314:         final String cur = transport(a.db);
+1315:         final String[] keys = {"drive", "server", "folder"};
+1316:         final String[] names = {"\u200FGoogle Drive مباشرة", "خادم المزامنة الخاص بك", "مجلد مشترك"};
+1317:         new AlertDialog.Builder(a).setTitle("نقل المزامنة إلى طريقة أخرى").setItems(names, (d, w) -> {
+1318:             final String to = keys[w];
+1319:             if (to.equals(cur) && !"folder".equals(to)) {
+1320:                 a.toast("هذه هي الطريقة الحالية");
+1321:                 return;
+1322:             }
+1323:             a.confirm("نقل المزامنة إلى «" + names[w] + "»", "تُنسخ ملفات الخزنة المشفّرة إلى الطريقة الجديدة ثم يستخدمها هذا الجهاز. "
+1324:                     + "افعل الشيء نفسه على كل جهاز (يكمل كل جهاز ما ينقص). "
+1325:                     + ("drive".equals(to) ? "يُطلب الدخول بحساب Google نفسه على كل الأجهزة." : "server".equals(to) ? "اكتب عنوان الخادم أولًا في الخطوة التالية." : "اختر المجلد في الخطوة التالية."),
+1326:                     "متابعة", () -> prepareTarget(to));
+1327:         }).show();
+1328:     }
+1329: 
+1330:     /** 10.3: إعدادات الناقل قبل النقل (تُعاد كما كانت إن فشل النقل، فلا يبقى الجهاز على مكان فارغ). */
+1331:     private String[] savedTransport;
+1332:     private static final String[] TRANSPORT_KEYS = {"sync_tree", "sync_server", "sync_server_key", "sync_server_vault", "sync_transport"};
+1333: 
+1334:     private void prepareTarget(final String to) {
+1335:         savedTransport = new String[TRANSPORT_KEYS.length];
+1336:         for (int i = 0; i < TRANSPORT_KEYS.length; i++) savedTransport[i] = a.db.setting(TRANSPORT_KEYS[i], "");
+1337:         final SyncFolder src = folder(a, a.db);
+1338:         if (src == null) {
+1339:             a.toast("الطريقة الحالية غير متاحة على هذا الجهاز");
+1340:             return;
+1341:         }
+1342:         if ("drive".equals(to)) {
+1343:             DriveAuth.connect(a, new DriveAuth.Done() {
+1344:                 @Override public void ok() { doMove(to, src); }
+1345: 
+1346:                 @Override public void fail(Exception e) { a.error(e); }
+1347:             });
+1348:         } else if ("server".equals(to)) {
+1349:             LinearLayout l = new LinearLayout(a);
+1350:             l.setOrientation(LinearLayout.VERTICAL);
+1351:             l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+1352:             final EditText url = a.field("https://عنوان-خادمك");
+1353:             url.setText(a.db.setting("sync_server", ""));
+1354:             url.setTextDirection(android.view.View.TEXT_DIRECTION_LTR);
+1355:             l.addView(url, a.lp(-1, 50, 3));
+1356:             final EditText key = secret(l, "رمز الخادم (إن وُجد)");
+1357:             key.setText(a.db.setting("sync_server_key", ""));
+1358:             new AlertDialog.Builder(a).setTitle("خادم المزامنة").setView(l).setPositiveButton("متابعة", (d, w) -> {
+1359:                 String base = HttpSyncFolder.parseLink(url.getText().toString())[0];
+1360:                 try {
+1361:                     HttpSyncFolder.checkUrl(base);
+1362:                 } catch (Exception e) {
+1363:                     a.error(e);
+1364:                     return;
+1365:                 }
+1366:                 a.db.setSettingQuiet("sync_server", base);
+1367:                 a.db.setSettingQuiet("sync_server_key", key.getText().toString().trim());
+1368:                 a.db.setSettingQuiet("sync_server_vault", SyncEngine.status(a.db).vaultId);
+1369:                 doMove(to, src);
+1370:             }).setNegativeButton("إلغاء", null).show();
+1371:         } else pick(() -> doMove(to, src));
+1372:     }
+1373: 
+1374:     private void doMove(final String to, final SyncFolder src) {
+1375:         final SyncFolder dst = folder(a, a.db, to);
+1376:         if (dst == null) {
+1377:             a.toast("الطريقة غير مهيأة بعد");
+1378:             return;
+1379:         }
+1380:         final String[] saved = savedTransport;
+1381:         a.busy("جارٍ نقل ملفات الخزنة المشفّرة…", p -> {
+1382:             try {
+1383:                 return new SyncEngine(a.db, src).moveTo(dst);
+1384:             } catch (Exception e) {
+1385:                 // فشل النقل: يعود الجهاز إلى مكانه السابق كما كان
+1386:                 if (saved != null) for (int i = 0; i < TRANSPORT_KEYS.length; i++) a.db.setSettingQuiet(TRANSPORT_KEYS[i], saved[i]);
+1387:                 throw new IllegalStateException("لم يكتمل النقل، وبقيت المزامنة على مكانها السابق: " + Ui.friendly(e));
+1388:             }
+1389:         }, res -> {
+1390:             a.db.setSettingQuiet("sync_transport", to);
+1391:             if ("drive".equals(to)) a.db.setSettingQuiet("sync_drive_ok", "1");
+1392:             a.toast("نُقلت المزامنة ✓ (" + res + " ملفًا). افعل الشيء نفسه على أجهزتك الأخرى.");
+1393:             now(this::show);
+1394:         });
+1395:     }
+1396: 
+1397:     // ===================================================================================
+1398:     // 10.2: حركات قد تكون مكررة (سُجّلت من جهازين قبل أن يتزامنا)
+1399:     // ===================================================================================
+1400: 
+1401:     /** 11.5: صفحة جهاز: تفاصيله وآخر ظهوره بالساعة، وسجله على هذا الجهاز (ما وصل منه، وأخطاؤه)، وإجراءاته. */
+1402:     private void deviceScreen(final JSONObject m, final String line, final boolean me, final boolean actions, final boolean renameOnly, final boolean canRm) {
+1403:         final String dev = m.optString("dev");
+1404:         a.here(() -> deviceScreen(m, line, me, actions, renameOnly, canRm));
+1405:         a.tabbedScreen(m.optString("name") + (me ? " (هذا الجهاز)" : ""), this::show, "more");
+1406:         LinearLayout g = a.group();

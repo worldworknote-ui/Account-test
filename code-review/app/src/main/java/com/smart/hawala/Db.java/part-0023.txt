@@ -1,0 +1,168 @@
+3245:         t.service = Model.nz(c.getString(16));
+3246:         t.dest = c.isNull(17) ? "" : Model.nz(Crypto.dec(c.getString(17)));
+3247:         t.pairUuid = Model.nz(c.getString(18));
+3248:         t.fxRate = Model.nz(c.getString(19));
+3249:         t.userId = c.isNull(20) ? null : c.getLong(20);
+3250:         t.approvedBy = c.isNull(21) ? null : c.getLong(21);
+3251:         t.approvedAt = c.isNull(22) ? 0 : c.getLong(22);
+3252:         t.special = c.isNull(23) ? "" : Model.nz(c.getString(23));
+3253:         t.specialBal = c.isNull(24) || c.getLong(24) != 0;
+3254:         return t;
+3255:     }
+3256: 
+3257:     /**
+3258:      * 10.18: رصيد المكتب بعملة واحدة بعد كل حركة (للتدقيق): يجمع قيود المكتب بهذه العملة بترتيبها الزمني، ويربط كل حركة
+3259:      * بالرصيد بعد آخر قيد لها (فيشمل أجرتها إن كانت بالعملة نفسها، والأرصدة السابقة والتسويات التي قبلها).
+3260:      * آخر قيمة = الرصيد الحالي. الحركات الملغاة والمعدّلة (قيدها وعكسه) خارج التراكم، فالعمود يطابق الحركات النشطة المعروضة.
+3261:      */
+3262:     public Map<Long, Long> balancesAfter(long officeId, String currency) {
+3263:         Map<Long, Long> out = new HashMap<>();
+3264:         long run = 0;
+3265:         try (Cursor c = getReadableDatabase().rawQuery("SELECT e.tx_id,SUM(l.debit_minor-l.credit_minor) FROM journal_entries e JOIN journal_lines l ON l.entry_id=e.id "
+3266:                 + "LEFT JOIN tx t ON t.id=e.tx_id WHERE l.account='OFFICE' AND l.office_id=? AND l.currency=? AND (e.tx_id IS NULL OR t.status='ACTIVE') "
+3267:                 + "GROUP BY e.id ORDER BY e.created_at,e.id", new String[]{"" + officeId, currency})) {
+3268:             while (c.moveToNext()) {
+3269:                 run += c.getLong(1);
+3270:                 if (!c.isNull(0)) out.put(c.getLong(0), run);
+3271:             }
+3272:         }
+3273:         return out;
+3274:     }
+3275: 
+3276:     public static final class TxFilter {
+3277:         public Long office;
+3278:         public String type;
+3279:         public String currency;
+3280:         public long from = 0;
+3281:         public long to = Long.MAX_VALUE;
+3282:         public boolean includeCancelled;
+3283:         /** حد أقصى لعدد الحركات (الأحدث أولًا)؛ 0 = بلا حد. */
+3284:         public int limit;
+3285:     }
+3286: 
+3287:     private static String txWhere(TxFilter f, List<String> args) { return txWhere(f, args, ""); }
+3288: 
+3289:     /** p = بادئة الجدول (مثل "t.") حين يُربط بجدول آخر. */
+3290:     private static String txWhere(TxFilter f, List<String> args, String p) {
+3291:         StringBuilder w = new StringBuilder(" WHERE " + p + "created_at>=" + f.from + " AND " + p + "created_at<" + f.to);
+3292:         if (f.office != null) w.append(" AND ").append(p).append("office_id=").append(f.office.longValue());
+3293:         if (!f.includeCancelled) w.append(" AND ").append(p).append("status='ACTIVE'");
+3294:         if (f.type != null) {
+3295:             w.append(" AND ").append(p).append("type=?");
+3296:             args.add(f.type);
+3297:         }
+3298:         if (f.currency != null) {
+3299:             w.append(" AND ").append(p).append("currency=?");
+3300:             args.add(f.currency);
+3301:         }
+3302:         return w.toString();
+3303:     }
+3304: 
+3305:     /** الحركات حسب الفلتر، الأحدث أولًا. */
+3306:     public List<Model.Tx> txLog(TxFilter f) {
+3307:         List<String> args = new ArrayList<>();
+3308:         String w = txWhere(f, args);
+3309:         List<Model.Tx> a = new ArrayList<>();
+3310:         try (Cursor c = getReadableDatabase().rawQuery("SELECT " + TX_COLS + " FROM tx" + w + " ORDER BY created_at DESC,id DESC" + (f.limit > 0 ? " LIMIT " + f.limit : ""),
+3311:                 args.isEmpty() ? null : args.toArray(new String[0]))) {
+3312:             while (c.moveToNext()) a.add(readTx(c));
+3313:         }
+3314:         return a;
+3315:     }
+3316: 
+3317:     /** 12.7: نص البحث لحركة (بالحروف الصغيرة): كل ما يطابقه بحث السجل عدا اسم المكتب والاسم الظاهر. */
+3318:     String searchText(Model.Tx x) {
+3319:         int d = decimals(x.currency);
+3320:         return (x.person + " " + x.description + " " + x.notes + " " + x.uuid + " " + Model.nz(x.userReal) + " " + Model.nz(x.dest) + " " + x.currency
+3321:                 + " " + Model.plain(x.amount, d) + " " + Model.fmt(x.amount, d)).toLowerCase(Locale.ROOT);
+3322:     }
+3323: 
+3324:     private static final Object SEARCH_LOCK = new Object();
+3325: 
+3326:     /** 12.7: يكمل نص البحث للحركات الجديدة أو المعدّلة (على دفعات قصيرة؛ أول مرة تُفك الحركات القديمة مرة واحدة فقط). */
+3327:     public void fillSearchIndex() {
+3328:         synchronized (SEARCH_LOCK) {
+3329:             while (true) {
+3330:                 List<Model.Tx> batch = new ArrayList<>();
+3331:                 try (Cursor c = getReadableDatabase().rawQuery("SELECT t." + TX_COLS.replace(",", ",t.")
+3332:                         + " FROM tx t LEFT JOIN tx_search s ON s.tx_id=t.id WHERE s.tx_id IS NULL OR s.uuid IS NOT t.uuid LIMIT 1000", null)) {
+3333:                     while (c.moveToNext()) batch.add(readTxRaw(c));
+3334:                 }
+3335:                 if (batch.isEmpty()) return;
+3336:                 SQLiteDatabase w = getWritableDatabase();
+3337:                 w.beginTransaction();
+3338:                 try {
+3339:                     for (Model.Tx x : batch) w.execSQL("INSERT OR REPLACE INTO tx_search(tx_id,uuid,txt) VALUES(?,?,?)", new Object[]{x.id, x.uuid, searchText(x)});
+3340:                     w.setTransactionSuccessful();
+3341:                 } finally {
+3342:                     w.endTransaction();
+3343:                 }
+3344:                 if (batch.size() < 1000) return;
+3345:             }
+3346:         }
+3347:     }
+3348: 
+3349:     /**
+3350:      * 12.7: حركات الفلتر التي قد تطابق النص (مرشّحة من نص البحث، أو من مكتب أو اسم ظاهر يطابقه). مجموعة أوسع من المطابق،
+3351:      * والتحقق النهائي في الواجهة كما كان. term بالحروف الصغيرة.
+3352:      */
+3353:     public List<Model.Tx> txSearch(TxFilter f, String term) {
+3354:         fillSearchIndex();
+3355:         List<String> args = new ArrayList<>();
+3356:         String w = txWhere(f, args, "t.");
+3357:         StringBuilder or = new StringBuilder("instr(s.txt,?)>0");
+3358:         args.add(term);
+3359:         List<Long> offs = new ArrayList<>();
+3360:         for (Map.Entry<Long, String> e : officeNames().entrySet()) if (Model.nz(e.getValue()).toLowerCase(Locale.ROOT).contains(term)) offs.add(e.getKey());
+3361:         if (!offs.isEmpty()) or.append(" OR t.office_id IN (").append(Model.join(longs(offs), ",")).append(")");
+3362:         List<Long> who = new ArrayList<>();
+3363:         for (Model.User u : users(true)) if (u.nick != null && u.nick.toLowerCase(Locale.ROOT).contains(term)) who.add(u.id);
+3364:         if (!who.isEmpty()) or.append(" OR t.user_id IN (").append(Model.join(longs(who), ",")).append(")");
+3365:         List<Model.Tx> a = new ArrayList<>();
+3366:         String cols = "t." + TX_COLS.replace(",", ",t.");
+3367:         try (Cursor c = getReadableDatabase().rawQuery("SELECT " + cols + " FROM tx t LEFT JOIN tx_search s ON s.tx_id=t.id" + w + " AND (" + or + ") ORDER BY t.created_at DESC,t.id DESC",
+3368:                 args.toArray(new String[0]))) {
+3369:             while (c.moveToNext()) a.add(readTx(c));
+3370:         }
+3371:         return a;
+3372:     }
+3373: 
+3374:     private static List<String> longs(List<Long> l) {
+3375:         List<String> o = new ArrayList<>();
+3376:         for (Long x : l) o.add(String.valueOf(x));
+3377:         return o;
+3378:     }
+3379: 
+3380:     /** عدد الحركات حسب الفلتر (بلا فك أي حقل). */
+3381:     public long txCount(TxFilter f) {
+3382:         List<String> args = new ArrayList<>();
+3383:         String w = txWhere(f, args);
+3384:         try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM tx" + w, args.isEmpty() ? null : args.toArray(new String[0]))) {
+3385:             return c.moveToFirst() ? c.getLong(0) : 0;
+3386:         }
+3387:     }
+3388: 
+3389:     /** حركات للمقارنة بالنص فقط (كشف تسجيل الرسالة مرتين): يُفك البيان وحده بدل أربعة حقول. */
+3390:     public List<Model.Tx> descriptionsSince(long from) {
+3391:         List<Model.Tx> a = new ArrayList<>();
+3392:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id,office_id,amount_minor,currency,created_at,description,type FROM tx WHERE status='ACTIVE' AND created_at>=" + from
+3393:                 + " ORDER BY created_at DESC,id DESC", null)) {
+3394:             while (c.moveToNext()) {
+3395:                 Model.Tx t = new Model.Tx();
+3396:                 t.id = c.getLong(0);
+3397:                 t.officeId = c.getLong(1);
+3398:                 t.amount = c.getLong(2);
+3399:                 t.currency = c.getString(3);
+3400:                 t.createdAt = c.getLong(4);
+3401:                 t.description = Model.nz(Crypto.dec(c.getString(5)));
+3402:                 t.type = c.getString(6);
+3403:                 t.person = "";
+3404:                 t.notes = "";
+3405:                 t.userName = "";
+3406:                 t.status = "ACTIVE";
+3407:                 a.add(t);
+3408:             }
+3409:         }
+3410:         return a;
+3411:     }
+3412: 

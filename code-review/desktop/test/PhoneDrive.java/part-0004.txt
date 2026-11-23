@@ -1,0 +1,141 @@
+485:                 for (View v : hits) r[0] = ((TextView) v).getText().toString();
+486:             }
+487:         });
+488:         return r[0];
+489:     }
+490: 
+491:     static void collectHint(View v, String hint, List<View> hits) {
+492:         if (!v.isShown()) return;
+493:         if (v instanceof TextView) {
+494:             CharSequence h = ((TextView) v).getHint();
+495:             if (h != null && h.toString().contains(hint)) hits.add(v);
+496:         }
+497:         if (v instanceof ViewGroup) for (int i = 0; i < ((ViewGroup) v).getChildCount(); i++) collectHint(((ViewGroup) v).getChildAt(i), hint, hits);
+498:     }
+499: 
+500:     static void waMove12_1(Db db) throws Exception {
+501:         // أ) HTML من واتساب ديسكتوب: النص العادي ملزوق بلا رؤوس، فتُقسم الفقاعات من HTML
+502:         String plain = "تجربة 100 دولار لأحمد\n10:32\nاستلام 50 يورو من سامي\n10:33";
+503:         String html = "<div class=\"message-in\"><div class=\"copyable-text\" data-pre-plain-text=\"[10:32, 17/11/2026] مكتب التجربة: \"><span>تجربة 100 دولار لأحمد</span></div><span>10:32</span></div>"
+504:                 + "<div class=\"message-in\"><div class=\"copyable-text\" data-pre-plain-text=\"[10:33, 17/11/2026] مكتب التجربة: \"><span>استلام 50 يورو من سامي</span></div><span>10:33</span></div>";
+505:         key(KeyEvent.VK_H, true);
+506:         wait(700);
+507:         setHtmlClip(plain, html);
+508:         robot.mouseMove(20, 500);
+509:         key(KeyEvent.VK_V, true);
+510:         wait(1000);
+511:         shot("wa-html-two");
+512:         expect(findQuiet("رسائل من واتساب") && findQuiet("2 رسائل"), "12.1 HTML clipboard splits two WhatsApp-desktop bubbles");
+513:         key(KeyEvent.VK_H, true);
+514:         wait(700);
+515:         // ب) نص ملزوق بأسطر فارغة: «قص الرسائل»
+516:         setClip("حوالة 100 دولار لأحمد\nرقم 55\n\nحوالة 70 يورو لسامي\n\nحوالة 20 دولار لعلي");
+517:         key(KeyEvent.VK_V, true);
+518:         wait(900);
+519:         expect(findQuiet("هل هذا النص أكثر من رسالة؟"), "12.1 glued text offers manual cut");
+520:         clickText("✂ قص الرسائل");
+521:         wait(900);
+522:         shot("wa-cut");
+523:         expect(findQuiet("قص الرسائل") && findQuiet("متابعة (3 رسائل)"), "12.1 cut screen pre-marks 3 messages");
+524:         click("✂ ─────── رسالة جديدة ───────", true);
+525:         wait(400);
+526:         expect(findQuiet("متابعة (2 رسائل)"), "12.1 tapping a cut removes it");
+527:         clickText("متابعة (2 رسائل)");
+528:         wait(900);
+529:         expect(findQuiet("رسائل من واتساب") && findQuiet("2 رسائل"), "12.1 cut result opens the batch list");
+530:         key(KeyEvent.VK_H, true);
+531:         wait(700);
+532:         // ج) وضع التجميع: كل نسخة رسالة
+533:         clickText("وضع التجميع");
+534:         wait(900);
+535:         setClip("حوالة 300 دولار للأخ سامر");
+536:         wait(2200);
+537:         setClip("حوالة 40 يورو لأبو علي");
+538:         wait(2200);
+539:         shot("wa-collect");
+540:         expect(findQuiet("جُمعت 2 رسائل"), "12.1 collect mode gathered two copies");
+541:         // 12.2: نافذة التجميع الصغيرة فوق كل النوافذ، فيها 1 و2 وزر «نقل (2)»
+542:         final DeskCollect dc = DeskCollect.last;
+543:         final boolean[] cw = {false};
+544:         SwingUtilities.invokeAndWait(() -> cw[0] = dc != null && dc.frame() != null && dc.frame().isShowing() && dc.rows() == 2
+545:                 && dc.moveButton().getText().equals("نقل (2)") && dc.frame().isAlwaysOnTop());
+546:         expect(cw[0], "12.2 small collect window lists 1 and 2 with «نقل (2)»");
+547:         if (dc != null && dc.frame() != null) {
+548:             BufferedImage ci = robot.createScreenCapture(dc.frame().getBounds());
+549:             ImageIO.write(ci, "png", new File(out, String.format("%02d-%s.png", ++n, "collect-window")));
+550:         }
+551:         clickText("نقل");
+552:         wait(900);
+553:         expect(findQuiet("رسائل من واتساب") && findQuiet("2 رسائل"), "12.1 collected messages open as a batch");
+554:         SwingUtilities.invokeAndWait(() -> cw[0] = dc.frame() == null);
+555:         expect(cw[0], "12.2 collect window closes after «نقل»");
+556:         key(KeyEvent.VK_H, true);
+557:         wait(700);
+558:         // 12.3: الرئيسية: لا «نافذة واتساب»، و«قص الرسائل» ظاهر ويفتح شاشة القص للنص المنسوخ
+559:         expect(!findQuiet("نافذة واتساب") && findQuiet("التقاط من الشاشة") && findQuiet("قص الرسائل"), "12.3 home: capture + collect + cut, no «نافذة واتساب»");
+560:         setClip("حوالة 100 دولار لسامر\nحوالة 200 يورو لأبو علي\nحوالة 50 دولار لخالد");
+561:         wait(400);
+562:         clickText("قص الرسائل");
+563:         wait(900);
+564:         shot("cut-screen");
+565:         expect(findQuiet("متابعة (3 رسائل)"), "12.3 «قص الرسائل» opens the cut screen with 3 suggested messages (same opener «حوالة»)");
+566:         key(KeyEvent.VK_H, true);
+567:         wait(700);
+568:         // 12.2: «🧺 تجميع» في نموذج التسجيل بجانب «التقاط»: رسالة واحدة ← خانة النموذج المفتوح مباشرة
+569:         key(KeyEvent.VK_N, true);
+570:         wait(1000);
+571:         expect(findQuiet("تجميع") && findQuiet("قص") && findQuiet("مسح") && findQuiet("لصق"), "12.2/12.3 form toolbar: paste, capture, collect, cut, clear");
+572:         shot("form-toolbar");
+573:         // 12.4: «حركة خاصة» في نموذج التسجيل: الأنواع وحسابها في الرصيد
+574:         expect(findQuiet("حركة خاصة"), "12.4 special section in the form");
+575:         performClickOn("حركة خاصة");
+576:         wait(500);
+577:         expect(findQuiet("ناقصة أجور") && findQuiet("تحتاج مراجعة") && findQuiet("لا تُحسب في الرصيد") && findQuiet("+ نوع جديد"), "12.4 special types and balance choice");
+578:         shot("special-form");
+579:         performClickOn("حركة خاصة");
+580:         wait(400);
+581:         clickText("تجميع");
+582:         wait(900);
+583:         setClip("حوالة 75 دولار لأم خالد");
+584:         wait(2200);
+585:         SwingUtilities.invokeAndWait(() -> cw[0] = dc.frame() != null && dc.rows() == 1);
+586:         expect(cw[0], "12.2 form collect shows the copied message as 1");
+587:         SwingUtilities.invokeAndWait(() -> dc.moveButton().doClick());
+588:         wait(1000);
+589:         String ft = formText();
+590:         expect(ft != null && ft.contains("حوالة 75 دولار لأم خالد"), "12.2 «نقل» of one message fills the open form: " + ft);
+591:         // نافذة التجميع أُغلقت: نضغط على البرنامج حتى تعود لوحة المفاتيح إليه (Xvfb بلا مدير نوافذ لا ينقلها وحده)
+592:         clickText("رسالة واتساب");
+593:         wait(300);
+594:         key(KeyEvent.VK_H, true);
+595:         wait(700);
+596:         // د) مراقبة الحافظة: بطاقة «في الحافظة N رسائل من واتساب» في الرئيسية
+597:         setClip("[14/11, 18:14] ابو النور: استلمنا 500 دولار\n[14/11, 18:15] ابو النور: سلمنا 300 يورو");
+598:         wait(2200);
+599:         shot("wa-clipcard");
+600:         expect(findQuiet("في الحافظة 2 رسائل من واتساب"), "12.1 clipboard watcher shows the move card");
+601:         // هـ) إطار الالتقاط (قارئ وهمي على لينكس): أرقام الفقاعات، والضغط ينقل النص إلى خانة النموذج المفتوح
+602:         File fake = File.createTempFile("sa-fake-", ".txt");
+603:         java.util.Base64.Encoder b = java.util.Base64.getEncoder();
+604:         String nodes = "W\t0\t0\t400\t500\t" + b.encodeToString("WhatsApp".getBytes("UTF-8")) + "\n"
+605:                 + "T\t120\t4\t200\t24\t" + b.encodeToString("مكتب الأمل للحوالات".getBytes("UTF-8")) + "\n"
+606:                 + "R\t40\t60\t300\t50\t" + b.encodeToString("حوالة 250 دولار لخالد\n11:05".getBytes("UTF-8")) + "\n"
+607:                 + "R\t40\t140\t300\t50\t" + b.encodeToString("حوالة 90 يورو لمحمود\n11:06".getBytes("UTF-8")) + "\n";
+608:         java.nio.file.Files.write(fake.toPath(), nodes.getBytes("UTF-8"));
+609:         System.setProperty("sa.capture.fake", fake.getAbsolutePath());
+610:         key(KeyEvent.VK_N, true);
+611:         wait(1000);
+612:         expect(findQuiet("التقاط"), "12.1 capture button in the form on desktop");
+613:         clickText("التقاط");
+614:         wait(2200);
+615:         final DeskCapture.Win[] w = {null};
+616:         SwingUtilities.invokeAndWait(() -> w[0] = DeskCapture.current());
+617:         expect(w[0] != null && w[0].isShowing(), "12.1 capture frame opened");
+618:         final javax.swing.JButton[] badge = {null, null};
+619:         if (w[0] != null) {
+620:             SwingUtilities.invokeAndWait(() -> {
+621:                 for (javax.swing.JButton c : w[0].badges()) {
+622:                     if ("badge-1".equals(c.getName())) badge[0] = c;
+623:                     if ("badge-2".equals(c.getName())) badge[1] = c;
+624:                 }
+625:             });

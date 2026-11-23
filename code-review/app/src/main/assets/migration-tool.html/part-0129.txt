@@ -1,0 +1,110 @@
+1944:       (t.officeFrom === "column" ? '<label class="f">عمود المكتب<select data-tc="office">' + colOptions(rows, hr, t.cols.office) + "</select></label>" : "") +
+1945:       '<label class="f">عمود التاريخ<select data-tc="date">' + colOptions(rows, hr, t.cols.date) + "</select></label>" +
+1946:       '<label class="f">ترتيب التاريخ<select data-t="dateOrder">' + [["dmy", "يوم/شهر/سنة"], ["mdy", "شهر/يوم/سنة"], ["ymd", "سنة/شهر/يوم"]].map(function (x) {
+1947:         return '<option value="' + x[0] + '"' + (t.dateOrder === x[0] ? " selected" : "") + ">" + x[1] + "</option>"; }).join("") + "</select></label>" +
+1948:       "</div>";
+1949:     html += '<label class="check"><input type="checkbox" data-tb="fillDate"' + (t.fillDate ? " checked" : "") + "> إذا كان التاريخ فارغًا في صف فيه بيان أو مستفيد، استخدم تاريخ الصف السابق (شائع في دفاتر Excel)</label>";
+1950:     html += "<h3>المبلغ واتجاهه</h3>" + seg("tlayout", [["split", "عمودان: لنا / علينا"], ["typed", "مبلغ + عمود نوع"], ["signed", "مبلغ موجب/سالب"]], t.layout);
+1951:     html += '<div class="grid" style="margin-top:10px">';
+1952:     if (t.layout === "split") {
+1953:       html += '<label class="f">عمود «لنا» <small>مدين / عليه — المكتب مدين لنا</small><select data-tc="debit">' + colOptions(rows, hr, t.cols.debit) + "</select></label>";
+1954:       html += '<label class="f">عمود «علينا» <small>دائن / له — نحن مدينون للمكتب</small><select data-tc="credit">' + colOptions(rows, hr, t.cols.credit) + "</select></label>";
+1955:     } else {
+1956:       html += '<label class="f">عمود المبلغ<select data-tc="amount">' + colOptions(rows, hr, t.cols.amount) + "</select></label>";
+1957:       if (t.layout === "typed") html += '<label class="f">عمود النوع <small>تطابق قيمه في الخطوة 3</small><select data-tc="type">' + colOptions(rows, hr, t.cols.type) + "</select></label>";
+1958:     }
+1959:     html += '<label class="f">العملة' + seg("tcurfrom", [["column", "من عمود"], ["fixed", "عملة واحدة"]], t.currencyFrom) + "</label>";
+1960:     html += t.currencyFrom === "column" ? '<label class="f">عمود العملة<select data-tc="currency">' + colOptions(rows, hr, t.cols.currency) + "</select></label>"
+1961:       : '<label class="f">العملة الثابتة<select data-t="fixedCurrency">' + codeOptions(t.fixedCurrency) + "</select></label>";
+1962:     html += "</div>";
+1963:     if (t.layout === "signed") html += "<h3>المبلغ الموجب يعني</h3>" + seg("tpos", [["D", "لنا — المكتب مدين لنا"], ["C", "علينا — نحن مدينون للمكتب"]], t.positiveIs);
+1964:     html += '<h3>أعمدة اختيارية</h3><div class="grid">' +
+1965:       '<label class="f">المستفيد<select data-tc="person">' + colOptions(rows, hr, t.cols.person, true) + "</select></label>" +
+1966:       '<label class="f">البيان<select data-desc="0">' + colOptions(rows, hr, t.descCols[0], true) + "</select></label>" +
+1967:       '<label class="f">بيان إضافي <small>يُضاف للبيان</small><select data-desc="1">' + colOptions(rows, hr, t.descCols[1], true) + "</select></label>" +
+1968:       '<label class="f">الملاحظات<select data-tc="notes">' + colOptions(rows, hr, t.cols.notes, true) + "</select></label>" +
+1969:       '<label class="f">المرجع / رقم السند<select data-tc="ref">' + colOptions(rows, hr, t.cols.ref, true) + "</select></label>" +
+1970:       '<label class="f">الأجرة<select data-tc="fee">' + colOptions(rows, hr, t.cols.fee, true) + "</select></label>" +
+1971:       (t.cols.fee !== undefined ? '<label class="f">الأجرة' + seg("tfeedir", [["D", "لنا"], ["C", "علينا"]], t.feeDir) + "</label>" : "") +
+1972:       '<label class="f">عمود الرصيد <small>للتحقق فقط: يقارن آخر رصيد في الملف بما سيحسبه التطبيق</small><select data-tc="balance">' + colOptions(rows, hr, t.cols.balance, true) + "</select></label>" +
+1973:       "</div>";
+1974:     if (t.cols.balance !== undefined) html += "<h3>الرصيد الموجب في عمود الرصيد يعني</h3>" + seg("tbalpos", [["D", "لنا"], ["C", "علينا"]], t.balancePositiveIs);
+1975:     html += "<h3>معاينة (" + esc(t.sheets[0] || "") + ")</h3>" + preview(rows, hr, [t.cols.office, t.cols.date, t.cols.debit, t.cols.credit, t.cols.amount, t.cols.type, t.cols.currency]);
+1976:     p.innerHTML = html;
+1977:   }
+1978: 
+1979:   // ===================================================================================
+1980:   // 2ب. الكشوفات
+1981:   // ===================================================================================
+1982: 
+1983:   function dmy(d) { return d ? d.y + "/" + (d.m < 10 ? "0" : "") + d.m + "/" + (d.d < 10 ? "0" : "") + d.d : ""; }
+1984: 
+1985:   function decOf(code) {
+1986:     var d = code && (S.currencyDefs[code] || C.KNOWN[code]);
+1987:     return d ? d.dec : 2;
+1988:   }
+1989: 
+1990:   function renderStmt() {
+1991:     var on = S.mode === "statements";
+1992:     $("stmtPanel").classList.toggle("hidden", !on);
+1993:     $("singleSetup").classList.toggle("hidden", on);
+1994:     if (!on) return;
+1995:     var html = '<p class="lead" style="margin-top:0">كل كشف = حساب واحد بعملة واحدة. كشوفات الحساب نفسه بعملات مختلفة تُجمع في مكتب واحد (برمز الحساب). ' +
+1996:       "كل سطر يُتحقق منه بعمود الرصيد، وآخر الكشف بسطر «اجمالي الرصيد»؛ الكشف الذي لا يطابق لا يُنقل.</p>";
+1997:     html += '<div class="row"><label class="btn sec" style="cursor:pointer">إضافة ملفات أخرى<input type="file" id="moreFiles" multiple accept="' + ACCEPT + '" hidden></label>' +
+1998:       '<span class="hint">ملف بالاسم نفسه يحلّ محل السابق.</span></div>';
+1999:     html += "<h3>ما الذي يُنقل؟</h3>" + seg("stwhat", [["all", "الرصيد السابق وكل حركات الكشوفات"], ["bal", "الأرصدة النهائية فقط"]], S.st.balancesOnly ? "bal" : "all");
+2000:     html += '<p class="hint">' + (S.st.balancesOnly
+2001:       ? "رصيد واحد لكل مكتب وعملة بتاريخ نهاية كشفه، وتبدأ الحركات الجديدة في التطبيق. يكفيك لهذا كشف لفترة قصيرة (يوم واحد مثلًا)."
+2002:       : "«Pre Balance» رصيدًا سابقًا بتاريخ بداية الكشف، ثم كل حركة كما هي في برنامجك.") + "</p>";
+2003:     if (!S.st.balancesOnly) html += '<label class="check"><input type="checkbox" id="mergeCom"' + (S.st.mergeCom ? " checked" : "") +
+2004:       "> دمج سطور العمولة «Com …» مع حركتها في اليوم نفسه كأجرة (الأرصدة لا تتغير). اتركه دون تحديد لتبقى الحركات سطرًا بسطر كما في برنامجك.</label>";
+2005:     html += '<h3>الكشوفات (' + S.stmts.length + ')</h3><div id="stmtTable"></div>';
+2006:     $("stmtPanel").innerHTML = html;
+2007:     renderStmtTable();
+2008:   }
+2009: 
+2010:   function renderStmtTable() {
+2011:     var box = $("stmtTable");
+2012:     if (!box) return;
+2013:     var res = S.result && S.result.model && S.result.model.files ? S.result.model.files : [];
+2014:     var h = '<div class="tablebox" style="max-height:440px"><table><tr><th>الملف</th><th>الحساب</th><th>العملة في الملف</th><th>الفترة</th><th class="num">سطور</th><th>الرصيد النهائي</th><th>التحقق</th></tr>';
+2015:     S.stmts.forEach(function (st, i) {
+2016:       var r = res[i];
+2017:       var acc = st.account ? (st.account.code ? '<span class="ltr hint">' + esc(st.account.code) + "</span> " : "") + esc(st.account.name) : "";
+2018:       h += "<tr><td>" + esc(st.file) + "</td><td>" + (acc || '<span class="them">غير معروف</span>') + "</td><td>" + esc(st.curText || "—") + (r && r.code ? ' <span class="ltr hint">' + r.code + "</span>" : "") +
+2019:         '</td><td class="ltr">' + esc(dmy(st.from) + (st.to ? " → " + dmy(st.to) : "")) + '</td><td class="num">' + st.rows.length + "</td><td>" +
+2020:         (r && r.ok ? balCell(r.final, decOf(r.code)) : "") + "</td><td>" +
+2021:         (!r ? "" : r.ok ? '<span class="chip ok">✓ ' + r.checked + " رصيدًا مطابقًا" + (st.footer ? " + الإجمالي" : "") + "</span>" : '<span class="chip bad">' + esc(r.status) + "</span>") + "</td></tr>";
+2022:     });
+2023:     box.innerHTML = h + "</table></div>";
+2024:   }
+2025: 
+2026:   // ===================================================================================
+2027:   // 3. المطابقة
+2028:   // ===================================================================================
+2029: 
+2030:   function collect(sec, sheets, col) {
+2031:     var m = {};
+2032:     if (col === undefined) return m;
+2033:     sheets.forEach(function (n) {
+2034:       (S.rows[n] || []).slice(sec.headerRow + 1).forEach(function (r) {
+2035:         var v = C.text(r[col]);
+2036:         if (!v) return;
+2037:         var k = C.officeKey(v);
+2038:         m[k] = m[k] || { text: v, n: 0 };
+2039:         m[k].n++;
+2040:       });
+2041:     });
+2042:     return m;
+2043:   }
+2044: 
+2045:   function ensureDef(code) {
+2046:     if (!code || code === "__skip" || S.currencyDefs[code]) return;
+2047:     var k = C.KNOWN[code];
+2048:     S.currencyDefs[code] = { name: k ? k.name : code, dec: k ? k.dec : 2 };
+2049:   }
+2050: 
+2051:   function renderMap() {
+2052:     var box = $("mapBox");
+2053:     var html = "";

@@ -1,0 +1,221 @@
+551:         int selected = -1;
+552:         Consumer<Integer> listener;
+553:         /** مكان المؤشر الحالي (x، العرض) ولونه، وحركته. */
+554:         private double ix = -1, iw;
+555:         private Color ic;
+556:         private Timer anim;
+557: 
+558:         Seg(String[] items, Color[] colors, int sel) {
+559:             super(new GridLayout(1, items.length, 4, 0));
+560:             setOpaque(false);
+561:             setBorder(new EmptyBorder(4, 4, 4, 4));
+562:             this.colors = colors;
+563:             for (int i = 0; i < items.length; i++) {
+564:                 final int k = i;
+565:                 Btn b = new Btn(items[i], new Color(0, 0, 0, 0), ink, false);
+566:                 b.addActionListener(e -> {
+567:                     set(k);
+568:                     if (listener != null) listener.accept(k);
+569:                 });
+570:                 buttons.add(b);
+571:                 add(b);
+572:             }
+573:             set(sel);
+574:             setAlignmentX(Component.RIGHT_ALIGNMENT);
+575:             addComponentListener(new java.awt.event.ComponentAdapter() {
+576:                 @Override public void componentResized(java.awt.event.ComponentEvent e) { snap(); }
+577:             });
+578:         }
+579: 
+580:         private Color colorOf(int k) { return colors == null ? primary : colors[Math.min(k, colors.length - 1)]; }
+581: 
+582:         private void snap() {
+583:             if (selected < 0 || selected >= buttons.size()) return;
+584:             Btn b = buttons.get(selected);
+585:             ix = b.getX();
+586:             iw = b.getWidth();
+587:             repaint();
+588:         }
+589: 
+590:         void set(int i) {
+591:             int prev = selected;
+592:             selected = i;
+593:             for (int k = 0; k < buttons.size(); k++) {
+594:                 Btn b = buttons.get(k);
+595:                 b.outline = false;
+596:                 Color c = colorOf(k);
+597:                 b.colors(new Color(0, 0, 0, 0), k == i ? onColor(c) : colors == null ? muted : c);
+598:             }
+599:             if (i < 0 || i >= buttons.size()) {
+600:                 ix = -1;
+601:                 repaint();
+602:                 return;
+603:             }
+604:             Btn b = buttons.get(i);
+605:             Color to = colorOf(i);
+606:             if (b.getWidth() == 0 || prev < 0 || ix < 0) {
+607:                 ic = to;
+608:                 SwingUtilities.invokeLater(this::snap);
+609:                 snap();
+610:                 return;
+611:             }
+612:             double fx = ix, fw = iw, tx = b.getX(), tw = b.getWidth();
+613:             Color fc = ic == null ? to : ic;
+614:             if (anim != null) anim.stop();
+615:             long t0 = com.smart.hawala.Clock.now();
+616:             anim = new Timer(15, null);
+617:             anim.addActionListener(e -> {
+618:                 double x = Math.min(1, (com.smart.hawala.Clock.now() - t0) / 560.0), y = backOut(x);
+619:                 ix = fx + (tx - fx) * y;
+620:                 iw = fw + (tw - fw) * y;
+621:                 ic = mix(fc, to, (float) Math.min(1, x * 1.3));
+622:                 repaint();
+623:                 if (x >= 1) anim.stop();
+624:             });
+625:             anim.start();
+626:         }
+627: 
+628:         @Override protected void paintComponent(Graphics g) {
+629:             Graphics2D g2 = (Graphics2D) g.create();
+630:             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+631:             g2.setColor(segTrack);
+632:             g2.fill(new RoundRectangle2D.Float(0, 0, getWidth(), getHeight(), 16, 16));
+633:             if (ix >= 0 && selected >= 0) {
+634:                 g2.setColor(ic == null ? colorOf(selected) : ic);
+635:                 Btn b = buttons.get(selected);
+636:                 g2.fill(new RoundRectangle2D.Double(ix, b.getY(), iw, b.getHeight(), 12, 12));
+637:             }
+638:             g2.dispose();
+639:         }
+640: 
+641:         boolean none() { return selected < 0; }
+642:     }
+643: 
+644:     // ===================================================================================
+645:     // الحاويات
+646:     // ===================================================================================
+647: 
+648:     /** بطاقة بيضاء بزوايا مستديرة؛ المحتوى عمودي. */
+649:     static final class Card extends JPanel {
+650:         Color fill = surface, border = line;
+651: 
+652:         Card() {
+653:             setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
+654:             setOpaque(false);
+655:             setBorder(new EmptyBorder(18, 20, 20, 20));
+656:             setAlignmentX(Component.RIGHT_ALIGNMENT);
+657:         }
+658: 
+659:         @Override protected void paintComponent(Graphics g) {
+660:             Graphics2D g2 = (Graphics2D) g.create();
+661:             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+662:             // 10.4: ظل ناعم (طبقتان) تحت البطاقة في الوضع الفاتح
+663:             if (shadow.getAlpha() > 0 && fill == surface) {
+664:                 g2.setColor(shadow);
+665:                 g2.fill(new RoundRectangle2D.Float(0, 2, getWidth() - 1, getHeight() - 2, 18, 18));
+666:                 g2.setColor(new Color(shadow.getRed(), shadow.getGreen(), shadow.getBlue(), shadow.getAlpha() / 2));
+667:                 g2.fill(new RoundRectangle2D.Float(0, 1, getWidth() - 1, getHeight() - 1, 18, 18));
+668:             }
+669:             g2.setColor(fill);
+670:             g2.fill(new RoundRectangle2D.Float(0, 0, getWidth() - 1, getHeight() - 3, 18, 18));
+671:             if (border != null && (cardBorders || border != line)) {
+672:                 g2.setColor(border);
+673:                 g2.draw(new RoundRectangle2D.Float(0, 0, getWidth() - 1, getHeight() - 3, 18, 18));
+674:             }
+675:             g2.dispose();
+676:             super.paintComponent(g);
+677:         }
+678: 
+679:         @Override public Dimension getMaximumSize() {
+680:             Dimension p = getPreferredSize();
+681:             return new Dimension(Integer.MAX_VALUE, p.height);
+682:         }
+683:     }
+684: 
+685:     static Card card() { return new Card(); }
+686: 
+687:     static Card tinted(Color fill, Color border) {
+688:         Card c = new Card();
+689:         c.fill = fill;
+690:         c.border = border;
+691:         return c;
+692:     }
+693: 
+694:     /** صف أفقي من اليمين لليسار. */
+695:     static JPanel row(Component... cs) {
+696:         JPanel p = new JPanel();
+697:         p.setLayout(new BoxLayout(p, BoxLayout.LINE_AXIS));
+698:         p.setOpaque(false);
+699:         p.setAlignmentX(Component.RIGHT_ALIGNMENT);
+700:         p.setComponentOrientation(RTL);
+701:         for (int i = 0; i < cs.length; i++) {
+702:             if (i > 0) p.add(Box.createHorizontalStrut(8));
+703:             p.add(cs[i]);
+704:         }
+705:         return p;
+706:     }
+707: 
+708:     static JPanel flow(Component... cs) {
+709:         JPanel p = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 4));
+710:         p.setOpaque(false);
+711:         p.setAlignmentX(Component.RIGHT_ALIGNMENT);
+712:         p.setComponentOrientation(RTL);
+713:         for (Component c : cs) p.add(c);
+714:         return p;
+715:     }
+716: 
+717:     /** عمود بعرض الصفحة. */
+718:     static JPanel column() {
+719:         JPanel p = new JPanel() {
+720:             @Override public Dimension getMaximumSize() { return new Dimension(Integer.MAX_VALUE, getPreferredSize().height); }
+721:         };
+722:         p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
+723:         p.setOpaque(false);
+724:         p.setAlignmentX(Component.RIGHT_ALIGNMENT);
+725:         return p;
+726:     }
+727: 
+728:     static Component gap(int h) { return Box.createVerticalStrut(h); }
+729: 
+730:     /** محتوى قابل للتمرير بعرض الصفحة. */
+731:     static JScrollPane scroll(JComponent c) {
+732:         JPanel holder = new JPanel(new BorderLayout()) {
+733:             @Override public Dimension getPreferredSize() {
+734:                 Dimension d = super.getPreferredSize();
+735:                 return d;
+736:             }
+737:         };
+738:         holder.setOpaque(false);
+739:         holder.add(c, BorderLayout.NORTH);
+740:         ScrollableHolder sh = new ScrollableHolder(holder);
+741:         JScrollPane sp = new JScrollPane(sh);
+742:         sp.setBorder(BorderFactory.createEmptyBorder());
+743:         sp.getViewport().setBackground(bg);
+744:         sp.getVerticalScrollBar().setUnitIncrement(18);
+745:         sp.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+746:         sp.setComponentOrientation(RTL);
+747:         return sp;
+748:     }
+749: 
+750:     static final class ScrollableHolder extends JPanel implements Scrollable {
+751:         ScrollableHolder(JComponent c) {
+752:             super(new BorderLayout());
+753:             setOpaque(true);
+754:             setBackground(bg);
+755:             setBorder(new EmptyBorder(16, 28, 28, 28));
+756:             add(c, BorderLayout.CENTER);
+757:         }
+758: 
+759:         @Override public Dimension getPreferredScrollableViewportSize() { return getPreferredSize(); }
+760: 
+761:         @Override public int getScrollableUnitIncrement(Rectangle r, int o, int d) { return 18; }
+762: 
+763:         @Override public int getScrollableBlockIncrement(Rectangle r, int o, int d) { return r.height - 40; }
+764: 
+765:         @Override public boolean getScrollableTracksViewportWidth() { return true; }
+766: 
+767:         @Override public boolean getScrollableTracksViewportHeight() { return false; }
+768:     }
+769: 
+770:     // ===================================================================================
+771:     // الحقول

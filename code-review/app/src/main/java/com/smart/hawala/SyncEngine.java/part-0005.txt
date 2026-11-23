@@ -1,0 +1,149 @@
+611:         // 11.5: حدود معقولة لحقول الرأس قبل استعمالها (رقم ضخم يعطّل الفتح، وصغير يُضعف الاشتقاق)
+612:         SyncCrypto.checkKdf(iter, salt);
+613:         char[] s = recovery ? SyncCrypto.normalizeRecovery(new String(secret)).toCharArray() : secret;
+614:         return SyncCrypto.unwrap(SyncCrypto.pbkdf2(s, salt, iter), h.optString(recovery ? "rc" : "pw"), h.optString("vault"));
+615:     }
+616: 
+617:     /**
+618:      * ينضم هذا الجهاز إلى خزنة موجودة: بياناته الحالية تُستبدل بآخر لقطة في الخزنة (احفظ نسخة احتياطية قبلها)،
+619:      * ثم تُطبَّق كل الحزم التي بعدها.
+620:      */
+621:     // ===================================================================================
+622:     // 12.7: الانضمام على مرحلتين: (1) فتح الخزنة بكلمة السر — لحظات — ثم يُعدّ الجهاز منضمًّا؛
+623:     // (2) تحميل البيانات بشريط تقدم، يكمل في الخلفية ويُستأنف من تلقاء نفسه إن انقطع (ترك التطبيق، إغلاقه، انقطاع الشبكة)
+624:     // ===================================================================================
+625: 
+626:     /** شريط التقدم: نسبة 0..100 ورسالة. */
+627:     public interface JoinListener {
+628:         void on(int percent, String message);
+629:     }
+630: 
+631:     static final String PENDING = "sync-join-pending.json";
+632: 
+633:     static File pendingFile(Db db) { return new File(db.evidenceDir().getParentFile(), PENDING); }
+634: 
+635:     /** 12.7: هل على هذا الجهاز انضمام بدأ ولم يكتمل تحميله؟ */
+636:     public static boolean joinPending(Db db) {
+637:         try {
+638:             return pendingFile(db).isFile();
+639:         } catch (Throwable t) {
+640:             return false;
+641:         }
+642:     }
+643: 
+644:     /** اسم الجهاز في الانضمام المعلّق (للعرض). */
+645:     public static String pendingName(Db db) {
+646:         try {
+647:             return new JSONObject(new String(Db.readAll(pendingFile(db)), StandardCharsets.UTF_8)).optString("name");
+648:         } catch (Exception e) {
+649:             return "";
+650:         }
+651:     }
+652: 
+653:     /** يلغي انضمامًا معلّقًا لم يبدأ استبدال البيانات بعد (أو انتهى). */
+654:     public static void cancelPending(Db db) { pendingFile(db).delete(); }
+655: 
+656:     public void join(char[] secret, boolean recovery, String deviceName) throws Exception {
+657:         joinPrepare(secret, recovery, deviceName);
+658:         joinFinish(null);
+659:     }
+660: 
+661:     /** المرحلة 1: يتحقق من كلمة السر ووجود لقطة، ويحفظ الانضمام معلّقًا (المفتاح مشفّرًا بمفتاح الجهاز). لا يغيّر البيانات. */
+662:     public void joinPrepare(char[] secret, boolean recovery, String deviceName) throws Exception {
+663:         VAULT.lock();
+664:         try {
+665:             if (!License.current.sync()) throw new Entitlements.LimitReached("المزامنة بين الأجهزة ميزة في النسخة المدفوعة.");
+666:             if (enabled(db)) throw new IllegalStateException("هذا الجهاز في مزامنة من قبل");
+667:             JSONObject h = header();
+668:             if (h == null) throw new IllegalStateException("لا توجد خزنة مزامنة في هذا المجلد. أنشئها من الجهاز الذي فيه بياناتك الكاملة.");
+669:             if (tombstone(h)) throw new IllegalStateException(tombText(h) + (h.has("moved") ? " سجّل الدخول بالمكان أو الحساب الجديد ثم انضم هناك." : " أنشئ مزامنة جديدة أو انضم إلى مكانها الجديد."));
+670:             byte[] vk;
+671:             try {
+672:                 vk = unlock(h, secret, recovery);
+673:             } catch (GeneralSecurityException e) {
+674:                 throw new IllegalArgumentException(recovery ? "رمز الاسترداد غير صحيح" : "كلمة سر المزامنة غير صحيحة");
+675:             }
+676:             String vid = h.getString("vault");
+677:             SyncCrypto.Keys keys = new SyncCrypto.Keys(vid, vk);
+678:             folder.unlock(keys);
+679:             if (bestSnapshot(readMembers(keys)) == null) throw new IllegalStateException("لم تصل لقطة الخزنة إلى هذا الجهاز بعد. انتظر حتى تكتمل مزامنة المجلد ثم أعد المحاولة.");
+680:             JSONObject p = new JSONObject();
+681:             p.put("vid", vid);
+682:             p.put("vk", Crypto.enc(SyncCrypto.hex(vk)));
+683:             p.put("name", deviceName == null ? "" : deviceName);
+684:             p.put("at", Clock.now());
+685:             File f = pendingFile(db), tmp = new File(f.getPath() + ".tmp");
+686:             try (FileOutputStream o = new FileOutputStream(tmp)) {
+687:                 o.write(p.toString().getBytes(StandardCharsets.UTF_8));
+688:                 o.getFD().sync();
+689:             }
+690:             if (!tmp.renameTo(f)) throw new IOException("تعذر حفظ حالة الانضمام");
+691:             db.audit("SYNC_JOIN_START", "sync", 0, p.optString("name"));
+692:         } finally {
+693:             VAULT.unlock();
+694:         }
+695:     }
+696: 
+697:     /** أحدث لقطة بين الأعضاء — 10.5: من اللقطات التي تشمل ما حُذف من حزم الأجهزة المُزالة فقط. */
+698:     private JSONObject bestSnapshot(Map<String, JSONObject> members) throws Exception {
+699:         Map<String, JSONObject> rem = removedMap();
+700:         JSONObject best = null;
+701:         for (JSONObject m : members.values()) {
+702:             JSONObject s = m.optJSONObject("snap");
+703:             if (s != null && covers(s, rem) && (best == null || s.optLong("at") > best.optLong("at"))) best = s;
+704:         }
+705:         return best;
+706:     }
+707: 
+708:     /** المرحلة 2: يحمّل البيانات ويستبدلها ويسجّل الجهاز. آمنة للإعادة: ما لم يُسجَّل الجهاز تُعاد من أولها. */
+709:     public void joinFinish(JoinListener l) throws Exception {
+710:         VAULT.lock();
+711:         try {
+712:             joinFinishLocked(l == null ? (pc, m) -> { } : l);
+713:         } finally {
+714:             VAULT.unlock();
+715:         }
+716:     }
+717: 
+718:     private void joinFinishLocked(JoinListener l) throws Exception {
+719:         File pf = pendingFile(db);
+720:         if (!pf.isFile()) {
+721:             if (enabled(db)) return;
+722:             throw new IllegalStateException("لا يوجد انضمام جارٍ. ابدأ الانضمام من جديد.");
+723:         }
+724:         JSONObject p = new JSONObject(new String(Db.readAll(pf), StandardCharsets.UTF_8));
+725:         if (enabled(db)) {
+726:             // سُجّل الجهاز ثم انقطع قبل حذف الملف: يكمل الجولة الأولى فقط
+727:             pf.delete();
+728:             l.on(92, "أول مزامنة…");
+729:             firstRound();
+730:             l.on(100, "اكتمل");
+731:             return;
+732:         }
+733:         if (!License.current.sync()) throw new Entitlements.LimitReached("المزامنة بين الأجهزة ميزة في النسخة المدفوعة.");
+734:         l.on(3, "فتح الخزنة…");
+735:         String vid = p.getString("vid");
+736:         byte[] vk = SyncCrypto.unhex(Crypto.decStrict(p.getString("vk")));
+737:         JSONObject h = header();
+738:         if (h == null) throw new IllegalStateException("لا تصل خزنة المزامنة الآن. تأكد من الاتصال ثم اضغط «إعادة المحاولة».");
+739:         if (!vid.equals(h.optString("vault")) || tombstone(h))
+740:             throw new IllegalStateException("تغيّرت خزنة المزامنة منذ بدأ الانضمام. اضغط «إلغاء الانضمام» ثم انضم من جديد.");
+741:         SyncCrypto.Keys keys = new SyncCrypto.Keys(vid, vk);
+742:         folder.unlock(keys);
+743:         Map<String, JSONObject> members = readMembers(keys);
+744:         JSONObject best = bestSnapshot(members);
+745:         if (best == null) throw new IllegalStateException("لم تصل لقطة الخزنة إلى هذا الجهاز بعد. انتظر حتى تكتمل مزامنة المجلد ثم أعد المحاولة.");
+746:         l.on(8, "تنزيل البيانات…");
+747:         // 10.18: اللقطة تُستبدل دوريًا على جهازها؛ تعثّر قراءتها لحظة الانضمام كان يُفشل الانضمام: تُعاد المحاولة
+748:         byte[] sealed = null;
+749:         for (int attempt = 0; attempt < 3 && sealed == null; attempt++) {
+750:             try {
+751:                 sealed = folder.read(best.getString("name"));
+752:             } catch (IOException e) {
+753:                 if (attempt == 2) throw e;
+754:             }
+755:             if (sealed == null && attempt < 2) Thread.sleep(700L * (attempt + 1));
+756:         }
+757:         if (sealed == null) throw new IllegalStateException("ملف اللقطة لم يصل بعد إلى هذا الجهاز. انتظر حتى تكتمل مزامنة المجلد.");
+758:         JSONObject snap = new JSONObject(new String(keys.openFile("s", best.getString("name"), sealed), StandardCharsets.UTF_8));
+759:         l.on(25, "تنزيل الصور…");

@@ -1,0 +1,202 @@
+401:             db.audit(UsageScreen.ACTION, "usage", sec, UsageScreen.describe(start, end));
+402:         } finally {
+403:             Db.currentUserName = keep;
+404:         }
+405:     }
+406: 
+407:     void sessionStart() {
+408:         if (db == null || !unlocked || keyMissing) return;
+409:         if (db.usersEnabled() && SmartApp.currentUser == null) return;
+410:         String u = Model.nz(Db.currentUserName);
+411:         if (sessionAt > 0 && u.equals(sessionUser)) return;
+412:         if (sessionAt > 0) sessionEnd();
+413:         recoverOpenSession();
+414:         sessionAt = Clock.now();
+415:         sessionUser = u;
+416:         lastInputClock = sessionAt;
+417:         idle = false;
+418:         usageHandler.removeCallbacks(usageTick);
+419:         usageHandler.postDelayed(usageTick, 30_000);
+420:     }
+421: 
+422:     void sessionEnd() { sessionEnd(Clock.now()); }
+423: 
+424:     void sessionEnd(long end) {
+425:         usageHandler.removeCallbacks(usageTick);
+426:         if (sessionAt <= 0 || db == null) return;
+427:         long start = sessionAt;
+428:         sessionAt = 0;
+429:         try {
+430:             db.setSettingQuiet(OPEN_KEY, "");
+431:         } catch (Throwable ignored) {
+432:             // غير حرج
+433:         }
+434:         writeSession(sessionUser, start, Math.max(start, end));
+435:     }
+436: 
+437:     void relock() {
+438:         unlocked = false;
+439:         if (db.usersEnabled()) SmartApp.currentUser = null;
+440:         if (biometricOn()) {
+441:             appLock.lockScreen();
+442:         } else {
+443:             unlocked = true;
+444:             afterUnlock();
+445:         }
+446:     }
+447: 
+448:     @Override
+449:     public void onBackPressed() {
+450:         if (!unlocked || (db != null && db.usersEnabled() && SmartApp.currentUser == null)) {
+451:             super.onBackPressed();
+452:             return;
+453:         }
+454:         if (closeFan()) return;
+455:         // 11.5: الصفحة السابقة فعلًا (السجل)، ثم الرجوع المحدد للصفحة، ثم الرئيسية
+456:         if (historyBack()) return;
+457:         if (back != null) {
+458:             Runnable r = back;
+459:             back = null;
+460:             returning = true;   // 10.5 (§6): الشاشة التي نرجع إليها تعود إلى موضع تمريرها (يُصفَّر بعد رسمها)
+461:             runAsBack(r);
+462:         } else if (!onHome) showHome();
+463:         else super.onBackPressed();
+464:     }
+465: 
+466:     @Override void beforeScreenChange() {
+467:         txScreen.saveDraft();
+468:         txScreen.detach();
+469:     }
+470: 
+471:     @Override boolean showHomeButton() {
+472:         return unlocked && !(db != null && db.usersEnabled() && SmartApp.currentUser == null);
+473:     }
+474: 
+475:     @Override void goHome() { showHome(); }
+476: 
+477:     @Override void themeLeft(String owner) {
+478:         if ("cash".equals(owner)) cashScreen.leave();
+479:     }
+480: 
+481:     // ===================================================================================
+482:     // 9.0.1: إخفاء المبالغ (العين) — أرصدة المكاتب والصفحة الرئيسية والصندوق
+483:     // ===================================================================================
+484: 
+485:     boolean amountsHidden() { return db != null && "1".equals(db.setting("hide_amounts", "0")); }
+486: 
+487:     /** مبلغ منسّق أو «••••». */
+488:     String mf(long v, int d) { return m(Model.fmt(v, d)); }
+489: 
+490:     /** رصيد منسّق («لنا»/«علينا») أو «••••». */
+491:     String mb(long v, int d) { return m(Model.bal(v, d)); }
+492: 
+493:     /** النص كما هو، أو «••••» حين تكون المبالغ مخفية. */
+494:     String m(String s) { return amountsHidden() ? "••••" : s; }
+495: 
+496:     /** زر العين في الشريط العلوي: يخفي المبالغ أو يظهرها ثم يعيد رسم الشاشة. */
+497:     void eyeAction(final Runnable refresh) {
+498:         final boolean h = amountsHidden();
+499:         headerAction(h ? R.drawable.ic_eye_off : R.drawable.ic_eye, h ? "إظهار المبالغ" : "إخفاء المبالغ", v -> {
+500:             db.setSettingQuiet("hide_amounts", h ? "0" : "1");
+501:             toast(h ? "المبالغ ظاهرة" : "المبالغ مخفية — اضغط العين لإظهارها");
+502:             refresh.run();
+503:         });
+504:     }
+505: 
+506:     // ===================================================================================
+507:     // 10.1: المزامنة السريعة
+508:     // ===================================================================================
+509: 
+510:     @Override void globalActions() {
+511:         try {
+512:             if (db == null || !unlocked || (db.usersEnabled() && SmartApp.currentUser == null)) return;
+513:             if (!SyncEngine.enabled(db) || !License.current.sync()) return;
+514:             headerAction(R.drawable.ic_sync, "مزامنة الآن", v -> syncScreen.now(null));
+515:         } catch (Throwable ignored) {
+516:             // الشريط فقط
+517:         }
+518:     }
+519: 
+520:     /** بعد وصول تغييرات من جهاز آخر: الدخول إن صار مطلوبًا، أو إعادة رسم الشاشة الجذرية الحالية. */
+521:     void afterSync(SyncEngine.Result res) {
+522:         if (db == null || !unlocked) return;
+523:         if (db.usersEnabled()) {
+524:             Model.User u = SmartApp.currentUser;
+525:             Model.User now = u == null ? null : db.user(u.id);
+526:             if (now == null || !now.active) {
+527:                 if (u != null) toast("أُوقف حسابك أو تغيّر من الجهاز الرئيسي. سجّل الدخول من جديد.");
+528:                 SmartApp.currentUser = null;
+529:                 usersScreen.showLogin();
+530:                 return;
+531:             }
+532:             SmartApp.currentUser = now;
+533:         }
+534:         if (onHome) showHome();
+535:         else if (rootTab != null && !rootTab.equals("tx")) openTab(rootTab);
+536:     }
+537: 
+538:     /** 10.3: قفل التطبيق على هذا الجهاز (بصمة أو كلمة سر التطبيق). */
+539:     boolean biometricOn() { return db != null && appLock.on(); }
+540: 
+541:     boolean can(Auth.Perm p) {
+542:         if (db == null) return true;
+543:         return db.allowed(p);
+544:     }
+545: 
+546:     boolean require(Auth.Perm p) {
+547:         if (can(p)) return true;
+548:         toast("ليست لديك صلاحية لهذه العملية. اطلب من المدير.");
+549:         return false;
+550:     }
+551: 
+552:     // ===================================================================================
+553:     // القفل والدخول
+554:     // ===================================================================================
+555: 
+556:     void afterUnlock() {
+557:         try {
+558:             if (!keyMissing) Reliability.healthIfDue(db);
+559:             if (!keyMissing) Reliability.searchIndexAsync(db);
+560:             LicenseGuard.refreshAsync(getApplicationContext(), db);
+561:         } catch (Throwable ignored) {
+562:             // غير حرج
+563:         }
+564:         // 12.7: انضمام بدأ ولم يكتمل تحميله: شاشة التحميل تكمله أولًا
+565:         if (SyncEngine.joinPending(db)) {
+566:             syncScreen.joinScreen();
+567:             return;
+568:         }
+569:         if (db.usersEnabled() && SmartApp.currentUser == null && !usersScreen.autoLogin()) usersScreen.showLogin();
+570:         else showHome();
+571:     }
+572: 
+573:     void showLock() {
+574:         returning = true;   // 11.5: شاشة القفل تظهر كاملة فورًا بلا حركة دخول (قد تُبنى والنافذة مصغّرة)
+575:         base("التطبيق مقفل", null);
+576:         ImageView logo = new ImageView(this);
+577:         Bitmap bm = homeLogo();
+578:         if (bm != null) logo.setImageBitmap(bm);
+579:         else logo.setImageResource(R.drawable.ic_logo);
+580:         body.addView(logo, lp(-1, 110, 20));
+581:         TextView t = text("تحقق من هويتك بالبصمة أو قفل الشاشة للمتابعة.", 17, dark, false);
+582:         t.setGravity(Gravity.CENTER);
+583:         add(t);
+584:         button("فتح التطبيق", primary, v -> authenticate());
+585:         if (appLock.hasPin()) button("الفتح بكلمة سر التطبيق", accent, v -> appLock.pinScreen(null));
+586:     }
+587: 
+588:     void authenticate() {
+589:         try {
+590:             android.hardware.biometrics.BiometricPrompt.Builder b = new android.hardware.biometrics.BiometricPrompt.Builder(this)
+591:                     .setTitle("فتح المحاسب الذكي").setSubtitle("تحقق من هويتك للمتابعة");
+592:             if (Build.VERSION.SDK_INT >= 30) b.setAllowedAuthenticators(android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG | android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL);
+593:             else b.setNegativeButton("إلغاء", getMainExecutor(), (d, w) -> showLock());
+594:             b.build().authenticate(new android.os.CancellationSignal(), getMainExecutor(),
+595:                     new android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
+596:                         @Override
+597:                         public void onAuthenticationSucceeded(android.hardware.biometrics.BiometricPrompt.AuthenticationResult r) {
+598:                             unlocked = true;
+599:                             lastAuthAt = SystemClock.elapsedRealtime();
+600:                             afterUnlock();
+601:                         }
+602: 

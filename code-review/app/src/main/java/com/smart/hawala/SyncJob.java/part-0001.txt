@@ -1,0 +1,91 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.job.JobInfo;
+4: import android.app.job.JobParameters;
+5: import android.app.job.JobScheduler;
+6: import android.app.job.JobService;
+7: import android.content.ComponentName;
+8: import android.content.Context;
+9: 
+10: /** 10.0: مزامنة دورية في الخلفية كل ربع ساعة تقريبًا (حين تكون مفعّلة). */
+11: public class SyncJob extends JobService {
+12:     static final int JOB_ID = 7710;
+13: 
+14:     static void schedule(Context c, boolean on) { schedule(c, on, false); }
+15: 
+16:     /** 10.4: wifiOnly = لا تعمل المهمة إلا على شبكة غير محسوبة (واي فاي). */
+17:     static void schedule(Context c, boolean on, boolean wifiOnly) {
+18:         try {
+19:             JobScheduler js = (JobScheduler) c.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+20:             if (js == null) return;
+21:             if (!on) {
+22:                 js.cancel(JOB_ID);
+23:                 return;
+24:             }
+25:             int net = wifiOnly ? JobInfo.NETWORK_TYPE_UNMETERED : JobInfo.NETWORK_TYPE_ANY;
+26:             JobInfo cur = js.getPendingJob(JOB_ID);
+27:             if (cur != null && cur.getNetworkType() == net) return;
+28:             js.schedule(new JobInfo.Builder(JOB_ID, new ComponentName(c, SyncJob.class))
+29:                     .setPeriodic(15L * 60000L)
+30:                     .setRequiredNetworkType(net)
+31:                     .setPersisted(true)
+32:                     .build());
+33:         } catch (Throwable ignored) {
+34:             // تُزامن عند فتح التطبيق
+35:         }
+36:     }
+37: 
+38:     /** 12.7: مهمة واحدة قريبة تكمل مزامنة بدأت ثم تُرك التطبيق (تعمل ولو أُغلق). */
+39:     static void runOnce(Context c, boolean wifiOnly) {
+40:         try {
+41:             JobScheduler js = (JobScheduler) c.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+42:             if (js == null) return;
+43:             js.schedule(new JobInfo.Builder(JOB_ID + 1, new ComponentName(c, SyncJob.class))
+44:                     .setRequiredNetworkType(wifiOnly ? JobInfo.NETWORK_TYPE_UNMETERED : JobInfo.NETWORK_TYPE_ANY)
+45:                     .setMinimumLatency(20_000L)
+46:                     .setOverrideDeadline(10L * 60_000L)
+47:                     .build());
+48:         } catch (Throwable ignored) {
+49:             // تُكمل عند فتح التطبيق
+50:         }
+51:     }
+52: 
+53:     @Override
+54:     public boolean onStartJob(final JobParameters params) {
+55:         new Thread(() -> {
+56:             try {
+57:                 Db db = SmartApp.db;
+58:                 if (db == null) {
+59:                     db = new Db(getApplicationContext());
+60:                     SmartApp.db = db;
+61:                 }
+62:                 // 12.7: انضمام تُرك أثناء التحميل: يكمله هنا ولو أُغلق التطبيق
+63:                 if (Crypto.healthy(getApplicationContext()) && Db.lockedAside == null && SyncEngine.joinPending(db) && !SyncScreen.joinRunning()) {
+64:                     try {
+65:                         if (License.current == null || !License.current.pro) License.load(getApplicationContext(), db);
+66:                         SyncFolder f = SyncScreen.folder(getApplicationContext(), db);
+67:                         if (f != null) new SyncEngine(db, f).joinFinish(null);
+68:                     } catch (Throwable ignored) {
+69:                         // يكمل عند فتح التطبيق
+70:                     }
+71:                 }
+72:                 if (Crypto.healthy(getApplicationContext()) && Db.lockedAside == null && SyncEngine.enabled(db)) {
+73:                     try {
+74:                         if (License.current == null || !License.current.pro) License.load(getApplicationContext(), db);
+75:                     } catch (Throwable ignored) {
+76:                         // تبقى الرخصة كما هي
+77:                     }
+78:                     SyncScreen.background(getApplicationContext(), db);
+79:                 } else schedule(getApplicationContext(), false);
+80:             } catch (Throwable ignored) {
+81:                 // المحاولة التالية
+82:             } finally {
+83:                 jobFinished(params, false);
+84:             }
+85:         }, "sync-job").start();
+86:         return true;
+87:     }
+88: 
+89:     @Override
+90:     public boolean onStopJob(JobParameters params) { return true; }
+91: }

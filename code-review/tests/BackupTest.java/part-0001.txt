@@ -1,0 +1,131 @@
+1: import com.smart.hawala.*;
+2: import org.json.*;
+3: import java.io.*;
+4: import java.util.*;
+5: import java.security.*;
+6: import javax.crypto.*;
+7: import javax.crypto.spec.*;
+8: import java.util.zip.*;
+9: 
+10: public class BackupTest {
+11:   static int fails = 0;
+12:   static void check(boolean c, String m) { System.out.println((c ? "  PASS " : "  FAIL ") + m); if (!c) fails++; }
+13: 
+14:   static class FakeSource implements BackupFormat.Source {
+15:     int nTx; int nImg; Random rnd = new Random(42); boolean badImage;
+16:     FakeSource(int nTx, int nImg) { this.nTx = nTx; this.nImg = nImg; }
+17:     public Map<String,Long> counts() { Map<String,Long> m = new LinkedHashMap<>(); m.put("offices", 2L); m.put("tx", (long) nTx); m.put("attachments", (long) nImg); return m; }
+18:     public void rows(String t, BackupFormat.RowSink s) throws Exception {
+19:       if (t.equals("currencies")) { s.row(new JSONObject().put("code","USD").put("name","دولار").put("decimals",2).put("active",1)); s.row(new JSONObject().put("code","SYP").put("name","ليرة").put("decimals",0).put("active",1)); }
+20:       if (t.equals("offices")) { for (int i=1;i<=2;i++) s.row(new JSONObject().put("id",i).put("name","مكتب "+i).put("active",1).put("usd_limit_minor", JSONObject.NULL)); }
+21:       if (t.equals("office_currencies")) { s.row(new JSONObject().put("office_id",1).put("code","USD")); s.row(new JSONObject().put("office_id",2).put("code","USD")); }
+22:       if (t.equals("tx")) for (int i=1;i<=nTx;i++) s.row(new JSONObject().put("id",i).put("uuid","u-"+i).put("office_id", 1 + (i%2)).put("type","مدين / لنا").put("person","شخص "+i).put("amount_minor", 1000L*i).put("currency","USD").put("fee_type","بدون أجرة").put("fee_minor",0).put("created_at", 1000L+i).put("status", i%10==0?"CANCELLED":"ACTIVE"));
+23:       if (t.equals("journal_entries")) for (int i=1;i<=nTx;i++) s.row(new JSONObject().put("id",i).put("tx_id",i).put("kind","PRINCIPAL").put("created_at",1000L+i));
+24:       if (t.equals("journal_lines")) for (int i=1;i<=nTx;i++) { s.row(new JSONObject().put("id",2*i-1).put("entry_id",i).put("account","OFFICE").put("office_id",1+(i%2)).put("currency","USD").put("debit_minor",1000L*i).put("credit_minor",0)); s.row(new JSONObject().put("id",2*i).put("entry_id",i).put("account","SETTLEMENT").put("office_id",JSONObject.NULL).put("currency","USD").put("debit_minor",0).put("credit_minor",1000L*i)); }
+25:       if (t.equals("settings")) s.row(new JSONObject().put("k","welcome").put("v","أهلًا"));
+26:     }
+27:     public List<BackupFormat.AttachmentRef> attachments() { List<BackupFormat.AttachmentRef> l = new ArrayList<>(); for (int i=1;i<=nImg;i++){ BackupFormat.AttachmentRef r=new BackupFormat.AttachmentRef(); r.id=i; r.txId=1+(i%Math.max(1,nTx)); r.mime="image/jpeg"; r.createdAt=5; l.add(r);} return l; }
+28:     public byte[] attachmentData(BackupFormat.AttachmentRef r) { if (badImage && r.id==2) return null; byte[] b = new byte[300000 + (int)r.id*1000]; new Random(r.id).nextBytes(b); return b; }
+29:     public List<String> warnings() { return new ArrayList<>(); }
+30:   }
+31:   static class MemStore implements BackupFormat.AttachmentStore {
+32:     Map<Object, byte[]> m = new HashMap<>(); int discarded;
+33:     public Object store(long id, InputStream in) throws Exception { ByteArrayOutputStream o = new ByteArrayOutputStream(); byte[] b = new byte[8192]; int n; while((n=in.read(b))>0) o.write(b,0,n); Object h = new Object(); m.put(h, o.toByteArray()); return h; }
+34:     public void discard(Object h) { m.remove(h); discarded++; }
+35:   }
+36: 
+37:   static byte[] makeBackup(BackupFormat.Source src, char[] pw) throws Exception {
+38:     ByteArrayOutputStream file = new ByteArrayOutputStream();
+39:     SecureStreams.EncryptingOutputStream enc = new SecureStreams.EncryptingOutputStream(file, pw, 100000, 64*1024);
+40:     BackupFormat.write(src, enc, "5.0", 5);
+41:     enc.close();
+42:     return file.toByteArray();
+43:   }
+44:   static BackupFormat.Parsed read(byte[] f, char[] pw, MemStore st) throws Exception {
+45:     return BackupFormat.readV5(new SecureStreams.DecryptingInputStream(new ByteArrayInputStream(f), pw), st);
+46:   }
+47: 
+48:   public static void main(String[] a) throws Exception {
+49:     char[] pw = "كلمة-سر-قوية 2026".toCharArray();
+50:     char[] pwCopy = pw.clone();
+51: 
+52:     System.out.println("1) round trip with 50 tx and 6 images (multi-chunk)");
+53:     byte[] f = makeBackup(new FakeSource(50, 6), pw);
+54:     check(Arrays.equals(pw, pwCopy), "caller password array NOT wiped by encryption (the reported 4.x bug)");
+55:     MemStore st = new MemStore();
+56:     BackupFormat.Parsed p = read(f, pw, st);
+57:     check(Arrays.equals(pw, pwCopy), "caller password array NOT wiped by decryption");
+58:     check(p.table("tx").size() == 50, "50 tx rows restored");
+59:     check(p.attachments.size() == 6, "6 attachments restored");
+60:     check(st.m.size() == 6, "6 attachments staged");
+61:     check(p.table("offices").get(0).getString("name").equals("مكتب 1"), "Arabic text intact");
+62:     BackupFormat.Report r = BackupFormat.validate(p);
+63:     check(r.ok(), "validation passes: " + r.errors);
+64:     check(r.txActive == 45 && r.txCancelled == 5, "active/cancelled counts " + r.txActive + "/" + r.txCancelled);
+65:     System.out.println("   file size = " + f.length + " bytes");
+66: 
+67:     System.out.println("2) wrong password");
+68:     try { read(f, "wrong-password".toCharArray(), new MemStore()); check(false, "should fail"); }
+69:     catch (SecureStreams.WrongPasswordException e) { check(true, "WrongPasswordException: " + e.getMessage().substring(0, 20)); }
+70: 
+71:     System.out.println("3) truncated file (cut in the middle and cut exactly before final chunk)");
+72:     for (int cut : new int[]{ f.length / 2, f.length - 1, 200 }) {
+73:       MemStore s3 = new MemStore();
+74:       try { read(Arrays.copyOf(f, cut), pw, s3); check(false, "truncated at " + cut + " should fail"); }
+75:       catch (IOException e) { check(e instanceof SecureStreams.CorruptBackupException, "cut@" + cut + " -> " + e.getMessage()); check(s3.m.isEmpty(), "  staged images cleaned up (" + s3.m.size() + ")"); }
+76:     }
+77: 
+78:     System.out.println("4) one byte flipped in the middle");
+79:     byte[] g = f.clone(); g[g.length / 2] ^= 0x01;
+80:     try { read(g, pw, new MemStore()); check(false, "tampered should fail"); }
+81:     catch (IOException e) { check(e instanceof SecureStreams.CorruptBackupException, "tamper -> " + e.getMessage()); }
+82: 
+83:     System.out.println("5) extra bytes appended");
+84:     byte[] h = Arrays.copyOf(f, f.length + 5);
+85:     try { read(h, pw, new MemStore()); check(false, "trailing data should fail"); }
+86:     catch (IOException e) { check(true, "trailing -> " + e.getMessage()); }
+87: 
+88:     System.out.println("6) empty database backup");
+89:     byte[] e0 = makeBackup(new FakeSource(0, 0), pw);
+90:     BackupFormat.Parsed p0 = read(e0, pw, new MemStore());
+91:     check(BackupFormat.validate(p0).ok(), "empty backup validates");
+92: 
+93:     System.out.println("7) aborted writer produces rejected file");
+94:     ByteArrayOutputStream bo = new ByteArrayOutputStream();
+95:     SecureStreams.EncryptingOutputStream enc = new SecureStreams.EncryptingOutputStream(bo, pw, 100000, 64*1024);
+96:     enc.write(new byte[200000]); enc.abort();
+97:     try { BackupFormat.readV5(new SecureStreams.DecryptingInputStream(new ByteArrayInputStream(bo.toByteArray()), pw), new MemStore()); check(false, "aborted should fail"); }
+98:     catch (IOException ex) { check(true, "aborted -> " + ex.getMessage()); }
+99: 
+100:     System.out.println("8) skipped bad image is reported");
+101:     FakeSource bad = new FakeSource(5, 3); bad.badImage = true;
+102:     BackupFormat.Parsed pb = read(makeBackup(bad, pw), pw, new MemStore());
+103:     check(pb.attachments.size() == 2, "2 of 3 images kept");
+104:     check(pb.warnings.toString().contains("تخطي"), "warning about skipped image present");
+105: 
+106:     System.out.println("9) validation catches broken data");
+107:     BackupFormat.Parsed pv = read(f, pw, new MemStore());
+108:     pv.table("journal_lines").get(0).put("debit_minor", 999);
+109:     check(!BackupFormat.validate(pv).ok(), "unbalanced entry detected: " + BackupFormat.validate(pv).errors);
+110:     BackupFormat.Parsed pv2 = read(f, pw, new MemStore());
+111:     pv2.table("tx").get(3).put("office_id", 77);
+112:     check(!BackupFormat.validate(pv2).ok(), "missing office reference detected");
+113:     BackupFormat.Parsed pv3 = read(f, pw, new MemStore());
+114:     pv3.table("tx").get(4).put("uuid", "u-1");
+115:     check(!BackupFormat.validate(pv3).ok(), "duplicate uuid detected");
+116: 
+117:     System.out.println("10) read a 4.0.x (SMARTBK4) backup produced by the OLD algorithm");
+118:     byte[] v4 = makeV4(pw);
+119:     MemStore s4 = new MemStore();
+120:     BackupFormat.Parsed p4 = BackupFormat.readV4(v4, pw, s4);
+121:     check(p4.format == 4 && p4.table("tx").size() == 1, "v4 parsed, tx=" + p4.table("tx").size());
+122:     check(p4.attachments.size() == 1 && s4.m.size() == 1, "v4 attachment staged");
+123:     check(BackupFormat.validate(p4).ok(), "v4 validates: " + BackupFormat.validate(p4).errors);
+124:     try { BackupFormat.readV4(v4, "bad".toCharArray(), new MemStore()); check(false, "v4 wrong pw"); } catch (IOException ex) { check(true, "v4 wrong pw -> " + ex.getMessage()); }
+125: 
+126:     System.out.println("11) large backup memory behaviour (40 images ~ 13MB) with 32MB heap");
+127:     long t0 = System.currentTimeMillis();
+128:     File tmp = File.createTempFile("bkp", ".sba");
+129:     try (FileOutputStream fo = new FileOutputStream(tmp)) {
+130:       SecureStreams.EncryptingOutputStream e2 = new SecureStreams.EncryptingOutputStream(new BufferedOutputStream(fo), pw);
+131:       BackupFormat.write(new FakeSource(2000, 40), e2, "5.0", 5); e2.close(); }

@@ -1,0 +1,132 @@
+151:                     SmartApp.db = (Db) res;
+152:                     a.db = SmartApp.db;
+153:                     a.toast("تمت إعادة البيانات كما كانت" + (Snapshot.lastSyncNote.isEmpty() ? "" : ". " + Snapshot.lastSyncNote));
+154:                     afterDataReplaced();
+155:                 })).setNegativeButton("إلغاء", null).show();
+156:     }
+157: 
+158:     /** 10.5 (AUDIT-030): أثر التراجع على المزامنة، يُضاف إلى رسالة التأكيد. */
+159:     private String syncWarn() {
+160:         String s = Snapshot.syncImpact(a.db);
+161:         return s.isEmpty() ? "" : "\n\n" + s;
+162:     }
+163: 
+164:     /** 8.0: التراجع إلى ما قبل عملية أقدم (حتى ثلاث عمليات كبيرة). */
+165:     private void olderSnapshots() {
+166:         if (!a.require(Auth.Perm.RESTORE)) return;
+167:         final List<Snapshot.Info> l = Snapshot.list(a);
+168:         String[] items = new String[l.size()];
+169:         for (int i = 0; i < l.size(); i++) {
+170:             Snapshot.Info x = l.get(i);
+171:             items[i] = "قبل " + (x.label.isEmpty() ? "استعادة" : x.label) + " — " + Model.date(x.time);
+172:         }
+173:         new AlertDialog.Builder(a).setTitle("نسخ الأمان على هذا الهاتف").setItems(items, (d, w) -> {
+174:             final Snapshot.Info x = l.get(w);
+175:             String what = x.label.isEmpty() ? "الاستعادة" : x.label;
+176:             new AlertDialog.Builder(a).setTitle("التراجع إلى ما قبل " + what)
+177:                     .setMessage("ستعود البيانات كما كانت قبل " + what + " (" + Model.date(x.time) + "). كل ما سُجّل بعدها سيُفقد"
+178:                             + (x.slot > 0 ? "، ومنه عمليات كبيرة أحدث" : "") + ". سجل العمليات الحالي يُحفظ في الأرشيف. متابعة؟" + syncWarn())
+179:                     .setPositiveButton("تراجع", (d2, w2) -> a.busy("جارٍ إرجاع البيانات…", p -> Snapshot.revert(a, a.db, x.slot), res -> {
+180:                         SmartApp.db = (Db) res;
+181:                         a.db = SmartApp.db;
+182:                         a.toast("تمت إعادة البيانات كما كانت" + (Snapshot.lastSyncNote.isEmpty() ? "" : ". " + Snapshot.lastSyncNote));
+183:                         afterDataReplaced();
+184:                     })).setNegativeButton("إلغاء", null).show();
+185:         }).setNegativeButton("إغلاق", null).show();
+186:     }
+187: 
+188:     /** بعد الاستعادة أو التراجع: قد تتغير قائمة المستخدمين والألوان، فنعيد الدخول. */
+189:     private void afterDataReplaced() {
+190:         Reliability.healthAsync(a.db);
+191:         SmartApp.currentUser = null;
+192:         Db.currentUserName = "المستخدم المحلي";
+193:         a.applyColors();
+194:         if (AutoBackup.enabled(a.db)) AutoBackup.schedule(a);
+195:         a.afterUnlock();
+196:     }
+197: 
+198:     // ===================================================================================
+199:     // النسخ التلقائي
+200:     // ===================================================================================
+201: 
+202:     static String folderName(String tree) {
+203:         try {
+204:             String id = DocumentsContract.getTreeDocumentId(Uri.parse(tree));
+205:             int i = id.indexOf(':');
+206:             String vol = i > 0 ? id.substring(0, i) : "";
+207:             String path = i >= 0 ? id.substring(i + 1) : id;
+208:             String where = "primary".equalsIgnoreCase(vol) ? "ذاكرة الهاتف" : vol.isEmpty() ? "" : vol;
+209:             return (where.isEmpty() ? "" : where + " / ") + (path.isEmpty() ? "(المجلد الرئيسي)" : path);
+210:         } catch (Exception e) {
+211:             return "مجلد مختار";
+212:         }
+213:     }
+214: 
+215:     private void autoSection() {
+216:         a.title("النسخ الاحتياطي التلقائي");
+217:         final LinearLayout c = a.card();
+218:         final String tree = a.db.setting("auto_backup_tree", "");
+219:         final String drive = a.db.setting("drive_backup_uri", "");
+220:         boolean hasPw = !a.db.setting("auto_backup_pw", "").isEmpty();
+221:         boolean on = AutoBackup.enabled(a.db);
+222:         if (!AutoBackup.configured(a.db)) {
+223:             c.addView(a.text("غير مفعّل. اختر أين تُحفظ النسخ المشفّرة تلقائيًا كل يوم (يمكنك اختيار المكانين معًا):", 14, a.dark, false));
+224:             c.addView(a.makeButton("📁 مجلد على الهاتف أو بطاقة الذاكرة", a.primary, v -> chooseFolder()), a.lp(-1, 48, 4));
+225:             c.addView(a.makeButton("☁ ملف في Google Drive", a.primary, v -> chooseDriveFile()), a.lp(-1, 48, 4));
+226:             c.addView(a.text("المجلد يحتفظ بعدة نسخ مؤرّخة. أما Google Drive فلا يسمح للتطبيقات باختيار مجلد كامل، لذلك تختار مكان ملف واحد داخل Drive، ويستبدل التطبيق محتواه بآخر نسخة في كل مرة.", 12, a.muted, false));
+227:             if ((!tree.isEmpty() || !drive.isEmpty()) && !hasPw) {
+228:                 c.addView(a.makeButton("تحديد كلمة مرور النسخ التلقائي", a.accent, v -> autoPassword(true)), a.lp(-1, 46, 4));
+229:             }
+230:             return;
+231:         }
+232:         long last = a.db.settingLong("last_auto_backup", 0);
+233:         c.addView(a.text((on ? "✓ مفعّل" : "⏸ متوقف")
+234:                 + "\nآخر نسخة تلقائية: " + (last == 0 ? "لا يوجد بعد" : Model.date(last) + " (" + MainActivity.ago(last) + ")"), 14, on ? a.green : a.dark, true));
+235:         String err = a.db.setting("auto_backup_error", "");
+236:         if (!err.isEmpty()) c.addView(a.text("⚠ فشل آخر نسخ تلقائي" + (tree.isEmpty() ? "" : " (المجلد)") + ":\n" + err, 13, a.red, true));
+237: 
+238:         c.addView(a.label("أماكن الحفظ"));
+239:         // المجلد
+240:         c.addView(a.text("📁 " + (tree.isEmpty() ? "مجلد على الهاتف: غير محدد" : "المجلد: " + folderName(tree)), 14, tree.isEmpty() ? a.muted : a.dark, !tree.isEmpty()));
+241:         LinearLayout fr = a.row();
+242:         fr.addView(a.smallButton(tree.isEmpty() ? "اختيار مجلد" : "تغيير المجلد", a.accent, v -> chooseFolder()), a.weight(42, 1, 2));
+243:         if (!tree.isEmpty()) fr.addView(a.smallButton("إزالة", a.muted, v -> removeDestination(false)), a.weight(42, 1, 2));
+244:         c.addView(fr);
+245:         // Google Drive
+246:         long lastDrive = a.db.settingLong("last_drive_backup", 0);
+247:         c.addView(a.text("☁ " + (drive.isEmpty() ? "Google Drive: غير محدد"
+248:                 : "Google Drive: " + a.db.setting("drive_backup_name", AutoBackup.driveFileName(a))
+249:                 + "\nآخر تحديث: " + (lastDrive == 0 ? "لا يوجد بعد" : Model.date(lastDrive) + " (" + MainActivity.ago(lastDrive) + ")")),
+250:                 14, drive.isEmpty() ? a.muted : a.dark, !drive.isEmpty()));
+251:         String dErr = a.db.setting("drive_backup_error", "");
+252:         if (!dErr.isEmpty()) c.addView(a.text("⚠ فشل آخر حفظ في Google Drive:\n" + dErr, 13, a.red, true));
+253:         LinearLayout dr = a.row();
+254:         dr.addView(a.smallButton(drive.isEmpty() ? "اختيار ملف في Drive" : "تغيير ملف Drive", a.accent, v -> chooseDriveFile()), a.weight(42, 1, 2));
+255:         if (!drive.isEmpty()) dr.addView(a.smallButton("إزالة", a.muted, v -> removeDestination(true)), a.weight(42, 1, 2));
+256:         c.addView(dr);
+257:         c.addView(a.text("المجلد يحتفظ بعدة نسخ مؤرّخة؛ ملف Google Drive يُستبدل بآخر نسخة في كل مرة (Drive لا يسمح للتطبيقات باختيار مجلد كامل).", 12, a.muted, false));
+258: 
+259:         c.addView(a.label("التكرار"));
+260:         long hours = AutoBackup.intervalHours(a.db);
+261:         final boolean six = License.current.autoBackupMinHours() <= 6;
+262:         final long[] hourValues = six ? BackupPolicy.HOURS : new long[]{24, 72, 168};
+263:         String[] hourLabels = six ? new String[]{"كل 6 ساعات", "يوميًا", "كل 3 أيام", "أسبوعيًا"} : new String[]{"يوميًا", "كل 3 أيام", "أسبوعيًا"};
+264:         int hi = 0;
+265:         for (int i = 0; i < hourValues.length; i++) if (hours >= hourValues[i]) hi = i;
+266:         Ui.Seg freq = a.new Seg(hourLabels, null, hi, false);
+267:         freq.listener = i -> {
+268:             a.db.setSetting("auto_backup_hours", "" + hourValues[i]);
+269:             a.db.setSetting("auto_backup_days", "" + Math.max(1, hourValues[i] / 24));
+270:         };
+271:         c.addView(freq.view);
+272:         if (License.current.autoBackupEveryTx() > 0) {
+273:             c.addView(a.label("وأيضًا بعد عدد من الحركات"));
+274:             final long[] txValues = {0, 25, 50};
+275:             int every = AutoBackup.everyTx(a.db);
+276:             Ui.Seg txSeg = a.new Seg(new String[]{"لا", "كل 25 حركة", "كل 50 حركة"}, null, every == 0 ? 0 : every <= 25 ? 1 : 2, false);
+277:             txSeg.listener = i -> a.db.setSetting("auto_backup_every_tx", "" + txValues[i]);
+278:             c.addView(txSeg.view);
+279:         } else {
+280:             c.addView(a.text("النسخة الكاملة: كل 6 ساعات أو بعد كل 25 حركة.", 12, a.muted, false));
+281:         }
+282:         if (!tree.isEmpty()) {

@@ -1,0 +1,131 @@
+180:     private static Line line(TextLayout t, int s, int e, boolean rtl, float asc, float desc) {
+181:         Line l = new Line();
+182:         l.tl = t; l.start = s; l.end = e; l.rtl = rtl;
+183:         l.adv = t.getAdvance();
+184:         l.vis = t.getVisibleAdvance();
+185:         l.ascent = Math.max(asc, t.getAscent());
+186:         l.descent = Math.max(desc, t.getDescent());
+187:         return l;
+188:     }
+189: 
+190:     private static Line ellipsize(String para, int pStart, int from, Spanned spans, Paint p, Font base, Font bb, Font br, float size, boolean bold, boolean rtl, float width, float asc, float desc, float density) {
+191:         String rest = para.substring(from).replace('\n', ' ');
+192:         int lo = 0, hi = rest.length();
+193:         TextLayout best = null;
+194:         // بحث ثنائي على أطول بداية تتسع مع «…»
+195:         while (lo < hi) {
+196:             int mid = (lo + hi + 1) / 2;
+197:             String s = rest.substring(0, mid).replaceAll("\\s+$", "") + "…";
+198:             TextLayout t = new TextLayout(attributed(s, -1, null, p, base, bb, br, size, bold, rtl, density).getIterator(), FRC);
+199:             if (t.getAdvance() <= width) { lo = mid; best = t; } else hi = mid - 1;
+200:         }
+201:         if (best == null) best = new TextLayout(attributed("…", -1, null, p, base, bb, br, size, bold, rtl, density).getIterator(), FRC);
+202:         else {
+203:             // إعادة البناء بالتنسيقات الأصلية
+204:             String s = rest.substring(0, lo).replaceAll("\\s+$", "");
+205:             AttributedString as = attributedWithTail(s, pStart + from, spans, p, base, bb, br, size, bold, rtl, density);
+206:             best = new TextLayout(as.getIterator(), FRC);
+207:         }
+208:         Line l = line(best, pStart + from, pStart + para.length(), rtl, asc, desc);
+209:         l.ellipsized = true;
+210:         return l;
+211:     }
+212: 
+213:     private static AttributedString attributedWithTail(String s, int off, Spanned spans, Paint p, Font base, Font bb, Font br, float size, boolean bold, boolean rtl, float density) {
+214:         String full = s + "…";
+215:         AttributedString as = attributed(full, -1, null, p, base, bb, br, size, bold, rtl, density);
+216:         return as;
+217:     }
+218: 
+219:     /** النص مع الخطوط (والبدائل) والاتجاه والتنسيقات. off = موضع الفقرة في النص الأصلي (-1 بلا تنسيقات). */
+220:     static AttributedString attributed(String s0, int off, Spanned spans, Paint p, Font base, Font bb, Font br, float size, boolean bold, boolean rtl, float density) {
+221:         // علامات الاتجاه الخفية (LRI/RLI/PDI...) تربك تقسيم الأسطر في Java: تُحذف ويُطبَّق أثرها بمستويات اتجاه صريحة
+222:         int n0 = s0.length();
+223:         int[] map = new int[n0 + 1];
+224:         StringBuilder sb = new StringBuilder(n0);
+225:         java.util.List<int[]> emb = new java.util.ArrayList<>();
+226:         java.util.ArrayDeque<int[]> open = new java.util.ArrayDeque<>();
+227:         for (int i = 0; i < n0; i++) {
+228:             map[i] = sb.length();
+229:             char c = s0.charAt(i);
+230:             if (c == '\u2066' || c == '\u202A' || c == '\u202D') { open.push(new int[]{sb.length(), 2}); continue; }
+231:             if (c == '\u2067' || c == '\u202B' || c == '\u202E') { open.push(new int[]{sb.length(), 1}); continue; }
+232:             if (c == '\u2068') { open.push(new int[]{sb.length(), 0}); continue; }
+233:             if (c == '\u2069' || c == '\u202C') { if (!open.isEmpty()) { int[] o = open.pop(); if (o[1] > 0 && sb.length() > o[0]) emb.add(new int[]{o[0], sb.length(), o[1]}); } continue; }
+234:             if (c == '\u200E' || c == '\u200F' || c == '\u061C') continue;
+235:             sb.append(c);
+236:         }
+237:         map[n0] = sb.length();
+238:         while (!open.isEmpty()) { int[] o = open.pop(); if (o[1] > 0 && sb.length() > o[0]) emb.add(new int[]{o[0], sb.length(), o[1]}); }
+239:         String s = sb.length() == 0 ? " " : sb.toString();
+240:         AttributedString as = new AttributedString(s);
+241:         FontKit.apply(as, s, 0, s.length(), base, size, bold);
+242:         as.addAttribute(TextAttribute.RUN_DIRECTION, rtl ? TextAttribute.RUN_DIRECTION_RTL : TextAttribute.RUN_DIRECTION_LTR);
+243:         for (int[] e : emb) as.addAttribute(TextAttribute.BIDI_EMBEDDING, e[2] == 2 ? (rtl ? 2 : 2) : (rtl ? 3 : 1), e[0], e[1]);
+244:         if ((p.getFlags() & Paint.STRIKE_THRU_TEXT_FLAG) != 0) as.addAttribute(TextAttribute.STRIKETHROUGH, TextAttribute.STRIKETHROUGH_ON);
+245:         if ((p.getFlags() & Paint.UNDERLINE_TEXT_FLAG) != 0) as.addAttribute(TextAttribute.UNDERLINE, TextAttribute.UNDERLINE_ON);
+246:         if (p.getLetterSpacing() != 0) as.addAttribute(TextAttribute.TRACKING, p.getLetterSpacing());
+247:         if (spans != null && off >= 0) applySpans(as, s, off, spans, p, base, bb, br, size, bold, density, map, n0);
+248:         return as;
+249:     }
+250: 
+251:     private static void applySpans(AttributedString as, String s, int off, Spanned spans, Paint p, Font base, Font bb, Font br, float size, boolean bold, float density, int[] map, int n0) {
+252:         int len = n0;
+253:         for (Object o : spans.getSpans(off, off + len, Object.class)) {
+254:             int a = map[Math.max(0, spans.getSpanStart(o) - off)], b = map[Math.min(len, spans.getSpanEnd(o) - off)];
+255:             if (a >= b) continue;
+256:             if (o instanceof ForegroundColorSpan) as.addAttribute(TextAttribute.FOREGROUND, new java.awt.Color(((ForegroundColorSpan) o).getForegroundColor(), true), a, b);
+257:             else if (o instanceof BackgroundColorSpan) as.addAttribute(TextAttribute.BACKGROUND, new java.awt.Color(((BackgroundColorSpan) o).getBackgroundColor(), true), a, b);
+258:             else if (o instanceof UnderlineSpan || o instanceof URLSpan) as.addAttribute(TextAttribute.UNDERLINE, TextAttribute.UNDERLINE_ON, a, b);
+259:             else if (o instanceof StrikethroughSpan) as.addAttribute(TextAttribute.STRIKETHROUGH, TextAttribute.STRIKETHROUGH_ON, a, b);
+260:         }
+261:         for (Object o : spans.getSpans(off, off + len, MetricAffectingSpan.class)) {
+262:             int a = map[Math.max(0, spans.getSpanStart(o) - off)], b = map[Math.min(len, spans.getSpanEnd(o) - off)];
+263:             if (a >= b) continue;
+264:             float sz = size;
+265:             boolean bo = bold;
+266:             if (o instanceof RelativeSizeSpan) sz = size * ((RelativeSizeSpan) o).getSizeChange();
+267:             else if (o instanceof AbsoluteSizeSpan) sz = ((AbsoluteSizeSpan) o).getSize() * (((AbsoluteSizeSpan) o).getDip() ? density : 1f);
+268:             else if (o instanceof StyleSpan) bo = (((StyleSpan) o).getStyle() & Typeface.BOLD) != 0 || bold;
+269:             FontKit.apply(as, s, a, b, bo ? bb : br, sz, bo);
+270:         }
+271:     }
+272: 
+273:     /**
+274:      * يرسم الأسطر داخل عرض w بدءًا من (x,y). mode: 0 طبيعي حسب اتجاه الفقرة، 1 وسط، 2 معاكس، 3 يسار، 4 يمين.
+275:      */
+276:     public void draw(Canvas c, float x, float y, float w, int mode, int color) {
+277:         java.awt.Graphics2D g = c.graphics();
+278:         int a = Math.round(Color.alpha(color) * c.alpha);
+279:         if (a <= 0) return;
+280:         g.setPaint(new java.awt.Color(Color.red(color), Color.green(color), Color.blue(color), a));
+281:         java.awt.Composite old = null;
+282:         if (c.alpha < 0.999f) {
+283:             old = g.getComposite();
+284:             g.setComposite(java.awt.AlphaComposite.getInstance(java.awt.AlphaComposite.SRC_OVER, Math.max(0, Math.min(1, c.alpha))));
+285:             g.setPaint(new java.awt.Color(Color.red(color), Color.green(color), Color.blue(color), Color.alpha(color)));
+286:         }
+287:         for (Line l : lines) {
+288:             if (l.tl == null) continue;
+289:             float lx = x + lineLeft(l, w, mode);
+290:             l.tl.draw(g, lx, y + l.top + l.ascent);
+291:         }
+292:         if (old != null) g.setComposite(old);
+293:     }
+294: 
+295:     public float lineLeft(int i, float w, int mode) { return lineLeft(lines.get(i), w, mode); }
+296: 
+297:     private static float lineLeft(Line l, float w, int mode) {
+298:         // المنطقة المرئية: للسطر العربي في الطرف الأيمن من عرضه الكلي
+299:         float visOff = l.rtl ? l.adv - l.vis : 0;
+300:         boolean right;
+301:         switch (mode) {
+302:             case 1: return (w - l.vis) / 2f - visOff;
+303:             case 2: right = !l.rtl; break;
+304:             case 3: right = false; break;
+305:             case 4: right = true; break;
+306:             default: right = l.rtl; break;
+307:         }
+308:         return right ? w - l.vis - visOff : -visOff;
+309:     }
+310: }

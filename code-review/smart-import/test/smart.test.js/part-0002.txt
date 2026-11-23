@@ -1,0 +1,114 @@
+135:   check("debit/credit/balance columns", tn && roleName(tn, "debit") === "لنا" && roleName(tn, "credit") === "علينا" && roleName(tn, "balance") === "الرصيد", tn && tn.roles);
+136:   check("«الأمين»: مدين/دائن", ta && roleName(ta, "debit") === "مدين" && roleName(ta, "credit") === "دائن", ta && ta.roles);
+137:   check("generic «Sheet3» without account is not imported", t3 && t3.kind === "journal-noaccount" && !t3.use, t3 && t3.kind);
+138:   const r = run(p);
+139:   expectBalances("S2", r, [["مكتب النور", "USD", 122550], ["الأمين", "USD", -160000]]);
+140:   const bn = r.model.balanceChecks.find((b) => b.table === "مكتب النور USD"), ba = r.model.balanceChecks.find((b) => b.table === "الأمين");
+141:   check("running balance: positive = لنا detected, 4 rows equal", bn && bn.sign === "D" && bn.ok === 4 && bn.badN === 0, bn);
+142:   check("running balance: positive = علينا detected on «الأمين», 3 rows equal", ba && ba.sign === "C" && ba.ok === 3 && ba.badN === 0, ba);
+143:   check("carried balance 500 added as an opening", r.model.impliedOpenings.length === 1 && r.model.impliedOpenings[0].minor === 50000n, r.model.impliedOpenings);
+144:   check("totals row skipped", r.model.totalsSkipped === 1, r.model.totalsSkipped);
+145:   check("«in your file» column matches for both", r.rep.rows.filter((x) => x.match === true).length === 2 && !r.rep.rows.some((x) => x.match === false), r.rep.rows.map((x) => [x.office, x.match]));
+146:   files.push(["S2", r, "s2-pass", [["مكتب النور", "USD", 122550], ["الأمين", "USD", -160000]]]);
+147:   // خطأ في الملف: رصيد مكتوب خطأ يجب أن يظهر في الصف نفسه
+148:   const rows = tn.rows;
+149:   const saved = rows[3][4];
+150:   rows[3][4] = { n: 1300 };
+151:   const rb = run(p);
+152:   const bb = rb.model.balanceChecks.find((b) => b.table === "مكتب النور USD");
+153:   check("a wrong balance cell is reported at its row", bb && bb.badN >= 1 && bb.bad[0].row === 4, bb && bb.bad);
+154:   rows[3][4] = saved;
+155:   // اختيار اسم حساب لورقة عامة
+156:   t3.sheetAccount = "الصندوق"; t3.accountFrom = "custom"; t3.kind = "journal"; t3.use = true;
+157:   const r3 = run(p);
+158:   check("generic sheet imported once an account name is chosen (signed: +100 −40 +15)", r3.bal["الصندوق|USD"] === 7500n, r3.bal);
+159: }
+160: 
+161: // ------------------------------------------------------------------------------------------------ S3
+162: console.log("== S3: signed amounts");
+163: {
+164:   const p = prepare(load(["S3-signed.xlsx"]));
+165:   const t = p.a.tables[0];
+166:   check("signed journal (no direction column)", t.kind === "journal" && t.signed, [t.kind, t.signed]);
+167:   const r = run(p);
+168:   expectBalances("S3", r, [["الخال", "USD", 45000], ["النور", "EUR", 100000], ["الخال", "TRY", 300000]]);
+169:   files.push(["S3", r, "s3-pass", [["الخال", "USD", 45000], ["النور", "EUR", 100000], ["الخال", "TRY", 300000]]]);
+170:   p.cfg.positiveIs[t.id] = "C";
+171:   expectBalances("S3 positive = علينا", run(p), [["الخال", "USD", -45000], ["النور", "EUR", -100000], ["الخال", "TRY", -300000]]);
+172: }
+173: 
+174: // ------------------------------------------------------------------------------------------------ S4
+175: console.log("== S4: wide balances table (a column per currency)");
+176: {
+177:   const p = prepare(load(["S4-balances.xlsx"]));
+178:   const t = p.a.tables[0];
+179:   check("balances table with currency columns USD/EUR/TRY", t.kind === "balances" && t.roles.wide && t.roles.wide.map((w) => w.code).join() === "USD,EUR,TRY", [t.kind, t.roles.wide]);
+180:   check("phone column recognised", roleName(t, "phone") === "الهاتف", t.roles);
+181:   const r = run(p);
+182:   expectBalances("S4", r, [["النور", "USD", 150000], ["النور", "EUR", -20000], ["الخال", "USD", -300050], ["الخال", "TRY", 4500000], ["الأمل", "EUR", 9999]]);
+183:   check("5 opening balances, totals row skipped", r.T.opening_balances.length === 5 && r.model.totalsSkipped === 1, [r.T.opening_balances.length, r.model.totalsSkipped]);
+184:   check("phones kept on offices", r.T.offices.find((o) => o.name === "النور").phone === "0933111222" && r.T.offices.find((o) => o.name === "الأمل").phone === "+963944555666");
+185:   files.push(["S4", r, "s4-pass", [["النور", "USD", 150000], ["النور", "EUR", -20000], ["الخال", "USD", -300050], ["الخال", "TRY", 4500000], ["الأمل", "EUR", 9999]]]);
+186: }
+187: 
+188: // ------------------------------------------------------------------------------------------------ S5
+189: console.log("== S5: journal + summaries (formulas, and pasted values with reversed sign)");
+190: {
+191:   const p = prepare(load(["S5-summary.xlsx"]));
+192:   check("Summary (formulas) recognised as a summary, not imported", kind(p, "Summary") === "summary" && !p.a.tables.find((t) => t.label === "Summary").use);
+193:   check("Values (no formulas) recognised as a summary by matching the journal", kind(p, "Values") === "summary");
+194:   const r = run(p);
+195:   expectBalances("S5", r, [["Delta", "USD", 6500], ["Gamma", "USD", -40000], ["Omega", "USD", 7500]]);
+196:   const sc = r.model.summaryChecks;
+197:   check("summary checks: 3/3 (positive = لنا) and 3/3 (positive = علينا)", sc.length === 2 && sc.every((s) => s.ok === 3 && s.n === 3) && sc.map((s) => s.sign).sort().join() === "C,D", sc.map((s) => [s.table, s.sign, s.ok, s.n]));
+198:   check("SUMIFS check cell recomputed (compound formulas skipped)", p.fchecks.length === 1 && p.fchecks[0].ok && p.fchecks[0].computed === 300.25, p.fchecks);
+199:   check("report shows «in your file» = match for all", r.rep.rows.filter((x) => x.match === true).length === 3, r.rep.rows.map((x) => [x.office, x.expected, x.match]));
+200:   files.push(["S5", r, "s5-pass", [["Delta", "USD", 6500], ["Gamma", "USD", -40000], ["Omega", "USD", 7500]]]);
+201: }
+202: 
+203: // ------------------------------------------------------------------------------------------------ S6
+204: console.log("== S6: CSV (semicolons, European numbers, text dates)");
+205: {
+206:   const p = prepare(load(["S6-journal.csv"]));
+207:   const t = p.a.tables[0];
+208:   check("CSV journal with لنا/علينا columns", t && t.kind === "journal" && roleName(t, "debit") === "لنا" && roleName(t, "credit") === "علينا", t && [t.kind, t.roles]);
+209:   const r = run(p);
+210:   expectBalances("S6", r, [["مكتب الشام", "USD", 95550], ["مكتب حلب", "EUR", -80000]]);
+211:   const d0 = new Date(r.T.tx[0].created_at);
+212:   check("text date 15/06/2026 read as 15 June", d0.getDate() === 15 && d0.getMonth() === 5 && d0.getFullYear() === 2026, d0.toISOString());
+213:   files.push(["S6", r, "s6-pass", [["مكتب الشام", "USD", 95550], ["مكتب حلب", "EUR", -80000]]]);
+214: }
+215: 
+216: // ------------------------------------------------------------------------------------------------ S7
+217: console.log("== S7: a file per office (generic sheet names) with fee + balance columns");
+218: {
+219:   const p = prepare(load(["الربيع.xlsx", "السلام.xlsx"]));
+220:   const t = p.a.tables[0];
+221:   check("account from file name", p.a.tables.map((x) => x.sheetAccount).join() === "الربيع,السلام" && p.a.tables.every((x) => x.kind === "journal" && x.accountFrom === "file"), p.a.tables.map((x) => [x.kind, x.sheetAccount]));
+222:   check("fee column found and its direction (لنا) learnt from the balance column", roleName(t, "fee") === "الأجرة" && t.feeDetected === "D" && p.a.tables[1].feeDetected === "D", [t.roles, t.feeDetected]);
+223:   const r = run(p);
+224:   expectBalances("S7", r, [["الربيع", "USD", 71500], ["السلام", "USD", -19700]]);
+225:   check("fees recorded on the transactions (FEE entries)", r.T.tx.filter((x) => x.fee_minor > 0).length === 3 && r.T.journal_entries.filter((e) => e.kind === "FEE").length === 3);
+226:   check("running balances all equal", r.model.balanceChecks.every((b) => b.badN === 0 && b.ok === b.rows && b.rows > 0), r.model.balanceChecks);
+227:   files.push(["S7", r, "s7-pass", [["الربيع", "USD", 71500], ["السلام", "USD", -19700]]]);
+228:   p.cfg.feeDir[t.id] = "X";
+229:   const rx = run(p);
+230:   const bx = rx.model.balanceChecks[0];
+231:   check("fee «not counted»: balance without fee; the balance column (sign of the other file) shows the mismatch, no opening is invented",
+232:     rx.bal["الربيع|USD"] === 70000n && bx.how === "book" && bx.badN === 3 && bx.implied === 0, [rx.bal, bx]);
+233: }
+234: 
+235: // ------------------------------------------------------------------------------------------------ أداة النقل: نفس النتيجة على ملفاتها
+236: console.log("== migration-tool samples A and B give the same balances as the migration tool");
+237: {
+238:   const pA = prepare(load(["sample-A.xlsx"]));
+239:   const rA = run(pA);
+240:   const expA = [["كاش شام", "USD", 130525], ["كاش شام", "SYP", -1250000], ["الأمين للصرافة", "USD", -20000], ["الأمين للصرافة", "EUR", 5000], ["الامين للصرافه", "USD", 1000]];
+241:   expectBalances("sample-A", rA, expA);
+242:   check("sample-A: phone from balances table", rA.T.offices.find((o) => o.name === "كاش شام").phone === "0933123456");
+243:   files.push(["MA", rA, "pass-A-1234", expA]);
+244:   const pB = prepare(load(["sample-B-ledger.xlsx"]));
+245:   const rB = run(pB);
+246:   expectBalances("sample-B", rB, [["كاش شام", "USD", 90000], ["الأمين", "USD", -10000]]);
+247:   const one = rB.model.balanceChecks.find((b) => b.table === "الأمين");
+248:   check("single-row sheet takes the sign of the other sheets and matches", one && one.how === "book" && one.ok === 1, one);

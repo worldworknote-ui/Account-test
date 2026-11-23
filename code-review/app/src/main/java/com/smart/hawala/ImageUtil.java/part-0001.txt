@@ -1,0 +1,94 @@
+1: package com.smart.hawala;
+2: 
+3: import android.graphics.Bitmap;
+4: import android.graphics.BitmapFactory;
+5: import android.graphics.Matrix;
+6: import android.media.ExifInterface;
+7: import java.io.ByteArrayInputStream;
+8: import java.io.ByteArrayOutputStream;
+9: 
+10: /** تصغير صور الإيصالات وتصحيح اتجاهها قبل حفظها، لتقليل حجم البيانات والنسخ الاحتياطية. */
+11: public final class ImageUtil {
+12:     private static final int MAX_EDGE = 1600;
+13: 
+14:     private ImageUtil() {}
+15: 
+16:     /** يفك الصورة بحجم مصغّر (لا تتجاوز حافتها الطويلة maxEdge) لتوفير الذاكرة عند العرض والتصدير. */
+17:     public static Bitmap decodeSampled(byte[] raw, int maxEdge) {
+18:         if (raw == null || raw.length == 0) return null;
+19:         try {
+20:             BitmapFactory.Options bounds = new BitmapFactory.Options();
+21:             bounds.inJustDecodeBounds = true;
+22:             BitmapFactory.decodeByteArray(raw, 0, raw.length, bounds);
+23:             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
+24:             int sample = 1;
+25:             while (Math.max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxEdge) sample *= 2;
+26:             BitmapFactory.Options opts = new BitmapFactory.Options();
+27:             opts.inSampleSize = sample;
+28:             return BitmapFactory.decodeByteArray(raw, 0, raw.length, opts);
+29:         } catch (Throwable t) {
+30:             return null;
+31:         }
+32:     }
+33: 
+34:     /** أبعاد الصورة دون فكها. */
+35:     public static int[] size(byte[] raw) {
+36:         if (raw == null) return null;
+37:         BitmapFactory.Options bounds = new BitmapFactory.Options();
+38:         bounds.inJustDecodeBounds = true;
+39:         BitmapFactory.decodeByteArray(raw, 0, raw.length, bounds);
+40:         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
+41:         return new int[]{bounds.outWidth, bounds.outHeight};
+42:     }
+43: 
+44:     public static byte[] shrink(byte[] raw) {
+45:         try {
+46:             BitmapFactory.Options bounds = new BitmapFactory.Options();
+47:             bounds.inJustDecodeBounds = true;
+48:             BitmapFactory.decodeByteArray(raw, 0, raw.length, bounds);
+49:             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return raw;
+50: 
+51:             int sample = 1;
+52:             while (Math.max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= MAX_EDGE) sample *= 2;
+53:             BitmapFactory.Options opts = new BitmapFactory.Options();
+54:             opts.inSampleSize = sample;
+55:             Bitmap decoded = BitmapFactory.decodeByteArray(raw, 0, raw.length, opts);
+56:             if (decoded == null) return raw;
+57: 
+58:             int rotation = 0;
+59:             try {
+60:                 ExifInterface exif = new ExifInterface(new ByteArrayInputStream(raw));
+61:                 int o = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+62:                 if (o == ExifInterface.ORIENTATION_ROTATE_90) rotation = 90;
+63:                 else if (o == ExifInterface.ORIENTATION_ROTATE_180) rotation = 180;
+64:                 else if (o == ExifInterface.ORIENTATION_ROTATE_270) rotation = 270;
+65:             } catch (Throwable ignored) {
+66:                 // بدون معلومات اتجاه
+67:             }
+68: 
+69:             int w = decoded.getWidth();
+70:             int h = decoded.getHeight();
+71:             float scale = Math.min(1f, (float) MAX_EDGE / Math.max(w, h));
+72:             Bitmap out = decoded;
+73:             if (scale < 1f || rotation != 0) {
+74:                 Matrix m = new Matrix();
+75:                 if (scale < 1f) m.postScale(scale, scale);
+76:                 if (rotation != 0) m.postRotate(rotation);
+77:                 out = Bitmap.createBitmap(decoded, 0, 0, w, h, m, true);
+78:             }
+79:             ByteArrayOutputStream z = new ByteArrayOutputStream();
+80:             out.compress(Bitmap.CompressFormat.JPEG, 85, z);
+81:             if (out != decoded) out.recycle();
+82:             decoded.recycle();
+83:             byte[] res = z.toByteArray();
+84:             return res.length > 0 ? res : raw;
+85:         } catch (Throwable t) {
+86:             return raw;
+87:         }
+88:     }
+89: 
+90:     /** هل البايتات صورة يمكن فكها؟ */
+91:     public static boolean isImage(byte[] raw) {
+92:         return size(raw) != null;
+93:     }
+94: }

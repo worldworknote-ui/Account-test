@@ -1,0 +1,130 @@
+156:         A.updateOffice(nour, "النور — تعديل المحل", "", "222", "", "", "", true, null, null, ue, new HashMap<>());
+157:         SyncEngine.Result r3 = eA.sync();
+158:         eB.sync();
+159:         SyncEngine.Result r3a = eA.sync();
+160:         eB.sync();
+161:         check(A.office(nour).name.equals(B.office(nour).name) && A.office(nour).name.startsWith("النور — تعديل"), "الجهازان اتفقا على تعديل واحد: " + A.office(nour).name);
+162:         Db W = kinds(A).contains("EDIT_LOST") ? A : B;
+163:         check(kinds(W).contains("EDIT_LOST") && detail(W, "EDIT_LOST").contains("المكتب «النور"), "الجهاز الذي بقي تعديله يُعلَم أن تعديلًا من جهاز آخر لم يُطبَّق: " + detail(W, "EDIT_LOST"));
+164:         check(kinds(A).contains("EDIT_LOST") != kinds(B).contains("EDIT_LOST"), "تنبيه واحد لا اثنان (على الجهاز الذي حُسم عنده)");
+165:         boolean red = false;
+166:         for (String[] al : SyncEngine.homeAlerts(W)) if ("1".equals(al[1]) && al[0].contains("مراجعت")) red = true;
+167:         check(red, "ويظهر في الرئيسية كأمر يحتاج مراجعة");
+168: 
+169:         System.out.println("== 4) تغيّر الصلاحيات من جهاز آخر");
+170:         long admin = A.addUser("المدير", Auth.ADMIN, null, "123456");
+171:         as(A, admin);
+172:         long clerk = A.addUser("سامر", Auth.CUSTOM, "VIEW,TX_ADD", "1111");
+173:         long acct = A.addUser("رنا", Auth.CUSTOM, "VIEW,TX_ADD,VERIFY", "2222");
+174:         syncAll(eA, eB);
+175:         SyncEngine.resolveAll(B);
+176:         A.updateUser(clerk, "سامر", Auth.CUSTOM, "VIEW,TX_ADD,TX_CANCEL,APPROVE", true);
+177:         A.updateUser(acct, "رنا", Auth.CUSTOM, "VIEW,TX_ADD,VERIFY", false);
+178:         eA.sync();
+179:         SyncEngine.Result r4 = eB.sync();
+180:         List<String> rc = new ArrayList<>();
+181:         for (String[] c : SyncEngine.conflicts(B)) if (c[2].equals("ROLE_CHANGED")) rc.add(c[5]);
+182:         check(rc.size() == 2 && rc.toString().contains("سامر") && rc.toString().contains("تغيّرت صلاحياته") && rc.toString().contains("أُوقف"), "الجهاز الآخر يُعلَم بتغيّر الصلاحيات والإيقاف: " + rc);
+183:         check(r4.notices == 2 && r4.review() >= 2, "وتُعدّ للإشعار");
+184:         A.updateUser(acct, "رنا", Auth.CUSTOM, "VIEW,TX_ADD,VERIFY", true);
+185:         syncAll(eA, eB);
+186: 
+187:         System.out.println("== 5) التحقق من عدة حركات دفعة واحدة");
+188:         Map<Long, String> roles = new HashMap<>();
+189:         roles.put(nour, "CHECK");
+190:         A.setUserOffices(acct, roles);
+191:         as(A, clerk);
+192:         List<Long> ids = new ArrayList<>();
+193:         for (int i = 0; i < 4; i++) ids.add(A.addTx(tx(nour, true, 1000 + i, "USD", "ح" + i), null));
+194:         as(A, acct);
+195:         long mine = A.addTx(tx(nour, true, 777, "USD", "حركتي"), null);
+196:         int waiting = A.awaitingMyCheck(60, 200).size();
+197:         List<Long> all = new ArrayList<>(ids);
+198:         all.add(mine);
+199:         Object[] vr = A.verifyTxs(all);
+200:         @SuppressWarnings("unchecked") List<String> refused = (List<String>) vr[1];
+201:         check((Integer) vr[0] == 4 && refused.size() == 1 && refused.get(0).startsWith("#" + mine), "سُجّل التحقق من 4 ورُفضت حركتي أنا بسببها: " + refused);
+202:         check(waiting >= 4 && A.awaitingMyCheck(60, 200).size() == waiting - 4, "لم يبقَ منها شيء بانتظار تحققي: كان " + waiting + " وصار " + A.awaitingMyCheck(60, 200).size());
+203:         as(A, clerk);
+204:         check(throwsMsg(() -> A.verifyTxs(ids), null), "من لا يملك صلاحية التحقق يُرفض في طبقة البيانات");
+205: 
+206:         System.out.println("== 6) حد محاولات الرمز في طبقة البيانات");
+207:         boolean wrongs = true;
+208:         for (int i = 0; i < 5; i++) wrongs &= !A.verifyPin(clerk, "0000");
+209:         check(wrongs, "5 محاولات خاطئة تُرفض كلٌّ بوصفها خطأ");
+210:         check(throwsMsg(() -> A.verifyPin(clerk, "1111"), "انتظر"), "بعدها حتى الرمز الصحيح يُرفض مؤقتًا (لا تخمين سريع من أي واجهة)");
+211:         check(A.verifyPin(acct, "2222"), "ولا يتأثر مستخدم آخر");
+212: 
+213:         System.out.println("== 7) الإعدادات الحساسة بصلاحيتها في طبقة البيانات");
+214:         as(A, clerk);
+215:         check(throwsMsg(() -> A.setSettingQuiet("lock_before", "0"), null), "موظف لا يفك الإقفال المحاسبي بكتابة الإعداد مباشرة");
+216:         check(throwsMsg(() -> A.setSetting("approval_on", "0"), null) && throwsMsg(() -> A.deleteSetting("approval_usd"), null), "ولا يعطّل الاعتماد");
+217:         A.setSettingQuiet("rc_title", "كشف");
+218:         check(A.setting("rc_title", "").equals("كشف"), "والإعدادات العادية تُكتب كما كانت");
+219:         as(A, admin);
+220:         A.setSetting("approval_on", "0");
+221:         check(A.setting("approval_on", "").equals("0"), "والمدير يكتبها");
+222: 
+223:         // ============ 10.17 ============
+224:         System.out.println("== 11) الاسم الظاهر: المحاسبون يرون الاسم المختار والمدير يرى اسم الدخول");
+225:         as(A, admin);
+226:         A.setNick(clerk, "أبو سامي");
+227:         as(A, clerk);
+228:         long nt = A.addTx(tx(nour, true, 4321, "USD", "حركة سامر"), null);
+229:         check(A.tx(nt).userName.equals("سامر") && A.tx(nt).realUser().equals("سامر"), "صاحب الحركة يرى اسمه");
+230:         as(A, acct);
+231:         Model.Tx seen11 = A.tx(nt);
+232:         check(seen11.userName.equals("أبو سامي") && seen11.realUser().equals("سامر"), "محاسب آخر يرى الاسم الظاهر، والمنطق يعرف الحقيقي: " + seen11.userName);
+233:         check(!Db.enteredBy(seen11, A.user(acct)) && Db.enteredBy(seen11, A.user(clerk)), "«حركتي؟» لا يتأثر بالاسم الظاهر");
+234:         boolean leak = false;
+235:         for (String ln : A.txPeople(seen11)) if (ln.contains("سامر")) leak = true;
+236:         check(!leak, "تفاصيل الحركة (من أدخلها) بلا اسم الدخول لغير المدير");
+237:         as(A, admin);
+238:         check(A.tx(nt).userName.equals("سامر"), "المدير يرى اسم الدخول");
+239:         as(A, acct);
+240:         A.setNick(acct, "المحاسبة");
+241:         check(A.user(acct).nick.equals("المحاسبة"), "المحاسب يختار اسمه الظاهر بنفسه");
+242:         check(throwsMsg(() -> A.setNick(clerk, "شيء"), null), "ولا يغيّر اسم غيره بلا صلاحية المستخدمين");
+243:         check(throwsMsg(() -> A.setNick(acct, "المدير"), "مستخدم آخر"), "ولا ينتحل اسم مستخدم آخر");
+244:         as(A, admin);
+245:         syncAll(eA, eB);
+246:         as(B, acct);
+247:         boolean onB = false;
+248:         for (Model.Tx t : B.recentTx(500)) if (t.id == nt) onB = t.userName.equals("أبو سامي");
+249:         check(onB, "الاسم الظاهر يصل بالمزامنة ويُطبَّق على الجهاز الآخر");
+250:         boolean noRoleNoise = true;
+251:         for (String[] c : SyncEngine.conflicts(B)) if (c[2].equals("ROLE_CHANGED") && c[5].contains("أبو سامي")) noRoleNoise = false;
+252:         check(noRoleNoise, "تغيير الاسم الظاهر لا يُعدّ تغيّر صلاحيات");
+253: 
+254:         System.out.println("== 12) المدير يعيد تسمية جهاز منضم");
+255:         as(A, admin);
+256:         as(B, admin);
+257:         String devB = SyncEngine.status(B).device;
+258:         SmartApp.currentUser = A.user(admin);
+259:         eA.renameDevice(devB, "هاتف رنا");
+260:         boolean inA = false;
+261:         for (org.json.JSONObject m : SyncEngine.status(A).members) if (m.optString("dev").equals(devB)) inA = m.optString("name").equals("هاتف رنا");
+262:         check(inA, "الاسم الجديد يظهر عند المدير فورًا");
+263:         eB.sync();
+264:         check("هاتف رنا".equals(SyncEngine.status(B).deviceName), "والجهاز نفسه يعتمده بعد مزامنته: " + SyncEngine.status(B).deviceName);
+265:         eB.sync();
+266:         eA.sync();
+267:         inA = false;
+268:         for (org.json.JSONObject m : SyncEngine.status(A).members) if (m.optString("dev").equals(devB)) inA = m.optString("name").equals("هاتف رنا");
+269:         check(inA, "ويبقى بعد جولات المزامنة");
+270:         boolean noNews = true;
+271:         for (String[] c : SyncEngine.conflicts(A)) if ((c[2].equals("DEVICE_GONE") || c[2].equals("DEVICE_JOINED")) && c[5].contains("رنا")) noNews = false;
+272:         check(noNews, "التسمية لا تُحسب خروج جهاز أو دخوله");
+273:         as(A, clerk);
+274:         check(throwsMsg(() -> {
+275:             try {
+276:                 eA.renameDevice(devB, "اسم آخر");
+277:             } catch (RuntimeException e) {
+278:                 throw e;
+279:             } catch (Exception e) {
+280:                 throw new RuntimeException(e);
+281:             }
+282:         }, null), "غير المدير لا يسمّي الأجهزة");
+283: 
+284:         System.out.println("== 13) رسائل المدير إلى المحاسبين");
+285:         as(A, clerk);

@@ -1,0 +1,29 @@
+301:             syncAll(new SyncEngine(D2, new DriveSyncFolder(toks)), new SyncEngine(D1, new DriveSyncFolder(toks)));
+302:             check(bal(D1).equals(bal(D2)) && refreshes[0] > 0, "رمز منتهي (401) يُجدَّد تلقائيًا وتكمل المزامنة (" + refreshes[0] + " تجديد)");
+303:             Set<String> names = new HashSet<>();
+304:             int dupMembers = 0;
+305:             for (Object[] f : fd.files.values()) if (!names.add((String) f[0])) dupMembers++;
+306:             check(dupMembers == 0, "استبدال ملف العضو لا يترك نسخًا مكررة في Drive");
+307:             // 10.4: الصورة الكبيرة ملف مستقل، والتنظيف في Drive
+308:             int bigImages = 0;
+309:             for (Object[] f : fd.files.values()) if (((String) f[0]).startsWith("a-") && ((byte[]) f[1]).length > 5_000_000) bigImages++;
+310:             check(bigImages == 1, "الصورة (5MB) ملف واحد مستقل في Drive، لا داخل اللقطة");
+311:             SyncEngine g1 = new SyncEngine(D1, new DriveSyncFolder(toks)), g2 = new SyncEngine(D2, new DriveSyncFolder(toks));
+312:             for (int i = 0; i < 155; i++) {
+313:                 D1.addTx(SyncDbTest.tx(d1o, i % 2 == 0, 5 + i, "USD", "د" + i), null);
+314:                 g1.sync();
+315:             }
+316:             syncAll(g2, g1);
+317:             int pBefore = 0, pAfter = 0;
+318:             for (Object[] f : fd.files.values()) if (((String) f[0]).startsWith("p-")) pBefore++;
+319:             g1.clean(true);
+320:             for (Object[] f : fd.files.values()) if (((String) f[0]).startsWith("p-")) pAfter++;
+321:             check(pAfter < pBefore - 100 && bal(D1).equals(bal(D2)), "التنظيف في Drive حذف الحزم القديمة (" + pBefore + " ← " + pAfter + ")");
+322:             fd.srv.stop(0);
+323:         } finally {
+324:             node.destroy();
+325:         }
+326:         System.out.println("\n" + passes + " نجح، " + fails + " فشل");
+327:         if (fails > 0) System.exit(1);
+328:     }
+329: }

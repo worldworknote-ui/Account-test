@@ -1,0 +1,170 @@
+165:             if (n != null && !n.trim().isEmpty()) c.name = n.trim();
+166:             c.currencies.addAll(list(settings.get("cash_currencies")));
+167:             c.strict = "1".equals(settings.get("cash_strict"));
+168:             c.allowInternal = !"0".equals(settings.get("cash_allow_internal"));
+169:             addExtra(c.expenseCats, settings.get("cash_cats_exp"));
+170:             addExtra(c.inCats, settings.get("cash_cats_in"));
+171:             addExtra(c.outCats, settings.get("cash_cats_out"));
+172:             return c;
+173:         }
+174: 
+175:         /**
+176:          * 9.0.1: كل الصناديق. الأول (رقم 1) من الإعدادات القديمة كما هو (متوافق مع 9.0 والماك)، والإضافية في «cash_boxes»
+177:          * (JSON: id, name, cur, active)، وترث الربط الإلزامي والبنود من الأول (سياسة المكتب واحدة).
+178:          */
+179:         public static List<Config> boxes(Map<String, String> settings) {
+180:             List<Config> out = new ArrayList<>();
+181:             Config main = from(settings);
+182:             out.add(main);
+183:             if (!main.on) return out;
+184:             try {
+185:                 org.json.JSONArray a = new org.json.JSONArray(Model.nz(settings.get("cash_boxes")).isEmpty() ? "[]" : settings.get("cash_boxes"));
+186:                 for (int i = 0; i < a.length(); i++) {
+187:                     org.json.JSONObject o = a.getJSONObject(i);
+188:                     long id = o.optLong("id", 0);
+189:                     if (id <= 1) continue;
+190:                     Config c = from(settings);
+191:                     c.id = id;
+192:                     c.name = o.optString("name", "صندوق " + id).trim();
+193:                     if (c.name.isEmpty()) c.name = "صندوق " + id;
+194:                     c.currencies.clear();
+195:                     c.currencies.addAll(list(o.optString("cur", "")));
+196:                     c.active = o.optBoolean("active", true);
+197:                     out.add(c);
+198:                 }
+199:             } catch (Exception ignored) {
+200:                 // قائمة تالفة: الصندوق الرئيسي وحده
+201:             }
+202:             return out;
+203:         }
+204: 
+205:         /** قائمة الصناديق الإضافية بصيغة الحفظ. */
+206:         public static String boxesJson(List<Config> boxes) {
+207:             org.json.JSONArray a = new org.json.JSONArray();
+208:             for (Config c : boxes) {
+209:                 if (c.id <= 1) continue;
+210:                 org.json.JSONObject o = new org.json.JSONObject();
+211:                 try {
+212:                     o.put("id", c.id).put("name", c.name).put("cur", join(c.currencies)).put("active", c.active);
+213:                 } catch (Exception ignored) {
+214:                     // لا يحدث
+215:                 }
+216:                 a.put(o);
+217:             }
+218:             return a.toString();
+219:         }
+220: 
+221:         public static Config find(List<Config> boxes, long id) {
+222:             for (Config c : boxes) if (c.id == id) return c;
+223:             return null;
+224:         }
+225:     }
+226: 
+227:     /** إدخال حركة صندوق جديدة (الواجهة تملؤه، وDb يتحقق به ثم يكتب). */
+228:     public static final class Input {
+229:         public String kind = IN, currency;
+230:         public long amount;
+231:         /** لـ ADJUST فقط: +1 زيادة، −1 عجز. */
+232:         public int adjustDir = 1;
+233:         public long fee;
+234:         public String feeSide = "";
+235:         /** الأجرة نقدًا في الصندوق؛ بدون مكتب تكون نقدًا دائمًا. */
+236:         public boolean feeInCash = true;
+237:         public String category = "", party = "", description = "";
+238:         public Long officeId;
+239:         public long when;
+240:         /** صرف العملة: العملة المستلمة ومبلغها وسعر الصرف المكتوب. */
+241:         public String toCurrency;
+242:         public long toAmount;
+243:         public String rate = "";
+244:         /** 9.0.1: الصندوق (عدة صناديق)، وصندوق الوجهة للتحويل، وجهة العملية (بيع/شراء). */
+245:         public long boxId = 1;
+246:         public Long toBox;
+247:         public String side = SELL;
+248:         /** 9.0.1: حساب العميل، والعملة والمبلغ اللذان يُقيَّدان على حسابه (قد تختلف عن عملة النقد). */
+249:         public Long clientId;
+250:         public String clientCurrency;
+251:         public long clientAmount;
+252: 
+253:         public int dir() {
+254:             switch (kind) {
+255:                 case OPENING: case IN: return 1;
+256:                 case ADJUST: return adjustDir >= 0 ? 1 : -1;
+257:                 case EXCHANGE: return BUY.equals(side) ? 1 : -1;
+258:                 default: return -1;
+259:             }
+260:         }
+261: 
+262:         /** العملة والمبلغ الخارجان من الصندوق (للتنبيه من العجز)، أو null إن لم يخرج شيء. */
+263:         public Object[] outgoing() {
+264:             if (EXCHANGE.equals(kind)) return BUY.equals(side) ? new Object[]{toCurrency, toAmount} : new Object[]{currency, amount};
+265:             long fee = this.fee > 0 && (officeId == null || feeInCash) ? (FEE_US.equals(feeSide) ? this.fee : -this.fee) : 0;
+266:             long change = dir() * amount + fee;
+267:             return change < 0 ? new Object[]{currency, -change} : null;
+268:         }
+269:     }
+270: 
+271:     /**
+272:      * 9.0.1: أثر الإدخال على نقد الصندوق لكل عملة (قبل التسجيل، للمعاينة): الداخل موجب والخارج سالب.
+273:      * التحويل: أثره على الصندوق المصدر فقط (الوجهة تستلم المبلغ نفسه).
+274:      */
+275:     public static Map<String, Long> changes(Input in) {
+276:         Map<String, Long> m = new LinkedHashMap<>();
+277:         if (in == null || in.currency == null) return m;
+278:         if (EXCHANGE.equals(in.kind)) {
+279:             int d = in.dir();
+280:             m.put(in.currency, d * in.amount);
+281:             if (in.toCurrency != null) m.put(in.toCurrency, -d * in.toAmount);
+282:             return m;
+283:         }
+284:         if (TRANSFER.equals(in.kind)) {
+285:             m.put(in.currency, -in.amount);
+286:             return m;
+287:         }
+288:         long fee = in.fee > 0 && (in.officeId == null || in.feeInCash) ? (FEE_US.equals(in.feeSide) ? in.fee : -in.fee) : 0;
+289:         m.put(in.currency, in.dir() * in.amount + fee);
+290:         return m;
+291:     }
+292: 
+293:     /** نص عملية البيع أو الشراء: «بيع 1,000 USD بسعر 0.92 = 920 EUR». */
+294:     public static String exchangeText(Input in, Map<String, Integer> decimals) { return exchangeText(in, decimals, false); }
+295: 
+296:     /** iso: عزل الأرقام باتجاهها (للعرض على الشاشة؛ لا للتقارير المطبوعة). */
+297:     public static String exchangeText(Input in, Map<String, Integer> decimals, boolean iso) {
+298:         String l = iso ? "\u2066" : "", r = iso ? "\u2069" : "";
+299:         String t = (BUY.equals(in.side) ? "شراء " : "بيع ") + l + Model.fmt(in.amount, dec(decimals, in.currency)) + " " + in.currency + r;
+300:         if (!Model.nz(in.rate).isEmpty()) t += " بسعر " + l + in.rate + " " + in.toCurrency + r;
+301:         return t + (BUY.equals(in.side) ? "، تدفع " : "، تستلم ") + l + Model.fmt(in.toAmount, dec(decimals, in.toCurrency)) + " " + in.toCurrency + r;
+302:     }
+303: 
+304:     /**
+305:      * 9.0.1: قراءة سعر صرف كما يكتبه الناس: النقطة الوحيدة عشرية دائمًا (1.085 = واحد وخمسة وثمانون جزءًا من ألف، لا 1085)،
+306:      * والفاصلة الوحيدة قبل 3 أرقام فاصلة آلاف (13,500) وإلا فعشرية (0,92)، والأرقام العربية مقبولة. null للفارغ أو غير الصالح.
+307:      */
+308:     public static BigDecimal rateDecimal(String text) {
+309:         if (text == null) return null;
+310:         StringBuilder b = new StringBuilder();
+311:         for (char ch : text.trim().toCharArray()) {
+312:             if (ch >= 0x0660 && ch <= 0x0669) b.append((char) ('0' + (ch - 0x0660)));
+313:             else if (ch >= 0x06F0 && ch <= 0x06F9) b.append((char) ('0' + (ch - 0x06F0)));
+314:             else if (ch == 0x066B) b.append('.');
+315:             else if (ch == 0x066C || ch == 0x060C) b.append(',');
+316:             else if (ch == ' ' || ch == 0x00A0 || ch == 0x200F || ch == 0x200E || ch == '\'') continue;
+317:             else b.append(ch);
+318:         }
+319:         String s = b.toString();
+320:         if (s.isEmpty()) return null;
+321:         int dots = s.length() - s.replace(".", "").length(), commas = s.length() - s.replace(",", "").length();
+322:         if (dots > 0 && commas > 0) {
+323:             boolean dotLast = s.lastIndexOf('.') > s.lastIndexOf(',');
+324:             s = dotLast ? s.replace(",", "") : s.replace(".", "").replace(',', '.');
+325:         } else if (dots > 1) s = s.replace(".", "");
+326:         else if (commas > 1) s = s.replace(",", "");
+327:         else if (commas == 1) {
+328:             String after = s.substring(s.indexOf(',') + 1);
+329:             s = after.length() == 3 && s.indexOf(',') > 0 ? s.replace(",", "") : s.replace(',', '.');
+330:         }
+331:         if (!s.matches("[0-9]*\\.?[0-9]+|[0-9]+\\.")) return null;
+332:         try {
+333:             BigDecimal r = new BigDecimal(s);
+334:             return r.signum() > 0 ? r.stripTrailingZeros() : null;

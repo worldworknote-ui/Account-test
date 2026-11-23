@@ -1,0 +1,173 @@
+3413:     /** يوقف تحويل التشفير في الخلفية (قبل الاستعادة أو الإضافة أو نسخة الأمان). */
+3414:     static volatile boolean stopMaintenance;
+3415:     /** تحمله كل دفعة تحويل؛ نسخة الأمان تنتظره حتى لا تُنسخ قاعدة البيانات أثناء كتابة دفعة. */
+3416:     static final Object MAINT_LOCK = new Object();
+3417: 
+3418:     /**
+3419:      * يحوّل الحقول المشفرة بالطريقة القديمة (Keystore لكل حقل، بطيئة) إلى مفتاح البيانات السريع، في الخلفية على دفعات.
+3420:      * لا يغيّر أي قيمة: يفك النص ويعيد تشفيره فقط، ويحدّث الصف بشرط أنه لم يتغير منذ قراءته.
+3421:      */
+3422:     public void reencryptLegacy() {
+3423:         if (!Crypto.fast() || "1".equals(setting("crypto_v2_done", "0"))) return;
+3424:         for (Map.Entry<String, List<String>> e : SENSITIVE.entrySet()) {
+3425:             String table = e.getKey();
+3426:             for (String col : e.getValue()) {
+3427:                 long after = 0;
+3428:                 while (true) {
+3429:                   synchronized (MAINT_LOCK) {
+3430:                     if (stopMaintenance) return;
+3431:                     List<Object[]> batch = new ArrayList<>();
+3432:                     try (Cursor c = getReadableDatabase().rawQuery("SELECT rowid," + col + " FROM " + table + " WHERE rowid>" + after + " ORDER BY rowid LIMIT 100", null)) {
+3433:                         while (c.moveToNext()) batch.add(new Object[]{c.getLong(0), c.isNull(1) ? null : c.getString(1)});
+3434:                     }
+3435:                     if (batch.isEmpty()) break;
+3436:                     after = (Long) batch.get(batch.size() - 1)[0];
+3437:                     List<Object[]> upd = new ArrayList<>();
+3438:                     for (Object[] r : batch) {
+3439:                         String v = (String) r[1];
+3440:                         if (!Crypto.isLegacy(v)) continue;
+3441:                         try {
+3442:                             upd.add(new Object[]{Crypto.enc(Crypto.decStrict(v)), r[0], v});
+3443:                         } catch (Exception x) {
+3444:                             // حقل لا يُفك (تالف أو نص عادي): يبقى كما هو
+3445:                         }
+3446:                     }
+3447:                     if (upd.isEmpty() || stopMaintenance) continue;
+3448:                     SQLiteDatabase d = getWritableDatabase();
+3449:                     d.beginTransaction();
+3450:                     try {
+3451:                         // إعادة تشفير محلية بالمحتوى نفسه: لا تُرسل للأجهزة الأخرى
+3452:                         SyncStore.capture(d, false);
+3453:                         for (Object[] u : upd) d.execSQL("UPDATE " + table + " SET " + col + "=? WHERE rowid=? AND " + col + "=?", u);
+3454:                         SyncStore.capture(d, syncPrefix > 0);
+3455:                         d.setTransactionSuccessful();
+3456:                     } finally {
+3457:                         d.endTransaction();
+3458:                     }
+3459:                   }
+3460:                 }
+3461:             }
+3462:         }
+3463:         setSettingQuiet("crypto_v2_done", "1");
+3464:     }
+3465: 
+3466:     /** آخر الحركات النشطة (للصفحة الرئيسية) دون قراءة السجل كله. */
+3467:     public List<Model.Tx> recentTx(int limit) {
+3468:         List<Model.Tx> a = new ArrayList<>();
+3469:         try (Cursor c = getReadableDatabase().rawQuery("SELECT " + TX_COLS + " FROM tx WHERE status='ACTIVE' ORDER BY created_at DESC,id DESC LIMIT " + Math.max(1, Math.min(limit, 100)), null)) {
+3470:             while (c.moveToNext()) a.add(readTx(c));
+3471:         }
+3472:         return a;
+3473:     }
+3474: 
+3475:     public List<Model.Tx> transactions(Long office, boolean cancelled) {
+3476:         TxFilter f = new TxFilter();
+3477:         f.office = office;
+3478:         f.includeCancelled = cancelled;
+3479:         return txLog(f);
+3480:     }
+3481: 
+3482:     public Model.Tx tx(long id) {
+3483:         try (Cursor c = getReadableDatabase().rawQuery("SELECT " + TX_COLS + " FROM tx WHERE id=" + id, null)) {
+3484:             return c.moveToFirst() ? readTx(c) : null;
+3485:         }
+3486:     }
+3487: 
+3488:     /**
+3489:      * 10.2: حركات مشابهة (المكتب والنوع والعملة والمبلغ نفسها، والاسم نفسه، خلال window حول التاريخ) ما زالت نشطة أو معلّقة.
+3490:      * تُستخدم لكشف حركة سُجّلت مرتين من جهازين قبل أن يتزامنا، وعند الاعتماد.
+3491:      */
+3492:     public List<Model.Tx> similarTx(SQLiteDatabase d, Model.Tx t, long window) {
+3493:         List<Model.Tx> out = new ArrayList<>();
+3494:         try (Cursor c = d.rawQuery("SELECT " + TX_COLS + " FROM tx WHERE office_id=? AND type=? AND currency=? AND amount_minor=? AND id<>? AND status IN ('ACTIVE','PENDING')"
+3495:                 + " AND created_at BETWEEN ? AND ?", new String[]{"" + t.officeId, t.type, t.currency, "" + t.amount, "" + t.id, "" + (t.createdAt - window), "" + (t.createdAt + window)})) {
+3496:             String p = Sanity.norm(t.person), ds = Sanity.norm(t.description);
+3497:             while (c.moveToNext()) {
+3498:                 Model.Tx o = readTx(c);
+3499:                 if (!Sanity.norm(o.person).equals(p)) continue;
+3500:                 if (p.isEmpty() && !Sanity.norm(o.description).equals(ds)) continue;
+3501:                 out.add(o);
+3502:             }
+3503:         }
+3504:         return out;
+3505:     }
+3506: 
+3507:     public List<Model.Tx> similarTx(Model.Tx t) { return similarTx(getReadableDatabase(), t, 36 * 3600000L); }
+3508: 
+3509:     static Model.Tx txOn(SQLiteDatabase d, long id) {
+3510:         try (Cursor c = d.rawQuery("SELECT " + TX_COLS + " FROM tx WHERE id=" + id, null)) {
+3511:             return c.moveToFirst() ? readTxRaw(c) : null;
+3512:         }
+3513:     }
+3514: 
+3515:     public Long replacementOf(long id) {
+3516:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id FROM tx WHERE replaces_id=" + id + " ORDER BY id DESC LIMIT 1", null)) {
+3517:             return c.moveToFirst() ? c.getLong(0) : null;
+3518:         }
+3519:     }
+3520: 
+3521:     public long txCount() {
+3522:         try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM tx", null)) {
+3523:             return c.moveToFirst() ? c.getLong(0) : 0;
+3524:         }
+3525:     }
+3526: 
+3527:     public long officeCount() {
+3528:         try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM offices", null)) {
+3529:             return c.moveToFirst() ? c.getLong(0) : 0;
+3530:         }
+3531:     }
+3532: 
+3533:     /** مجاميع فترة: العملة ← {لنا، علينا، أجور لنا، أجور علينا، عدد الحركات}. الحركات الملغاة غير محسوبة. */
+3534:     public Map<String, long[]> dailyStats(long from, long to) {
+3535:         Map<String, long[]> m = new TreeMap<>();
+3536:         String range = " WHERE status='ACTIVE' AND created_at>=" + from + " AND created_at<" + to;
+3537:         try (Cursor c = getReadableDatabase().rawQuery("SELECT currency,type,SUM(amount_minor),COUNT(*) FROM tx" + range + " GROUP BY currency,type", null)) {
+3538:             while (c.moveToNext()) {
+3539:                 long[] v = stat(m, c.getString(0));
+3540:                 if (TYPE_DEBIT.equals(c.getString(1))) v[0] += c.getLong(2);
+3541:                 else v[1] += c.getLong(2);
+3542:                 v[4] += c.getLong(3);
+3543:             }
+3544:         }
+3545:         try (Cursor c = getReadableDatabase().rawQuery("SELECT fee_currency,fee_type,SUM(fee_minor) FROM tx" + range
+3546:                 + " AND fee_minor>0 AND fee_type IN (?,?) GROUP BY fee_currency,fee_type", new String[]{FEE_US, FEE_THEM})) {
+3547:             while (c.moveToNext()) {
+3548:                 long[] v = stat(m, c.getString(0));
+3549:                 if (FEE_US.equals(c.getString(1))) v[2] += c.getLong(2);
+3550:                 else v[3] += c.getLong(2);
+3551:             }
+3552:         }
+3553:         return m;
+3554:     }
+3555: 
+3556:     private static long[] stat(Map<String, long[]> m, String code) {
+3557:         long[] v = m.get(code);
+3558:         if (v == null) {
+3559:             v = new long[5];
+3560:             m.put(code, v);
+3561:         }
+3562:         return v;
+3563:     }
+3564: 
+3565:     // ===================================================================================
+3566:     // المرفقات
+3567:     // ===================================================================================
+3568: 
+3569:     public File evidenceDir() { return new File(ctx.getFilesDir(), "evidence"); }
+3570: 
+3571:     /**
+3572:      * 10.11 (AUDIT-002): ملف الصورة كما حُفظ مساره، وإن لم يوجد هناك (نُقل مجلد البيانات أو تغيّر اسم مستخدم النظام)
+3573:      * فباسمه في مجلد الصور الحالي. المسار المحفوظ لا يتغير، فلا تتأثر الأجهزة والإصدارات الأقدم.
+3574:      */
+3575:     public File attachmentFile(String path) {
+3576:         if (path == null) return null;
+3577:         File f = new File(path);
+3578:         if (f.isFile()) return f;
+3579:         return new File(evidenceDir(), f.getName());
+3580:     }
+3581: 
+3582:     public byte[] attachment(long id) {
+3583:         try (Cursor c = getReadableDatabase().rawQuery("SELECT path FROM attachments WHERE id=" + id, null)) {
+3584:             if (!c.moveToFirst()) return null;
+3585:             try {

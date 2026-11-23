@@ -1,0 +1,84 @@
+1: package android.net;
+2: 
+3: import java.io.File;
+4: 
+5: /** عنوان ملف أو رابط. على الكمبيوتر الملفات بعناوين file:// والمجلدات (بدل أشجار SAF) كذلك. */
+6: public final class Uri implements android.os.Parcelable, Comparable<Uri> {
+7:     public static final Uri EMPTY = new Uri("");
+8:     private final String s;
+9:     private Uri(String s) { this.s = s; }
+10:     public static Uri parse(String s) { return new Uri(s == null ? "" : s); }
+11:     public static Uri fromFile(File f) { return new Uri(f.toURI().toString().replace("file:/", "file:///").replace("file:////", "file:///")); }
+12:     public static Uri withAppendedPath(Uri base, String seg) { return new Uri(base.s.endsWith("/") ? base.s + encode(seg) : base.s + "/" + encode(seg)); }
+13:     public static String encode(String s) { try { return java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20"); } catch (Exception e) { return s; } }
+14:     public static String encode(String s, String allow) { return encode(s); }
+15:     public static String decode(String s) { try { return java.net.URLDecoder.decode(s.replace("+", "%2B"), "UTF-8"); } catch (Exception e) { return s; } }
+16:     public String getScheme() { int i = s.indexOf(':'); return i < 0 ? null : s.substring(0, i); }
+17:     public boolean isRelative() { return getScheme() == null; }
+18:     public boolean isAbsolute() { return !isRelative(); }
+19:     public String getPath() {
+20:         try {
+21:             if (s.startsWith("file:")) return file().getPath();
+22:             java.net.URI u = new java.net.URI(s);
+23:             return u.getPath();
+24:         } catch (Exception e) {
+25:             return s;
+26:         }
+27:     }
+28:     public String getEncodedPath() { return getPath(); }
+29:     public String getHost() { try { return new java.net.URI(s).getHost(); } catch (Exception e) { return null; } }
+30:     public String getAuthority() { try { return new java.net.URI(s).getAuthority(); } catch (Exception e) { return null; } }
+31:     public int getPort() { try { return new java.net.URI(s).getPort(); } catch (Exception e) { return -1; } }
+32:     public String getQuery() { int i = s.indexOf('?'); return i < 0 ? null : s.substring(i + 1); }
+33:     public String getFragment() { int i = s.indexOf('#'); return i < 0 ? null : s.substring(i + 1); }
+34:     public String getQueryParameter(String k) {
+35:         String q = getQuery();
+36:         if (q == null) return null;
+37:         for (String p : q.split("&")) { int e = p.indexOf('='); String n = e < 0 ? p : p.substring(0, e); if (n.equals(k)) return e < 0 ? "" : decode(p.substring(e + 1)); }
+38:         return null;
+39:     }
+40:     public java.util.List<String> getPathSegments() {
+41:         java.util.List<String> l = new java.util.ArrayList<>();
+42:         String p = getPath();
+43:         if (p != null) for (String x : p.split("/")) if (!x.isEmpty()) l.add(x);
+44:         return l;
+45:     }
+46:     public String getLastPathSegment() { java.util.List<String> l = getPathSegments(); return l.isEmpty() ? null : l.get(l.size() - 1); }
+47:     public Builder buildUpon() { return new Builder(s); }
+48:     /** الملف المحلي لهذا العنوان (file://). */
+49:     public File file() {
+50:         // 11.2: ملفات المشاركة الداخلية (content://<الحزمة>.files/<الاسم>) = مجلد cache/shared للتطبيق
+51:         if (s.startsWith("content://")) {
+52:             String rest = s.substring("content://".length());
+53:             int sl = rest.indexOf('/');
+54:             String auth = sl < 0 ? rest : rest.substring(0, sl);
+55:             String name = sl < 0 ? "" : decode(rest.substring(sl + 1));
+56:             android.content.Context c = android.content.Context.app;
+57:             if (auth.endsWith(".files") && c != null && !name.isEmpty() && !name.contains("/") && !name.contains("..")) return new File(new File(c.getCacheDir(), "shared"), name);
+58:         }
+59:         String x = s;
+60:         int q = x.indexOf('?');
+61:         if (q >= 0) x = x.substring(0, q);
+62:         try { return new File(new java.net.URI(x)); } catch (Exception e) { return new File(decode(x.replaceFirst("^file:/+", "/"))); }
+63:     }
+64:     public boolean isFile() { return s.startsWith("file:") || (s.startsWith("content://") && file() != null && s.substring(10).split("/")[0].endsWith(".files")); }
+65:     @Override public String toString() { return s; }
+66:     @Override public boolean equals(Object o) { return o instanceof Uri && ((Uri) o).s.equals(s); }
+67:     @Override public int hashCode() { return s.hashCode(); }
+68:     @Override public int compareTo(Uri o) { return s.compareTo(o.s); }
+69: 
+70:     public static final class Builder {
+71:         private String s;
+72:         public Builder() { s = ""; }
+73:         Builder(String s) { this.s = s; }
+74:         public Builder scheme(String sc) { s = sc + ":" + s; return this; }
+75:         public Builder authority(String a) { s = s + "//" + a; return this; }
+76:         public Builder path(String p) { s = s + p; return this; }
+77:         public Builder appendPath(String p) { s = s + (s.endsWith("/") ? "" : "/") + encode(p); return this; }
+78:         public Builder appendQueryParameter(String k, String v) { s = s + (s.contains("?") ? "&" : "?") + encode(k) + "=" + encode(v); return this; }
+79:         public Builder encodedPath(String p) { s = s + p; return this; }
+80:         public Builder fragment(String f) { s = s + "#" + f; return this; }
+81:         public Builder clearQuery() { int i = s.indexOf('?'); if (i >= 0) s = s.substring(0, i); return this; }
+82:         public Uri build() { return new Uri(s); }
+83:     }
+84: }

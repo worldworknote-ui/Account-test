@@ -1,0 +1,133 @@
+1: package android.animation;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.List;
+5: 
+6: public class ValueAnimator extends Animator {
+7:     public static final int RESTART = 1, REVERSE = 2, INFINITE = -1;
+8:     public interface AnimatorUpdateListener { void onAnimationUpdate(ValueAnimator a); }
+9: 
+10:     private static final TimeInterpolator DEFAULT = new android.view.animation.AccelerateDecelerateInterpolator();
+11: 
+12:     long duration = 300, delay;
+13:     TimeInterpolator interp = DEFAULT;
+14:     PropertyValuesHolder[] values;
+15:     private List<AnimatorUpdateListener> updates;
+16:     private int repeatCount, repeatMode = RESTART, repeats;
+17:     private boolean running, started, reversing;
+18:     private long startNs = -1;
+19:     private float fraction;
+20: 
+21:     public static ValueAnimator ofFloat(float... v) { ValueAnimator a = new ValueAnimator(); a.setFloatValues(v); return a; }
+22:     public static ValueAnimator ofInt(int... v) { ValueAnimator a = new ValueAnimator(); a.setIntValues(v); return a; }
+23:     public static ValueAnimator ofArgb(int... v) { ValueAnimator a = new ValueAnimator(); a.setIntValues(v); a.setEvaluator(ArgbEvaluator.getInstance()); return a; }
+24:     public static ValueAnimator ofObject(TypeEvaluator ev, Object... v) { ValueAnimator a = new ValueAnimator(); a.setObjectValues(v); a.setEvaluator(ev); return a; }
+25:     public static ValueAnimator ofPropertyValuesHolder(PropertyValuesHolder... h) { ValueAnimator a = new ValueAnimator(); a.values = h; return a; }
+26:     public static boolean areAnimatorsEnabled() { return true; }
+27:     public static float getDurationScale() { return 1f; }
+28: 
+29:     public void setFloatValues(float... v) { values = new PropertyValuesHolder[]{PropertyValuesHolder.ofFloat("", v)}; }
+30:     public void setIntValues(int... v) { values = new PropertyValuesHolder[]{PropertyValuesHolder.ofInt("", v)}; }
+31:     public void setObjectValues(Object... v) { values = new PropertyValuesHolder[]{PropertyValuesHolder.ofObject("", null, v)}; }
+32:     public void setValues(PropertyValuesHolder... h) { values = h; }
+33:     public PropertyValuesHolder[] getValues() { return values; }
+34:     @SuppressWarnings("rawtypes")
+35:     public void setEvaluator(TypeEvaluator ev) { if (values != null) for (PropertyValuesHolder h : values) h.evaluator = ev; }
+36: 
+37:     @Override public ValueAnimator setDuration(long d) { duration = Math.max(0, d); return this; }
+38:     @Override public long getDuration() { return duration; }
+39:     @Override public long getStartDelay() { return delay; }
+40:     @Override public void setStartDelay(long d) { delay = Math.max(0, d); }
+41:     @Override public void setInterpolator(TimeInterpolator i) { interp = i == null ? new android.view.animation.LinearInterpolator() : i; }
+42:     @Override public TimeInterpolator getInterpolator() { return interp; }
+43:     public void setRepeatCount(int c) { repeatCount = c; }
+44:     public int getRepeatCount() { return repeatCount; }
+45:     public void setRepeatMode(int m) { repeatMode = m; }
+46:     public int getRepeatMode() { return repeatMode; }
+47:     public void addUpdateListener(AnimatorUpdateListener l) { if (updates == null) updates = new ArrayList<>(); updates.add(l); }
+48:     public void removeUpdateListener(AnimatorUpdateListener l) { if (updates != null) updates.remove(l); }
+49:     public void removeAllUpdateListeners() { updates = null; }
+50:     public Object getAnimatedValue() { return values == null || values.length == 0 ? null : values[0].value; }
+51:     public Object getAnimatedValue(String name) { if (values != null) for (PropertyValuesHolder h : values) if (h.name.equals(name)) return h.value; return null; }
+52:     public float getAnimatedFraction() { return fraction; }
+53:     public long getCurrentPlayTime() { return startNs < 0 ? 0 : (System.nanoTime() - startNs) / 1_000_000L; }
+54:     public void setCurrentPlayTime(long t) { animateValue(interp.getInterpolation(duration == 0 ? 1f : Math.min(1f, t / (float) duration))); }
+55:     public void setCurrentFraction(float f) { animateValue(interp.getInterpolation(f)); }
+56:     @Override public boolean isRunning() { return running; }
+57:     @Override public boolean isStarted() { return started; }
+58: 
+59:     @Override public void start() { start(false); }
+60:     public void reverse() { start(true); }
+61:     private void start(boolean rev) {
+62:         if (started) cancelQuiet();
+63:         reversing = rev;
+64:         started = true;
+65:         running = delay == 0;
+66:         repeats = 0;
+67:         startNs = System.nanoTime();
+68:         prepare();
+69:         notifyStart();
+70:         if (Choreo.instant) { finish(); return; }
+71:         if (delay == 0) animateValue(interp.getInterpolation(rev ? 1f : 0f));
+72:         if (duration == 0 && delay == 0) { finish(); return; }
+73:         Choreo.add(this);
+74:     }
+75:     /** للمشتقات: قراءة قيم البداية (ObjectAnimator). */
+76:     void prepare() {}
+77: 
+78:     void tick(long now) {
+79:         if (!started) { Choreo.remove(this); return; }
+80:         long ms = (now - startNs) / 1_000_000L - delay;
+81:         if (ms < 0) return;
+82:         if (!running) { running = true; }
+83:         float f = duration == 0 ? 1f : ms / (float) duration;
+84:         if (f >= 1f) {
+85:             if (repeatCount == INFINITE || repeats < repeatCount) {
+86:                 repeats++;
+87:                 startNs = now;
+88:                 delay = 0;
+89:                 if (repeatMode == REVERSE) reversing = !reversing;
+90:                 notifyRepeat();
+91:                 f = 0;
+92:             } else {
+93:                 finish();
+94:                 return;
+95:             }
+96:         }
+97:         animateValue(interp.getInterpolation(reversing ? 1f - f : f));
+98:     }
+99: 
+100:     private void finish() {
+101:         Choreo.remove(this);
+102:         animateValue(interp.getInterpolation(reversing ? 0f : 1f));
+103:         running = false;
+104:         started = false;
+105:         notifyEnd();
+106:     }
+107: 
+108:     void animateValue(float f) {
+109:         fraction = f;
+110:         if (values != null) for (PropertyValuesHolder h : values) h.calc(f);
+111:         if (updates != null) for (AnimatorUpdateListener l : new ArrayList<>(updates)) l.onAnimationUpdate(this);
+112:     }
+113: 
+114:     private void cancelQuiet() { Choreo.remove(this); running = false; started = false; }
+115: 
+116:     @Override public void cancel() {
+117:         if (!started) return;
+118:         cancelQuiet();
+119:         notifyCancel();
+120:         notifyEnd();
+121:     }
+122:     @Override public void end() {
+123:         if (!started) { prepare(); started = true; }
+124:         finish();
+125:     }
+126:     @Override public ValueAnimator clone() {
+127:         ValueAnimator a = (ValueAnimator) super.clone();
+128:         if (updates != null) a.updates = new ArrayList<>(updates);
+129:         if (values != null) { a.values = new PropertyValuesHolder[values.length]; for (int i = 0; i < values.length; i++) a.values[i] = values[i].clone(); }
+130:         a.started = false; a.running = false;
+131:         return a;
+132:     }
+133: }

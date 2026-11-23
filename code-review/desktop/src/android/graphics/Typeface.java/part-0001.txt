@@ -1,0 +1,92 @@
+1: package android.graphics;
+2: 
+3: import java.awt.Font;
+4: import java.awt.GraphicsEnvironment;
+5: import java.io.InputStream;
+6: import java.util.*;
+7: 
+8: /**
+9:  * خطوط أندرويد على الكمبيوتر: خطوط التطبيق نفسها (plex/cairo/kufi) من موارد البرنامج، والخط الافتراضي يتبع اختيار المستخدم
+10:  * (يضبطه Activity عند تطبيق السمة). الرموز التي لا يحويها الخط تُرسم بخط بديل من النظام (FontKit).
+11:  */
+12: public class Typeface {
+13:     public static final int NORMAL = 0, BOLD = 1, ITALIC = 2, BOLD_ITALIC = 3;
+14: 
+15:     final String family;
+16:     final int style;
+17: 
+18:     private Typeface(String family, int style) { this.family = family; this.style = style; }
+19: 
+20:     /** الخط الافتراضي حسب السمة الحالية (plex افتراضيًا). */
+21:     public static volatile String themeFamily = "plex";
+22: 
+23:     public static final Typeface DEFAULT = new Typeface(null, NORMAL);
+24:     public static final Typeface DEFAULT_BOLD = new Typeface(null, BOLD);
+25:     public static final Typeface SANS_SERIF = new Typeface("sans-serif", NORMAL);
+26:     public static final Typeface SERIF = new Typeface("serif", NORMAL);
+27:     public static final Typeface MONOSPACE = new Typeface("monospace", NORMAL);
+28: 
+29:     public static Typeface create(String family, int style) { return new Typeface(family, style); }
+30:     public static Typeface create(Typeface t, int style) { return new Typeface(t == null ? null : t.family, style); }
+31:     public static Typeface create(Typeface t, int weight, boolean italic) { return new Typeface(t == null ? null : t.family, weight >= 600 ? BOLD : NORMAL); }
+32:     public static Typeface defaultFromStyle(int style) { return new Typeface(null, style); }
+33:     public static Typeface family(String f) { return new Typeface(f, NORMAL); }
+34: 
+35:     public int getStyle() { return style; }
+36:     public boolean isBold() { return (style & BOLD) != 0; }
+37:     public boolean isItalic() { return (style & ITALIC) != 0; }
+38:     public String familyName() { return family == null ? themeFamily : family; }
+39: 
+40:     @Override public boolean equals(Object o) {
+41:         return o instanceof Typeface && Objects.equals(((Typeface) o).family, family) && ((Typeface) o).style == style;
+42:     }
+43:     @Override public int hashCode() { return Objects.hashCode(family) * 7 + style; }
+44: 
+45:     // ------------------------------------------------------------------ تحميل الخطوط
+46:     private static final Map<String, Font> loaded = new HashMap<>();
+47: 
+48:     /** الخط الأساسي بحجم 1 لهذه العائلة والنمط. */
+49:     public Font base() { return base(familyName(), isBold()); }
+50: 
+51:     public static synchronized Font base(String fam, boolean bold) {
+52:         String key = fam + (bold ? ":b" : ":r");
+53:         Font f = loaded.get(key);
+54:         if (f != null) return f;
+55:         String file = null;
+56:         switch (fam) {
+57:             case "plex": case "cairo": case "kufi": file = fam + (bold ? "_bold" : "_regular") + ".ttf"; break;
+58:             default: break;
+59:         }
+60:         if (file != null) f = load("/res/" + file);
+61:         if (f == null && ("monospace".equals(fam))) f = new Font(Font.MONOSPACED, bold ? Font.BOLD : Font.PLAIN, 1);
+62:         if (f == null && ("sans-serif".equals(fam) || "system".equals(fam) || "serif".equals(fam))) f = systemFont(bold);
+63:         if (f == null) {
+64:             Font p = load("/res/plex" + (bold ? "_bold" : "_regular") + ".ttf");
+65:             f = p != null ? p : new Font(Font.SANS_SERIF, bold ? Font.BOLD : Font.PLAIN, 1);
+66:         }
+67:         loaded.put(key, f);
+68:         return f;
+69:     }
+70: 
+71:     private static Font load(String res) {
+72:         try (InputStream in = Typeface.class.getResourceAsStream(res)) {
+73:             if (in == null) return null;
+74:             Font f = Font.createFont(Font.TRUETYPE_FONT, in);
+75:             try { GraphicsEnvironment.getLocalGraphicsEnvironment().registerFont(f); } catch (Throwable ignored) { }
+76:             return f.deriveFont(1f);
+77:         } catch (Exception e) {
+78:             return null;
+79:         }
+80:     }
+81: 
+82:     /** «خط النظام»: خط عربي من النظام إن وُجد (الماك: SF Arabic/Geeza، ويندوز: Segoe UI)، وإلا plex. */
+83:     private static Font systemFont(boolean bold) {
+84:         for (String n : new String[]{"SF Arabic", "Geeza Pro", "Segoe UI", "Tahoma", "Noto Sans Arabic", "Arial"}) {
+85:             if (FontKit.has(n)) {
+86:                 Font f = new Font(n, bold ? Font.BOLD : Font.PLAIN, 1);
+87:                 if (f.canDisplay('ا')) return f;
+88:             }
+89:         }
+90:         return null;
+91:     }
+92: }

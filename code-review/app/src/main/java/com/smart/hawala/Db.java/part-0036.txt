@@ -1,0 +1,156 @@
+5356:                                 if (sensitive != null && sensitive.contains(col)) {
+5357:                                     try {
+5358:                                         s = Crypto.decStrict(s);
+5359:                                     } catch (Exception e) {
+5360:                                         s = Crypto.PLACEHOLDER;
+5361:                                         unreadable++;
+5362:                                     }
+5363:                                 }
+5364:                                 r.put(col, s);
+5365:                             }
+5366:                         }
+5367:                         if (table.equals("settings") && DEVICE_SETTINGS.contains(r.optString("k"))) continue;
+5368:                         if (table.equals("settings") && ENCRYPTED_SETTINGS.contains(r.optString("k")) && !r.isNull("v")) {
+5369:                             try {
+5370:                                 r.put("v", Crypto.decStrict(r.getString("v")));
+5371:                             } catch (Exception e) {
+5372:                                 continue;   // لا يُصدَّر سرّ لا يُفك (يُنشأ غيره عند الحاجة)
+5373:                             }
+5374:                         }
+5375:                         sink.row(r);
+5376:                     }
+5377:                 }
+5378:             }
+5379: 
+5380:             @Override public List<BackupFormat.AttachmentRef> attachments() {
+5381:                 List<BackupFormat.AttachmentRef> l = new ArrayList<>();
+5382:                 try (Cursor c = db().rawQuery("SELECT id,tx_id,path,mime,created_at FROM attachments ORDER BY id", null)) {
+5383:                     while (c.moveToNext()) {
+5384:                         BackupFormat.AttachmentRef r = new BackupFormat.AttachmentRef();
+5385:                         r.id = c.getLong(0);
+5386:                         r.txId = c.getLong(1);
+5387:                         r.handle = c.getString(2);
+5388:                         r.mime = c.getString(3);
+5389:                         r.createdAt = c.isNull(4) ? 0 : c.getLong(4);
+5390:                         l.add(r);
+5391:                     }
+5392:                 }
+5393:                 return l;
+5394:             }
+5395: 
+5396:             @Override public byte[] attachmentData(BackupFormat.AttachmentRef ref) {
+5397:                 try {
+5398:                     return Crypto.decBytes(readAll(attachmentFile((String) ref.handle)));
+5399:                 } catch (Throwable t) {
+5400:                     return null;
+5401:                 }
+5402:             }
+5403: 
+5404:             @Override public List<String> warnings() {
+5405:                 List<String> w = new ArrayList<>();
+5406:                 if (unreadable > 0) w.add(unreadable + " حقل نصي لم يمكن فك تشفيره في الهاتف الأصلي (حُفظ كنص بديل)");
+5407:                 return w;
+5408:             }
+5409: 
+5410:             @Override public int unreadable() { return unreadable; }
+5411:         };
+5412:     }
+5413: 
+5414:     // ===================================================================================
+5415:     // إضافة ملف النقل إلى البيانات الحالية (بدل استبدالها)
+5416:     // ===================================================================================
+5417: 
+5418:     /** ما تحتاجه خطة الإضافة من البيانات الحالية. */
+5419:     public MergePlan.Existing mergeExisting() {
+5420:         MergePlan.Existing ex = new MergePlan.Existing();
+5421:         for (Model.Office o : offices()) ex.offices.put(o.id, o.name);
+5422:         try (Cursor c = getReadableDatabase().rawQuery("SELECT code,decimals FROM currencies", null)) {
+5423:             while (c.moveToNext()) ex.decimals.put(c.getString(0), c.getInt(1));
+5424:         }
+5425:         try (Cursor c = getReadableDatabase().rawQuery(
+5426:                 "SELECT office_id,currency,SUM(debit_minor-credit_minor) FROM journal_lines WHERE account='OFFICE' AND office_id IS NOT NULL GROUP BY office_id,currency", null)) {
+5427:             while (c.moveToNext()) ex.balances.put(c.getLong(0) + "|" + c.getString(1), c.getLong(2));
+5428:         }
+5429:         try (Cursor c = getReadableDatabase().rawQuery("SELECT uuid FROM tx", null)) {
+5430:             while (c.moveToNext()) ex.uuids.add(c.getString(0));
+5431:         }
+5432:         for (String f : setting("merged_files", "").split("\n")) if (!f.trim().isEmpty()) ex.mergedFiles.add(f.trim());
+5433:         ex.lockBefore = settingLong("lock_before", 0);
+5434:         return ex;
+5435:     }
+5436: 
+5437:     private static long officeBalance(SQLiteDatabase d, long office, String code) {
+5438:         try (Cursor c = d.rawQuery("SELECT COALESCE(SUM(debit_minor-credit_minor),0) FROM journal_lines WHERE account='OFFICE' AND office_id=? AND currency=?",
+5439:                 new String[]{String.valueOf(office), code})) {
+5440:             return c.moveToFirst() ? c.getLong(0) : 0;
+5441:         }
+5442:     }
+5443: 
+5444:     /**
+5445:      * يضيف محتوى ملف النقل إلى البيانات الحالية في معاملة واحدة: عملات ومكاتب جديدة، وأرصدة سابقة وحركات بالقيود نفسها
+5446:      * التي يكتبها التطبيق (postEntry)، ثم يتحقق أن رصيد كل مكتب وعملة تغيّر بمقدار قيود الملف تمامًا، وإلا يُلغى كل شيء.
+5447:      * يرجع عدد المكاتب الجديدة.
+5448:      */
+5449:     public int mergeMigration(MergePlan plan) {
+5450:         require(Auth.Perm.RESTORE);
+5451:         if (!plan.ok()) throw new IllegalStateException(plan.errors.get(0));
+5452:         SQLiteDatabase d = getWritableDatabase();
+5453:         d.beginTransaction();
+5454:         try {
+5455:             Entitlements ent = License.current;
+5456:             if (!unlimited(ent) && liveOffices(d) + plan.newOffices > ent.maxOffices()) {
+5457:                 throw new Entitlements.LimitReached("الملف يضيف " + plan.newOffices + " مكتبًا جديدًا وعندك " + liveOffices(d) + "، والنسخة المجانية تتسع لـ "
+5458:                         + ent.maxOffices() + ". اختر المكاتب الجديدة التي تريد إضافتها، أو فعّل النسخة الكاملة.");
+5459:             }
+5460:             for (MergePlan.NewCurrency c : plan.newCurrencies) {
+5461:                 d.execSQL("INSERT OR IGNORE INTO currencies(code,name,decimals,active) VALUES(?,?,?,1)", new Object[]{c.code, c.name, c.decimals});
+5462:             }
+5463:             Map<Long, Long> target = new HashMap<>();
+5464:             int created = 0;
+5465:             for (MergePlan.Office o : plan.offices.values()) {
+5466:                 long id;
+5467:                 if (o.targetId != null) {
+5468:                     id = o.targetId;
+5469:                     try (Cursor c = d.rawQuery("SELECT 1 FROM offices WHERE id=" + id, null)) {
+5470:                         if (!c.moveToFirst()) throw new IllegalStateException("المكتب «" + o.targetName + "» لم يعد موجودًا؛ أعد المحاولة.");
+5471:                     }
+5472:                 } else {
+5473:                     ContentValues v = officeValues(o.name, "", o.phone, "", "", o.notes, null, null);
+5474:                     v.put("active", 1);
+5475:                     v.put("pinned", 0);
+5476:                     id = ins(d, "offices", v);
+5477:                     created++;
+5478:                 }
+5479:                 target.put(o.fileId, id);
+5480:                 for (String code : o.codes) {
+5481:                     d.execSQL("INSERT OR IGNORE INTO office_currencies(office_id,code) VALUES(?,?)", new Object[]{id, code});
+5482:                     d.execSQL("UPDATE currencies SET active=1 WHERE code=?", new Object[]{code});
+5483:                 }
+5484:             }
+5485:             // الأرصدة قبل الإضافة، والمتوقع بعدها (مكتبان في الملف قد يذهبان للمكتب نفسه)
+5486:             Map<String, Long> want = new HashMap<>();
+5487:             for (Map.Entry<String, Long> e : plan.expected.entrySet()) {
+5488:                 String[] k = e.getKey().split("\\|", 2);
+5489:                 long id = target.get(Long.parseLong(k[0]));
+5490:                 String key = id + "|" + k[1];
+5491:                 if (!want.containsKey(key)) want.put(key, officeBalance(d, id, k[1]));
+5492:                 want.put(key, want.get(key) + e.getValue());
+5493:             }
+5494:             long lock = lockBefore(d);
+5495:             // 10.16: «اعتماد رصيد الملف»: رصيد المكتب الموجود يُصفَّر بقيد تسوية ظاهر (لا حذف)، فيصبح بعد الإضافة = رصيد الملف
+5496:             int adopted = 0;
+5497:             if (plan.adopt) {
+5498:                 long nowT = Clock.now();
+5499:                 Set<String> seen = new HashSet<>();
+5500:                 for (MergePlan.Office o : plan.offices.values()) {
+5501:                     if (o.targetId == null) continue;
+5502:                     for (String code : o.codes) {
+5503:                         String key = o.targetId + "|" + code;
+5504:                         if (!seen.add(key)) continue;
+5505:                         long cur = officeBalance(d, o.targetId, code);
+5506:                         if (cur == 0) continue;
+5507:                         long amt = Math.abs(cur);
+5508:                         long eid = postEntry(d, null, "OPENING", o.targetId, code, cur < 0 ? amt : 0, cur > 0 ? amt : 0, nowT);
+5509:                         ContentValues z = new ContentValues();
+5510:                         z.put("office_id", o.targetId);
+5511:                         z.put("currency", code);

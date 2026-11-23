@@ -1,0 +1,166 @@
+572:             new SyncEngine(db, folder(db)).claimFounder(rc.getPassword());
+573:             return true;
+574:         }, ok -> {
+575:             Ui.toast("أصبح هذا الجهاز هو الجهاز الرئيسي ✓");
+576:             refresh();
+577:         });
+578:     }
+579: 
+580:     void newRecovery() {
+581:         JPasswordField pw = Ui.password();
+582:         JPanel c = Ui.column();
+583:         c.add(Ui.para("يتوقف رمز الاسترداد القديم فورًا، ويظهر رمز جديد مرة واحدة. احفظه في مكان آمن.", 13.5f, Ui.ink, 420));
+584:         c.add(Ui.labeled("كلمة سر المزامنة الحالية", pw));
+585:         if (!Ui.form(this, "رمز استرداد جديد", Ui.rtl(c), "إصدار")) return;
+586:         Ui.busy(this, "جارٍ إصدار الرمز…", p -> new SyncEngine(db, folder(db)).newRecoveryCode(pw.getPassword()), rc -> {
+587:             JTextField code = new JTextField(rc);
+588:             code.setEditable(false);
+589:             code.setFont(Ui.font(18, true));
+590:             JPanel q = Ui.column();
+591:             q.add(Ui.para("الرمز الجديد (يظهر مرة واحدة). القديم لم يعد يعمل.", 14, Ui.ink, 460));
+592:             q.add(Ui.gap(8));
+593:             q.add(code);
+594:             Ui.form(this, "رمز الاسترداد الجديد — احفظه الآن", Ui.rtl(q), "حفظته");
+595:         });
+596:     }
+597: 
+598:     void editServer() {
+599:         Ui.Field url = Ui.field("https://عنوان-خادمك");
+600:         url.setText(db.setting("sync_server", ""));
+601:         url.setComponentOrientation(ComponentOrientation.LEFT_TO_RIGHT);
+602:         JPasswordField key = Ui.password();
+603:         key.setText(db.setting("sync_server_key", ""));
+604:         JPanel c = Ui.column();
+605:         c.add(Ui.labeled("عنوان الخادم", url));
+606:         c.add(Ui.labeled("رمز الخادم (إن وُجد)", key));
+607:         c.add(Ui.para("يُفحص الاتصال قبل الحفظ، والخزنة نفسها تبقى. للانتقال إلى خادم آخر استعمل «نقل المزامنة».", 12.5f, Ui.muted, 420));
+608:         if (!Ui.form(this, "خادم المزامنة", Ui.rtl(c), "فحص وحفظ")) return;
+609:         String base = HttpSyncFolder.parseLink(url.val())[0], k = new String(key.getPassword()).trim(), vault = SyncEngine.status(db).vaultId;
+610:         try {
+611:             HttpSyncFolder.checkUrl(base);
+612:         } catch (Exception e) {
+613:             Ui.error(this, e);
+614:             return;
+615:         }
+616:         Ui.busy(this, "جارٍ فحص الخادم…", p -> {
+617:             HttpSyncFolder h = new HttpSyncFolder(base, vault, k);
+618:             h.ping();
+619:             return new SyncEngine(db, h).vaultExists();
+620:         }, has -> {
+621:             if (!has) {
+622:                 Ui.info(this, "خادم المزامنة", "الخادم يعمل لكن خزنتك ليست عليه. للانتقال إليه استعمل «نقل المزامنة إلى طريقة أخرى ← خادم المزامنة».");
+623:                 return;
+624:             }
+625:             db.setSettingQuiet("sync_server", base);
+626:             db.setSettingQuiet("sync_server_key", k);
+627:             Ui.toast("حُفظت إعدادات الخادم ✓");
+628:             now(app);
+629:             refresh();
+630:         });
+631:     }
+632: 
+633:     /** المجلد نفسه صار في مسار آخر (نُقل أو تغيّر اسم المستخدم): يُختار دون نسخ، ويُفحص أنه يحوي الخزنة نفسها. */
+634:     void repointFolder() {
+635:         JFileChooser ch = new JFileChooser(db.setting("sync_dir", System.getProperty("user.home")));
+636:         ch.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+637:         ch.setDialogTitle("اختر مجلد المزامنة نفسه في مكانه الجديد");
+638:         ch.applyComponentOrientation(Ui.RTL);
+639:         if (ch.showOpenDialog(this) != JFileChooser.APPROVE_OPTION || ch.getSelectedFile() == null) return;
+640:         File f = ch.getSelectedFile();
+641:         try {
+642:             FileSyncFolder ff = new FileSyncFolder(f);
+643:             byte[] h = ff.read(SyncEngine.HEADER);
+644:             if (h == null || !new String(h, java.nio.charset.StandardCharsets.UTF_8).contains(SyncEngine.status(db).vaultId)) {
+645:                 Ui.info(this, "المزامنة", "هذا المجلد لا يحوي خزنة المزامنة نفسها. لنقل المزامنة إلى مجلد جديد استعمل «نقل المزامنة إلى طريقة أخرى».");
+646:                 return;
+647:             }
+648:         } catch (Exception e) {
+649:             Ui.error(this, e);
+650:             return;
+651:         }
+652:         db.setSettingQuiet("sync_dir", f.getAbsolutePath());
+653:         Ui.toast("اختير المجلد ✓");
+654:         now(app);
+655:         refresh();
+656:     }
+657: 
+658:     String dupLine(String which, Model.Tx t) {
+659:         String dev = SyncEngine.deviceOf(db, t.id);
+660:         return "• " + which + ": " + Model.date(t.createdAt) + (t.person.isEmpty() ? "" : " • " + t.person) + (t.description.isEmpty() ? "" : " • " + t.description)
+661:                 + (t.userName.isEmpty() ? "" : " • سجّلها " + t.userName) + (dev.isEmpty() ? "" : " • من «" + dev + "»") + (t.isPending() ? " • بانتظار الاعتماد" : "");
+662:     }
+663: 
+664:     void dropDup(SyncEngine.Dup x, Model.Tx t) {
+665:         if (!app.require(t.isPending() ? Auth.Perm.APPROVE : Auth.Perm.TX_CANCEL)) return;
+666:         if (!Ui.confirm(this, "إلغاء الحركة المكررة", dupLine("الحركة", t) + "\n\n" + (t.isPending() ? "تُرفض (لم تدخل الأرصدة)." : "تُلغى بقيد عكسي ظاهر في السجل، وتبقى الأخرى."), "إلغاء هذه")) return;
+667:         try {
+668:             SyncEngine.dropDuplicate(db, x, t);
+669:             app.changed();
+670:             Ui.toast("أُلغيت الحركة المكررة");
+671:         } catch (Exception e) {
+672:             Ui.error(this, e);
+673:         }
+674:         refresh();
+675:     }
+676: 
+677:     /** 10.2: نقل الخزنة إلى طريقة أخرى (تُنسخ الملفات المشفّرة كما هي؛ كرّرها على كل جهاز). */
+678:     void changeTransport() {
+679:         if (!app.require(Auth.Perm.SYNC)) return;
+680:         String[] keys = {"drive", "server", "folder"};
+681:         String[] names = {kindName("drive"), kindName("server"), kindName("folder")};
+682:         JComboBox<String> to = Ui.combo(names);
+683:         JPanel c = Ui.column();
+684:         c.add(Ui.labeled("الطريقة الجديدة", to));
+685:         c.add(Ui.para("تُنسخ ملفات الخزنة المشفّرة إلى الطريقة الجديدة ثم يستخدمها هذا الجهاز. افعل الشيء نفسه على كل جهاز (يكمل كل جهاز ما ينقص).", 12.5f, Ui.muted, 420));
+686:         if (!Ui.form(this, "نقل المزامنة", Ui.rtl(c), "متابعة")) return;
+687:         String k = keys[to.getSelectedIndex()];
+688:         saved = new String[TKEYS.length];
+689:         for (int i = 0; i < TKEYS.length; i++) saved[i] = db.setting(TKEYS[i], "");
+690:         SyncFolder src = folder(db);
+691:         if (src == null) return;
+692:         if ("drive".equals(k)) {
+693:             if (DeskDriveAuth.client(db) == null) {
+694:                 clientDialog();
+695:                 if (DeskDriveAuth.client(db) == null) return;
+696:             }
+697:             if (!DeskDriveAuth.connected()) {
+698:                 driveLogin(() -> move(k, src));
+699:                 return;
+700:             }
+701:         } else if ("server".equals(k)) {
+702:             Ui.Field url = Ui.field("https://عنوان-خادمك");
+703:             url.setText(db.setting("sync_server", ""));
+704:             JPasswordField key = Ui.password();
+705:             key.setText(db.setting("sync_server_key", ""));
+706:             JPanel q = Ui.column();
+707:             q.add(Ui.labeled("عنوان الخادم", url));
+708:             q.add(Ui.labeled("رمز الخادم (إن وُجد)", key));
+709:             if (!Ui.form(this, "خادم المزامنة", Ui.rtl(q), "متابعة")) return;
+710:             String base = HttpSyncFolder.parseLink(url.val())[0];
+711:             try {
+712:                 HttpSyncFolder.checkUrl(base);
+713:             } catch (Exception e) {
+714:                 Ui.error(this, e);
+715:                 return;
+716:             }
+717:             db.setSettingQuiet("sync_server", base);
+718:             db.setSettingQuiet("sync_server_key", new String(key.getPassword()).trim());
+719:             db.setSettingQuiet("sync_server_vault", SyncEngine.status(db).vaultId);
+720:         } else {
+721:             JFileChooser ch = new JFileChooser(db.setting("sync_dir", System.getProperty("user.home")));
+722:             ch.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+723:             ch.applyComponentOrientation(Ui.RTL);
+724:             if (ch.showOpenDialog(this) != JFileChooser.APPROVE_OPTION || ch.getSelectedFile() == null) return;
+725:             db.setSettingQuiet("sync_dir", ch.getSelectedFile().getAbsolutePath());
+726:         }
+727:         move(k, src);
+728:     }
+729: 
+730:     /** 10.3: إعدادات الناقل قبل النقل (تُعاد إن فشل النقل). */
+731:     static final String[] TKEYS = {"sync_dir", "sync_server", "sync_server_key", "sync_server_vault", "sync_transport"};
+732:     String[] saved;
+733: 
+734:     void move(String k, SyncFolder src) {
+735:         SyncFolder dst = folder(db, k);
+736:         if (dst == null) return;
+737:         String[] keep = saved;

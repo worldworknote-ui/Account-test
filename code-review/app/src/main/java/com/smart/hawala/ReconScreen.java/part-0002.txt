@@ -1,0 +1,151 @@
+175:      * 11.3: سطور الأمانات والمجمّد المفتوحة للمكتب (مجموعة حسب النوع والعملة)، مثل «أمانة لنا عند المكتب: 500 دولار أمريكي».
+176:      * only: العملات المختارة (أو null للكل).
+177:      */
+178:     List<String> holdLines(Model.Office o, Set<String> only) {
+179:         Map<String, Long> sum = new LinkedHashMap<>();
+180:         for (Db.Hold h : a.db.holds(o.id, true)) {
+181:             if (only != null && !only.contains(h.currency)) continue;
+182:             String k = h.label() + "|" + h.currency;
+183:             sum.put(k, (sum.containsKey(k) ? sum.get(k) : 0L) + h.amount);
+184:         }
+185:         Map<String, String> names = a.db.currencyNames();
+186:         List<String> out = new ArrayList<>();
+187:         for (Map.Entry<String, Long> e : sum.entrySet()) {
+188:             String[] p = e.getKey().split("\\|", 2);
+189:             String nm = names.get(p[1]);
+190:             out.add(p[0] + ": " + Model.fmt(e.getValue(), a.db.decimals(p[1])) + " " + (nm == null ? p[1] : nm));
+191:         }
+192:         return out;
+193:     }
+194: 
+195:     /** 11.6: سطر الميزان للعملات المختارة بكلمتي القالب («لنا/لكم» كما يقرؤها المكتب)، أو null إن كان كل شيء صفرًا. */
+196:     String scaleLine(Map<String, Long> bal, Set<String> only) {
+197:         Map<String, Long> sub = new LinkedHashMap<>();
+198:         for (Map.Entry<String, Long> e : bal.entrySet()) if (only == null || only.contains(e.getKey())) sub.put(e.getKey(), e.getValue());
+199:         boolean any = false;
+200:         for (long v : sub.values()) if (v != 0) any = true;
+201:         if (!any) return null;
+202:         Ledger.Valuation val = Ledger.valueOffice(sub, a.db.usdRates(), a.db.decimalsMap());
+203:         java.math.BigDecimal net = val.netUsd();
+204:         long whole = net.abs().setScale(0, java.math.RoundingMode.HALF_EVEN).longValue();
+205:         Reconcile.Template t = template();
+206:         String s = "⚖️ الميزان ≈ " + (whole == 0 ? "صفر" : Model.fmt(whole, 0)) + " USD" + (whole == 0 ? "" : " " + (net.signum() > 0 ? t.plusWord : t.minusWord));
+207:         if (!val.missingRates.isEmpty()) s += " (بلا سعر صرف: " + Model.join(new ArrayList<>(val.missingRates), "، ") + ")";
+208:         return s;
+209:     }
+210: 
+211:     /** 11.6: يضع سطر الميزان تحت الأرصدة (في النص والصورة) لهذا الإرسال فقط. */
+212:     static Reconcile.Template withScale(Reconcile.Template t, String line) {
+213:         if (line == null || line.isEmpty()) return t;
+214:         String f = Model.nz(t.footer).trim();
+215:         t.footer = line + (f.isEmpty() ? "" : "\n\n" + f);
+216:         return t;
+217:     }
+218: 
+219:     /** 12.4: الحركات الخاصة المحسوبة في الرصيد (معلّقة) تُذكر تحت الأرصدة: داخلة فيها، وتنتظر الإكمال. */
+220:     List<String> specialLines(Model.Office o, java.util.Set<String> only) {
+221:         List<String> out = new java.util.ArrayList<>();
+222:         for (Model.Tx t : a.db.specials(o.id)) {
+223:             if (!t.isActive() || (only != null && !only.isEmpty() && !only.contains(t.currency))) continue;
+224:             out.add(t.special + ": " + (Model.TYPE_DEBIT.equals(t.type) ? "لنا " : "علينا ") + Model.fmt(t.amount, a.db.decimals(t.currency)) + " " + t.currency
+225:                     + (Model.nz(t.person).isEmpty() ? "" : " — " + t.person));
+226:         }
+227:         return out;
+228:     }
+229: 
+230:     static Reconcile.Template withSpecials(Reconcile.Template t, List<String> lines) {
+231:         if (lines == null || lines.isEmpty()) return t;
+232:         StringBuilder b = new StringBuilder("حركات معلّقة داخلة في الرصيد:");
+233:         for (String s : lines) b.append("\n• ").append(s);
+234:         String f = Model.nz(t.footer).trim();
+235:         t.footer = b + (f.isEmpty() ? "" : "\n\n" + f);
+236:         return t;
+237:     }
+238: 
+239:     /** يضع سطور الأمانات تحت الأرصدة (في النص والصورة) لهذا الإرسال فقط. */
+240:     static Reconcile.Template withHolds(Reconcile.Template t, List<String> lines) {
+241:         if (lines == null || lines.isEmpty()) return t;
+242:         StringBuilder b = new StringBuilder("الأمانات والمبالغ المجمّدة (لا تدخل في الرصيد):");
+243:         for (String s : lines) b.append("\n• ").append(s);
+244:         String f = Model.nz(t.footer).trim();
+245:         t.footer = b + (f.isEmpty() ? "" : "\n\n" + f);
+246:         return t;
+247:     }
+248: 
+249:     private void copyText(Reconcile.Template t, Model.Office o, long at, List<Reconcile.Row> rows) {
+250:         String txt = Reconcile.text(t, o.name, issuer(), at, rows);
+251:         ClipboardManager cm = (ClipboardManager) a.getSystemService(Context.CLIPBOARD_SERVICE);
+252:         if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("مطابقة رصيد", txt));
+253:         a.toast("نُسخ النص؛ الصقه في محادثة المكتب.");
+254:     }
+255: 
+256:     private File imageFile(Reconcile.Template t, String office, long at, List<Reconcile.Row> rows) throws Exception {
+257:         Bitmap bm = BalanceCard.render(t, office, issuer(), at, rows, accent(), a.homeLogo());
+258:         File f = new File(a.sharedDir(), Ui.safeName("مطابقة-" + office) + "-" + Model.sdf(new SimpleDateFormat("yyyyMMdd-HHmm", Locale.US)).format(new Date(at)) + ".png");
+259:         try (OutputStream os = new FileOutputStream(f)) {
+260:             bm.compress(Bitmap.CompressFormat.PNG, 100, os);
+261:         } finally {
+262:             bm.recycle();
+263:         }
+264:         return f;
+265:     }
+266: 
+267:     /** يرسل الرسالة: نص عبر قائمة المشاركة، أو صورة، أو صورة مع النص كتعليق. */
+268:     void deliver(final Reconcile.Template t, final Model.Office o, final long at, final List<Reconcile.Row> rows, final int mode) {
+269:         final String txt = Reconcile.text(t, o.name, issuer(), at, rows);
+270:         a.db.audit("EXPORT", "balance", o.id, mode == TEXT ? "text" : mode == IMAGE ? "image" : "image+text");
+271:         if (mode == TEXT) {
+272:             Intent i = new Intent(Intent.ACTION_SEND);
+273:             i.setType("text/plain");
+274:             i.putExtra(Intent.EXTRA_TEXT, txt);
+275:             if (!a.startOwn(Intent.createChooser(i, "إرسال الرصيد"))) a.error(new Exception("لا يوجد تطبيق للمشاركة."));
+276:             return;
+277:         }
+278:         a.busy("جارٍ تجهيز الصورة…", p -> imageFile(t, o.name, at, rows), res -> {
+279:             File f = (File) res;
+280:             Intent i = a.shareIntent(Collections.singletonList(f), "image/png", "مطابقة رصيد — " + o.name);
+281:             if (mode == BOTH) i.putExtra(Intent.EXTRA_TEXT, txt);
+282:             if (!a.startOwn(Intent.createChooser(i, "إرسال الرصيد"))) a.error(new Exception("لا يوجد تطبيق للمشاركة."));
+283:         });
+284:     }
+285: 
+286:     private void preview(Reconcile.Template t, String office, long at, List<Reconcile.Row> rows, int mode) {
+287:         ScrollView sv = new ScrollView(a);
+288:         LinearLayout l = new LinearLayout(a);
+289:         l.setOrientation(LinearLayout.VERTICAL);
+290:         l.setPadding(a.dp(12), a.dp(8), a.dp(12), a.dp(8));
+291:         sv.addView(l);
+292:         if (mode != TEXT) {
+293:             Bitmap bm = BalanceCard.render(t, office, issuer(), at, rows, accent(), a.homeLogo());
+294:             ImageView iv = new ImageView(a);
+295:             iv.setAdjustViewBounds(true);
+296:             iv.setImageBitmap(bm);
+297:             l.addView(iv, new LinearLayout.LayoutParams(-1, -2));
+298:         }
+299:         if (mode != IMAGE) {
+300:             TextView tv = a.text(Reconcile.text(t, office, issuer(), at, rows), 14, a.dark, false);
+301:             tv.setTextIsSelectable(true);
+302:             tv.setBackground(a.round(Color.rgb(231, 246, 227), Color.rgb(200, 225, 195), 10));
+303:             tv.setPadding(a.dp(12), a.dp(10), a.dp(12), a.dp(10));
+304:             l.addView(tv, a.lp(-1, -2, 6));
+305:         }
+306:         new AlertDialog.Builder(a).setTitle("معاينة").setView(sv).setPositiveButton("إغلاق", null).show();
+307:     }
+308: 
+309:     // ===================================================================================
+310:     // سجل المطابقات للمكتب
+311:     // ===================================================================================
+312: 
+313:     void showOffice(final Model.Office o) {
+314:         if (!a.require(Auth.Perm.VIEW) || !a.require(Auth.Perm.RECON)) return;   // 12.0
+315:         a.here(() -> showOffice(o));
+316:         a.tabbedScreen("مطابقات: " + o.name, () -> a.officeHub.showOffice(o), "offices");
+317:         LinearLayout top = a.card();
+318:         top.addView(a.text("الرصيد الحالي", 16, a.primary, true));
+319:         Reconcile.Template t = template();
+320:         List<Reconcile.Row> now = Reconcile.rows(currentBalances(o), a.db.currencyNames(), a.db.decimalsMap(), null, false);
+321:         if (now.isEmpty()) top.addView(a.text("لا توجد أرصدة قائمة.", 14, a.muted, false));
+322:         for (Reconcile.Row r : now) {
+323:             top.addView(a.text(r.label(false) + ": " + t.amount(r) + " " + Reconcile.word(t, r), 15, r.sign() > 0 ? a.green : a.red, true));
+324:         }
+325:         a.button("مطابقة جديدة: إرسال الرصيد", a.primary, v -> sendDialog(o, () -> showOffice(o)));

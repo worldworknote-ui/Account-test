@@ -1,0 +1,147 @@
+334:         for (Map.Entry<Long, Long> e : ops.entrySet()) c.ranked.add(new long[]{e.getKey(), e.getValue()});
+335:         Collections.sort(c.ranked, (a, b) -> Long.compare(b[1], a[1]));
+336:         for (int i = 0; i < c.ranked.size(); i++) {
+337:             c.total += c.ranked.get(i)[1];
+338:             if (i < 10) c.top10 += c.ranked.get(i)[1];
+339:         }
+340:         for (Map.Entry<Long, Map<String, Long>> e : balances(in).entrySet()) {
+341:             for (Map.Entry<String, Long> b : e.getValue().entrySet()) {
+342:                 long v = b.getValue();
+343:                 Map<String, Object[]> m = v > 0 ? c.recTop : c.payTop;
+344:                 if (v == 0) continue;
+345:                 Object[] x = m.computeIfAbsent(b.getKey(), k -> new Object[]{0L, 0L, 0L});
+346:                 x[2] = (Long) x[2] + Math.abs(v);
+347:                 if (Math.abs(v) > (Long) x[1]) {
+348:                     x[0] = e.getKey();
+349:                     x[1] = Math.abs(v);
+350:                 }
+351:             }
+352:         }
+353:         return c;
+354:     }
+355: 
+356:     static void concentrationSection(Report r, Input in, long from, String period) {
+357:         Concentration c = concentration(in, from);
+358:         Report.Section s = r.section("ترتيب المكاتب وتركّز العمل", "التركز");
+359:         s.kv("الفترة", period, false);
+360:         s.kv("أكبر " + Math.min(10, c.ranked.size()) + " مكاتب من " + c.ranked.size(), pct(c.top10, c.total) + " من العمليات", true);
+361:         if (!c.ranked.isEmpty()) s.kv("أكبر مكتب: «" + name(in, c.ranked.get(0)[0]) + "»", pct(c.ranked.get(0)[1], c.total) + " وحده", false);
+362:         for (Map.Entry<String, Object[]> e : c.payTop.entrySet()) {
+363:             Object[] x = e.getValue();
+364:             s.kv("أكبر ما عليك بـ" + e.getKey(), "«" + name(in, (Long) x[0]) + "»: " + fmt(in, e.getKey(), (Long) x[1]) + " = " + pct((Long) x[1], (Long) x[2]) + " مما عليك بها", false);
+365:         }
+366:         for (Map.Entry<String, Object[]> e : c.recTop.entrySet()) {
+367:             Object[] x = e.getValue();
+368:             s.kv("أكبر ما لك بـ" + e.getKey(), "«" + name(in, (Long) x[0]) + "»: " + fmt(in, e.getKey(), (Long) x[1]) + " = " + pct((Long) x[1], (Long) x[2]) + " مما لك بها", false);
+369:         }
+370:         s.col("#", 0.4f, Report.INT).col("المكتب", 2f, Report.TEXT).col("العمليات", 0.9f, Report.INT).col("النسبة", 0.8f, Report.TEXT).col("التراكمي", 0.8f, Report.TEXT);
+371:         long cum = 0;
+372:         for (int i = 0; i < c.ranked.size() && i < 30; i++) {
+373:             long[] x = c.ranked.get(i);
+374:             cum += x[1];
+375:             s.row(i < 10 ? Report.BOLD : Report.NORMAL, (long) (i + 1), name(in, x[0]), x[1], pct(x[1], c.total), pct(cum, c.total));
+376:         }
+377:         s.note = "خسارة مكتب كبير واحد تهزّ العمل: ضع حدًا لما يبقى لك أو عليك عند مكتب واحد، وابنِ بدائل على الوجهات نفسها.";
+378:     }
+379: 
+380:     // ===================================================================================
+381:     // 3) عمر الأرصدة (الأقدم يُسدَّد أولًا)
+382:     // ===================================================================================
+383: 
+384:     public static final long[] BUCKETS = {30, 90, 180};
+385: 
+386:     public static final class Aging {
+387:         /** oldestDays: عمر أقدم جزء من الرصيد (الأقدم يُسدَّد أولًا). sinceDays: أيام منذ آخر مرة كان الحساب مسدَّدًا (صفرًا أو بالاتجاه المعاكس). */
+388:         public long office, balance, oldestDays, sinceDays;
+389:         public String currency;
+390:         /** 0-30، 31-90، 91-180، أكثر من 180 يومًا. */
+391:         public final long[] buckets = new long[4];
+392: 
+393:         public long over90() { return buckets[2] + buckets[3]; }
+394:     }
+395: 
+396:     /** receivable=true: ما لك (رصيد موجب)؛ false: ما عليك. */
+397:     public static List<Aging> aging(Input in, boolean receivable) {
+398:         Map<String, List<long[]>> moves = new HashMap<>();   // office|currency ← {when, amount} في اتجاه الرصيد
+399:         List<Object[]> fx = new ArrayList<>();
+400:         for (Model.Tx t : in.txs) {
+401:             if (!active(t)) continue;
+402:             fx.clear();
+403:             effects(t, fx);
+404:             for (Object[] e : fx) {
+405:                 long v = (Long) e[1];
+406:                 if (receivable ? v > 0 : v < 0) moves.computeIfAbsent(t.officeId + "|" + e[0], k -> new ArrayList<>()).add(new long[]{t.createdAt, Math.abs(v)});
+407:             }
+408:         }
+409:         for (Opening o : in.openings) {
+410:             if (receivable ? o.signed > 0 : o.signed < 0) moves.computeIfAbsent(o.office + "|" + o.currency, k -> new ArrayList<>()).add(new long[]{o.when, Math.abs(o.signed)});
+411:         }
+412:         // كل الحركات بترتيبها الزمني لحساب «غير مسدَّد منذ»
+413:         Map<String, List<long[]>> all = new HashMap<>();   // office|currency ← {when, id, signed}
+414:         for (Model.Tx t : in.txs) {
+415:             if (!active(t)) continue;
+416:             fx.clear();
+417:             effects(t, fx);
+418:             for (Object[] e : fx) all.computeIfAbsent(t.officeId + "|" + e[0], k -> new ArrayList<>()).add(new long[]{t.createdAt, t.id, (Long) e[1]});
+419:         }
+420:         for (Opening o : in.openings) all.computeIfAbsent(o.office + "|" + o.currency, k -> new ArrayList<>()).add(new long[]{o.when, -1, o.signed});
+421:         List<Aging> out = new ArrayList<>();
+422:         for (Map.Entry<Long, Map<String, Long>> e : balances(in).entrySet()) {
+423:             for (Map.Entry<String, Long> b : e.getValue().entrySet()) {
+424:                 long bal = receivable ? b.getValue() : -b.getValue();
+425:                 if (bal <= 0) continue;
+426:                 Aging a = new Aging();
+427:                 List<long[]> seq = all.getOrDefault(e.getKey() + "|" + b.getKey(), new ArrayList<>());
+428:                 Collections.sort(seq, (x, y) -> x[0] != y[0] ? Long.compare(x[0], y[0]) : Long.compare(x[1], y[1]));
+429:                 long run = 0, start = seq.isEmpty() ? in.now : seq.get(0)[0];
+430:                 for (long[] m : seq) {
+431:                     long before = run;
+432:                     run += receivable ? m[2] : -m[2];
+433:                     if (before <= 0 && run > 0) start = m[0];
+434:                 }
+435:                 a.sinceDays = Math.max(0, (in.now - start) / DAY);
+436:                 a.office = e.getKey();
+437:                 a.currency = b.getKey();
+438:                 a.balance = bal;
+439:                 List<long[]> l = moves.getOrDefault(a.office + "|" + a.currency, new ArrayList<>());
+440:                 Collections.sort(l, (x, y) -> Long.compare(y[0], x[0]));
+441:                 long left = bal;
+442:                 for (long[] m : l) {
+443:                     if (left <= 0) break;
+444:                     long take = Math.min(left, m[1]);
+445:                     long days = Math.max(0, (in.now - m[0]) / DAY);
+446:                     a.buckets[days <= BUCKETS[0] ? 0 : days <= BUCKETS[1] ? 1 : days <= BUCKETS[2] ? 2 : 3] += take;
+447:                     a.oldestDays = Math.max(a.oldestDays, days);
+448:                     left -= take;
+449:                 }
+450:                 if (left > 0) a.buckets[3] += left;   // أقدم من كل حركة مسجّلة
+451:                 out.add(a);
+452:             }
+453:         }
+454:         Collections.sort(out, (x, y) -> Long.compare(y.over90(), x.over90()) != 0 ? Long.compare(y.over90(), x.over90()) : Long.compare(y.balance, x.balance));
+455:         return out;
+456:     }
+457: 
+458:     /** العملة ← {المجموع، لم يُسدَّد بالكامل منذ أكثر من 90 يومًا، الأقدم من 90 يومًا بطريقة الأقدم أولًا}. */
+459:     public static Map<String, long[]> agingTotals(List<Aging> l) {
+460:         Map<String, long[]> tot = new TreeMap<>();
+461:         for (Aging a : l) {
+462:             long[] t = tot.computeIfAbsent(a.currency, k -> new long[3]);
+463:             t[0] += a.balance;
+464:             if (a.sinceDays > 90) t[1] += a.balance;
+465:             t[2] += a.over90();
+466:         }
+467:         return tot;
+468:     }
+469: 
+470:     static void agingSection(Report r, Input in, boolean receivable) {
+471:         List<Aging> l = aging(in, receivable);
+472:         Report.Section s = r.section(receivable ? "عمر ما لك عند المكاتب" : "عمر ما عليك للمكاتب", receivable ? "عمر لنا" : "عمر علينا");
+473:         for (Map.Entry<String, long[]> e : agingTotals(l).entrySet()) {
+474:             long[] t = e.getValue();
+475:             s.kv((receivable ? "لك بـ" : "عليك بـ") + e.getKey(), fmt(in, e.getKey(), t[0]) + "؛ على حسابات لم تُسدَّد بالكامل منذ أكثر من 90 يومًا " + fmt(in, e.getKey(), t[1])
+476:                     + " (" + pct(t[1], t[0]) + ")؛ والأقدم من 90 يومًا فعلًا " + fmt(in, e.getKey(), t[2]) + " (" + pct(t[2], t[0]) + ")", t[2] > 0);
+477:         }
+478:         s.col("المكتب", 1.8f, Report.TEXT).col("العملة", 0.6f, Report.TEXT).col("الرصيد", 1.1f, Report.MONEY).col("غير مسدَّد منذ (يوم)", 0.9f, Report.INT)
+479:                 .col("حتى 30 يومًا", 1f, Report.MONEY).col("31-90", 1f, Report.MONEY).col("91-180", 1f, Report.MONEY).col("أكثر من 180", 1f, Report.MONEY);
+480:         for (Aging a : l) {

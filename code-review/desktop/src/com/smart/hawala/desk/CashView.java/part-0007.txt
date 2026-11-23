@@ -1,0 +1,102 @@
+895:         String[] labels = new String[list.size()];
+896:         for (int i = 0; i < labels.length; i++) labels[i] = list.get(i) + " — " + WorldCurrencies.name(list.get(i));
+897:         JComboBox<String> pick = Ui.combo(labels);
+898:         if (!Ui.form(this, "إضافة عملة للتطبيق", Ui.rtl(Ui.labeled("العملة", pick)), "إضافة")) return;
+899:         String code = list.get(pick.getSelectedIndex());
+900:         try {
+901:             db.saveCurrency(code, WorldCurrencies.name(code), WorldCurrencies.decimals(code), true);
+902:             Ui.toast("أُضيفت " + code + " — افتح الإعدادات من جديد لتظهر");
+903:         } catch (Exception e) {
+904:             Ui.error(this, e);
+905:         }
+906:     }
+907: 
+908:     void boxForm() {
+909:         Ui.Field name = Ui.field("مثل: خزنة البيت");
+910:         Map<String, JCheckBox> checks = new LinkedHashMap<>();
+911:         Map<String, Ui.Field> opens = new LinkedHashMap<>();
+912:         JPanel g = currencyPanel(new HashSet<>(), new HashMap<>(), checks, opens);
+913:         JCheckBox strict = Ui.check("ربط هذا الصندوق بالمكاتب", false);
+914:         JCheckBox internal = Ui.check("مع الربط: السماح بالمصاريف والبيع والشراء", true);
+915:         JPanel c = Ui.column();
+916:         c.add(Ui.para("صندوق آخر لك بنقده المستقل (مثل: صندوق الفرع، خزنة البيت). تنقل النقد بينه وبين الصناديق الأخرى بـ«تحويل».", 13, Ui.muted, 700));
+917:         c.add(Ui.labeled("اسم الصندوق", name));
+918:         c.add(Ui.gap(8));
+919:         c.add(g);
+920:         c.add(strict);
+921:         c.add(internal);
+922:         JScrollPane sp = Ui.scroll(Ui.rtl(c));
+923:         sp.setPreferredSize(new Dimension(820, 520));
+924:         if (!Ui.form(this, "صندوق جديد", sp, "إنشاء")) return;
+925:         try {
+926:             List<String> codes = new ArrayList<>();
+927:             Map<String, Long> op = openings(checks, opens, codes);
+928:             if (codes.isEmpty()) throw new IllegalArgumentException("اختر عملة واحدة على الأقل");
+929:             long id = db.addCashBox(name.val(), codes, op, strict.isSelected(), internal.isSelected());
+930:             db.setCurrentBox(id);
+931:             app.changed();
+932:             refresh();
+933:         } catch (Exception e) {
+934:             Ui.error(this, e);
+935:         }
+936:     }
+937: 
+938:     void boxes() {
+939:         List<CashBox.Config> all = new ArrayList<>();
+940:         for (CashBox.Config b : db.cashBoxes()) if (b.on) all.add(b);
+941:         String[] labels = new String[all.size()];
+942:         for (int i = 0; i < labels.length; i++) {
+943:             CashBox.Config b = all.get(i);
+944:             labels[i] = b.name + " — " + String.join("، ", b.currencies) + (b.strict ? " — مربوط" : " — حر") + (b.active ? "" : " — معطّل");
+945:         }
+946:         JComboBox<String> pick = Ui.combo(labels);
+947:         int k = Ui.choose(this, "إدارة الصناديق", "اختر الصندوق ثم الإجراء. التعطيل يُبقي تاريخه في التقارير (رصيده صفر). الحذف نهائي ويجوز فقط لصندوق رصيده صفر "
+948:                 + "ولا ترتبط حركاته بمكاتب أو عملاء أو بصناديق أخرى.", new String[]{"إغلاق", "فتحه", "تعطيل / تفعيل", "حذف نهائيًا"});
+949:         if (k <= 0) return;
+950:         JPanel p = Ui.column();
+951:         p.add(Ui.labeled("الصندوق", pick));
+952:         if (!Ui.form(this, "إدارة الصناديق", Ui.rtl(p), "متابعة")) return;
+953:         CashBox.Config b = all.get(pick.getSelectedIndex());
+954:         try {
+955:             if (k == 1) {
+956:                 if (!b.active) throw new IllegalStateException("الصندوق معطّل؛ فعّله أولًا");
+957:                 db.setCurrentBox(b.id);
+958:             } else if (k == 2) {
+959:                 db.setCashBoxActive(b.id, !b.active);
+960:                 Ui.toast(b.active ? "عُطّل «" + b.name + "»" : "فُعّل «" + b.name + "»");
+961:             } else {
+962:                 String why = db.cashBoxDeleteBlock(b.id);
+963:                 if (why != null) {
+964:                     Ui.info(this, "لا يمكن حذف «" + b.name + "»", why);
+965:                     return;
+966:                 }
+967:                 if (!Ui.confirm(this, "حذف «" + b.name + "» نهائيًا", "يُحذف الصندوق بكل حركاته وسجل جرده، ولا يمكن التراجع إلا من نسخة احتياطية.", "حذف نهائيًا")) return;
+968:                 db.deleteCashBox(b.id);
+969:             }
+970:             app.changed();
+971:             refresh();
+972:         } catch (Exception e) {
+973:             Ui.error(this, e);
+974:         }
+975:     }
+976: 
+977:     Report makeReport() {
+978:         long[] r = ReportBuilder.period(period.getSelectedIndex(), Clock.now());
+979:         CashBox.ReportSpec sp = new CashBox.ReportSpec();
+980:         sp.from = r[0];
+981:         sp.to = r[1];
+982:         CashBox.Config cfg = db.cashConfig();
+983:         Report rep = CashBox.report(db.cashMoves(cfg.id), sp, db.decimalsMap(), db.officeNames(), cfg.name, db.setting("office_name", ""));
+984:         Entitlements e = License.current;
+985:         rep.stamp(e.watermark(), e.lid);
+986:         return rep;
+987:     }
+988: 
+989:     void report() {
+990:         Report r = makeReport();
+991:         JPanel p = ReportPanel.render(r, 900);
+992:         JScrollPane sp = Ui.scroll(p);
+993:         sp.setPreferredSize(new Dimension(960, 600));
+994:         if (Ui.form(this, r.title + " — " + ReportBuilder.PERIODS[period.getSelectedIndex()], sp, "تصدير / طباعة…")) Export.dialog(this, app, r.title, this::makeReport);
+995:     }
+996: }

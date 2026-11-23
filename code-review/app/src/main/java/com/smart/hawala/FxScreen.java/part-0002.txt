@@ -1,0 +1,132 @@
+175:         sbp.topMargin = a.dp(4);
+176:         foot.addView(b, sbp);
+177:         a.footer(foot);
+178:         // 10.13: على التابلت: الطرف الأول في عمود، والطرف الثاني والملخص في العمود المقابل
+179:         a.splitBody(splitMark);
+180:         splitMark = null;
+181:         return new Object[]{summary, line, b};
+182:     }
+183: 
+184:     private String amountText(EditText e, String cur) {
+185:         try {
+186:             int d = a.db.decimals(cur);
+187:             long v = Db.minor(e.getText().toString(), d);
+188:             return v > 0 ? "\u2066" + Model.fmt(v, d) + " " + cur + "\u2069" : null;
+189:         } catch (Exception ex) {
+190:             return null;
+191:         }
+192:     }
+193: 
+194:     // ===================================================================================
+195:     // 10.6: تسجيل حركة قص عملات
+196:     // ===================================================================================
+197: 
+198:     /**
+199:      * 10.8: قص العملات مقاصةُ أرصدة: نبيع من رصيدنا لدى المكتب عملةً (تُخصم) ونأخذ مقابلها عملة أخرى (تُضاف)، بسعر يكتبه المحاسب؛
+200:      * سعر البرنامج يُقترح ويبقى ظاهرًا للاستئناس. يجوز بيع أكثر من الرصيد (ينقلب «لنا» إلى «علينا») بعد تنبيه وتأكيد. لا حركة صندوق.
+201:      * office0: المكتب إن فُتحت من صفحته (null = من زر «تسجيل»، فيُقترح آخر مكتب).
+202:      */
+203:     void show(final Model.Office office0) { show(office0, null); }
+204: 
+205:     /** 10.18: تعديل قص عملات مسجّل (أي ساق منه): الشاشة نفسها مملوءة بقيمه، والحفظ يعكس القديم ويسجّل المصحّح مكانه. */
+206:     void edit(Model.Tx leg) {
+207:         Model.Tx[] legs = a.db.fxLegsOf(leg.id);
+208:         Model.Office o = legs == null ? null : a.db.office(legs[0].officeId);
+209:         if (legs == null || o == null || !legs[0].isActive() || !legs[1].isActive()) {
+210:             a.toast("هذه العملية ليست قص عملات نشطًا يمكن تعديله");
+211:             return;
+212:         }
+213:         show(o, legs);
+214:     }
+215: 
+216:     private void show(final Model.Office office0, final Model.Tx[] editing) {
+217:         // 12.0: «قص العملات» صلاحية مستقلة؛ والتعديل يحتاج «تعديل الحركات» أيضًا
+218:         if (!a.require(Auth.Perm.TX_ADD) || !a.require(Auth.Perm.FX) || (editing != null && !a.require(Auth.Perm.TX_EDIT))) return;
+219:         a.base(editing != null ? "تعديل قص عملات" : "تسجيل حركة", office0 == null ? null : () -> a.officeHub.showOffice(office0));
+220:         final Model.Office[] office = {null};
+221:         // 10.7: نوع الحركة فوق المكتب
+222:         if (editing == null) a.recordKinds(RecordMenu.FX, () -> office[0]);
+223:         else a.notice(R.drawable.ic_info, "تعديل عملية " + Model.shortRef(editing[0].uuid) + " بتاريخ " + Model.date(editing[0].createdAt)
+224:                 + ": تُعكس القديمة وتُسجَّل المصحّحة مكانها بالتاريخ نفسه. المكتب لا يتغير.", false, null, null);
+225:         a.hint("قص عملات مع مكتب: نبيع من رصيدنا لديه عملة (تُخصم من رصيدنا) ونأخذ مقابلها عملة أخرى (تُضاف إلى رصيدنا). " + FxDeal.NETTING_NOTE
+226:                 + " تُسجَّل الساقان معًا وتُعتمدان وتُلغيان معًا.");
+227:         final List<String> curs = new java.util.ArrayList<>();
+228:         final Ui.Seg[] sell = {null}, buy = {null};
+229:         final boolean[] manual = {false}, quiet = {false}, rateAuto = {true};
+230:         final java.util.Map<String, Db.Rate> rates = a.db.rates();
+231:         final java.util.Map<String, java.math.BigDecimal> usd = a.db.usdRates();
+232:         final Button officeBtn = a.button("اختر المكتب", a.accent, null);
+233:         final TextView balance = a.add(a.text("", 13, a.muted, false));
+234: 
+235:         LinearLayout sc = sideCard("العملة المباعة من رصيدنا", "تُخصم من رصيدنا لدى المكتب (يجوز أن تتجاوزه)", a.red, a.debitBg);
+236:         final LinearLayout sellHolder = new LinearLayout(a);
+237:         sc.addView(sellHolder, a.lp(-1, -2, 2));
+238:         final EditText amt = bigAmount(sc, "المبلغ المباع");
+239:         final Button swap = swapButton("⇅ قلب العملية", null);
+240:         LinearLayout bc = sideCard("العملة المشتراة مقابلها", "تُضاف إلى رصيدنا لدى المكتب", a.green, a.creditBg);
+241:         splitMark = bc;
+242:         final LinearLayout buyHolder = new LinearLayout(a);
+243:         bc.addView(buyHolder, a.lp(-1, -2, 2));
+244:         final EditText counter = bigAmount(bc, "المبلغ المقابل");
+245:         bc.addView(a.text("اكتب أحد المبلغين والسعر فيُحسب الآخر. ويمكنك تعديل الاثنين فيُحفظ السعر الفعلي.", 12, a.muted, false));
+246: 
+247:         a.add(a.label("سعر الصرف"));
+248:         final Ui.Seg dir = a.new Seg(new String[]{"1 المباعة = ؟ المشتراة", "1 المشتراة = ؟ المباعة"}, null, 0, false);
+249:         a.body.addView(dir.view, a.lp(-1, -2, 2));
+250:         final EditText rate = a.field("مثال: 0.92 أو 35.4");
+251:         rate.setContentDescription("السعر");
+252:         Ui.numeric(rate);
+253:         rate.setTextSize(19);
+254:         Ui.bold(rate);
+255:         a.body.addView(rate, a.lp(-1, 54, 4));
+256:         final TextView meaning = a.add(a.text("", 13, a.primaryInk, true));
+257:         // 10.8: سعر البرنامج (أسعار الصرف المحفوظة) يُقترح، ويبقى ظاهرًا للاستئناس وإن كتب المحاسب سعره
+258:         final TextView refLine = a.add(a.text("", 13, a.goldInk, false));
+259:         final Button useRef = a.smallButton("استعمل سعر البرنامج", a.accent, null);
+260:         a.body.addView(useRef, a.lp(-2, 40, 2));
+261:         useRef.setVisibility(android.view.View.GONE);
+262:         final EditText desc = a.input("البيان (اختياري)");
+263: 
+264:         final java.util.function.Supplier<FxDeal> deal = () -> {
+265:             FxDeal x = new FxDeal();
+266:             x.sell = sell[0] == null || sell[0].none() ? "" : sell[0].label();
+267:             x.buy = buy[0] == null || buy[0].none() ? "" : buy[0].label();
+268:             x.sellDec = x.sell.isEmpty() ? 2 : a.db.decimals(x.sell);
+269:             x.buyDec = x.buy.isEmpty() ? 2 : a.db.decimals(x.buy);
+270:             try {
+271:                 x.sellAmount = x.sell.isEmpty() ? 0 : Db.minor(amt.getText().toString(), x.sellDec);
+272:             } catch (Exception e) {
+273:                 x.sellAmount = 0;
+274:             }
+275:             x.rate = FxDeal.parseRate(rate.getText().toString());
+276:             x.buyPerSell = dir.selected != 1;
+277:             return x;
+278:         };
+279:         final Runnable[] calc_holder = new Runnable[1];
+280:         /** 10.13: آخر ما كتبه المحاسب المبلغ المشترى (فالمباع يُحسب منه). */
+281:         final boolean[] fromBuy = {false};
+282:         final Object[] sf = summaryAndFooter(editing != null ? "حفظ التعديل" : "تسجيل القص", null);
+283:         final LinearLayout summary = (LinearLayout) sf[0];
+284:         final TextView footer = (TextView) sf[1];
+285:         final Button save = (Button) sf[2];
+286:         final Runnable update = () -> {
+287:             FxDeal x = deal.get();
+288:             List<String> l = new java.util.ArrayList<>();
+289:             l.add("راجع قبل التسجيل:");
+290:             l.add(office[0] == null ? "✗ المكتب: لم يُختر" : "المكتب: " + office[0].name);
+291:             String sa = x.sell.isEmpty() ? null : amountText(amt, x.sell);
+292:             l.add(x.sell.isEmpty() ? "✗ نبيع: اختر العملة المباعة" : sa == null ? "✗ نبيع: اكتب المبلغ" : "نبيع من رصيدنا: " + sa);
+293:             String ba = x.buy.isEmpty() ? null : amountText(counter, x.buy);
+294:             l.add(x.buy.isEmpty() ? "✗ نشتري: اختر العملة المشتراة" : ba == null ? "✗ نشتري: اكتب السعر أو المبلغ المقابل" : "نأخذ مقابلها: " + ba);
+295:             if (sa != null && ba != null) {
+296:                 try {
+297:                     long ua = Db.minor(amt.getText().toString(), x.sellDec), ta = Db.minor(counter.getText().toString(), x.buyDec);
+298:                     String eff = FxDeal.effectiveRate(ua, x.sellDec, ta, x.buyDec);
+299:                     l.add("السعر الفعلي: 1 " + x.sell + " = " + eff + " " + x.buy);
+300:                     java.math.BigDecimal ref = FxDeal.reference(usd, x.sell, x.buy);
+301:                     if (ref != null) {
+302:                         java.math.BigDecimal pct = new java.math.BigDecimal(eff).subtract(ref).multiply(java.math.BigDecimal.valueOf(100)).divide(ref, 2, java.math.RoundingMode.HALF_UP);
+303:                         l.add("مقارنة بسعر البرنامج: " + (pct.signum() == 0 ? "مطابق" : (pct.signum() > 0 ? "أعلى بـ " : "أقل بـ ") + pct.abs().toPlainString() + "٪") + " (1 " + x.sell + " = "
+304:                                 + ref.toPlainString() + " " + x.buy + ")");
+305:                     }
+306:                     if (office[0] != null && editing != null) {

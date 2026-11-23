@@ -1,0 +1,206 @@
+1: package android.view;
+2: 
+3: import android.graphics.Canvas;
+4: import java.awt.*;
+5: import java.awt.event.*;
+6: import java.awt.event.KeyEvent;
+7: import java.awt.event.KeyListener;
+8: import javax.swing.*;
+9: 
+10: /**
+11:  * نافذة أندرويد واحدة (الشاشة، أو نافذة حوار، أو إشعار) فوق مكوّن Swing: تقيس العناصر وترسمها وتوصل إليها الفأرة
+12:  * ولوحة المفاتيح. خانة الكتابة المركّزة فقط تصير خانة Swing حقيقية فوق مكانها، والباقي يُرسم كما في الهاتف.
+13:  */
+14: public final class ViewRootImpl implements ViewParent {
+15:     /** نوع النافذة: الطبقة في الكومة. */
+16:     public static final int LAYER_APP = 0, LAYER_DIALOG = 100, LAYER_POPUP = 200, LAYER_TOAST = 300;
+17: 
+18:     final View view;
+19:     final AttachInfo ai = new AttachInfo(this);
+20:     public final Pane pane = new Pane();
+21:     final int layer;
+22:     boolean inLayout;
+23:     private boolean layoutWanted = true, traversalScheduled;
+24:     View focused;
+25:     private View hovered, pressedTarget;
+26:     private boolean touchable = true;
+27:     /** لنوافذ الحوار: لمسة خارج المحتوى. */
+28:     public Runnable onOutsideTouch;
+29:     public Runnable onBack;
+30:     private boolean firstFocusDone;
+31:     /** يُستدعى عند الضغط على مفتاح (اختصارات)؛ يعيد true إن استُهلك. */
+32:     public java.util.function.Predicate<KeyEvent> keyHook;
+33: 
+34:     /** 11.0: مقياس الرسم العام (تكبير النافذة كلها دون إعادة بناء الشاشات). العناصر تُقاس بوحدات منطقية (dp عند كثافة 1). */
+35:     private static float scale = 1f;
+36:     public static float scale() { return scale; }
+37:     public static void setScale(float s) { scale = Math.max(0.5f, Math.min(4f, s)); }
+38:     static float lx(MouseEvent e) { return e.getX() / scale; }
+39:     static float ly(MouseEvent e) { return e.getY() / scale; }
+40: 
+41:     public ViewRootImpl(View v, int layer) {
+42:         this.view = v;
+43:         this.layer = layer;
+44:         v.parent = this;
+45:         pane.setOpaque(false);
+46:         pane.setLayout(null);
+47:         pane.setFocusable(true);
+48:         pane.setFocusTraversalKeysEnabled(false);
+49:         Input in = new Input();
+50:         pane.addMouseListener(in);
+51:         pane.addMouseMotionListener(in);
+52:         pane.addMouseWheelListener(in);
+53:         pane.addKeyListener(in);
+54:         v.dispatchAttachedToWindowTree(ai);
+55:         requestLayout();
+56:     }
+57: 
+58:     public View getView() { return view; }
+59:     public int layer() { return layer; }
+60:     public void setTouchable(boolean t) { touchable = t; }
+61:     public int width() { return Math.round(pane.getWidth() / scale); }
+62:     public int height() { return Math.round(pane.getHeight() / scale); }
+63:     Point screenOrigin() {
+64:         try { Point p = pane.getLocationOnScreen(); return p; } catch (Exception e) { return new Point(0, 0); }
+65:     }
+66: 
+67:     /** إزالة النافذة (تفصل العناصر). */
+68:     public void detach() {
+69:         if (focused != null) setFocused(null);
+70:         TextOverlay.hide(this);
+71:         if (view.attachInfo != null) view.dispatchDetachedFromWindowTree();
+72:     }
+73: 
+74:     // ------------------------------------------------------------------ ViewParent
+75:     @Override public void requestLayout() {
+76:         layoutWanted = true;
+77:         if (!traversalScheduled) {
+78:             traversalScheduled = true;
+79:             SwingUtilities.invokeLater(this::traversal);
+80:         }
+81:         pane.repaint();
+82:     }
+83:     @Override public boolean isLayoutRequested() { return layoutWanted; }
+84:     @Override public ViewParent getParent() { return null; }
+85:     @Override public void requestDisallowInterceptTouchEvent(boolean d) {}
+86:     public void invalidate() { pane.repaint(); }
+87:     void visibilityChanged() { overlaysDirty(); }
+88:     void overlaysDirty() { pane.repaint(); }
+89:     void tooltipChanged(View v) {}
+90: 
+91:     /** القياس والتخطيط ثم مستمعو التخطيط (حتى 4 مرات إن طلبوا تخطيطًا جديدًا). */
+92:     public void traversal() {
+93:         traversalScheduled = false;
+94:         int w = width(), h = height();
+95:         if (w <= 0 || h <= 0) return;
+96:         for (int pass = 0; pass < 4 && layoutWanted; pass++) {
+97:             layoutWanted = false;
+98:             inLayout = true;
+99:             try {
+100:                 view.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY));
+101:                 view.layout(0, 0, w, h);
+102:             } finally {
+103:                 inLayout = false;
+104:             }
+105:             ai.observer.dispatchOnGlobalLayout();
+106:         }
+107:         if (!firstFocusDone && view.getWidth() > 0) {
+108:             firstFocusDone = true;
+109:             if (focused == null) focusFirst(view);
+110:         }
+111:         TextOverlay.sync(this);
+112:         pane.repaint();
+113:     }
+114: 
+115:     /** أول خانة كتابة في النافذة تأخذ التركيز (كما في أندرويد). */
+116:     private boolean focusFirst(View v) {
+117:         if (v.getVisibility() != View.VISIBLE) return false;
+118:         if (v.isFocusableInTouchMode() && v.isEnabled() && v.onCheckIsTextEditor()) { setFocused(v); return true; }
+119:         if (v instanceof ViewGroup) {
+120:             ViewGroup g = (ViewGroup) v;
+121:             if (g.getDescendantFocusability() == ViewGroup.FOCUS_BLOCK_DESCENDANTS) return false;
+122:             if (g.isFocusableInTouchMode() && g.getDescendantFocusability() == ViewGroup.FOCUS_BEFORE_DESCENDANTS) return true;
+123:             for (int i = 0; i < g.getChildCount(); i++) if (focusFirst(g.getChildAt(i))) return true;
+124:         }
+125:         return false;
+126:     }
+127: 
+128:     /** نقل التركيز إلى عنصر (أو لا شيء). */
+129:     public void setFocused(View v) {
+130:         if (v == focused) {
+131:             if (v != null && v.onCheckIsTextEditor()) TextOverlay.show(this, v, -1, -1);
+132:             return;
+133:         }
+134:         View old = focused;
+135:         focused = v;
+136:         if (old != null) old.setFocusedInternal(false);
+137:         if (v != null) v.setFocusedInternal(true);
+138:         ai.observer.dispatchFocus(old, v);
+139:         if (v != null && v.onCheckIsTextEditor()) TextOverlay.show(this, v, -1, -1);
+140:         else {
+141:             TextOverlay.hide(this);
+142:             if (pane.isShowing()) pane.requestFocusInWindow();
+143:         }
+144:         pane.repaint();
+145:     }
+146:     public View getFocused() { return focused; }
+147: 
+148:     boolean focusOnClick(View v) { return false; }
+149: 
+150:     /** التالي/السابق بين خانات الكتابة (Tab). */
+151:     public void moveFocus(boolean forward) {
+152:         java.util.List<View> all = new java.util.ArrayList<>();
+153:         collect(view, all);
+154:         if (all.isEmpty()) return;
+155:         int i = all.indexOf(focused);
+156:         int n = forward ? (i + 1) % all.size() : (i <= 0 ? all.size() - 1 : i - 1);
+157:         View next = all.get(n);
+158:         setFocused(next);
+159:         next.requestRectangleOnScreen(new android.graphics.Rect(0, 0, next.getWidth(), next.getHeight()));
+160:     }
+161:     private void collect(View v, java.util.List<View> out) {
+162:         if (v.getVisibility() != View.VISIBLE) return;
+163:         if (v.onCheckIsTextEditor() && v.isEnabled() && v.isFocusable()) out.add(v);
+164:         if (v instanceof ViewGroup) { ViewGroup g = (ViewGroup) v; for (int i = 0; i < g.getChildCount(); i++) collect(g.getChildAt(i), out); }
+165:     }
+166: 
+167:     // ------------------------------------------------------------------ الرسم
+168:     public final class Pane extends JComponent {
+169:         @Override protected void paintComponent(Graphics g0) {
+170:             if (layoutWanted) traversal();
+171:             if (ai.observer.dispatchOnPreDraw()) { /* يُكمل الرسم على أي حال */ }
+172:             Graphics2D g = (Graphics2D) g0.create();
+173:             try {
+174:                 if (scale != 1f) g.scale(scale, scale);
+175:                 Canvas c = new Canvas(g, width(), height());
+176:                 view.draw(c);
+177:             } finally {
+178:                 g.dispose();
+179:             }
+180:             ai.observer.dispatchDraw();
+181:             TextOverlay.sync(ViewRootImpl.this);
+182:         }
+183:         @Override public boolean contains(int x, int y) {
+184:             if (!touchable) return false;
+185:             return super.contains(x, y);
+186:         }
+187:         public ViewRootImpl root() { return ViewRootImpl.this; }
+188:     }
+189: 
+190:     /** يرسم النافذة في صورة (للتجارب واللقطات). */
+191:     public java.awt.image.BufferedImage snapshot(int w, int h, float scale) {
+192:         pane.setSize(w, h);
+193:         traversal();
+194:         java.awt.image.BufferedImage im = new java.awt.image.BufferedImage(Math.round(w * scale), Math.round(h * scale), java.awt.image.BufferedImage.TYPE_INT_ARGB);
+195:         Graphics2D g = im.createGraphics();
+196:         g.scale(scale, scale);
+197:         view.draw(new Canvas(g, w, h));
+198:         g.dispose();
+199:         return im;
+200:     }
+201: 
+202:     // ------------------------------------------------------------------ الإدخال
+203:     private long downTime;
+204:     private boolean down;
+205: 
+206:     private final class Input extends MouseAdapter implements KeyListener {

@@ -1,0 +1,185 @@
+195:         for (Map.Entry<String, Long> e : src.counts().entrySet()) counts.put(e.getKey(), e.getValue().longValue());
+196:         JSONObject manifest = new JSONObject();
+197:         manifest.put("format", FORMAT);
+198:         manifest.put("app", APP_ID);
+199:         manifest.put("appName", "المحاسب الذكي لمكاتب الحوالات");
+200:         manifest.put("appVersion", appVersion);
+201:         manifest.put("schema", schema);
+202:         manifest.put("createdAt", now);
+203:         manifest.put("counts", counts);
+204:         putText(zip, "manifest.json", manifest.toString(1));
+205: 
+206:         for (final String table : TABLES) {
+207:             zip.putNextEntry(new ZipEntry("tables/" + table + ".ndjson"));
+208:             final long[] n = {0};
+209:             final OutputStream z = zip;
+210:             src.rows(table, new RowSink() {
+211:                 @Override public void row(JSONObject row) throws Exception {
+212:                     z.write(row.toString().getBytes(StandardCharsets.UTF_8));
+213:                     z.write('\n');
+214:                     n[0]++;
+215:                 }
+216:             });
+217:             zip.closeEntry();
+218:             res.rows.put(table, n[0]);
+219:         }
+220: 
+221:         StringBuilder index = new StringBuilder();
+222:         for (AttachmentRef ref : src.attachments()) {
+223:             byte[] data;
+224:             try {
+225:                 data = src.attachmentData(ref);
+226:             } catch (Throwable t) {
+227:                 data = null;
+228:             }
+229:             if (data == null || data.length == 0) {
+230:                 res.skippedAttachments++;
+231:                 continue;
+232:             }
+233:             zip.putNextEntry(new ZipEntry("attachments/" + ref.id + ".bin"));
+234:             zip.write(data);
+235:             zip.closeEntry();
+236:             JSONObject meta = new JSONObject();
+237:             meta.put("id", ref.id);
+238:             meta.put("tx_id", ref.txId);
+239:             meta.put("mime", ref.mime == null ? "image/jpeg" : ref.mime);
+240:             meta.put("created_at", ref.createdAt);
+241:             meta.put("size", data.length);
+242:             meta.put("sha256", sha256Hex(data));
+243:             index.append(meta.toString()).append('\n');
+244:             res.attachments++;
+245:             Arrays.fill(data, (byte) 0);
+246:         }
+247:         putText(zip, "attachments/index.ndjson", index.toString());
+248: 
+249:         res.warnings.addAll(src.warnings());
+250:         res.unreadable = src.unreadable();
+251:         JSONObject summary = new JSONObject();
+252:         JSONObject rows = new JSONObject();
+253:         for (Map.Entry<String, Long> e : res.rows.entrySet()) rows.put(e.getKey(), e.getValue().longValue());
+254:         summary.put("rows", rows);
+255:         summary.put("attachments", res.attachments);
+256:         summary.put("skippedAttachments", res.skippedAttachments);
+257:         summary.put("unreadableFields", res.unreadable);
+258:         summary.put("warnings", new JSONArray(res.warnings));
+259:         summary.put("completedAt", Clock.now());
+260:         putText(zip, "summary.json", summary.toString(1));
+261:         zip.finish();
+262:         zip.flush();
+263:         return res;
+264:     }
+265: 
+266:     private static void putText(ZipOutputStream zip, String name, String text) throws IOException {
+267:         zip.putNextEntry(new ZipEntry(name));
+268:         zip.write(text.getBytes(StandardCharsets.UTF_8));
+269:         zip.closeEntry();
+270:     }
+271: 
+272:     // ===================================================================================
+273:     // قراءة الصيغة 5
+274:     // ===================================================================================
+275: 
+276:     public static Parsed readV5(InputStream decrypted, AttachmentStore store) throws Exception {
+277:         return readV5(decrypted, store, null);
+278:     }
+279: 
+280:     /**
+281:      * spillDir: مجلد خاص بالتطبيق تُكتب فيه الجداول الكبيرة مشفّرة بمفتاح عابر بدل إبقائها في الذاكرة
+282:      * (null = كلها في الذاكرة، للنسخ الصغيرة والاختبارات). الذاكرة تثبت مهما كبر الدفتر.
+283:      */
+284:     public static Parsed readV5(InputStream decrypted, AttachmentStore store, File spillDir) throws Exception {
+285:         Parsed p = new Parsed();
+286:         p.format = 5;
+287:         ZipInputStream zin = new ZipInputStream(decrypted);
+288:         Map<Long, StagedAttachment> staged = new LinkedHashMap<>();
+289:         List<JSONObject> index = null;
+290:         boolean manifestSeen = false;
+291:         try {
+292:             ZipEntry e;
+293:             while ((e = zin.getNextEntry()) != null) {
+294:                 String name = e.getName();
+295:                 if (name.equals("manifest.json")) {
+296:                     p.manifest = new JSONObject(readText(zin));
+297:                     manifestSeen = true;
+298:                 } else if (name.startsWith("tables/") && name.endsWith(".ndjson")) {
+299:                     String table = name.substring(7, name.length() - 7);
+300:                     if (!Arrays.asList(TABLES).contains(table)) {
+301:                         p.warnings.add("تم تجاهل جدول غير معروف داخل النسخة: " + table);
+302:                         continue;
+303:                     }
+304:                     p.tables.put(table, readLines(zin, spillDir));
+305:                 } else if (name.equals("attachments/index.ndjson")) {
+306:                     index = readLines(zin, null);
+307:                 } else if (name.startsWith("attachments/") && name.endsWith(".bin")) {
+308:                     long id;
+309:                     try {
+310:                         id = Long.parseLong(name.substring(12, name.length() - 4));
+311:                     } catch (NumberFormatException nfe) {
+312:                         p.warnings.add("تم تجاهل ملف غير معروف: " + name);
+313:                         continue;
+314:                     }
+315:                     MessageDigest md = MessageDigest.getInstance("SHA-256");
+316:                     CountingDigestStream cs = new CountingDigestStream(zin, md, MAX_ATTACHMENT_BYTES);
+317:                     Object handle = store.store(id, cs);
+318:                     drain(cs);
+319:                     StagedAttachment old = staged.get(id);
+320:                     if (old != null) store.discard(old.handle);
+321:                     StagedAttachment s = new StagedAttachment();
+322:                     s.id = id;
+323:                     s.size = cs.count;
+324:                     s.sha256 = hex(md.digest());
+325:                     s.handle = handle;
+326:                     staged.put(id, s);
+327:                 } else if (name.equals("summary.json")) {
+328:                     p.summary = new JSONObject(readText(zin));
+329:                 } else if (!e.isDirectory()) {
+330:                     p.warnings.add("تم تجاهل ملف غير معروف داخل النسخة: " + name);
+331:                 }
+332:             }
+333:         } catch (Exception ex) {
+334:             for (StagedAttachment s : staged.values()) store.discard(s.handle);
+335:             throw ex;
+336:         }
+337:         if (!manifestSeen) {
+338:             discardAll(staged, store);
+339:             throw new SecureStreams.CorruptBackupException("النسخة لا تحتوي على ملف التعريف؛ ليست نسخة صالحة");
+340:         }
+341:         if (!APP_ID.equals(p.manifest.optString("app"))) {
+342:             discardAll(staged, store);
+343:             throw new SecureStreams.CorruptBackupException("هذه النسخة ليست من تطبيق المحاسب الذكي");
+344:         }
+345:         if (p.summary == null) {
+346:             discardAll(staged, store);
+347:             throw new SecureStreams.CorruptBackupException("النسخة غير مكتملة: لم تُكتب نهايتها (ربما انقطعت عملية الإنشاء)");
+348:         }
+349:         if (index == null) index = new ArrayList<>();
+350:         Set<Long> used = new HashSet<>();
+351:         for (JSONObject meta : index) {
+352:             long id = meta.optLong("id", -1);
+353:             StagedAttachment s = staged.get(id);
+354:             if (s == null) {
+355:                 discardAll(staged, store);
+356:                 throw new SecureStreams.CorruptBackupException("صورة مفقودة داخل النسخة (رقم " + id + ")");
+357:             }
+358:             if (meta.optLong("size", -1) != s.size || !meta.optString("sha256").equalsIgnoreCase(s.sha256)) {
+359:                 discardAll(staged, store);
+360:                 throw new SecureStreams.CorruptBackupException("صورة تالفة داخل النسخة (رقم " + id + ")");
+361:             }
+362:             s.txId = meta.optLong("tx_id", -1);
+363:             s.createdAt = meta.optLong("created_at", 0);
+364:             s.mime = meta.optString("mime", "image/jpeg");
+365:             used.add(id);
+366:             p.attachments.add(s);
+367:         }
+368:         for (StagedAttachment s : staged.values()) {
+369:             if (!used.contains(s.id)) store.discard(s.handle);
+370:         }
+371:         JSONObject rows = p.summary.optJSONObject("rows");
+372:         if (rows != null) {
+373:             Iterator<String> it = rows.keys();
+374:             while (it.hasNext()) {
+375:                 String t = it.next();
+376:                 long expected = rows.optLong(t, -1);
+377:                 long got = p.table(t).size();
+378:                 if (expected != got) {
+379:                     for (StagedAttachment s : p.attachments) store.discard(s.handle);

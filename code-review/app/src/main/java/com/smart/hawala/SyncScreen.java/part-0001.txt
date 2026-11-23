@@ -1,0 +1,191 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.content.ClipData;
+5: import android.content.ClipboardManager;
+6: import android.content.Context;
+7: import android.content.Intent;
+8: import android.graphics.Color;
+9: import android.net.Uri;
+10: import android.os.Handler;
+11: import android.os.Looper;
+12: import android.os.SystemClock;
+13: import android.view.Gravity;
+14: import android.widget.EditText;
+15: import android.widget.ProgressBar;
+16: import android.widget.LinearLayout;
+17: import android.widget.TextView;
+18: import java.util.List;
+19: import java.util.Map;
+20: import org.json.JSONObject;
+21: 
+22: /**
+23:  * 10.0: «المزامنة بين الأجهزة» (النسخة المدفوعة، يفعّلها المستخدم أو يتركها): اختيار المجلد المشترك، وإنشاء الخزنة من
+24:  * هذا الجهاز أو الانضمام إليها، والحالة والأجهزة والتعارضات، ومزامنة تلقائية في الخلفية.
+25:  */
+26: final class SyncScreen {
+27:     static final int PICK_TREE = 70;
+28:     private final MainActivity a;
+29:     private Runnable afterPick;
+30: 
+31:     SyncScreen(MainActivity a) { this.a = a; }
+32: 
+33:     // ===================================================================================
+34:     // التشغيل في الخلفية
+35:     // ===================================================================================
+36: 
+37:     private static volatile boolean running;
+38:     private static long lastRun;
+39:     private final Handler handler = new Handler(Looper.getMainLooper());
+40:     private final Runnable tick = new Runnable() {
+41:         @Override public void run() {
+42:             auto(false);
+43:             handler.postDelayed(this, a.db == null ? 90_000 : SyncEngine.everySeconds(a.db) * 1000L);
+44:         }
+45:     };
+46: 
+47:     /** 10.2: الناقل المختار: «drive» (Google Drive مباشرة)، «server» (خادمك)، أو «folder» (مجلد مشترك). */
+48:     static String transport(Db db) { return db.setting("sync_transport", "folder"); }
+49: 
+50:     static SyncFolder folder(Context ctx, Db db) { return folder(ctx, db, transport(db)); }
+51: 
+52:     static SyncFolder folder(Context ctx, Db db, String kind) {
+53:         if ("drive".equals(kind)) return new DriveSyncFolder(new DriveAuth(ctx, db.setting("drive_account", "")));
+54:         if ("server".equals(kind)) {
+55:             String url = db.setting("sync_server", "");
+56:             if (url.isEmpty()) return null;
+57:             String v = db.setting("sync_server_vault", "");
+58:             if (v.isEmpty()) v = SyncEngine.status(db).vaultId;
+59:             return new HttpSyncFolder(url, v, db.setting("sync_server_key", ""));
+60:         }
+61:         String t = db.setting("sync_tree", "");
+62:         return t.isEmpty() ? null : new SafSyncFolder(ctx, Uri.parse(t));
+63:     }
+64: 
+65:     static String kindName(Db db) {
+66:         switch (transport(db)) {
+67:             case "drive": return "\u200FGoogle Drive مباشرة";
+68:             case "server": return "خادم المزامنة الخاص بك";
+69:             default: return "مجلد مشترك";
+70:         }
+71:     }
+72: 
+73:     /** مزامنة في الخلفية دون واجهة (من مهمة النظام الدورية). */
+74:     static void background(Context ctx, Db db) {
+75:         if (running || !SyncEngine.enabled(db) || !License.current.sync() || SyncEngine.paused(db) || !networkOk(ctx, db)) return;
+76:         SyncFolder f = folder(ctx, db);
+77:         if (f == null) return;
+78:         running = true;
+79:         try {
+80:             Notifier.afterSync(ctx, db, syncWithRetry(db, f));
+81:         } catch (Throwable ignored) {
+82:             // الخطأ محفوظ في حالة المزامنة ويظهر في شاشتها
+83:         } finally {
+84:             running = false;
+85:             lastRun = SystemClock.elapsedRealtime();
+86:         }
+87:     }
+88: 
+89:     /** 10.4: «عبر الواي فاي فقط»: لا مزامنة تلقائية على بيانات الجوال (اليدوية تعمل دائمًا). */
+90:     static boolean networkOk(Context ctx, Db db) {
+91:         if (!"1".equals(db.setting("sync_wifi", "0"))) return true;
+92:         try {
+93:             android.net.ConnectivityManager cm = (android.net.ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+94:             return cm != null && !cm.isActiveNetworkMetered();
+95:         } catch (Throwable t) {
+96:             return true;
+97:         }
+98:     }
+99: 
+100:     void onResume() {
+101:         handler.removeCallbacks(tick);
+102:         inBackground = false;
+103:         retryIfPending();
+104:         if (a.db != null) SyncJob.schedule(a, SyncEngine.enabled(a.db) && !SyncEngine.paused(a.db), "1".equals(a.db.setting("sync_wifi", "0")));
+105:         if (a.db != null && SyncEngine.enabled(a.db)) handler.postDelayed(tick, 3000);
+106:     }
+107: 
+108:     void onPause() {
+109:         handler.removeCallbacks(tick);
+110:         // 12.7: ترك التطبيق أثناء مزامنة: مهمة نظام قصيرة تكملها إن أُوقف التطبيق، والخطأ لا يظهر عند العودة بل تُعاد الجولة
+111:         pauseSerial++;
+112:         inBackground = true;
+113:         if ((running || joinRunning()) && a.db != null) SyncJob.runOnce(a, "1".equals(a.db.setting("sync_wifi", "0")));
+114:     }
+115: 
+116:     private void retryIfPending() {
+117:         if (!retryOnResume || a.db == null || !SyncEngine.enabled(a.db)) return;
+118:         retryOnResume = false;
+119:         handler.postDelayed(() -> {
+120:             if (running) return;
+121:             a.toast("تكملة المزامنة التي توقفت حين تركت التطبيق…");
+122:             now(null);
+123:         }, 1500);
+124:     }
+125: 
+126:     /** 12.7: يزداد مع كل ترك للتطبيق؛ جولة بدأت قبله وفشلت تُعاد بصمت عند العودة. */
+127:     static volatile int pauseSerial;
+128:     static volatile boolean inBackground;
+129:     private static volatile boolean retryOnResume;
+130: 
+131:     /** 12.7: خطأ عابر (شبكة، مهلة، انقطاع) يستحق إعادة المحاولة بدل رسالة خطأ. */
+132:     static boolean transientError(Throwable t) {
+133:         for (Throwable x = t; x != null; x = x.getCause()) {
+134:             if (x instanceof java.io.InterruptedIOException || x instanceof java.net.SocketException || x instanceof java.net.UnknownHostException
+135:                     || x instanceof javax.net.ssl.SSLException) return true;
+136:             String m = x.getMessage() == null ? "" : x.getMessage().toLowerCase(java.util.Locale.ROOT);
+137:             if (m.contains("timeout") || m.contains("timed out") || m.contains("connection reset") || m.contains("broken pipe") || m.contains("unable to resolve")) return true;
+138:             if (x.getCause() == x) break;
+139:         }
+140:         return false;
+141:     }
+142: 
+143:     /** 12.7: جولة مع إعادة محاولة الأخطاء العابرة (5 ثم 15 ثانية). */
+144:     static SyncEngine.Result syncWithRetry(Db db, SyncFolder f) throws Exception {
+145:         Exception last = null;
+146:         for (int attempt = 0; attempt < 3; attempt++) {
+147:             try {
+148:                 return new SyncEngine(db, f).sync();
+149:             } catch (Exception e) {
+150:                 last = e;
+151:                 if (!transientError(e) || attempt == 2) throw e;
+152:                 Thread.sleep(attempt == 0 ? 5000 : 15000);
+153:             }
+154:         }
+155:         throw last;
+156:     }
+157: 
+158:     /** جولة تلقائية (لا تزعج المستخدم إلا إن وصلت تغييرات). */
+159:     void auto(boolean force) {
+160:         if (running || a.db == null || !SyncEngine.enabled(a.db) || !License.current.sync() || SyncEngine.paused(a.db) || !networkOk(a, a.db)) return;
+161:         if (!force && SystemClock.elapsedRealtime() - lastRun < 60_000 && SyncEngine.pending(a.db) == 0) return;
+162:         final SyncFolder f = folder(a, a.db);
+163:         if (f == null) return;
+164:         running = true;
+165:         new Thread(() -> {
+166:             SyncEngine.Result r = null;
+167:             try {
+168:                 r = syncWithRetry(a.db, f);
+169:             } catch (Throwable ignored) {
+170:                 // يظهر في شاشة المزامنة
+171:             } finally {
+172:                 running = false;
+173:                 lastRun = SystemClock.elapsedRealtime();
+174:             }
+175:             final SyncEngine.Result res = r;
+176:             // التطبيق أمام المستخدم: الإشعار لما يحتاج إجراء فقط (الاعتماد والتكرار)، والباقي رسالة قصيرة.
+177:             // 11.5: «أمامه» = النافذة في المقدمة فعلًا (كان الكمبيوتر يُعدّ في الواجهة دائمًا فلا تصل إشعارات الحركات للمدير)
+178:             boolean looking;
+179:             try {
+180:                 looking = a.hasWindowFocus();
+181:             } catch (Throwable t) {
+182:                 looking = false;
+183:             }
+184:             if (res != null) Notifier.afterSync(a, a.db, res, looking);
+185:             if (res != null && res.received > 0) a.runOnUiThread(() -> {
+186:                 a.toast("وصلت تحديثات من الأجهزة الأخرى (" + res.rows + " تغييرًا)");
+187:                 a.afterSync(res);
+188:             });
+189:         }, "sync").start();
+190:     }
+191: 

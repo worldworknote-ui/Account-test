@@ -1,0 +1,110 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.ClipData;
+4: import android.content.ClipboardManager;
+5: import android.content.Context;
+6: import android.content.Intent;
+7: import android.net.Uri;
+8: import android.view.Gravity;
+9: import android.widget.ImageView;
+10: import android.widget.LinearLayout;
+11: import android.widget.TextView;
+12: 
+13: /** 9.0: «من نحن» و«اتصل بنا» و«معلومات عن التطبيق» (النصوص في AboutText المشترك). */
+14: final class About {
+15:     private About() {}
+16: 
+17:     static final String COMPANY = AboutText.COMPANY;
+18:     static final String PHONE_SHOWN = AboutText.PHONE_SHOWN;
+19: 
+20:     private static void logoCard(MainActivity a, String title, String sub) {
+21:         LinearLayout c = a.card();
+22:         c.setGravity(Gravity.CENTER_HORIZONTAL);
+23:         ImageView iv = new ImageView(a);
+24:         iv.setImageResource(R.mipmap.ic_launcher);
+25:         c.addView(iv, new LinearLayout.LayoutParams(a.dp(72), a.dp(72)));
+26:         TextView t = a.text(title, 19, a.primaryInk, true);
+27:         t.setGravity(Gravity.CENTER);
+28:         c.addView(t, new LinearLayout.LayoutParams(-1, -2));
+29:         if (sub != null) {
+30:             TextView s = a.text(sub, 13, a.muted, false);
+31:             s.setGravity(Gravity.CENTER);
+32:             c.addView(s, new LinearLayout.LayoutParams(-1, -2));
+33:         }
+34:     }
+35: 
+36:     static void aboutUs(final MainActivity a, Runnable back) {
+37:         a.here(() -> aboutUs(a, back));
+38:         a.tabbedScreen("من نحن", back, "more");
+39:         logoCard(a, COMPANY, "حلول ذكية تسهّل عمل المشاريع");
+40:         LinearLayout c = a.card();
+41:         for (String p : AboutText.ABOUT_US) {
+42:             TextView t = a.text(p, 15, a.ink, false);
+43:             t.setTextDirection(android.view.View.TEXT_DIRECTION_RTL);
+44:             c.addView(t);
+45:         }
+46:         a.button("اتصل بنا", a.primary, v -> contact(a, () -> aboutUs(a, back)));
+47:     }
+48: 
+49:     static void contact(final MainActivity a, Runnable back) {
+50:         a.here(() -> contact(a, back));
+51:         a.tabbedScreen("اتصل بنا", back, "more");
+52:         logoCard(a, COMPANY, "يسعدنا سماع ملاحظاتك واقتراحاتك");
+53:         LinearLayout c = a.card();
+54:         c.addView(a.text("رقم التواصل", 13, a.muted, false));
+55:         TextView n = a.text(PHONE_SHOWN, 24, a.primaryInk, true);
+56:         n.setTextIsSelectable(true);
+57:         c.addView(n);
+58:         c.addView(a.text("واتساب أو اتصال، للدعم الفني وطلب النسخة الكاملة.", 13, a.muted, false));
+59:         a.button("مراسلة على واتساب", a.primary, v -> open(a, "https://wa.me/" + AboutText.PHONE_DIGITS));
+60:         a.button("اتصال", a.accent, v -> open(a, "tel:" + AboutText.PHONE));
+61:         a.button("نسخ الرقم", android.graphics.Color.rgb(130, 130, 130), v -> {
+62:             try {
+63:                 ClipboardManager cm = (ClipboardManager) a.getSystemService(Context.CLIPBOARD_SERVICE);
+64:                 if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("phone", AboutText.PHONE));
+65:                 a.toast("نُسخ الرقم " + AboutText.PHONE);
+66:             } catch (Exception e) {
+67:                 a.error(e);
+68:             }
+69:         });
+70:     }
+71: 
+72:     static void appInfo(final MainActivity a, Runnable back) {
+73:         a.here(() -> appInfo(a, back));
+74:         a.tabbedScreen("معلومات عن التطبيق", back, "more");
+75:         logoCard(a, a.db.setting("app_title", "المحاسب الذكي لمكاتب الحوالات"), "الإصدار " + a.versionName());
+76:         LinearLayout in = a.card();
+77:         TextView it = a.text(AboutText.INTRO, 15, a.ink, false);
+78:         it.setTextDirection(android.view.View.TEXT_DIRECTION_RTL);
+79:         in.addView(it);
+80:         for (String[] f : AboutText.FEATURES) {
+81:             LinearLayout c = a.card();
+82:             c.addView(a.text(f[0], 16, a.primaryInk, true));
+83:             c.addView(a.text(f[1], 14, a.ink, false));
+84:         }
+85:         // 10.12: المنصات الأخرى، وطلبها بالتواصل
+86:         LinearLayout pc = a.card();
+87:         pc.addView(a.text(AboutText.PLATFORMS_TITLE, 16, a.primaryInk, true));
+88:         pc.addView(a.text(AboutText.PLATFORMS_LINE, 14, a.ink, false));
+89:         LinearLayout pr = a.row();
+90:         pr.addView(a.smallButton("اطلبها على واتساب", a.primary, v -> open(a, "https://wa.me/" + AboutText.PHONE_DIGITS + "?text="
+91:                 + Uri.encode("أرغب بنسخة المحاسب الذكي للكمبيوتر (ويندوز / ماك)"))), a.weight(44, 1.2f, 2));
+92:         pr.addView(a.smallButton("اتصل بنا", a.accent, v -> open(a, "tel:" + AboutText.PHONE)), a.weight(44, 0.8f, 2));
+93:         pc.addView(pr, a.lp(-1, -2, 4));
+94:         Entitlements e = License.current;
+95:         LinearLayout lc = a.card();
+96:         lc.addView(a.text(e.pro ? e.edition() : AboutText.FREE_TITLE, 16, a.goldInk, true));
+97:         lc.addView(a.text(e.pro ? "كل الميزات مفتوحة." : AboutText.FREE_LINE + "\n" + AboutText.BUY_LINE, 14, a.ink, false));
+98:         a.hint("من " + COMPANY + " • الإصدار " + a.versionName());
+99:     }
+100: 
+101:     private static void open(MainActivity a, String uri) {
+102:         try {
+103:             Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(uri));
+104:             if (uri.startsWith("tel:")) i = new Intent(Intent.ACTION_DIAL, Uri.parse(uri));
+105:             a.startActivity(i);
+106:         } catch (Exception e) {
+107:             a.toast("تعذر الفتح على هذا الهاتف. الرقم: " + AboutText.PHONE);
+108:         }
+109:     }
+110: }

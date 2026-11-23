@@ -1,0 +1,151 @@
+413:         JPanel list = Ui.column();
+414:         List<JCheckBox> boxes = new ArrayList<>();
+415:         Runnable upd = () -> {
+416:             int n = 0;
+417:             for (JCheckBox b : boxes) if (b.isSelected()) n++;
+418:             counter.setText("المختار: " + n + " من " + max);
+419:             counter.setForeground(n > max ? Ui.red : Ui.primaryInk);
+420:         };
+421:         for (int i = 0; i < ids.size(); i++) {
+422:             JCheckBox b = Ui.check(labels.get(i), i < max);
+423:             b.addActionListener(e -> upd.run());
+424:             boxes.add(b);
+425:             list.add(b);
+426:         }
+427:         JScrollPane sp = Ui.scroll(list);
+428:         sp.setPreferredSize(new Dimension(600, 340));
+429:         c.add(sp);
+430:         upd.run();
+431:         while (true) {
+432:             if (!Ui.form(this, title, Ui.rtl(c), "متابعة")) return null;
+433:             Set<Long> out = new LinkedHashSet<>();
+434:             for (int i = 0; i < boxes.size(); i++) if (boxes.get(i).isSelected()) out.add(ids.get(i));
+435:             if (!out.isEmpty() && out.size() <= max) return out;
+436:             Ui.info(this, title, out.isEmpty() ? "اختر مكتبًا واحدًا على الأقل." : "اخترت " + out.size() + "، والحد " + max + ".");
+437:         }
+438:     }
+439: 
+440:     void afterDataReplaced() {
+441:         SmartApp.currentUser = null;
+442:         Db.currentUserName = "المستخدم المحلي";
+443:         License.load(app.ctx, db);
+444:         app.locked = db.usersEnabled();
+445:         app.reloadAll();
+446:         app.afterUnlock();
+447:     }
+448: 
+449:     // ===================================================================================
+450:     // النسخ التلقائي: المجلد وكلمة المرور
+451:     // ===================================================================================
+452: 
+453:     void pickDir() {
+454:         JFileChooser ch = new JFileChooser(db.setting("desk_backup_dir", System.getProperty("user.home")));
+455:         ch.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+456:         ch.setDialogTitle("اختر مجلد النسخ التلقائي");
+457:         ch.applyComponentOrientation(Ui.RTL);
+458:         File icloud = new File(System.getProperty("user.home"), "Library/Mobile Documents/com~apple~CloudDocs");
+459:         if (icloud.isDirectory() && db.setting("desk_backup_dir", "").isEmpty()) ch.setCurrentDirectory(icloud);
+460:         if (ch.showDialog(this, "اختيار") != JFileChooser.APPROVE_OPTION) return;
+461:         File d = ch.getSelectedFile();
+462:         if (!d.isDirectory() || !d.canWrite()) {
+463:             Ui.toast("لا يمكن الكتابة في هذا المجلد");
+464:             return;
+465:         }
+466:         db.setSetting("desk_backup_dir", d.getAbsolutePath());
+467:         refresh();
+468:     }
+469: 
+470:     void setAutoPw() {
+471:         char[][] pw = askNewPassword(this, "كلمة مرور النسخ التلقائي");
+472:         if (pw == null) return;
+473:         try {
+474:             db.setSettingQuiet("auto_backup_pw", Crypto.enc(new String(pw[0])));
+475:             Ui.toast("حُفظت كلمة المرور مشفّرة بمفتاح هذا الجهاز");
+476:         } finally {
+477:             Arrays.fill(pw[0], '\0');
+478:         }
+479:         refresh();
+480:     }
+481: 
+482:     boolean isAdmin() {
+483:         return app.can(Auth.Perm.BACKUP) && (!db.usersEnabled() || (SmartApp.currentUser != null && Auth.isAdmin(SmartApp.currentUser)));
+484:     }
+485: 
+486:     void newBackupCode() {
+487:         Ui.busy(this, "جارٍ إنشاء الرمز…", p -> BackupRecovery.create(db), code -> {
+488:             JTextField f = new JTextField(code);
+489:             f.setEditable(false);
+490:             f.setFont(Ui.font(18, true));
+491:             JPanel q = Ui.column();
+492:             q.add(Ui.para("يفتح كل نسخة احتياطية تُؤخذ من الآن إن نسيت كلمة مرورها. يظهر مرة واحدة فقط: اكتبه على ورقة واحفظه بعيدًا عن هذا الجهاز.", 14, Ui.ink, 460));
+493:             q.add(Ui.gap(8));
+494:             q.add(f);
+495:             Ui.form(this, "رمز استرداد النسخ — احفظه الآن", Ui.rtl(q), "حفظته");
+496:             refresh();
+497:         });
+498:     }
+499: 
+500:     /** 10.16: مساعد النقل من برنامج آخر (كان على الهاتف وحده): الأداتان تُفتحان في المتصفح من هذا الجهاز، ثم يُستورد الملف الناتج. */
+501:     void migrationWizard() {
+502:         if (!app.require(Auth.Perm.RESTORE)) return;
+503:         JPanel c = Ui.column();
+504:         c.add(Ui.label("انقل بياناتك من برنامجك الحالي في ثلاث خطوات", 16, Ui.ink, true));
+505:         c.add(Ui.para("الأداتان تعملان في المتصفح على هذا الجهاز بلا إنترنت: تقرآن ملف Excel الذي يصدّره برنامجك (أو جدول Excel تعمل عليه)، "
+506:                 + "وتحوّلانه إلى ملف نسخة مشفّر (‎.sba) بكلمة سر تختارها، ثم تستورده هنا.", 13.5f, Ui.muted, 520));
+507:         c.add(Ui.gap(10));
+508:         c.add(Ui.label("1. افتح الأداة المناسبة", 14, Ui.primaryInk, true));
+509:         c.add(Ui.flow(Ui.ghost("أداة النقل (كشوفات وملفات الميزان بيست ريت)", e -> openTool("migration-tool.html", "أداة-النقل-المحاسب-الذكي.html")),
+510:                 Ui.ghost("الاستيراد الذكي (أي ملف Excel)", e -> openTool("smart-import.html", "الاستيراد-الذكي-المحاسب-الذكي.html"))));
+511:         c.add(Ui.gap(6));
+512:         c.add(Ui.label("2. حوّل ملفاتك في المتصفح", 14, Ui.primaryInk, true));
+513:         c.add(Ui.para("اختر ملف Excel أو كشوفات الحساب، راجع مطابقة أسماء المكاتب والأرصدة المتوقعة، ثم احفظ ملف ‎.sba.", 13.5f, Ui.ink, 520));
+514:         c.add(Ui.gap(6));
+515:         c.add(Ui.label("3. استورد الملف الناتج هنا", 14, Ui.primaryInk, true));
+516:         c.add(Ui.para("تختار عند الاستيراد «إضافة إلى بياناتي» (ومعها خيار اعتماد رصيد الملف بدل الجمع) أو «استبدال الكل». تُعرض معاينة الأرصدة قبل أي تغيير وتُحفظ نسخة أمان.",
+517:                 13.5f, Ui.ink, 520));
+518:         if (Ui.form(this, "مساعد النقل من برنامج آخر", Ui.rtl(c), "استيراد ملف ‎.sba الآن…")) restoreFromFile();
+519:     }
+520: 
+521:     void openTool(String res, String name) {
+522:         try (java.io.InputStream in = BackupView.class.getResourceAsStream("/res/" + res)) {
+523:             if (in == null) throw new IllegalStateException("الأداة غير مضمّنة في هذه النسخة");
+524:             File dir = new File(app.ctx.home(), "tools");
+525:             if (!dir.isDirectory() && !dir.mkdirs()) throw new java.io.IOException("تعذر إنشاء مجلد الأدوات");
+526:             File f = new File(dir, name);
+527:             java.nio.file.Files.copy(in, f.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+528:             Desktop.getDesktop().browse(f.toURI());
+529:             Ui.toast("فُتحت الأداة في المتصفح");
+530:         } catch (Exception e) {
+531:             Ui.error(this, e);
+532:         }
+533:     }
+534: 
+535:     /** 10.16: «اختبر أنك تتذكر كلمة المرور» (كالهاتف): تكتبها وتُقارن بالمحفوظة دون عرضها. */
+536:     void testAutoPw() {
+537:         if (db.setting("auto_backup_pw", "").isEmpty()) {
+538:             Ui.info(this, "اختبار كلمة المرور", "لم تُحدَّد كلمة مرور للنسخ التلقائي بعد.");
+539:             return;
+540:         }
+541:         JPasswordField f = Ui.password();
+542:         JPanel q = Ui.column();
+543:         q.add(Ui.para("اكتب كلمة مرور النسخ التلقائي كما تتذكرها. بدونها لا تُفتح النسخ على جهاز آخر.", 14, Ui.ink, 400));
+544:         q.add(Ui.gap(8));
+545:         q.add(f);
+546:         if (!Ui.form(this, "اختبار تذكّر كلمة المرور", q, "اختبار")) return;
+547:         try {
+548:             boolean ok = Crypto.decStrict(db.setting("auto_backup_pw", "")).equals(new String(f.getPassword()));
+549:             if (ok) Ui.info(this, "صحيحة ✓", "كلمة المرور التي كتبتها تطابق المحفوظة.");
+550:             else Ui.info(this, "غير مطابقة", "ما كتبته لا يطابق كلمة المرور المحفوظة. إن نسيتها فاعرضها (للمدير) أو عيّن كلمة جديدة واحفظها في مكان آمن.");
+551:         } catch (Exception e) {
+552:             Ui.info(this, "تعذر الاختبار", "لا يمكن فك كلمة المرور المحفوظة على هذا الجهاز. عيّن كلمة جديدة.");
+553:         }
+554:     }
+555: 
+556:     /** 10.14: نسيان كلمة مرور النسخ التلقائي: تُعرض للمدير بعد تأكيد رمزه، ويُسجَّل العرض. */
+557:     void revealAutoPw() {
+558:         if (db.setting("auto_backup_pw", "").isEmpty()) {
+559:             Ui.info(this, "كلمة مرور النسخ التلقائي", "لم تُحدَّد كلمة مرور بعد.");
+560:             return;
+561:         }
+562:         if (!isAdmin()) {
+563:             Ui.info(this, "كلمة مرور النسخ التلقائي", "عرضها للمدير وحده.");

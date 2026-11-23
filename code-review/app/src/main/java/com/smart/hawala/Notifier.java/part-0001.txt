@@ -1,0 +1,134 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.Notification;
+4: import android.app.NotificationChannel;
+5: import android.app.NotificationManager;
+6: import android.app.PendingIntent;
+7: import android.app.job.JobInfo;
+8: import android.app.job.JobScheduler;
+9: import android.content.ComponentName;
+10: import android.content.Context;
+11: import android.content.Intent;
+12: import java.util.ArrayList;
+13: import java.util.Calendar;
+14: import java.util.List;
+15: import java.util.Map;
+16: 
+17: /**
+18:  * 9.0: الإشعارات: عند إنشاء نسخة تلقائية، وعند مكتب لم تُسجَّل عليه حركات منذ يوم كامل، وعند مكتب لم تُرسل له مطابقة رصيد.
+19:  * لكل نوع مفتاح تشغيل، ولكل مكتب خيار (صفحة المكتب ← البيانات). تُفحص في الخلفية كل بضع ساعات، ولا يتكرر النوع نفسه في اليوم
+20:  * أكثر من مرة، ولا تظهر خارج ساعات العمل التي يختارها المستخدم. لا تُرسل أي بيانات خارج الهاتف.
+21:  */
+22: final class Notifier {
+23:     private Notifier() {}
+24: 
+25:     static final String CH_BACKUP = "backup", CH_REMIND = "reminders";
+26:     static final int ID_BACKUP_OK = 5110, ID_IDLE = 5111, ID_RECON = 5112, JOB_ID = 5103;
+27: 
+28:     static boolean on(Db db) { return !"0".equals(db.setting("notif_on", "1")); }
+29: 
+30:     static boolean backupOn(Db db) { return on(db) && !"0".equals(db.setting("notif_backup", "1")); }
+31: 
+32:     static boolean idleOn(Db db) { return on(db) && !"0".equals(db.setting("notif_idle", "1")); }
+33: 
+34:     static boolean reconOn(Db db) { return on(db) && !"0".equals(db.setting("notif_recon", "1")); }
+35: 
+36:     static int reconDays(Db db) { return (int) Math.max(1, Math.min(60, db.settingLong("notif_recon_days", 7))); }
+37: 
+38:     static int hourFrom(Db db) { return (int) Math.max(0, Math.min(23, db.settingLong("notif_hour_from", 9))); }
+39: 
+40:     static int hourTo(Db db) { return (int) Math.max(1, Math.min(24, db.settingLong("notif_hour_to", 21))); }
+41: 
+42:     static void channels(Context c) {
+43:         NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+44:         if (nm == null) return;
+45:         nm.createNotificationChannel(new NotificationChannel(CH_BACKUP, "النسخ الاحتياطي", NotificationManager.IMPORTANCE_DEFAULT));
+46:         NotificationChannel r = new NotificationChannel(CH_REMIND, "تذكيرات المكاتب", NotificationManager.IMPORTANCE_DEFAULT);
+47:         r.setDescription("مكتب بلا حركات منذ يوم كامل، ومطابقة رصيد لم تُرسل");
+48:         nm.createNotificationChannel(r);
+49:         NotificationChannel x = new NotificationChannel(CH_ACTION, "حركات تحتاج إجراء", NotificationManager.IMPORTANCE_HIGH);
+50:         x.setDescription("حركات من الأجهزة الأخرى: بانتظار اعتمادك، أو جديدة، أو قد تكون مكررة");
+51:         nm.createNotificationChannel(x);
+52:     }
+53: 
+54:     static final String CH_ACTION = "actions";
+55: 
+56:     /**
+57:      * 10.2: بعد مزامنة وصلت فيها حركات من أجهزة أخرى: حركات بانتظار الاعتماد (لمن يعتمد)، وحركات جديدة (للمدير ومن يعتمد)،
+58:      * وتكرار محتمل. المستخدم المعني هو الحالي على هذا الجهاز أو المحفوظ عليه («تذكرني»)؛ بلا مستخدمين: صاحب الجهاز.
+59:      */
+60:     /** 10.17: إشعار برسائل المدير الجديدة للمستخدم الحالي (مرة واحدة لكل رسالة على هذا الجهاز). */
+61:     static void adminMsgs(Context c, Db db) {
+62:         try {
+63:             if (!on(db)) return;
+64:             int i = 0;
+65:             for (Db.AdminMsg m : db.adminMsgsToNotify(target(db))) post(c, CH_ACTION, 3200 + (i++ % 20), "رسالة من المدير", m.body, null);
+66:         } catch (Exception ignored) {
+67:             // الإشعار للتنبيه فقط
+68:         }
+69:     }
+70: 
+71:     static void afterSync(Context c, Db db, SyncEngine.Result r) { afterSync(c, db, r, false); }
+72: 
+73:     /**
+74:      * 11.5: لمن الإشعارات على هذا الجهاز: الداخل الآن، أو المحفوظ («تذكرني»)، أو آخر من دخل عليه.
+75:      * (في الخلفية بلا «تذكرني» كان لا أحد معنيًّا فلا يصل شيء للمدير ولا للمحاسبين.)
+76:      */
+77:     static Model.User target(Db db) {
+78:         Model.User who = SmartApp.currentUser != null ? db.user(SmartApp.currentUser.id) : db.rememberedUser();
+79:         if (who == null && db.usersEnabled()) {
+80:             long last = db.settingLong("notif_last_user", 0);
+81:             if (last > 0) who = db.user(last);
+82:         }
+83:         return who;
+84:     }
+85: 
+86:     static void afterSync(Context c, Db db, SyncEngine.Result r, boolean foreground) {
+87:         if (r == null || !on(db)) return;
+88:         adminMsgs(c, db);
+89:         if (r.newTx.isEmpty() && r.dupTx == 0 && r.review() == 0 && r.news.isEmpty()) return;
+90:         try {
+91:             Model.User who = target(db);
+92:             boolean users = db.usersEnabled();
+93:             boolean approver = !users || (who != null && who.active && Auth.can(who, Auth.Perm.APPROVE));
+94:             boolean watcher = !users || (who != null && who.active && (Auth.isAdmin(who) || Auth.can(who, Auth.Perm.APPROVE)));
+95:             Map<Long, String> names = db.officeNames();
+96:             List<String> pend = new ArrayList<>(), fresh = new ArrayList<>(), mineNew = new ArrayList<>();
+97:             // 11.5: المحاسب يُشعَر بحركات مكاتبه («مكاتبي») التي سجّلها غيره (كان لا يصله شيء)
+98:             java.util.Set<Long> myOffices = new java.util.HashSet<>();
+99:             if (users && who != null && who.active && !watcher) myOffices.addAll(db.officeRoles(who.id).keySet());
+100:             for (long id : r.newTx) {
+101:                 Model.Tx t = db.tx(id);
+102:                 if (t == null) continue;
+103:                 String line = (t.userName.isEmpty() ? "" : t.userName + ": ") + (Model.TYPE_DEBIT.equals(t.type) ? "لنا " : "علينا ")
+104:                         + Model.fmt(t.amount, db.decimals(t.currency)) + " " + t.currency + " — " + Model.nz(names.get(t.officeId)) + (t.person.isEmpty() ? "" : " (" + t.person + ")");
+105:                 if (t.isPending()) pend.add(line);
+106:                 else if (t.isActive()) fresh.add(line);
+107:                 if (t.isActive() && myOffices.contains(t.officeId) && (who == null || !who.name.equals(t.userName))) mineNew.add(line);
+108:             }
+109:             if (approver && !pend.isEmpty() && !"0".equals(db.setting("notif_sync_pending", "1"))) {
+110:                 post(c, CH_ACTION, nextId(3130), pend.size() == 1 ? "حركة بانتظار اعتمادك" : pend.size() + " حركات بانتظار اعتمادك",
+111:                         join(pend, 4) + "\nاعتمدها أو صحّحها أو ارفضها من التطبيق.", MainActivity.ACTION_PENDING);
+112:             }
+113:             if (watcher && !fresh.isEmpty() && !"0".equals(db.setting("notif_sync_tx", "1"))) {
+114:                 String title = fresh.size() == 1 ? "حركة جديدة من جهاز آخر" : fresh.size() + " حركات جديدة من الأجهزة الأخرى";
+115:                 if (foreground) logOnly(title, join(fresh, 4));   // أمامه الآن: رسالة قصيرة داخل التطبيق، ويبقى في سجل الإشعارات
+116:                 else post(c, CH_ACTION, nextId(3110), title, join(fresh, 4), MainActivity.ACTION_LOG);
+117:             }
+118:             if (!mineNew.isEmpty() && !"0".equals(db.setting("notif_sync_tx", "1"))) {
+119:                 String title = mineNew.size() == 1 ? "حركة جديدة على أحد مكاتبك" : mineNew.size() + " حركات جديدة على مكاتبك";
+120:                 if (foreground) logOnly(title, join(mineNew, 4));
+121:                 else post(c, CH_ACTION, nextId(3110), title, join(mineNew, 4), MainActivity.ACTION_LOG);
+122:             }
+123:             if (r.dupTx > 0 && (approver || watcher)) {
+124:                 post(c, CH_ACTION, 3103, "حركات قد تكون مكررة", r.dupTx + " زوج حركات متشابهة سُجّل من جهازين. راجعها: أبقِ الاثنتين أو ألغِ المكررة.", MainActivity.ACTION_DUPS);
+125:             }
+126:             // 10.16: تعارضات المزامنة وتنبيهاتها، ودخول جهاز أو خروجه (كانت لا تظهر إلا لمن يفتح شاشة المزامنة)
+127:             boolean admin = !users || (who != null && who.active && Auth.isAdmin(who));
+128:             // 11.6: تنبيهات المزامنة حساسة: لمن يملك «سجل الإشعارات»
+129:             boolean seesNotifs = !users || (who != null && who.active && Auth.can(who, Auth.Perm.NOTIFS));
+130:             if (r.review() > 0 && seesNotifs && !"0".equals(db.setting("notif_sync_review", "1"))) {
+131:                 List<String[]> cs = SyncEngine.conflicts(db);
+132:                 List<String> lines = new ArrayList<>();
+133:                 for (String[] x : cs) lines.add(SyncStore.kindName(x[2]) + ": " + x[5]);
+134:                 post(c, CH_ACTION, 3104, r.review() == 1 ? "تنبيه من المزامنة بحاجة لمراجعتك" : r.review() + " تنبيهات من المزامنة بحاجة لمراجعتك",

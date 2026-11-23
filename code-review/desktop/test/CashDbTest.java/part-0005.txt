@@ -1,0 +1,71 @@
+531:         System.out.println("== 13) المجانية: إضافة ملف نقل يتجاوز الحد باختيار المكاتب الجديدة");
+532:         Object[] dv6 = DeskCoreTest.device("merge");
+533:         Context ctx6 = (Context) dv6[0];
+534:         Db db6 = (Db) dv6[1];
+535:         for (int k = 1; k <= F - 1; k++) db6.addOffice("قائم " + k, "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+536:         String pw = expect.getJSONObject("A").getString("password");
+537:         BackupManager.Prepared pa = BackupManager.prepareRestore(ctx6, new File(data, "A.sba"), pw.toCharArray(), m -> {});
+538:         MergePlan plan = MergePlan.build(pa.parsed.tables, pa.parsed.manifest, db6.mergeExisting());
+539:         check(plan.ok() && plan.newOffices == 3, "ملف A: 3 مكاتب جديدة");
+540:         check(throwsMsg(() -> db6.mergeMigration(plan), "تتسع"), "إضافتها كلها تتجاوز 9 فتُرفض");
+541:         long firstNew = plan.newOfficeList().get(0).fileId;
+542:         String firstName = plan.newOfficeList().get(0).name;
+543:         Map<String, Long> fileExp = new TreeMap<>();
+544:         for (Map.Entry<String, Long> e : plan.expected.entrySet()) if (e.getKey().startsWith(firstNew + "|")) fileExp.put(e.getKey().split("\\|")[1], e.getValue());
+545:         plan.keepNew(new HashSet<>(Collections.singletonList(firstNew)));
+546:         check(plan.newOffices == 1 && plan.droppedOffices == 2, "بقي مكتب جديد واحد باختيار المستخدم");
+547:         db6.mergeMigration(plan);
+548:         long nid = -1;
+549:         for (Model.Office o : db6.offices()) if (o.name.equals(firstName)) nid = o.id;
+550:         Map<String, Long> nb = new TreeMap<>();
+551:         for (Map.Entry<String, Long> e : db6.balances(nid).entrySet()) if (e.getValue() != 0) nb.put(e.getKey(), e.getValue());
+552:         check(db6.offices().size() == F && nb.equals(fileExp), "أُضيف المكتب المختار بأرصدته كما في الملف " + nb + " والمجموع 9 مكاتب");
+553:         healthy(db6, "بعد الإضافة الانتقائية");
+554: 
+555:         System.out.println("== 14) عدّاد واتساب اليومي");
+556:         boolean okAll = true;
+557:         for (int k = 0; k < 20; k++) okAll &= db6.waAllowed("رسالة رقم " + k) && db6.waUse("رسالة رقم " + k);
+558:         check(okAll, "20 رسالة مختلفة مسموحة اليوم");
+559:         check(!db6.waAllowed("رسالة 21") && !db6.waUse("رسالة 21"), "الرسالة 21 تُرفض (الإدخال اليدوي)");
+560:         check(db6.waAllowed("رسالة رقم 3") && db6.waUse("  رسالة   رقم 3 "), "الرسالة المحتسبة سابقًا اليوم تُعاد بلا احتساب جديد");
+561:         check(db6.waUsage()[0] == 20 && db6.waUsage()[1] == 20, "الاستهلاك 20 / 20");
+562: 
+563:         System.out.println("== 15) ترتيب المكاتب");
+564:         Map<Long, Map<String, Long>> ob = db.officeBalances();
+565:         OfficeOrder.Inputs oi = db.officeOrderInputs(ob);
+566:         List<Model.Office> list = db.offices();
+567:         OfficeOrder.sort(list, OfficeOrder.BIGGEST, oi);
+568:         check(!list.isEmpty(), "الترتيب بالأكبر رصيدًا يعمل على " + list.size() + " مكاتب");
+569:         db.touchOffice(nour);
+570:         oi = db.officeOrderInputs(ob);
+571:         OfficeOrder.sort(list, OfficeOrder.LAST_OPENED, oi);
+572:         check(list.get(0).id == nour, "«آخر ما فتحته»: النور أولًا بعد فتحه");
+573: 
+574:         System.out.println("== 16) 10.0: ترقية صناديق 9.x (في الإعدادات) إلى جدولها");
+575:         {
+576:             Object[] dvm = DeskCoreTest.device("migboxes");
+577:             Context cm = (Context) dvm[0];
+578:             Db dm = (Db) dvm[1];
+579:             net.zetetic.database.sqlcipher.SQLiteDatabase wm = dm.getWritableDatabase();
+580:             wm.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('cash_on','1')");
+581:             wm.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('cash_name','صندوق المحل')");
+582:             wm.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('cash_currencies','USD,EUR')");
+583:             wm.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('cash_strict','1')");
+584:             wm.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('cash_boxes',?)", new Object[]{"[{\"id\":2,\"name\":\"البيت\",\"cur\":\"USD\",\"active\":false}]"});
+585:             wm.execSQL("INSERT INTO cash_moves(uuid,box_id,kind,currency,amount_minor,dir,category,status,created_at) VALUES('m1',1,'OPENING','USD',5000,1,'x','ACTIVE',1)");
+586:             wm.execSQL("INSERT INTO cash_moves(uuid,box_id,kind,currency,amount_minor,dir,category,status,created_at) VALUES('m2',2,'OPENING','USD',700,1,'x','ACTIVE',1)");
+587:             wm.execSQL("DELETE FROM cash_boxes");
+588:             dm.close();
+589:             Db dm2 = new Db(cm);
+590:             List<CashBox.Config> bx = dm2.cashBoxes();
+591:             check(bx.size() == 2 && bx.get(0).name.equals("صندوق المحل") && bx.get(0).strict && bx.get(0).currencies.equals(Arrays.asList("USD", "EUR"))
+592:                     && bx.get(1).id == 2 && !bx.get(1).active && b(dm2.cashBalances(1), "USD") == 5000 && b(dm2.cashBalances(2), "USD") == 700,
+593:                     "الصندوقان بأرقامهما وأسمائهما وربطهما وحالتهما، وأرصدتهما كما هي");
+594:             dm2.close();
+595:         }
+596: 
+597:         db.close();
+598:         System.out.println("\n" + passes + " نجح، " + fails + " فشل");
+599:         if (fails > 0) System.exit(1);
+600:     }
+601: }

@@ -1,0 +1,108 @@
+1: import re, sqlite3, sys
+2: import os, sys
+3: src = open(sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'app', 'src', 'main', 'java', 'com', 'smart', 'hawala', 'Db.java'), encoding='utf-8').read()
+4: fails = 0
+5: def check(c, m):
+6:     global fails
+7:     print(("  PASS " if c else "  FAIL ") + m); fails += 0 if c else 1
+8: def frag(*parts):
+9:     # every SQL fragment used here must exist verbatim in Db.java (so the test exercises the real SQL)
+10:     for p in parts:
+11:         if p not in src: print("  FAIL fragment not found in Db.java:", p[:90]); globals()['fails'] += 1
+12:     return "".join(parts)
+13: def T(*a): return tuple(str(x) for x in a)   # Android rawQuery binds everything as TEXT
+14: 
+15: ddl = re.findall(r'"(CREATE TABLE IF NOT EXISTS [^"]+)"', re.sub(r'"\s*\+\s*"', '', src))   # 12.7.1: جمل مقسومة بـ +
+16: db = sqlite3.connect(':memory:'); db.execute('PRAGMA foreign_keys=ON')
+17: for s in ddl: db.execute(s)
+18: DEBIT, CREDIT, FUS, FTHEM, FNONE = "مدين / لنا", "دائن / علينا", "الأجرة لنا", "الأجرة علينا", "بدون أجرة"
+19: db.execute("INSERT INTO currencies VALUES('USD','دولار',2,1)"); db.execute("INSERT INTO currencies VALUES('SYP','ليرة',0,1)")
+20: db.execute("INSERT INTO offices(id,name,active,pinned) VALUES(1,'a',1,0)"); db.execute("INSERT INTO offices(id,name,active,pinned) VALUES(2,'b',1,1)")
+21: for o in (1,2):
+22:     for c in ('USD','SYP'): db.execute("INSERT INTO office_currencies(office_id,code) VALUES(?,?)", (o,c))
+23: def post(tx, kind, office, cur, od, oc, t):
+24:     eid = db.execute("INSERT INTO journal_entries(tx_id,kind,created_at) VALUES(?,?,?)", (tx, kind, t)).lastrowid
+25:     db.execute("INSERT INTO journal_lines(entry_id,account,office_id,currency,debit_minor,credit_minor) VALUES(?,?,?,?,?,?)", (eid,'OFFICE',office,cur,od,oc))
+26:     contra = ('FEE_REVENUE' if od > 0 else 'FEE_EXPENSE') if kind == 'FEE' else ('OPENING' if kind == 'OPENING' else 'SETTLEMENT')
+27:     db.execute("INSERT INTO journal_lines(entry_id,account,office_id,currency,debit_minor,credit_minor) VALUES(?,?,NULL,?,?,?)", (eid,contra,cur,oc,od))
+28: def tx(id, office, typ, amt, cur, t, fee_type=FNONE, fee=0, status='ACTIVE'):
+29:     db.execute("INSERT INTO tx(id,uuid,office_id,type,amount_minor,currency,fee_type,fee_minor,fee_currency,created_at,status) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+30:                (id, 'u%d'%id, office, typ, amt, cur, fee_type, fee, cur, t, status))
+31:     post(id, 'PRINCIPAL', office, cur, amt if typ == DEBIT else 0, amt if typ == CREDIT else 0, t)
+32:     if fee: post(id, 'FEE', office, cur, fee if fee_type == FUS else 0, fee if fee_type == FTHEM else 0, t)
+33: DAY = 86400000; t0 = 1760000000000
+34: post(None, 'OPENING', 1, 'USD', 20000, 0, t0 - 10*DAY)
+35: tx(1, 1, DEBIT, 100000, 'USD', t0, FUS, 500)
+36: tx(2, 1, CREDIT, 70000, 'USD', t0 + DAY)
+37: tx(3, 1, DEBIT, 30000, 'USD', t0 + 2*DAY)
+38: tx(4, 2, CREDIT, 2600000, 'SYP', t0 + 2*DAY, FTHEM, 1000)
+39: # cancel tx 3 using the exact reversal SQL from Db.reverseTx
+40: olds = db.execute(frag("SELECT id FROM journal_entries WHERE tx_id=", "") + "3" + frag(" AND COALESCE(status,'POSTED')='POSTED' AND COALESCE(kind,'')<>'REVERSAL'")).fetchall()
+41: for (old,) in olds:
+42:     ne = db.execute("INSERT INTO journal_entries(tx_id,kind,created_at,reverses_id) VALUES(3,'REVERSAL',?,?)", (t0 + 5*DAY, old)).lastrowid
+43:     # 10.0+: Db.reverseTx reads the original lines then inserts them one by one (each row gets an id from the device range)
+44:     rev = db.execute(frag("SELECT account,office_id,currency,credit_minor,debit_minor FROM journal_lines WHERE entry_id=") + str(old) + frag(" ORDER BY id")).fetchall()
+45:     for r in rev:
+46:         db.execute("INSERT INTO journal_lines(entry_id,account,office_id,currency,debit_minor,credit_minor) VALUES(?,?,?,?,?,?)", (ne,) + tuple(r))
+47: db.execute("UPDATE tx SET status='CANCELLED' WHERE id=3")
+48: 
+49: print("1) statementLines with literal dates (the 5.0 bug: TEXT params returned nothing)")
+50: q_st = frag("SELECT l.id,l.entry_id,COALESCE(e.kind,''),COALESCE(e.created_at,0),l.currency,l.debit_minor,l.credit_minor,e.tx_id,",
+51:             "t.uuid,t.type,t.person,t.description,t.status,t.fee_type,t.notes",
+52:             " FROM journal_lines l JOIN journal_entries e ON e.id=l.entry_id LEFT JOIN tx t ON t.id=e.tx_id",
+53:             " WHERE l.account='OFFICE' AND l.office_id=")
+54: def st(office, frm, to):
+55:     return db.execute(q_st + str(office) + frag(" AND COALESCE(e.created_at,0)>=") + str(frm) + frag(" AND COALESCE(e.created_at,0)<") + str(to)
+56:                       + frag(" ORDER BY COALESCE(e.created_at,0),l.id")).fetchall()
+57: rows = st(1, 0, 2**63-1)
+58: check(len(rows) == 6, f"all periods: 6 lines (opening, principal, fee, credit, cancelled + reversal) -> {len(rows)}")
+59: check(len(st(1, t0, t0 + DAY)) == 2, "period [t0, t0+1d): principal + fee")
+60: 
+61: print("2) balanceBefore, with and without cancelled")
+62: q_bb = frag("SELECT l.currency,SUM(l.debit_minor-l.credit_minor) FROM journal_lines l JOIN journal_entries e ON e.id=l.entry_id",
+63:             " LEFT JOIN tx t ON t.id=e.tx_id WHERE l.account='OFFICE' AND l.office_id=")
+64: def bb(office, before, excl):
+65:     return dict(db.execute(q_bb + str(office) + frag(" AND COALESCE(e.created_at,0)<") + str(before)
+66:             + (frag(" AND (e.tx_id IS NULL OR t.status='ACTIVE')") if excl else "") + frag(" GROUP BY l.currency")).fetchall())
+67: check(bb(1, t0, False) == {'USD': 20000}, f"before t0 = opening 200.00 -> {bb(1, t0, False)}")
+68: check(bb(1, t0 + 3*DAY, False) == {'USD': 80500}, f"before t0+3d incl. cancelled tx (not yet reversed) = 805.00 -> {bb(1, t0+3*DAY, False)}")
+69: check(bb(1, t0 + 3*DAY, True) == {'USD': 50500}, f"same, cancelled excluded = 505.00 -> {bb(1, t0+3*DAY, True)}")
+70: check(bb(1, t0 + 9*DAY, False) == bb(1, t0 + 9*DAY, True) == {'USD': 50500}, "after reversal both agree: 505.00")
+71: 
+72: print("3) office totals: every لنا, every علينا, balance (cancelled excluded from gross)")
+73: # 12.7: كل أسطر المكاتب ناقص أسطر الحركات غير النشطة وناقص قيود حركة غير موجودة (الجمل حرفيًا من Db.officeTotals)
+74: q_all = frag("SELECT l.office_id,l.currency,SUM(l.debit_minor),SUM(l.credit_minor) FROM journal_lines l",
+75:              " WHERE l.account='OFFICE' AND l.office_id IS NOT NULL") + frag(" GROUP BY l.office_id,l.currency")
+76: q_m1 = frag("SELECT l.office_id,l.currency,SUM(l.debit_minor),SUM(l.credit_minor) FROM tx t JOIN journal_entries e ON e.tx_id=t.id",
+77:             " JOIN journal_lines l ON l.entry_id=e.id WHERE t.status<>'ACTIVE' AND l.account='OFFICE' AND l.office_id IS NOT NULL") + frag(" GROUP BY l.office_id,l.currency")
+78: q_m2 = frag("SELECT l.office_id,l.currency,SUM(l.debit_minor),SUM(l.credit_minor) FROM journal_entries e JOIN journal_lines l ON l.entry_id=e.id",
+79:             " WHERE e.tx_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM tx x WHERE x.id=e.tx_id) AND l.account='OFFICE' AND l.office_id IS NOT NULL") + frag(" GROUP BY l.office_id,l.currency")
+80: acc = {(r[0], r[1]): [r[2], r[3]] for r in db.execute(q_all)}
+81: for q in (q_m1, q_m2):
+82:     for r in db.execute(q):
+83:         if (r[0], r[1]) in acc:
+84:             acc[(r[0], r[1])][0] -= r[2]
+85:             acc[(r[0], r[1])][1] -= r[3]
+86: got = {k: (v[0], v[1], v[0] - v[1]) for k, v in acc.items()}
+87: # الطريقة القديمة (ربط كل سطر بقيده وحركته) للمقارنة: النتيجتان متطابقتان
+88: old = {(r[0], r[1]): (r[2], r[3], r[2]-r[3]) for r in db.execute("SELECT l.office_id,l.currency,SUM(l.debit_minor),SUM(l.credit_minor) FROM journal_lines l"
+89:        " JOIN journal_entries e ON e.id=l.entry_id LEFT JOIN tx t ON t.id=e.tx_id"
+90:        " WHERE l.account='OFFICE' AND l.office_id IS NOT NULL AND (e.tx_id IS NULL OR t.status='ACTIVE') GROUP BY l.office_id,l.currency")}
+91: check(got == old, f"12.7 office totals == old join method: {got} vs {old}")
+92: check(got[(1,'USD')] == (120500, 70000, 50500), f"office 1 USD: لنا 1205.00 (opening+principal+fee) / علينا 700.00 / رصيد لنا 505.00 -> {got[(1,'USD')]}")
+93: check(got[(2,'SYP')] == (0, 2601000, -2601000), f"office 2 SYP: علينا 2,601,000 -> {got[(2,'SYP')]}")
+94: net = dict(((r[0], r[1]), r[2]) for r in db.execute(frag("SELECT office_id,currency,SUM(debit_minor-credit_minor) FROM journal_lines WHERE account='OFFICE' AND office_id IS NOT NULL GROUP BY office_id,currency")))
+95: check(net[(1,'USD')] == got[(1,'USD')][2], "gross balance == true net balance")
+96: 
+97: print("4) daily stats with TEXT-bound fee types")
+98: rng = frag(" WHERE status='ACTIVE' AND created_at>=") + str(t0) + frag(" AND created_at<") + str(t0 + 3*DAY)
+99: p = db.execute(frag("SELECT currency,type,SUM(amount_minor),COUNT(*) FROM tx") + rng + frag(" GROUP BY currency,type")).fetchall()
+100: f = db.execute(frag("SELECT fee_currency,fee_type,SUM(fee_minor) FROM tx") + rng + frag(" AND fee_minor>0 AND fee_type IN (?,?) GROUP BY fee_currency,fee_type"), T(FUS, FTHEM)).fetchall()
+101: check(sorted(p) == sorted([('USD', DEBIT, 100000, 1), ('USD', CREDIT, 70000, 1), ('SYP', CREDIT, 2600000, 1)]), f"principal sums (cancelled excluded): {p}")
+102: check(sorted(f) == sorted([('USD', FUS, 500), ('SYP', FTHEM, 1000)]), f"fee sums via TEXT params: {f}")
+103: 
+104: print("5) txLog filters with TEXT-bound type/currency and literal ids/dates")
+105: TXC = "id,uuid,office_id,type,person,amount_minor,currency,fee_type,fee_minor,fee_currency,description,notes,created_at,status,replaces_id,user_name"
+106: check(TXC in src, "TX_COLS matches")
+107: def log(frm=0, to=2**63-1, office=None, cancelled=False, typ=None, cur=None):
+108:     w = frag(" WHERE created_at>=") + str(frm) + frag(" AND created_at<") + str(to); args = []

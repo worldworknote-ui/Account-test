@@ -1,0 +1,145 @@
+2929:             "UPDATE office_holds SET office_id={into} WHERE office_id={from}",
+2930:             "UPDATE journal_lines SET office_id={into} WHERE office_id={from}",
+2931:             "UPDATE opening_balances SET office_id={into} WHERE office_id={from}",
+2932:             "UPDATE cash_moves SET office_id={into} WHERE office_id={from}",
+2933:             "DELETE FROM reconciliation_lines WHERE recon_id IN (SELECT id FROM reconciliations WHERE office_id={from})",
+2934:             "DELETE FROM reconciliations WHERE office_id={from}",
+2935:             "DELETE FROM office_currencies WHERE office_id={from}",
+2936:             // 10.5 (§7): محاسبو المكتب المدموج يصيرون محاسبي الهدف بأدوارهم (10.11، AUDIT-010: «يتحقق» يبقى «يتحقق»)، وتاريخ علامة آخر رسالة ينتقل معه
+2937:             "INSERT OR IGNORE INTO user_offices(user_id,office_id,role) SELECT user_id,{into},COALESCE(role,'OWN') FROM user_offices WHERE office_id={from}",
+2938:             "DELETE FROM user_offices WHERE office_id={from}",
+2939:             "UPDATE wa_marks SET office_id={into} WHERE office_id={from}",
+2940:             // 10.13: حالات العمل: يوم للهدف حالته تبقى، وما ليس له ينتقل
+2941:             "INSERT OR IGNORE INTO office_work(office_id,day,status,user_id,user_name,at) SELECT {into},day,status,user_id,user_name,at FROM office_work WHERE office_id={from}",
+2942:             "DELETE FROM office_work WHERE office_id={from}",
+2943:             "DELETE FROM offices WHERE id={from}"
+2944:     };
+2945: 
+2946:     private static Map<String, Long> officeBalances(SQLiteDatabase d, long office) {
+2947:         Map<String, Long> m = new TreeMap<>();
+2948:         try (Cursor c = d.rawQuery("SELECT currency,SUM(debit_minor-credit_minor) FROM journal_lines WHERE account='OFFICE' AND office_id=" + office + " GROUP BY currency", null)) {
+2949:             while (c.moveToNext()) m.put(c.getString(0), c.getLong(1));
+2950:         }
+2951:         return m;
+2952:     }
+2953: 
+2954:     /**
+2955:      * يدمج المكتب from في into: الحركات والقيود والأرصدة السابقة تنتقل كما هي (لا يتغير أي مبلغ)، ثم يتحقق أن رصيد into
+2956:      * لكل عملة = مجموع رصيدي المكتبين قبل الدمج، وإلا يُلغى كل شيء. يُرفض إن كان للمصدر قيود داخل فترة مقفلة.
+2957:      */
+2958:     public void mergeOffices(long from, long into) {
+2959:         require(Auth.Perm.DELETE);
+2960:         if (from == into) throw new IllegalArgumentException("اختر مكتبين مختلفين");
+2961:         Model.Office a = office(from), b = office(into);
+2962:         if (a == null || b == null) throw new IllegalArgumentException("المكتب غير موجود");
+2963:         SQLiteDatabase d = getWritableDatabase();
+2964:         d.beginTransaction();
+2965:         try {
+2966:             long lock = lockBefore(d);
+2967:             if (lock > 0) {
+2968:                 try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM journal_lines l JOIN journal_entries e ON e.id=l.entry_id WHERE l.office_id=" + from
+2969:                         + " AND COALESCE(e.created_at,0)<" + lock, null)) {
+2970:                     if (c.moveToFirst() && c.getLong(0) > 0) throw new IllegalStateException("للمكتب «" + Model.nz(a.name) + "» قيود داخل فترة محاسبية مقفلة؛ فك الإقفال أولًا إن كان الدمج ضروريًا.");
+2971:                 }
+2972:             }
+2973:             Map<String, Long> want = officeBalances(d, into);
+2974:             for (Map.Entry<String, Long> e : officeBalances(d, from).entrySet()) want.put(e.getKey(), want.getOrDefault(e.getKey(), 0L) + e.getValue());
+2975:             long recons;
+2976:             try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM reconciliations WHERE office_id=" + from, null)) {
+2977:                 recons = c.moveToFirst() ? c.getLong(0) : 0;
+2978:             }
+2979:             long txs = officeTxCount(from);
+2980:             QuotaState q = quota(d, 0);
+2981:             for (String sql : MERGE_SQL) d.execSQL(sql.replace("{from}", "" + from).replace("{into}", "" + into));
+2982:             Map<String, Long> got = officeBalances(d, into);
+2983:             for (Map.Entry<String, Long> e : want.entrySet()) {
+2984:                 long g = got.getOrDefault(e.getKey(), 0L);
+2985:                 if (g != e.getValue()) throw new IllegalStateException("تحقق الدمج فشل في " + e.getKey() + " (المتوقع " + e.getValue() + " والناتج " + g + "). لم يتغير شيء.");
+2986:             }
+2987:             q.officesMerged(from, into);
+2988:             saveQuota(d, q);
+2989:             audit(d, "MERGE_OFFICES", "office", into, Model.nz(a.name) + " ← " + Model.nz(b.name) + " — " + txs + " حركة" + (recons > 0 ? "، حُذفت " + recons + " مطابقة للمصدر" : ""));
+2990:             d.setTransactionSuccessful();
+2991:         } finally {
+2992:             d.endTransaction();
+2993:         }
+2994:     }
+2995: 
+2996:     // ===================================================================================
+2997:     // بيانات تقارير صاحب المكتب (8.0)
+2998:     // ===================================================================================
+2999: 
+3000:     /** كل الحركات بالحقول التي تحتاجها التقارير فقط (يُفك البيان والوجهة وحدهما، فتسرع مع عشرات الآلاف). */
+3001:     public List<Model.Tx> reportTxs() {
+3002:         List<Model.Tx> a = new ArrayList<>();
+3003:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id,uuid,office_id,type,amount_minor,currency,fee_type,fee_minor,fee_currency,description,created_at,status,"
+3004:                 + "replaces_id,service,dest,pair_uuid,fx_rate FROM tx ORDER BY created_at,id", null)) {
+3005:             while (c.moveToNext()) {
+3006:                 Model.Tx t = new Model.Tx();
+3007:                 t.id = c.getLong(0);
+3008:                 t.uuid = c.getString(1);
+3009:                 t.officeId = c.getLong(2);
+3010:                 t.type = c.getString(3);
+3011:                 t.amount = c.getLong(4);
+3012:                 t.currency = c.getString(5);
+3013:                 t.feeType = c.getString(6);
+3014:                 t.fee = c.getLong(7);
+3015:                 t.feeCurrency = c.getString(8);
+3016:                 t.description = Model.nz(Crypto.dec(c.getString(9)));
+3017:                 t.createdAt = c.getLong(10);
+3018:                 t.status = c.getString(11);
+3019:                 t.replacesId = c.isNull(12) ? null : c.getLong(12);
+3020:                 t.service = Model.nz(c.getString(13));
+3021:                 t.dest = c.isNull(14) ? "" : Model.nz(Crypto.dec(c.getString(14)));
+3022:                 t.pairUuid = Model.nz(c.getString(15));
+3023:                 t.fxRate = Model.nz(c.getString(16));
+3024:                 t.person = "";
+3025:                 t.notes = "";
+3026:                 t.userName = "";
+3027:                 a.add(t);
+3028:             }
+3029:         }
+3030:         return a;
+3031:     }
+3032: 
+3033:     /** الأرصدة السابقة بتاريخ قيدها (لنا موجب). */
+3034:     /** 8.1: بيانات «منشئ التقارير»: كل الحركات بكل حالاتها مع النصوص مفكوكة، والأرصدة السابقة والأسماء والمنازل. */
+3035:     public ReportBuilder.Data builderData() {
+3036:         ReportBuilder.Data d = new ReportBuilder.Data();
+3037:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id,uuid,office_id,type,amount_minor,currency,fee_type,fee_minor,fee_currency,description,created_at,status,"
+3038:                 + "replaces_id,service,dest,pair_uuid,fx_rate,person,notes,user_name FROM tx ORDER BY created_at,id", null)) {
+3039:             while (c.moveToNext()) {
+3040:                 Model.Tx t = new Model.Tx();
+3041:                 t.id = c.getLong(0);
+3042:                 t.uuid = c.getString(1);
+3043:                 t.officeId = c.getLong(2);
+3044:                 t.type = c.getString(3);
+3045:                 t.amount = c.getLong(4);
+3046:                 t.currency = c.getString(5);
+3047:                 t.feeType = c.getString(6);
+3048:                 t.fee = c.getLong(7);
+3049:                 t.feeCurrency = c.getString(8);
+3050:                 t.description = Model.nz(Crypto.dec(c.getString(9)));
+3051:                 t.createdAt = c.getLong(10);
+3052:                 t.status = c.getString(11);
+3053:                 t.replacesId = c.isNull(12) ? null : c.getLong(12);
+3054:                 t.service = Model.nz(c.getString(13));
+3055:                 t.dest = c.isNull(14) ? "" : Model.nz(Crypto.dec(c.getString(14)));
+3056:                 t.pairUuid = Model.nz(c.getString(15));
+3057:                 t.fxRate = Model.nz(c.getString(16));
+3058:                 t.person = Model.nz(Crypto.dec(c.getString(17)));
+3059:                 t.notes = Model.nz(Crypto.dec(c.getString(18)));
+3060:                 t.userReal = Model.nz(Crypto.dec(c.getString(19)));
+3061:                 t.userName = shown(t.userReal);
+3062:                 d.txs.add(t);
+3063:             }
+3064:         }
+3065:         d.openings.addAll(reportOpenings());
+3066:         d.names.putAll(officeNames());
+3067:         d.decimals.putAll(decimalsMap());
+3068:         return d;
+3069:     }
+3070: 
+3071:     public List<OwnerReports.Opening> reportOpenings() {
+3072:         List<OwnerReports.Opening> l = new ArrayList<>();
+3073:         try (Cursor c = getReadableDatabase().rawQuery("SELECT o.office_id,o.currency,o.type,o.amount_minor,COALESCE(e.created_at,0) FROM opening_balances o "

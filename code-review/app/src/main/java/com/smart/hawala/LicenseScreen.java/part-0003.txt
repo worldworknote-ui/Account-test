@@ -1,0 +1,102 @@
+270:         a.button("إلغاء التفعيل على هذا الهاتف", a.red, v -> a.confirm("إلغاء التفعيل",
+271:                 "سيعود هذا الهاتف إلى النسخة المجانية فورًا (بياناتك كلها تبقى) ويُعطى إيصال تحرير موقّع ترسله للبائع لينقل الرخصة. متابعة؟",
+272:                 "إلغاء التفعيل", () -> a.busy("جارٍ إنشاء إيصال التحرير…", p -> License.release(a, a.db), res -> {
+273:                     showText("إيصال التحرير", "أرسله للبائع مع طلب التفعيل من الهاتف الجديد.", String.valueOf(res));
+274:                 })));
+275:     }
+276: 
+277:     /** نافذة نص قابل للنسخ والمشاركة (طلب أو إيصال). */
+278:     /** 11.5: نص ملف المفتاح أو رابط QR: يُفعَّل مباشرة. */
+279:     void activateText(final String text) {
+280:         a.busy("جارٍ التحقق من الرمز…", p -> License.activate(a, a.db, text), res -> {
+281:             Entitlements n = (Entitlements) res;
+282:             new AlertDialog.Builder(a).setTitle("تم التفعيل ✓")
+283:                     .setMessage(n.edition() + "\nرقم الرخصة: " + n.lid + "\nالتحديثات حتى: " + n.updatesUntil() + (n.note.isEmpty() ? "" : "\n\n" + n.note))
+284:                     .setPositiveButton("حسنًا", null).show();
+285:             show();
+286:         });
+287:     }
+288: 
+289:     /** 11.6: نتيجة اختيار صورة رمز QR: تُقرأ ثم يُفعَّل بما فيها. */
+290:     void onQrImage(final android.net.Uri uri) {
+291:         if (uri == null) return;
+292:         a.busy("جارٍ قراءة رمز QR…", p -> {
+293:             android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+294:             o.inJustDecodeBounds = true;
+295:             try (java.io.InputStream in = a.getContentResolver().openInputStream(uri)) {
+296:                 android.graphics.BitmapFactory.decodeStream(in, null, o);
+297:             }
+298:             int big = Math.max(o.outWidth, o.outHeight), sample = 1;
+299:             while (big / sample > 2400) sample *= 2;
+300:             android.graphics.BitmapFactory.Options o2 = new android.graphics.BitmapFactory.Options();
+301:             o2.inSampleSize = sample;
+302:             android.graphics.Bitmap bm;
+303:             try (java.io.InputStream in = a.getContentResolver().openInputStream(uri)) {
+304:                 bm = android.graphics.BitmapFactory.decodeStream(in, null, o2);
+305:             }
+306:             if (bm == null) throw new java.io.IOException("تعذر فتح الصورة");
+307:             String txt = QrRead.decode(bm);
+308:             return txt == null ? "" : txt;
+309:         }, res -> {
+310:             String txt = String.valueOf(res);
+311:             if (txt.isEmpty() || LicenseToken.extract(txt).indexOf('.') < 0) {
+312:                 a.toast("لم يُقرأ رمز ترخيص في الصورة. قرّب الصورة على الرمز أو استعمل ملف المفتاح.");
+313:                 return;
+314:             }
+315:             activateText(txt);
+316:         });
+317:     }
+318: 
+319:     /** نتيجة اختيار ملف المفتاح. */
+320:     void onKeyFile(android.net.Uri uri) {
+321:         if (uri == null) return;
+322:         try (java.io.InputStream in = a.getContentResolver().openInputStream(uri)) {
+323:             if (in == null) throw new java.io.IOException("تعذر فتح الملف");
+324:             java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+325:             byte[] b = new byte[4096];
+326:             int n, total = 0;
+327:             while ((n = in.read(b)) > 0 && (total += n) < 64 * 1024) bo.write(b, 0, n);
+328:             activateText(new String(bo.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
+329:         } catch (Exception e) {
+330:             a.error(e);
+331:         }
+332:     }
+333: 
+334:     private void showText(String title, String note, final String body) { showText(title, note, body, null); }
+335: 
+336:     private void showText(String title, String note, final String body, final String fileName) {
+337:         LinearLayout l = new LinearLayout(a);
+338:         l.setOrientation(LinearLayout.VERTICAL);
+339:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), a.dp(4));
+340:         l.addView(a.text(note, 13, a.muted, false));
+341:         TextView t = a.text(body, 11, a.ink, false);
+342:         t.setTextIsSelectable(true);
+343:         t.setTextDirection(View.TEXT_DIRECTION_LTR);
+344:         t.setMaxLines(8);
+345:         t.setPadding(a.dp(8), a.dp(8), a.dp(8), a.dp(8));
+346:         t.setBackground(a.round(a.night ? Color.rgb(30, 40, 37) : Color.rgb(244, 246, 245), a.muted, 8));
+347:         l.addView(t, new LinearLayout.LayoutParams(-1, -2));
+348:         l.addView(a.text(body.length() + " حرفًا", 11, a.muted, false));
+349:         if (fileName != null) l.addView(a.smallButton("إرسال كملف (مرفق واحد)", a.primary, v -> {
+350:             try {
+351:                 java.io.File dir = new java.io.File(a.getCacheDir(), "shared");
+352:                 dir.mkdirs();
+353:                 java.io.File f = new java.io.File(dir, fileName);
+354:                 try (java.io.FileOutputStream o = new java.io.FileOutputStream(f)) {
+355:                     o.write((body + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+356:                 }
+357:                 a.shareFiles(java.util.Collections.singletonList(f), "application/octet-stream", title);
+358:             } catch (Exception e) {
+359:                 a.error(e);
+360:             }
+361:         }), a.lp(-1, 44, 6));
+362:         new AlertDialog.Builder(a).setTitle(title).setView(l)
+363:                 .setPositiveButton("مشاركة", (d, w) -> a.shareText(body))
+364:                 .setNeutralButton("نسخ", (d, w) -> {
+365:                     ClipboardManager cm = (ClipboardManager) a.getSystemService(Context.CLIPBOARD_SERVICE);
+366:                     if (cm != null) cm.setPrimaryClip(ClipData.newPlainText(title, body));
+367:                     a.toast("نُسخ النص");
+368:                 })
+369:                 .setNegativeButton("إغلاق", null).show();
+370:     }
+371: }

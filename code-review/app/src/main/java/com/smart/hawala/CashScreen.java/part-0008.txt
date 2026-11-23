@@ -1,0 +1,158 @@
+1138:         final boolean buy = CashBox.BUY.equals(side);
+1139:         screen(buy ? "شراء عملة" : "بيع عملة", this::home);
+1140:         final Map<String, Integer> dec = a.db.decimalsMap();
+1141:         final String[] cs = cfg.currencies.toArray(new String[0]);
+1142:         final Ui.Seg sideSeg = a.new Seg(new String[]{"بيع", "شراء"}, new int[]{a.primary, teal()}, buy ? 1 : 0, false);
+1143:         sideSeg.listener = i -> trade(i == 1 ? CashBox.BUY : CashBox.SELL);
+1144:         a.body.addView(sideSeg.view, a.lp(-1, -2, 2));
+1145:         a.hint(buy ? "تشتري عملة: تدخل الصندوق، وتدفع مقابلها من عملة أخرى تخرج من الصندوق."
+1146:                 : "تبيع عملة: تخرج من الصندوق، وتستلم مقابلها عملة أخرى تدخل الصندوق.");
+1147:         a.add(a.label(buy ? "1) العملة التي تشتريها" : "1) العملة التي تبيعها"));
+1148:         final Ui.Seg cur = a.new Seg(cs, null, -1, cs.length > 4);
+1149:         a.body.addView(cur.view, a.lp(-1, -2, 2));
+1150:         final EditText amount = a.amountInput("الكمية");
+1151:         amount.setTextSize(20);
+1152:         Ui.bold(amount);
+1153:         a.add(a.label(buy ? "2) تدفع مقابلها بـ" : "2) تستلم مقابلها بـ"));
+1154:         final Ui.Seg counter = a.new Seg(cs, null, -1, cs.length > 4);
+1155:         a.body.addView(counter.view, a.lp(-1, -2, 2));
+1156:         a.add(a.label("3) السعر والمقابل"));
+1157:         final TextView rateLbl = a.add(a.text("السعر: كم من العملة المقابلة لكل 1", 12, a.muted, false));
+1158:         final EditText rate = a.field("السعر");
+1159:         Ui.numeric(rate);
+1160:         a.body.addView(rate, a.lp(-1, 50, 2));
+1161:         final TextView market = a.add(a.text("", 12, a.primary, true));
+1162:         final EditText counterAmt = a.amountInput(buy ? "تدفع (يُحسب تلقائيًا)" : "تستلم (يُحسب تلقائيًا)");
+1163:         final TextView live = a.add(a.text("", 14, a.primaryInk, true));
+1164:         final EditText party = a.input("مع من؟ (اختياري)");
+1165:         final EditText desc = a.input("البيان (اختياري)");
+1166:         dateButton(null);
+1167:         LinearLayout rr = a.row();
+1168:         if (a.can(Auth.Perm.RATES_ONLINE)) rr.addView(a.smallButton("تحديث الأسعار من الإنترنت", Color.rgb(130, 130, 130), v -> a.busy("جارٍ تحديث الأسعار…", p -> ExchangeRates.refresh(a.db), res -> {
+1169:             a.toast("حُدّثت أسعار " + res + " عملة");
+1170:             trade(side);
+1171:         })), new LinearLayout.LayoutParams(-2, a.dp(38)));
+1172:         a.body.addView(rr, a.lp(-1, -2, 2));
+1173: 
+1174:         final boolean[] lock = {false};
+1175:         final Runnable info = () -> {
+1176:             String c1 = cur.label(), c2 = counter.label();
+1177:             if (c1 == null || c2 == null || c1.equals(c2)) {
+1178:                 rateLbl.setText(c1 != null && c1.equals(c2) ? "اختر عملتين مختلفتين" : "السعر: كم من العملة المقابلة لكل 1");
+1179:                 market.setText("");
+1180:                 live.setText("");
+1181:                 return;
+1182:             }
+1183:             rateLbl.setText("السعر: " + iso("1 " + c1 + " = ؟ " + c2));
+1184:             BigDecimal mk = CashBox.crossRate(c1, c2, a.db.usdRates());
+1185:             market.setText(mk == null ? "لا يوجد سعر سوق لهما — حدّث الأسعار أو اكتب السعر" : "سعر السوق: " + iso("1 " + c1 + " = " + mk.toPlainString() + " " + c2) + "   (اضغط لاستخدامه)");
+1186:             market.setOnClickListener(mk == null ? null : v -> rate.setText(mk.toPlainString()));
+1187:             try {
+1188:                 long amt = Db.minor(amount.getText().toString(), dec(dec, c1));
+1189:                 long ca = Db.minor(counterAmt.getText().toString(), dec(dec, c2));
+1190:                 String t = (buy ? "تشتري " : "تبيع ") + iso(Model.fmt(amt, dec(dec, c1)) + " " + c1) + (buy ? " وتدفع " : " وتستلم ") + iso(Model.fmt(ca, dec(dec, c2)) + " " + c2);
+1191:                 String ml = marketLine(c1, c2, amt, ca, buy);
+1192:                 live.setText(ml == null ? t : t + "\n" + ml);
+1193:             } catch (Exception e) {
+1194:                 live.setText("");
+1195:             }
+1196:         };
+1197:         final Runnable fromRate = () -> {
+1198:             if (lock[0]) return;
+1199:             String c1 = cur.label(), c2 = counter.label();
+1200:             if (c1 == null || c2 == null) return;
+1201:             try {
+1202:                 long amt = Db.minor(amount.getText().toString(), dec(dec, c1));
+1203:                 Long ca = CashBox.counterAmount(amt, dec(dec, c1), rate.getText().toString(), dec(dec, c2));
+1204:                 if (ca == null) return;
+1205:                 lock[0] = true;
+1206:                 counterAmt.setText(BigDecimal.valueOf(ca, dec(dec, c2)).stripTrailingZeros().toPlainString());
+1207:             } catch (Exception ignored) {
+1208:                 // ناقص
+1209:             } finally {
+1210:                 lock[0] = false;
+1211:             }
+1212:         };
+1213:         final Runnable fromCounter = () -> {
+1214:             // كتب المقابل بيده: السعر = المقابل ÷ الكمية
+1215:             if (lock[0] || !counterAmt.hasFocus()) return;
+1216:             String c1 = cur.label(), c2 = counter.label();
+1217:             if (c1 == null || c2 == null) return;
+1218:             try {
+1219:                 long amt = Db.minor(amount.getText().toString(), dec(dec, c1));
+1220:                 long ca = Db.minor(counterAmt.getText().toString(), dec(dec, c2));
+1221:                 lock[0] = true;
+1222:                 rate.setText(ClientBook.rateOf(amt, dec(dec, c1), ca, dec(dec, c2)));
+1223:             } catch (Exception ignored) {
+1224:                 // ناقص
+1225:             } finally {
+1226:                 lock[0] = false;
+1227:             }
+1228:         };
+1229:         cur.listener = i -> {
+1230:             fromRate.run();
+1231:             info.run();
+1232:         };
+1233:         counter.listener = i -> {
+1234:             fromRate.run();
+1235:             info.run();
+1236:         };
+1237:         amount.addTextChangedListener(Ui.watcher(() -> {
+1238:             fromRate.run();
+1239:             info.run();
+1240:         }));
+1241:         rate.addTextChangedListener(Ui.watcher(() -> {
+1242:             fromRate.run();
+1243:             info.run();
+1244:         }));
+1245:         counterAmt.addTextChangedListener(Ui.watcher(() -> {
+1246:             fromCounter.run();
+1247:             info.run();
+1248:         }));
+1249:         info.run();
+1250:         a.footer(a.makeButton(buy ? "مراجعة الشراء" : "مراجعة البيع", buy ? teal() : a.primary, v -> {
+1251:             try {
+1252:                 if (cur.none()) throw new Exception(buy ? "اختر العملة التي تشتريها" : "اختر العملة التي تبيعها");
+1253:                 if (counter.none()) throw new Exception("اختر العملة المقابلة");
+1254:                 CashBox.Input x = new CashBox.Input();
+1255:                 x.kind = CashBox.EXCHANGE;
+1256:                 x.side = side;
+1257:                 x.boxId = cfg.id;
+1258:                 x.currency = cur.label();
+1259:                 x.toCurrency = counter.label();
+1260:                 x.amount = Db.minor(amount.getText().toString(), dec(dec, x.currency));
+1261:                 String ct = counterAmt.getText().toString().trim();
+1262:                 if (ct.isEmpty()) {
+1263:                     Long ca = CashBox.counterAmount(x.amount, dec(dec, x.currency), rate.getText().toString(), dec(dec, x.toCurrency));
+1264:                     if (ca == null) throw new Exception("اكتب السعر أو المبلغ المقابل");
+1265:                     x.toAmount = ca;
+1266:                 } else x.toAmount = Db.minor(ct, dec(dec, x.toCurrency));
+1267:                 String rt = rate.getText().toString().trim();
+1268:                 BigDecimal rv = CashBox.rateDecimal(rt);
+1269:                 if (!rt.isEmpty() && rv == null) throw new Exception("السعر غير مفهوم: اكتبه مثل 0.92 أو 13500");
+1270:                 x.rate = rv == null ? ClientBook.rateOf(x.amount, dec(dec, x.currency), x.toAmount, dec(dec, x.toCurrency)) : rv.toPlainString();
+1271:                 x.party = party.getText().toString().trim();
+1272:                 x.description = desc.getText().toString().trim();
+1273:                 x.when = now();
+1274:                 String err = CashBox.validate(x, cfg, Clock.now());
+1275:                 if (err != null) throw new Exception(err);
+1276:                 preview(x, this::home);
+1277:             } catch (Exception e) {
+1278:                 a.error(e);
+1279:             }
+1280:         }));
+1281:     }
+1282: 
+1283:     /** متوافق مع 9.0: «صرف عملة» صار بيعًا. */
+1284:     void exchange() { trade(CashBox.SELL); }
+1285: 
+1286:     // ===================================================================================
+1287:     // 9.0.1: التحويل بين الصناديق
+1288:     // ===================================================================================
+1289: 
+1290:     void transfer() {
+1291:         if (!a.require(Auth.Perm.CASH)) return;
+1292:         final CashBox.Config cfg = a.db.cashConfig();
+1293:         final List<CashBox.Config> others = new ArrayList<>();
+1294:         for (CashBox.Config c : activeBoxes()) if (c.id != cfg.id) others.add(c);
+1295:         if (others.isEmpty()) {

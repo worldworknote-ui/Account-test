@@ -1,0 +1,143 @@
+326:         a.button("كشف الحركات بعد آخر مطابقة", a.accent, v -> a.exportUi.statementDialog(o, StatementScreen.Period.all(), null, ExportUi.SCOPE_SINCE, null));
+327:         a.hint("«بعد المطابقة» تعني كل ما سُجّل بعدها، حتى الحركة المسجّلة بتاريخ أقدم، وأي إلغاء لحركة قديمة؛ فيبدأ الكشف برصيد المطابقة وينتهي بالرصيد الحالي.");
+328: 
+329:         List<Model.Recon> list = a.db.recons(o.id, 100);
+330:         a.title("سجل المطابقات (" + list.size() + ")");
+331:         if (list.isEmpty()) a.hint("لم تُنشأ مطابقة بعد.");
+332:         Map<String, String> names = a.db.currencyNames();
+333:         Map<String, Integer> dec = a.db.decimalsMap();
+334:         for (final Model.Recon r : list) {
+335:             LinearLayout c = a.card();
+336:             c.addView(a.text(Model.date(r.createdAt) + "   •   " + statusText(r), 15, statusColor(r), true));
+337:             List<Reconcile.Row> rows = Reconcile.rows(r.balances, names, dec, null, false);
+338:             StringBuilder sb = new StringBuilder();
+339:             for (Reconcile.Row x : rows) {
+340:                 if (sb.length() > 0) sb.append("\n");
+341:                 sb.append(x.label(false)).append(": ").append(t.amount(x)).append(" ").append(Reconcile.word(t, x));
+342:             }
+343:             if (rows.isEmpty()) sb.append("كل الأرصدة صفر");
+344:             c.addView(a.text(sb.toString(), 14, a.dark, false));
+345:             if (!r.note.isEmpty()) c.addView(a.text("ملاحظة: " + r.note, 13, a.muted, false));
+346:             // 10.8: من أنشأها ومن تحقق منها
+347:             c.addView(a.text(a.db.reconPeople(r), 12, r.checkedBy != null ? a.green : a.muted, false));
+348:             if (r.checkedBy == null && a.can(Auth.Perm.VERIFY)) c.addView(a.smallButton("تم التحقق من المطابقة ✓", a.primary, v -> {
+349:                 try {
+350:                     a.db.verifyRecon(r.id);
+351:                     a.toast("سُجّل تحققك من المطابقة ✓");
+352:                     showOffice(o);
+353:                 } catch (Exception e) {
+354:                     a.error(e);
+355:                 }
+356:             }), a.lp(-1, 40, 2));
+357:             LinearLayout b1 = a.row();
+358:             if (Model.RECON_SENT.equals(r.status)) {
+359:                 b1.addView(a.smallButton("✓ أكّد المكتب", a.green, v -> statusDialog(r, Model.RECON_CONFIRMED, () -> showOffice(o))), a.weight(42, 1, 2));
+360:                 b1.addView(a.smallButton("✗ غير مطابق", a.red, v -> statusDialog(r, Model.RECON_DISPUTED, () -> showOffice(o))), a.weight(42, 1, 2));
+361:             } else {
+362:                 b1.addView(a.smallButton("تغيير الحالة", Color.rgb(120, 120, 120), v -> statusDialog(r, Model.RECON_SENT, () -> showOffice(o))), a.weight(42, 1, 2));
+363:             }
+364:             c.addView(b1);
+365:             LinearLayout b2 = a.row();
+366:             b2.addView(a.smallButton("كشف بعدها", a.accent, v -> a.exportUi.statementDialog(o, StatementScreen.Period.all(), null, ExportUi.SCOPE_SINCE, r)), a.weight(42, 1, 2));
+367:             b2.addView(a.smallButton("إعادة الإرسال", a.primary, v -> resend(o, r)), a.weight(42, 1, 2));
+368:             if (a.can(Auth.Perm.TX_CANCEL)) {
+369:                 b2.addView(a.smallButton("حذف", Color.rgb(140, 140, 140), v -> a.confirm("حذف المطابقة", "تُحذف هذه المطابقة من السجل فقط؛ الحركات والأرصدة لا تتغير.", "حذف", () -> {
+370:                     a.db.deleteRecon(r.id);
+371:                     showOffice(o);
+372:                 })), a.weight(42, 0.7f, 2));
+373:             }
+374:             c.addView(b2);
+375:         }
+376:     }
+377: 
+378:     void statusDialog(final Model.Recon r, final String status, final Runnable after) {
+379:         if (!a.require(Auth.Perm.TX_ADD)) return;
+380:         if (Model.RECON_SENT.equals(status) && !Model.RECON_SENT.equals(r.status)) {
+381:             new AlertDialog.Builder(a).setTitle("تغيير الحالة").setItems(new String[]{"مطابِقة ✓", "غير مطابِقة ✗", "بانتظار التأكيد"}, (d, w) -> {
+382:                 String s = w == 0 ? Model.RECON_CONFIRMED : w == 1 ? Model.RECON_DISPUTED : Model.RECON_SENT;
+383:                 if (Model.RECON_SENT.equals(s)) {
+384:                     a.db.setReconStatus(r.id, s, r.note);
+385:                     if (after != null) after.run();
+386:                 } else statusDialog(r, s, after);
+387:             }).show();
+388:             return;
+389:         }
+390:         boolean ok = Model.RECON_CONFIRMED.equals(status);
+391:         final EditText note = new EditText(a);
+392:         note.setHint(ok ? "ملاحظة (اختياري): من أكّد ومتى" : "ما الفرق؟ مثلًا: رصيد الدولار عندهم 7,800 لكم");
+393:         note.setText(r.note);
+394:         LinearLayout l = new LinearLayout(a);
+395:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), a.dp(4));
+396:         l.addView(note, new LinearLayout.LayoutParams(-1, -2));
+397:         new AlertDialog.Builder(a).setTitle(ok ? "أكّد المكتب أن الرصيد مطابق" : "الرصيد غير مطابق عند المكتب")
+398:                 .setMessage("مطابقة " + Model.date(r.createdAt))
+399:                 .setView(l).setPositiveButton("حفظ", (d, w) -> {
+400:                     a.db.setReconStatus(r.id, status, note.getText().toString().trim());
+401:                     a.toast(ok ? "سُجّلت المطابقة مؤكدة ✓" : "سُجّلت المطابقة غير مطابقة ✗");
+402:                     if (after != null) after.run();
+403:                 }).setNegativeButton("إلغاء", null).show();
+404:     }
+405: 
+406:     private void resend(final Model.Office o, final Model.Recon r) {
+407:         final Reconcile.Template t = template();
+408:         final List<Reconcile.Row> rows = Reconcile.rows(r.balances, a.db.currencyNames(), a.db.decimalsMap(), null, t.showZero);
+409:         new AlertDialog.Builder(a).setTitle("إعادة إرسال مطابقة " + Model.date(r.createdAt))
+410:                 .setItems(new String[]{"نص", "صورة", "صورة + نص", "نسخ النص"}, (d, w) -> {
+411:                     if (w == 3) copyText(t, o, r.createdAt, rows);
+412:                     else deliver(t, o, r.createdAt, rows, w);
+413:                 }).show();
+414:     }
+415: 
+416:     // ===================================================================================
+417:     // قالب الرسالة
+418:     // ===================================================================================
+419: 
+420:     void templateScreen(final Runnable back) {
+421:         if (!a.require(Auth.Perm.DESIGN)) return;
+422:         final Reconcile.Template t = template();
+423:         a.here(() -> templateScreen(back));
+424:         a.tabbedScreen("قالب رسالة مطابقة الرصيد", back == null ? a.moreScreen::show : back, "more");
+425:         a.hint("يظهر في النص المرسل لواتساب وفي الصورة. اترك أي حقل فارغًا لإخفائه.");
+426:         final EditText greeting = a.input("الترحيب (مثل: السلام عليكم ورحمة الله وبركاته)");
+427:         greeting.setText(t.greeting);
+428:         final EditText title = a.input("العنوان (مثل: مطابقة رصيد)");
+429:         title.setText(t.title);
+430:         final EditText orn = a.input("زخرفة حول العنوان (مثل 🌹)");
+431:         orn.setText(t.ornament);
+432:         LinearLayout sr = a.row();
+433:         final EditText sal = a.field("قبل اسم المكتب: السادة:");
+434:         sal.setText(t.salutation);
+435:         final EditText hon = a.field("بعده: المحترمين");
+436:         hon.setText(t.honorific);
+437:         sr.addView(sal, a.weight(50, 1, 2));
+438:         sr.addView(hon, a.weight(50, 1, 2));
+439:         a.body.addView(sr);
+440:         a.add(a.label("كلمة الرصيد كما يقرؤها المكتب"));
+441:         LinearLayout wr = a.row();
+442:         final EditText plus = a.field("المكتب مدين لنا: لنا");
+443:         plus.setText(t.plusWord);
+444:         final EditText minus = a.field("نحن مدينون له: لكم");
+445:         minus.setText(t.minusWord);
+446:         wr.addView(plus, a.weight(50, 1, 2));
+447:         wr.addView(minus, a.weight(50, 1, 2));
+448:         a.body.addView(wr);
+449:         final EditText footer = a.input("التذييل");
+450:         footer.setSingleLine(false);
+451:         footer.setMinLines(2);
+452:         footer.setLayoutParams(a.lp(-1, -2, 4));
+453:         footer.setPadding(a.dp(14), a.dp(8), a.dp(14), a.dp(8));
+454:         footer.setText(t.footer);
+455:         final CheckBox bold = new CheckBox(a);
+456:         bold.setText("خط عريض للمبالغ والعنوان في واتساب");
+457:         bold.setChecked(t.bold);
+458:         final CheckBox issuer = new CheckBox(a);
+459:         issuer.setText("إظهار اسم مكتبك");
+460:         issuer.setChecked(t.showIssuer);
+461:         final CheckBox code = new CheckBox(a);
+462:         code.setText("إظهار رمز العملة بجانب اسمها (USD…)");
+463:         code.setChecked(t.showCode);
+464:         final CheckBox zero = new CheckBox(a);
+465:         zero.setText("تحديد العملات ذات الرصيد الصفري افتراضيًا");
+466:         zero.setChecked(t.showZero);
+467:         for (CheckBox cb : new CheckBox[]{bold, issuer, code, zero}) a.body.addView(cb);
+468: 

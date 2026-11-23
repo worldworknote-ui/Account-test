@@ -1,0 +1,158 @@
+1675:     parseAmount: parseAmount, toMinor: toMinor, fmtMinor: fmtMinor, balWord: balWord,
+1676:     parseDate: parseDate, guessDateOrder: guessDateOrder, epoch: epoch, fmtDate: fmtDate,
+1677:     sheetRows: sheetRows, text: text, isBlankRow: isBlankRow,
+1678:     guessHeaderRow: guessHeaderRow, guessColumns: guessColumns, guessCurrency: guessCurrency, guessDirection: guessDirection,
+1679:     KNOWN: KNOWN, DEFAULT_CODES: DEFAULT_CODES, OPENING_RE: OPENING_RE, TOTAL_RE: TOTAL_RE,
+1680:     build: build, tables: tables, stmtHeader: stmtHeader, splitAccount: splitAccount, parseStatements: parseStatements, isStatementFile: isStatementFile, checkStatement: checkStatement,
+1681:     buildStatements: buildStatements, PRE_RE: PRE_RE, FOOT_RE: FOOT_RE, keyOf: keyOf, displayName: displayName, balancesFromTables: balancesFromTables, checkBalanced: checkBalanced, report: report,
+1682:     crc32: crc32, zipStored: zipStored, backupZip: backupZip, encrypt: encrypt, makeBackup: makeBackup, reportCsv: reportCsv
+1683:   };
+1684: })();
+1685: if (typeof module !== "undefined") module.exports = Core;
+1686: </script>
+1687: <script>/*
+1688:  * الاستيراد الذكي — يفهم أغلب ملفات Excel بلا إعداد: يكتشف الجداول (جداول Excel المعرّفة أو بالتخمين)،
+1689:  * ويعرف دور كل عمود من محتواه لا من اسمه فقط (تاريخ، عملة، مبلغ، اتجاه، حساب، بيان، رقم قيد، رصيد)،
+1690:  * ويصنّف الأوراق (سجل حركات، نسخة مفلترة مشتقة، أرصدة، قائمة حسابات، قوائم قيم)،
+1691:  * ثم يبني مكاتب وحركات بالقاعدة نفسها التي تحسب بها معادلات الملف (SUMIFS)، ويتحقق من مجاميع الملف نفسه.
+1692:  * يعتمد على Core (أداة النقل) للمبالغ والتواريخ والقيود وملف النسخة، دون تعديلها.
+1693:  */
+1694: "use strict";
+1695: var Smart = (function (C) {
+1696:   var text = C.text, clean = C.clean, normDigits = C.normDigits;
+1697: 
+1698:   // ===================================================================================
+1699:   // أدوات عامة
+1700:   // ===================================================================================
+1701: 
+1702:   function colName(i) { var s = ""; i++; while (i > 0) { var m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
+1703: 
+1704:   function colIndex(letters) {
+1705:     var n = 0;
+1706:     for (var i = 0; i < letters.length; i++) n = n * 26 + (letters.charCodeAt(i) - 64);
+1707:     return n - 1;
+1708:   }
+1709: 
+1710:   /** «B8:H5279» ← {s:{r,c}, e:{r,c}} (صفر أولًا). */
+1711:   function decodeRef(ref) {
+1712:     var m = String(ref || "").replace(/\$/g, "").match(/^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/i);
+1713:     if (!m) return null;
+1714:     var s = { r: +m[2] - 1, c: colIndex(m[1].toUpperCase()) };
+1715:     var e = m[3] ? { r: +m[4] - 1, c: colIndex(m[3].toUpperCase()) } : { r: s.r, c: s.c };
+1716:     return { s: s, e: e };
+1717:   }
+1718: 
+1719:   function unxml(s) {
+1720:     return String(s || "").replace(/&#x([0-9a-f]+);/gi, function (_, h) { return String.fromCharCode(parseInt(h, 16)); })
+1721:       .replace(/&#(\d+);/g, function (_, d) { return String.fromCharCode(+d); })
+1722:       .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+1723:   }
+1724: 
+1725:   function attr(tag, name) {
+1726:     var m = tag.match(new RegExp("\\s" + name.replace(":", "\\:") + '="([^"]*)"'));
+1727:     return m ? unxml(m[1]) : null;
+1728:   }
+1729: 
+1730:   function fileText(wb, path) {
+1731:     if (!wb || !wb.files) return null;
+1732:     var f = wb.files[path] || wb.files["/" + path];
+1733:     if (!f || !f.content) return null;
+1734:     try { return new TextDecoder("utf-8").decode(f.content instanceof Uint8Array ? f.content : new Uint8Array(f.content)); } catch (e) { return null; }
+1735:   }
+1736: 
+1737:   function resolvePath(dir, target) {
+1738:     if (target.charAt(0) === "/") return target.slice(1);
+1739:     var parts = (dir ? dir.split("/") : []);
+1740:     target.split("/").forEach(function (p) {
+1741:       if (p === "..") parts.pop();
+1742:       else if (p !== ".") parts.push(p);
+1743:     });
+1744:     return parts.join("/");
+1745:   }
+1746: 
+1747:   function rowLabel(row) {
+1748:     for (var i = 0; i < (row || []).length; i++) {
+1749:       var c = row[i];
+1750:       if (c && c.s !== undefined && clean(c.s)) return clean(c.s);
+1751:     }
+1752:     return "";
+1753:   }
+1754: 
+1755:   /** مفتاح مطابقة للنصوص (الحسابات والقيم): يتجاهل المسافات الزائدة وحالة الأحرف. */
+1756:   function key(s) { return C.officeKey(s); }
+1757: 
+1758:   /** مفتاح عناوين الأعمدة: بلا مسافات ولا رموز، مع توحيد الهمزات. */
+1759:   function hkey(s) { return C.headerKey(s).replace(/\s/g, ""); }
+1760: 
+1761:   // ===================================================================================
+1762:   // جداول Excel المعرّفة (ListObjects): أدق مصدر لحدود الجدول وعناوينه
+1763:   // ===================================================================================
+1764: 
+1765:   function excelTables(wb) {
+1766:     var out = [];
+1767:     var wbx = fileText(wb, "xl/workbook.xml"), rels = fileText(wb, "xl/_rels/workbook.xml.rels");
+1768:     if (!wbx || !rels) return out;
+1769:     var relMap = {};
+1770:     rels.replace(/<Relationship\b[^>]*>/g, function (t) { relMap[attr(t, "Id")] = attr(t, "Target"); return t; });
+1771:     wbx.replace(/<sheet\b[^>]*>/g, function (t) {
+1772:       var name = attr(t, "name"), rid = attr(t, "r:id");
+1773:       var target = rid && relMap[rid];
+1774:       if (!target) return t;
+1775:       var path = resolvePath("xl", target);
+1776:       var dir = path.slice(0, path.lastIndexOf("/")), file = path.slice(path.lastIndexOf("/") + 1);
+1777:       var srels = fileText(wb, dir + "/_rels/" + file + ".rels");
+1778:       if (!srels) return t;
+1779:       srels.replace(/<Relationship\b[^>]*>/g, function (r) {
+1780:         if (!/\/table$/.test(attr(r, "Type") || "")) return r;
+1781:         var tx = fileText(wb, resolvePath(dir, attr(r, "Target")));
+1782:         if (!tx) return r;
+1783:         var head = (tx.match(/<table\b[^>]*>/) || [""])[0];
+1784:         var cols = [];
+1785:         tx.replace(/<tableColumn\b[^>]*>/g, function (c) { cols.push(attr(c, "name") || ""); return c; });
+1786:         out.push({ name: attr(head, "displayName") || attr(head, "name") || "", sheet: name, ref: attr(head, "ref"),
+1787:           headerRows: attr(head, "headerRowCount") === "0" ? 0 : 1, totalsRows: +(attr(head, "totalsRowCount") || 0), columns: cols });
+1788:         return r;
+1789:       });
+1790:       return t;
+1791:     });
+1792:     return out;
+1793:   }
+1794: 
+1795:   // ===================================================================================
+1796:   // التعرف على القيم: الاتجاه والعملة والعناوين
+1797:   // ===================================================================================
+1798: 
+1799:   var D_WORDS = ["مدين", "لنا", "عليه", "منه", "debit", "dr", "debtor", "receivable"].map(function (w) { return C.looseKey(w); });
+1800:   var C_WORDS = ["دائن", "لكم", "علينا", "له", "لهم", "credit", "cr", "creditor", "payable"].map(function (w) { return C.looseKey(w); });
+1801: 
+1802:   /** «مدين(لنا)» ← D، «دائن(لكم)» ← C، «علينا» ← C (لا تُخدع بأن «لنا» داخل «علينا»). */
+1803:   function guessDir(t) {
+1804:     var s = clean(normDigits(t)).toLowerCase();
+1805:     if (!s || s.length > 40) return null;
+1806:     var toks = s.split(/[^a-z؀-ۿ]+/).filter(Boolean).map(function (w) { return C.looseKey(w); });
+1807:     if (!toks.length) return s === "+" ? "D" : s === "-" ? "C" : null;
+1808:     var d = 0, c = 0;
+1809:     toks.forEach(function (w) {
+1810:       if (C_WORDS.indexOf(w) >= 0) c++;
+1811:       else if (D_WORDS.indexOf(w) >= 0) d++;
+1812:     });
+1813:     if (d && !c) return "D";
+1814:     if (c && !d) return "C";
+1815:     return null;
+1816:   }
+1817: 
+1818:   function guessCur(t) {
+1819:     var s = clean(t);
+1820:     if (!s || s.length > 30) return null;
+1821:     return C.guessCurrency(s) || C.guessCurrency(s.toUpperCase());
+1822:   }
+1823: 
+1824:   var HINTS = {
+1825:     date: ["date", "التاريخ", "تاريخ", "تاريخ الحركه", "التاريخ والوقت", "datetime", "time", "الوقت", "يوم"],
+1826:     currency: ["currency", "العمله", "عمله", "cur", "ccy", "نوع العمله"],
+1827:     amount: ["amount", "ammount", "amout", "ammout", "المبلغ", "مبلغ", "القيمه", "قيمه", "value", "sum", "الكميه", "مقدار"],
+1828:     direction: ["in-out", "inout", "in out", "type", "النوع", "نوع", "نوع الحركه", "الاتجاه", "لنا علينا", "لنا/علينا", "مدين دائن", "dr/cr", "drcr", "حركه"],
+1829:     debit: ["debit", "dr", "مدين", "لنا", "عليه", "مدين لنا", "منه"],
+1830:     credit: ["credit", "cr", "دائن", "علينا", "له", "دائن علينا", "لكم"],
+1831:     account: ["account", "name of account", "name of accunt", "accunt", "acount", "الحساب", "اسم الحساب", "حساب", "المكتب", "اسم المكتب", "مكتب",
+1832:       "العميل", "الوكيل", "الطرف", "الجهه", "office", "agent", "client", "customer", "name", "الاسم", "اسم"],

@@ -1,0 +1,150 @@
+480:         info.setTextIsSelectable(true);
+481:         l.addView(info);
+482:         final AlertDialog[] dlg = new AlertDialog[1];
+483:         for (final String act : fa) {
+484:             l.addView(a.smallButton(act, act.startsWith("إلغاء") || act.startsWith("رفض") ? a.red : a.primary, v -> {
+485:                 if (dlg[0] != null) dlg[0].dismiss();
+486:                 if (act.startsWith("تم التحقق")) {
+487:                     try {
+488:                         a.db.verifyTx(t.id);
+489:                         a.toast("سُجّل تحققك ✓ (بلا قيد ولا أثر في الأرصدة)");
+490:                         if (refresh != null) refresh.run();
+491:                     } catch (Exception e) {
+492:                         a.error(e);
+493:                     }
+494:                 } else if (act.startsWith("عرض الصور")) showAttachments(t.id);
+495:                 else if (act.equals("تعديل القص")) a.fxScreen.edit(t);
+496:                 else if (act.equals("تحويل لحركة عادية")) convertDialog(t, refresh);
+497:                 else if (act.equals("تعليم كحركة خاصة")) a.txScreen.showMarkSpecial(t, refresh);
+498:                 else if (act.equals("إلغاء الحركة الخاصة")) a.confirm("إلغاء الحركة الخاصة", "لم تدخل الرصيد بعد، فتُلغى بلا قيد عكسي وتبقى في السجل.", "إلغاء الحركة", () -> {
+499:                     try {
+500:                         a.db.voidSpecial(t.id, "");
+501:                         a.toast("أُلغيت ✓");
+502:                         if (refresh != null) refresh.run();
+503:                     } catch (Exception e) {
+504:                         a.error(e);
+505:                     }
+506:                 });
+507:                 else if (act.startsWith("تعديل")) a.txScreen.showEdit(t, refresh);
+508:                 else if (act.startsWith("إلغاء")) cancelDialog(t, refresh);
+509:                 else if (act.startsWith("اعتماد")) approve(t, refresh);
+510:                 else if (act.startsWith("رفض")) rejectDialog(t, refresh);
+511:                 else if (act.contains("الأصلية")) {
+512:                     Model.Tx orig = a.db.tx(t.replacesId);
+513:                     if (orig != null) details(orig, refresh);
+514:                 } else if (act.contains("البديلة")) {
+515:                     Model.Tx nt = a.db.tx(rep);
+516:                     if (nt != null) details(nt, refresh);
+517:                 } else if (office != null) a.statementScreen.show(office);
+518:             }), a.lp(-1, 44, 3));
+519:         }
+520:         ScrollView sv = new ScrollView(a);
+521:         sv.addView(l);
+522:         dlg[0] = new AlertDialog.Builder(a).setTitle("تفاصيل الحركة").setView(sv).setPositiveButton("إغلاق", null).show();
+523:     }
+524: 
+525:     // ===================================================================================
+526:     // الاعتماد المزدوج (ت4)
+527:     // ===================================================================================
+528: 
+529:     void approve(final Model.Tx t, final Runnable refresh) {
+530:         int dec = a.db.decimals(t.currency);
+531:         a.confirm("اعتماد الحركة", "ستدخل الحركة الأرصدة بتاريخها الأصلي (" + Model.date(t.createdAt) + "):\n"
+532:                 + (Model.TYPE_DEBIT.equals(t.type) ? "لنا " : "علينا ") + "\u2066" + Model.fmt(t.amount, dec) + " " + t.currency + "\u2069 — " + Model.nz(a.db.officeNames().get(t.officeId))
+533:                 + (t.userName.isEmpty() ? "" : "\nاقترحها: " + t.userName)
+534:                 + (a.db.similarTx(t).isEmpty() ? "" : "\n\n⚠ توجد حركة مشابهة (المكتب والمبلغ والاسم نفسها): تأكد أنها ليست مكررة قبل الاعتماد."), "اعتماد", () -> {
+535:             try {
+536:                 a.db.approveTx(t.id);
+537:                 a.toast("اعتُمدت الحركة ودخلت الأرصدة");
+538:                 if (refresh != null) refresh.run();
+539:             } catch (Exception e) {
+540:                 a.error(e);
+541:             }
+542:         });
+543:     }
+544: 
+545:     void rejectDialog(final Model.Tx t, final Runnable refresh) {
+546:         final EditText r = new EditText(a);
+547:         r.setHint("سبب الرفض (يُحفظ في سجل العمليات)");
+548:         new AlertDialog.Builder(a).setTitle("رفض الحركة").setMessage("لن تدخل الأرصدة، وتبقى ظاهرة في السجل كمرفوضة." + (a.db.cashLinked(t.id) ? "\n\n⚠ " + Db.REJECT_CASH_NOTE : ""))
+549:                 .setView(r).setPositiveButton("رفض", (x, z) -> {
+550:                     try {
+551:                         a.db.rejectTx(t.id, r.getText().toString());
+552:                         a.toast("رُفضت الحركة");
+553:                         if (refresh != null) refresh.run();
+554:                     } catch (Exception e) {
+555:                         a.error(e);
+556:                     }
+557:                 }).setNegativeButton("رجوع", null).show();
+558:     }
+559: 
+560:     /** قائمة الحركات بانتظار الاعتماد (للمحاسب والمدير). */
+561:     void showPending() {
+562:         if (!a.require(Auth.Perm.APPROVE)) return;
+563:         a.here(this::showPending);
+564:         a.tabbedScreen("بانتظار الاعتماد", a::showHome, "home");
+565:         List<Model.Tx> l = a.db.pendingTx();
+566:         a.hint("حركات كبيرة سجّلها موظف ولا أثر لها في الأرصدة حتى تُعتمد. «تصحيح واعتماد» يصلح الخطأ بدل الرفض. اضغط الحركة لتفاصيلها. من اقترح الحركة لا يعتمدها.");
+567:         if (l.isEmpty()) a.add(a.text("لا توجد حركات بانتظار الاعتماد ✓", 15, a.muted, false));
+568:         Map<Long, String> names = a.db.officeNames();
+569:         for (final Model.Tx t : l) {
+570:             LinearLayout x = a.card();
+571:             x.addView(txRow(t, names.get(t.officeId), null));
+572:             List<Model.Tx> sim = a.db.similarTx(t);
+573:             if (!sim.isEmpty()) {
+574:                 Model.Tx o = sim.get(0);
+575:                 x.addView(a.text("⚠ تشبه حركة " + (o.isPending() ? "معلّقة" : "مسجّلة") + " بتاريخ " + Model.date(o.createdAt) + (o.userName.isEmpty() ? "" : " سجّلها " + o.userName)
+576:                         + ": قد تكون مكررة.", 13, a.red, true));
+577:             }
+578:             LinearLayout r = a.row();
+579:             r.addView(a.smallButton("اعتماد", a.primary, v -> approve(t, this::showPending)), a.weight(42, 1, 2));
+580:             r.addView(a.smallButton("تصحيح واعتماد", a.accent, v -> a.txScreen.showApproveEdit(t, this::showPending)), a.weight(42, 1.3f, 2));
+581:             r.addView(a.smallButton("رفض", a.red, v -> rejectDialog(t, this::showPending)), a.weight(42, 1, 2));
+582:             x.addView(r);
+583:             x.setOnClickListener(v -> details(t, this::showPending));
+584:         }
+585:     }
+586: 
+587:     void cancelDialog(final Model.Tx t, final Runnable refresh) {
+588:         final EditText r = new EditText(a);
+589:         r.setHint("سبب الإلغاء (يُحفظ في سجل التدقيق)");
+590:         new AlertDialog.Builder(a).setTitle("إلغاء الحركة بقيد عكسي")
+591:                 .setMessage("سيُسجَّل قيد عكسي يلغي أثر الحركة وأجرتها بالكامل، وتبقى الحركة الأصلية ظاهرة كملغاة."
+592:                         + (t.isFx() ? "\nتُلغى ساقا التبديل معًا." : t.isTransfer() ? "\nتُلغى ساقا التحويل بين المكتبين معًا." : ""))
+593:                 .setView(r).setPositiveButton("تنفيذ الإلغاء", (x, z) -> {
+594:                     try {
+595:                         a.db.cancelTx(t.id, r.getText().toString());
+596:                         a.toast("تم إلغاء الحركة");
+597:                         if (refresh != null) refresh.run();
+598:                     } catch (Exception e) {
+599:                         a.error(e);
+600:                     }
+601:                 }).setNegativeButton("رجوع", null).show();
+602:     }
+603: 
+604:     /** 8.0: الصور تُفك وتُصغَّر في خيط خلفي؛ الصورة كاملة تُفك عند الضغط للمشاركة فقط. */
+605:     void showAttachments(long tx) {
+606:         final List<Long> ids = a.db.attachmentIds(tx);
+607:         a.busy("جارٍ فتح الصور…", p -> {
+608:             List<Object[]> out = new ArrayList<>();
+609:             for (Long id : ids) {
+610:                 byte[] raw = a.db.attachment(id);
+611:                 out.add(new Object[]{id, raw == null ? null : ImageUtil.decodeSampled(raw, 720)});
+612:             }
+613:             return out;
+614:         }, res -> {
+615:             @SuppressWarnings("unchecked") List<Object[]> imgs = (List<Object[]>) res;
+616:             LinearLayout l = new LinearLayout(a);
+617:             l.setOrientation(LinearLayout.VERTICAL);
+618:             ScrollView s = new ScrollView(a);
+619:             s.addView(l);
+620:             int shown = 0;
+621:             for (Object[] x : imgs) {
+622:                 final long id = (Long) x[0];
+623:                 Bitmap bm = (Bitmap) x[1];
+624:                 if (bm == null) {
+625:                     l.addView(a.text("صورة رقم " + id + " تالفة أو مفقودة", 14, a.red, false));
+626:                     continue;
+627:                 }
+628:                 ImageView im = new ImageView(a);
+629:                 im.setImageBitmap(bm);

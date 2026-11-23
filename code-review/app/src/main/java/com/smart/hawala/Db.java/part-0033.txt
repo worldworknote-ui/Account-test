@@ -1,0 +1,161 @@
+4876:             if (hex == null || hex.length() < 32 || !hex.matches("[0-9a-fA-F]+")) throw new IllegalStateException("تعذر فك سرّ رموز المستخدمين؛ استعمل رمز الاسترداد.");
+4877:             byte[] b = new byte[hex.length() / 2];
+4878:             for (int i = 0; i < b.length; i++) b[i] = (byte) Integer.parseInt(hex.substring(2 * i, 2 * i + 2), 16);
+4879:             return b;
+4880:         }
+4881:         byte[] p = Pin.newPepper();
+4882:         setSettingQuiet("pin_pepper", Crypto.enc(BackupFormat.hex(p)));
+4883:         return p;
+4884:     }
+4885: 
+4886:     // ===================================================================================
+4887:     // مطابقة الأرصدة مع المكاتب
+4888:     // ===================================================================================
+4889: 
+4890:     /** يسجّل مطابقة: لقطة من رصيد المكتب الآن لكل عملة، ورقم آخر قيد حتى تُعرف الحركات التي جاءت بعدها. */
+4891:     public long createRecon(long officeId) {
+4892:         // 10.11 (AUDIT-011): كما في الواجهة: المطابقة تُرسل للمكتب فهي تصدير
+4893:         require(Auth.Perm.EXPORT);
+4894:         require(Auth.Perm.RECON);   // 12.0
+4895:         SQLiteDatabase d = getWritableDatabase();
+4896:         d.beginTransaction();
+4897:         try {
+4898:             long cutoff;
+4899:             try (Cursor c = d.rawQuery("SELECT COALESCE(MAX(id),0) FROM journal_entries", null)) {
+4900:                 cutoff = c.moveToFirst() ? c.getLong(0) : 0;
+4901:             }
+4902:             Map<String, Long> bal = new TreeMap<>();
+4903:             for (String code : officeCurrencies(officeId)) bal.put(code, 0L);
+4904:             try (Cursor c = d.rawQuery("SELECT currency,SUM(debit_minor-credit_minor) FROM journal_lines WHERE account='OFFICE' AND office_id=" + officeId
+4905:                     + " GROUP BY currency", null)) {
+4906:                 while (c.moveToNext()) bal.put(c.getString(0), c.getLong(1));
+4907:             }
+4908:             // 10.18: إعادة إرسال المطابقة نفسها (صورة ثم نص، أو نسخ ثم واتساب) لا تُنشئ مطابقة ثانية: إن كانت آخر مطابقة
+4909:             // لهذا المكتب ما زالت بانتظار التأكيد ولم يُسجَّل بعدها أي قيد والأرصدة هي نفسها، تُعتمد هي.
+4910:             try (Cursor c = d.rawQuery("SELECT id,status,cutoff_entry FROM reconciliations WHERE office_id=" + officeId + " ORDER BY created_at DESC,id DESC LIMIT 1", null)) {
+4911:                 if (c.moveToFirst() && Model.RECON_SENT.equals(c.getString(1)) && c.getLong(2) == cutoff) {
+4912:                     long last = c.getLong(0);
+4913:                     Map<String, Long> was = new TreeMap<>();
+4914:                     try (Cursor l = d.rawQuery("SELECT currency,balance_minor FROM reconciliation_lines WHERE recon_id=" + last, null)) {
+4915:                         while (l.moveToNext()) was.put(l.getString(0), l.getLong(1));
+4916:                     }
+4917:                     if (was.equals(bal)) {
+4918:                         d.setTransactionSuccessful();
+4919:                         return last;
+4920:                     }
+4921:                 }
+4922:             }
+4923:             ContentValues v = new ContentValues();
+4924:             v.put("uuid", UUID.randomUUID().toString());
+4925:             v.put("office_id", officeId);
+4926:             v.put("created_at", Clock.now());
+4927:             v.put("cutoff_entry", cutoff);
+4928:             // 10.0: مع المزامنة لكل جهاز نطاق أرقام: «حتى القيد» = حتى آخر قيد من كل نطاق
+4929:             v.put("cutoff_marks", SyncStore.marks(d));
+4930:             v.put("status", Model.RECON_SENT);
+4931:             v.put("user_name", Crypto.enc(currentUserName));
+4932:             Model.User me = actor();
+4933:             if (me != null) v.put("user_id", me.id);
+4934:             long id = ins(d, "reconciliations", v);
+4935:             for (Map.Entry<String, Long> e : bal.entrySet()) {
+4936:                 ContentValues l = new ContentValues();
+4937:                 l.put("recon_id", id);
+4938:                 l.put("currency", e.getKey());
+4939:                 l.put("balance_minor", e.getValue());
+4940:                 ins(d, "reconciliation_lines", l);
+4941:             }
+4942:             audit(d, "CREATE_RECON", "office", officeId, "");
+4943:             d.setTransactionSuccessful();
+4944:             return id;
+4945:         } finally {
+4946:             d.endTransaction();
+4947:         }
+4948:     }
+4949: 
+4950:     /** مطابقات المكتب، الأحدث أولًا. */
+4951:     public List<Model.Recon> recons(long officeId, int limit) {
+4952:         List<Model.Recon> out = new ArrayList<>();
+4953:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id,uuid,office_id,created_at,cutoff_entry,status,confirmed_at,note,user_name,cutoff_marks,user_id,checked_by,checked_at FROM reconciliations WHERE office_id="
+4954:                 + officeId + " ORDER BY created_at DESC,id DESC LIMIT " + limit, null)) {
+4955:             while (c.moveToNext()) out.add(readRecon(c));
+4956:         }
+4957:         for (Model.Recon r : out) r.balances.putAll(reconLines(r.id));
+4958:         return out;
+4959:     }
+4960: 
+4961:     public Model.Recon recon(long id) {
+4962:         Model.Recon r = null;
+4963:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id,uuid,office_id,created_at,cutoff_entry,status,confirmed_at,note,user_name,cutoff_marks,user_id,checked_by,checked_at FROM reconciliations WHERE id=" + id, null)) {
+4964:             if (c.moveToFirst()) r = readRecon(c);
+4965:         }
+4966:         if (r != null) r.balances.putAll(reconLines(r.id));
+4967:         return r;
+4968:     }
+4969: 
+4970:     /** آخر مطابقة للمكتب؛ confirmedOnly = آخر مطابقة أكّدها المكتب. */
+4971:     public Model.Recon lastRecon(long officeId, boolean confirmedOnly) {
+4972:         String q = "SELECT id FROM reconciliations WHERE office_id=" + officeId
+4973:                 + (confirmedOnly ? " AND status='" + Model.RECON_CONFIRMED + "'" : "") + " ORDER BY created_at DESC,id DESC LIMIT 1";
+4974:         try (Cursor c = getReadableDatabase().rawQuery(q, null)) {
+4975:             if (!c.moveToFirst()) return null;
+4976:             return recon(c.getLong(0));
+4977:         }
+4978:     }
+4979: 
+4980:     private Model.Recon readRecon(Cursor c) {
+4981:         Model.Recon r = new Model.Recon();
+4982:         r.id = c.getLong(0);
+4983:         r.uuid = Model.nz(c.getString(1));
+4984:         r.officeId = c.getLong(2);
+4985:         r.createdAt = c.getLong(3);
+4986:         r.cutoffEntry = c.getLong(4);
+4987:         r.status = Model.nz(c.getString(5));
+4988:         r.confirmedAt = c.isNull(6) ? 0 : c.getLong(6);
+4989:         r.note = Model.nz(Crypto.dec(c.getString(7)));
+4990:         r.userReal = Model.nz(Crypto.dec(c.getString(8)));
+4991:         r.userName = shown(r.userReal);
+4992:         r.cutoffMarks = c.getColumnCount() > 9 && !c.isNull(9) ? c.getString(9) : "";
+4993:         if (c.getColumnCount() > 12) {
+4994:             r.userId = c.isNull(10) ? null : c.getLong(10);
+4995:             r.checkedBy = c.isNull(11) ? null : c.getLong(11);
+4996:             r.checkedAt = c.isNull(12) ? 0 : c.getLong(12);
+4997:         }
+4998:         return r;
+4999:     }
+5000: 
+5001:     private Map<String, Long> reconLines(long reconId) {
+5002:         Map<String, Long> m = new TreeMap<>();
+5003:         try (Cursor c = getReadableDatabase().rawQuery("SELECT currency,balance_minor FROM reconciliation_lines WHERE recon_id=" + reconId, null)) {
+5004:             while (c.moveToNext()) m.put(c.getString(0), c.getLong(1));
+5005:         }
+5006:         return m;
+5007:     }
+5008: 
+5009:     /** 10.8: هل أنشأ المستخدم هذه المطابقة (برقمه، أو باسمه للمطابقات الأقدم)؟ */
+5010:     static boolean reconBy(Model.Recon r, Model.User u) {
+5011:         if (u == null) return false;
+5012:         if (r.userId != null) return r.userId == u.id;
+5013:         String real = r.userReal.isEmpty() ? r.userName : r.userReal;
+5014:         return !real.isEmpty() && Sanity.norm(real).equals(Sanity.norm(u.name));
+5015:     }
+5016: 
+5017:     /**
+5018:      * 10.8: «تم التحقق» من مطابقة: محاسب غير من أنشأها، ممن يتحقق من مكتبها، يؤكد أن لقطة الأرصدة سليمة. لا يغيّر رصيدًا ولا حالة المطابقة مع المكتب.
+5019:      */
+5020:     public void verifyRecon(long reconId) {
+5021:         require(Auth.Perm.VERIFY);
+5022:         Model.User me = actor();
+5023:         if (me == null) throw new IllegalStateException("التحقق يحتاج نظام المستخدمين: كل تحقق يُسجَّل باسم من قام به.");
+5024:         Model.Recon r = recon(reconId);
+5025:         if (r == null) throw new IllegalStateException("المطابقة غير موجودة");
+5026:         if (reconBy(r, me)) throw new IllegalStateException("لا يُحتسب تحققك من مطابقة أنشأتها أنت؛ يتحقق منها محاسب آخر.");
+5027:         SQLiteDatabase d = getWritableDatabase();
+5028:         Set<Long> scope = checkScope(d, me);
+5029:         if (scope != null && !scope.contains(r.officeId)) throw new SecurityException(checkRefusal(d, me, r.officeId));
+5030:         ContentValues v = new ContentValues();
+5031:         v.put("checked_by", me.id);
+5032:         v.put("checked_at", Clock.now());
+5033:         d.update("reconciliations", v, "id=" + reconId, null);
+5034:         audit(d, "VERIFY_RECON", "recon", reconId, me.name);
+5035:     }
+5036: 

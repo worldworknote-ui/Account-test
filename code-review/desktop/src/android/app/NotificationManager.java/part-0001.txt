@@ -1,0 +1,47 @@
+1: package android.app;
+2: 
+3: import java.awt.*;
+4: 
+5: /** إشعارات النظام (شريط الماك/ويندوز) مع إشعار داخل البرنامج. الضغط على الإشعار يفتح الشاشة المطلوبة. */
+6: public class NotificationManager {
+7:     public static final int IMPORTANCE_DEFAULT = 3, IMPORTANCE_HIGH = 4, IMPORTANCE_LOW = 2, IMPORTANCE_MIN = 1, IMPORTANCE_NONE = 0, IMPORTANCE_MAX = 5;
+8:     private static TrayIcon tray;
+9:     private static Notification last;
+10:     /** يُستدعى عند الضغط على الإشعار: النية المرفقة. */
+11:     public static java.util.function.Consumer<android.content.Intent> onOpen;
+12: 
+13:     public void createNotificationChannel(NotificationChannel c) {}
+14:     public void createNotificationChannels(java.util.List<NotificationChannel> l) {}
+15:     public void deleteNotificationChannel(String id) {}
+16:     public NotificationChannel getNotificationChannel(String id) { return new NotificationChannel(id, id, IMPORTANCE_DEFAULT); }
+17:     public boolean areNotificationsEnabled() { return true; }
+18:     public void cancel(int id) {}
+19:     public void cancel(String tag, int id) {}
+20:     public void cancelAll() {}
+21:     public void notify(String tag, int id, Notification n) { notify(id, n); }
+22:     public void notify(int id, Notification n) {
+23:         last = n;
+24:         String title = n.title == null ? "المحاسب الذكي" : n.title.toString(), text = n.text == null ? "" : n.text.toString();
+25:         javax.swing.SwingUtilities.invokeLater(() -> {
+26:             try {
+27:                 if (GraphicsEnvironment.isHeadless() || !SystemTray.isSupported()) return;
+28:                 if (tray == null) {
+29:                     Image icon = Toolkit.getDefaultToolkit().createImage(new byte[0]);
+30:                     if (Platform.frame != null && !Platform.frame.getIconImages().isEmpty()) icon = Platform.frame.getIconImages().get(0);
+31:                     tray = new TrayIcon(icon, "المحاسب الذكي");
+32:                     tray.setImageAutoSize(true);
+33:                     tray.addActionListener(e -> open());
+34:                     SystemTray.getSystemTray().add(tray);
+35:                 }
+36:                 tray.displayMessage(title, text, TrayIcon.MessageType.INFO);
+37:             } catch (Throwable ignored) {
+38:                 // يكفي سجل الإشعارات داخل البرنامج
+39:             }
+40:         });
+41:     }
+42:     private static void open() {
+43:         if (Platform.frame != null) { Platform.frame.setState(Frame.NORMAL); Platform.frame.toFront(); }
+44:         if (last != null && last.contentIntent != null && onOpen != null) onOpen.accept(last.contentIntent.intent);
+45:     }
+46:     public android.service.notification.StatusBarNotification[] getActiveNotifications() { return new android.service.notification.StatusBarNotification[0]; }
+47: }

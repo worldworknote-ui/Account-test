@@ -1,0 +1,123 @@
+1: import com.smart.hawala.*;
+2: import com.sun.net.httpserver.*;
+3: import org.json.*;
+4: import java.io.*;
+5: import java.net.InetSocketAddress;
+6: import java.nio.charset.StandardCharsets;
+7: import java.util.*;
+8: /** 6.2: طلب الذكاء الاصطناعي ورده (Claude وخدمة متوافقة مع OpenAI) عبر خادم وهمي محلي، بلا إنترنت ولا مفتاح حقيقي. */
+9: public class AiTest {
+10:   static int fails = 0;
+11:   static void check(boolean c, String m) { System.out.println((c ? "  PASS " : "  FAIL ") + m); if (!c) fails++; }
+12:   static volatile String lastPath, lastBody, lastKey, lastVersion, lastAuth;
+13:   static volatile int status = 200;
+14:   static volatile String reply = "";
+15:   public static void main(String[] a) throws Exception {
+16:     HttpServer srv = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+17:     srv.createContext("/", ex -> {
+18:       lastPath = ex.getRequestURI().getPath();
+19:       lastKey = ex.getRequestHeaders().getFirst("x-api-key");
+20:       lastVersion = ex.getRequestHeaders().getFirst("anthropic-version");
+21:       lastAuth = ex.getRequestHeaders().getFirst("Authorization");
+22:       try (InputStream in = ex.getRequestBody()) { lastBody = new String(in.readAllBytes(), StandardCharsets.UTF_8); }
+23:       byte[] b = reply.getBytes(StandardCharsets.UTF_8);
+24:       ex.sendResponseHeaders(status, b.length);
+25:       try (OutputStream o = ex.getResponseBody()) { o.write(b); }
+26:     });
+27:     srv.start();
+28:     String base = "http://127.0.0.1:" + srv.getAddress().getPort();
+29:     List<MessageParser.Cur> curs = Arrays.asList(new MessageParser.Cur("USD", "دولار امريكي"), new MessageParser.Cur("EUR", "يورو"), new MessageParser.Cur("USDT", "تيثر"));
+30:     Map<String, List<String>> al = MessageParser.aliasesFrom("USDT=يوز");
+31: 
+32:     // ---- Claude
+33:     AiExtract.Config c = new AiExtract.Config();
+34:     c.provider = AiExtract.CLAUDE; c.key = "sk-ant-test"; c.baseUrl = base + "/v1/messages";
+35:     String out = new JSONObject().put("person", "Tony").put("amount", "500").put("currency", "").put("currency_word", "RON")
+36:         .put("phone", "").put("city", "Syria").put("sender", "").put("fee", "").put("net", false).toString();
+37:     reply = new JSONObject().put("type", "message").put("stop_reason", "end_turn")
+38:         .put("content", new JSONArray().put(new JSONObject().put("type", "text").put("text", out))).toString();
+39:     MessageParser.Result r = AiExtract.call(c, "need five hundred ron to syria for mr tony", curs, al);
+40:     check(lastPath.equals("/v1/messages"), "Claude endpoint");
+41:     check("sk-ant-test".equals(lastKey) && "2023-06-01".equals(lastVersion), "Claude headers x-api-key + anthropic-version");
+42:     JSONObject sent = new JSONObject(lastBody);
+43:     check(sent.getString("model").equals("claude-haiku-5-5"), "default model claude-haiku-5-5");
+44:     check(sent.getJSONObject("output_config").getJSONObject("format").getString("type").equals("json_schema"), "structured output json_schema");
+45:     check(sent.getJSONObject("output_config").getJSONObject("format").getJSONObject("schema").getBoolean("additionalProperties") == false, "schema closed");
+46:     check(sent.getString("system").contains("USDT = تيثر (also written: يوز)"), "currencies + user words in the prompt");
+47:     check(sent.getJSONArray("messages").getJSONObject(0).getString("content").contains("need five hundred ron"), "message text sent");
+48:     check(r.person.equals("Tony") && r.amount.equals("500") && r.currency == null && r.currencyWord.equals("RON") && r.city.equals("Syria"),
+49:         "Claude result parsed; RON not an office currency -> warning word");
+50: 
+51:     out = new JSONObject().put("person", "حمدي احمد محمد").put("amount", "2,500.50").put("currency", "usd").put("currency_word", "دولار")
+52:         .put("phone", "+963 933 974").put("city", "حماة").put("sender", "").put("fee", "10").put("net", true).toString();
+53:     reply = new JSONObject().put("content", new JSONArray().put(new JSONObject().put("type", "text").put("text", out))).toString();
+54:     r = AiExtract.call(c, "x", curs, al);
+55:     check(r.amount.equals("2500.5") && "USD".equals(r.currency) && r.fee.equals("10") && r.net && r.phone.equals("+963 933 974"), "amount with separators, code case, fee, net");
+56: 
+57:     // ---- errors
+58:     status = 401; reply = "{\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}";
+59:     try { AiExtract.call(c, "x", curs, al); check(false, "401 should fail"); }
+60:     catch (Exception e) { check(e.getMessage().startsWith("مفتاح الخدمة غير صحيح") && e.getMessage().contains("HTTP 401"), "401 -> wrong key message"); }
+61:     status = 400; reply = "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low\"}}";
+62:     try { AiExtract.call(c, "x", curs, al); check(false, "400 should fail"); }
+63:     catch (Exception e) { check(e.getMessage().startsWith("رصيد حسابك"), "credit balance -> balance message"); }
+64:     // a 400 that is not about credit: retried once without output_config
+65:     final int[] calls = {0};
+66:     srv.removeContext("/");
+67:     srv.createContext("/", ex -> {
+68:       calls[0]++;
+69:       lastPath = ex.getRequestURI().getPath();
+70:       try (InputStream in = ex.getRequestBody()) { lastBody = new String(in.readAllBytes(), StandardCharsets.UTF_8); }
+71:       boolean structured = lastBody.contains("output_config");
+72:       String body;
+73:       try {
+74:         body = structured ? "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"output_config: unsupported\"}}"
+75:             : new JSONObject().put("content", new JSONArray().put(new JSONObject().put("type", "text").put("text", "{\"person\":\"Lina\",\"amount\":\"150\",\"currency\":\"EUR\",\"currency_word\":\"euro\",\"phone\":\"\",\"city\":\"\",\"sender\":\"\",\"fee\":\"\",\"net\":false}"))).toString();
+76:       } catch (Exception e) { body = "{}"; }
+77:       byte[] b = body.getBytes(StandardCharsets.UTF_8);
+78:       ex.sendResponseHeaders(structured ? 400 : 200, b.length);
+79:       try (OutputStream os = ex.getResponseBody()) { os.write(b); }
+80:     });
+81:     r = AiExtract.call(c, "a hundred and fifty euros for Lina", curs, al);
+82:     check(calls[0] == 2 && r.person.equals("Lina") && "EUR".equals(r.currency) && !lastBody.contains("output_config"), "400 on output_config -> one retry with plain JSON instructions");
+83:     srv.removeContext("/");
+84:     srv.createContext("/", ex -> {
+85:       lastPath = ex.getRequestURI().getPath();
+86:       lastKey = ex.getRequestHeaders().getFirst("x-api-key");
+87:       lastAuth = ex.getRequestHeaders().getFirst("Authorization");
+88:       try (InputStream in = ex.getRequestBody()) { lastBody = new String(in.readAllBytes(), StandardCharsets.UTF_8); }
+89:       byte[] b = reply.getBytes(StandardCharsets.UTF_8);
+90:       ex.sendResponseHeaders(status, b.length);
+91:       try (OutputStream os = ex.getResponseBody()) { os.write(b); }
+92:     });
+93:     status = 529; reply = "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}";
+94:     try { AiExtract.call(c, "x", curs, al); check(false, "529 should fail"); }
+95:     catch (Exception e) { check(e.getMessage().startsWith("خدمة الذكاء الاصطناعي مشغولة"), "529 -> busy message"); }
+96:     status = 200; reply = "{\"content\":[{\"type\":\"text\",\"text\":\"sorry\"}]}";
+97:     try { AiExtract.call(c, "x", curs, al); check(false, "bad reply should fail"); }
+98:     catch (Exception e) { check(e.getMessage().contains("ليس بالصيغة المتوقعة"), "non-JSON reply -> clear message"); }
+99: 
+100:     // ---- OpenAI-compatible
+101:     AiExtract.Config o = new AiExtract.Config();
+102:     o.provider = AiExtract.OPENAI; o.key = "sk-test"; o.model = "some-model"; o.baseUrl = base + "/v1/";
+103:     out = "```json\n" + new JSONObject().put("person", "Ahmet Yılmaz").put("amount", "2000").put("currency", "USD").put("currency_word", "dolar")
+104:         .put("phone", "").put("city", "Gaziantep").put("sender", "").put("fee", "").put("net", false) + "\n```";
+105:     reply = new JSONObject().put("choices", new JSONArray().put(new JSONObject().put("message", new JSONObject().put("role", "assistant").put("content", out)))).toString();
+106:     r = AiExtract.call(o, "Ahmet Yılmaz için 2 bin dolar", curs, al);
+107:     check(lastPath.equals("/v1/chat/completions"), "OpenAI-compatible endpoint built from base URL");
+108:     check("Bearer sk-test".equals(lastAuth), "Bearer key");
+109:     sent = new JSONObject(lastBody);
+110:     check(sent.getString("model").equals("some-model") && sent.getJSONArray("messages").length() == 2, "model + system/user messages");
+111:     check(r.person.equals("Ahmet Yılmaz") && r.amount.equals("2000") && "USD".equals(r.currency) && r.city.equals("Gaziantep"), "OpenAI reply in ```json``` parsed");
+112: 
+113:     // ---- configuration problems (no network)
+114:     AiExtract.Config bad = new AiExtract.Config();
+115:     check(bad.problem() != null && bad.problem().contains("مفتاح"), "missing key reported");
+116:     bad.key = "k"; bad.provider = AiExtract.OPENAI;
+117:     check(bad.problem() != null && bad.problem().contains("النموذج"), "OpenAI-compatible needs a model name");
+118:     check(new AiExtract.Config().endpoint().equals("https://api.anthropic.com/v1/messages"), "default Claude endpoint");
+119:     srv.stop(0);
+120:     System.out.println(fails == 0 ? "ALL AI TESTS PASSED" : fails + " FAILED");
+121:     System.exit(fails == 0 ? 0 : 1);
+122:   }
+123: }

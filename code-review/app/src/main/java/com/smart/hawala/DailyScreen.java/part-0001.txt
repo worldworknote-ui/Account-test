@@ -1,0 +1,138 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.DatePickerDialog;
+4: import android.graphics.Color;
+5: import android.widget.LinearLayout;
+6: import java.util.Calendar;
+7: import java.util.List;
+8: import java.util.Map;
+9: 
+10: /** التقرير اليومي: مجاميع اليوم لكل عملة (لنا، علينا، الأجور، الصافي، العدد) وحركات اليوم، مع التصدير. */
+11: final class DailyScreen {
+12:     private final MainActivity a;
+13: 
+14:     DailyScreen(MainActivity a) { this.a = a; }
+15: 
+16:     static long dayStart(long t) {
+17:         Calendar c = Model.cal();
+18:         c.setTimeInMillis(t);
+19:         return StatementScreen.startOfDay(c);
+20:     }
+21: 
+22:     static long nextDay(long start) {
+23:         Calendar c = Model.cal();
+24:         c.setTimeInMillis(start);
+25:         c.add(Calendar.DAY_OF_MONTH, 1);
+26:         return StatementScreen.startOfDay(c);
+27:     }
+28: 
+29:     static long prevDay(long start) {
+30:         Calendar c = Model.cal();
+31:         c.setTimeInMillis(start);
+32:         c.add(Calendar.DAY_OF_MONTH, -1);
+33:         return StatementScreen.startOfDay(c);
+34:     }
+35: 
+36:     void show(final long anyTime) {
+37:         if (!a.require(Auth.Perm.VIEW) || !a.require(Auth.Perm.REPORTS)) return;   // 12.0
+38:         final long from = dayStart(anyTime);
+39:         final long to = nextDay(from);
+40:         a.here(() -> show(anyTime));
+41:         a.tabbedScreen("التقرير اليومي", a::showHome, "home");
+42:         LinearLayout nav = a.row();
+43:         a.body.addView(nav, a.lp(-1, -2, 4));
+44:         nav.addView(a.smallButton("اليوم السابق", Color.rgb(120, 120, 120), v -> show(prevDay(from))), a.weight(46, 1, 2));
+45:         nav.addView(a.smallButton(Model.day(from), a.accent, v -> {
+46:             Calendar c = Model.cal();
+47:             c.setTimeInMillis(from);
+48:             DatePickerDialog dp = new DatePickerDialog(a, (x, y, m, d) -> {
+49:                 Calendar s = Model.cal();
+50:                 s.set(y, m, d);
+51:                 show(s.getTimeInMillis());
+52:             }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH));
+53:             dp.getDatePicker().setMaxDate(Clock.now());
+54:             dp.show();
+55:         }), a.weight(46, 1.2f, 2));
+56:         boolean isToday = to > Clock.now();
+57:         nav.addView(a.smallButton("اليوم التالي", isToday ? Color.LTGRAY : Color.rgb(120, 120, 120), v -> {
+58:             if (!isToday) show(to);
+59:         }), a.weight(46, 1, 2));
+60: 
+61:         Map<String, long[]> stats = a.db.dailyStats(from, to);
+62:         LinearLayout c = a.card();
+63:         c.addView(a.text("مجاميع " + (isToday ? "اليوم" : Model.day(from)), 18, a.primary, true));
+64:         if (stats.isEmpty()) c.addView(a.text("لا توجد حركات في هذا اليوم.", 15, a.muted, false));
+65:         for (Map.Entry<String, long[]> e : stats.entrySet()) {
+66:             int d = a.db.decimals(e.getKey());
+67:             long[] v = e.getValue();
+68:             StringBuilder sb = new StringBuilder(e.getKey() + "   (" + v[4] + " حركة)");
+69:             sb.append("\nحركات لنا: ").append(Model.fmt(v[0], d)).append("   •   حركات علينا: ").append(Model.fmt(v[1], d));
+70:             if (v[2] > 0 || v[3] > 0) sb.append("\nأجور لنا: ").append(Model.fmt(v[2], d)).append("   •   أجور علينا: ").append(Model.fmt(v[3], d));
+71:             sb.append("\nصافي اليوم: ").append(Model.bal(v[0] - v[1] + v[2] - v[3], d));
+72:             c.addView(a.text(sb.toString(), 15, a.dark, false));
+73:         }
+74:         c.addView(a.text("الحركات الملغاة غير محسوبة.", 12, a.muted, false));
+75:         try {
+76:             // 8.0 (ت5): بصمة اليوم تُطبع على التقرير المصدَّر؛ أي تعديل في الملف بعد خروجه يُكشف هنا
+77:             c.addView(a.text("بصمة اليوم: \u2066" + a.db.dayCode(from, to) + "\u2069", 14, a.primaryInk, true));
+78:         } catch (Exception e) {
+79:             c.addView(a.text("تعذر حساب بصمة اليوم: " + Ui.friendly(e), 12, a.red, false));
+80:         }
+81:         LinearLayout vr = a.row();
+82:         vr.addView(a.smallButton("التحقق من بصمة تقرير", a.accent, v -> verifyDialog(from)), a.weight(42, 1, 2));
+83:         a.body.addView(vr, a.lp(-1, -2, 2));
+84: 
+85:         Db.TxFilter f = new Db.TxFilter();
+86:         f.from = from;
+87:         f.to = to;
+88:         f.includeCancelled = true;
+89:         final List<Model.Tx> txs = a.db.txLog(f);
+90:         if (!txs.isEmpty()) {
+91:             a.button("تصدير التقرير اليومي (PDF / صور / Excel)", a.primary, v -> a.exportUi.dailyDialog(from, to));
+92:         }
+93:         Map<Long, String> names = a.db.officeNames();
+94:         Map<Long, Integer> att = a.db.attachmentCounts(null);
+95:         for (final Model.Tx t : txs) {
+96:             LinearLayout x = a.card();
+97:             x.addView(a.logScreen.txRow(t, names.get(t.officeId), att.get(t.id)));
+98:             x.setBackground(a.ripple(a.round(a.surface, a.line, 16), 16));
+99:             x.setOnClickListener(v -> a.logScreen.details(t, () -> show(from)));
+100:         }
+101:     }
+102: 
+103:     Report report(long from, long to) {
+104:         Db.TxFilter f = new Db.TxFilter();
+105:         f.from = from;
+106:         f.to = to;
+107:         f.includeCancelled = true;
+108:         Report r = Reports.daily(Model.day(from), a.db.dailyStats(from, to), a.db.txLog(f), a.db.officeNames(), a.db.decimalsMap(),
+109:                 a.db.setting("office_name", ""), Clock.now());
+110:         try {
+111:             r.headerLines.add("بصمة اليوم: " + a.db.dayCode(from, to) + " — للتحقق: التقرير اليومي ← «التحقق من بصمة تقرير»");
+112:         } catch (Exception ignored) {
+113:             // التقرير يُصدَّر بلا بصمة
+114:         }
+115:         return r;
+116:     }
+117: 
+118:     /** يكتب المستخدم تاريخ التقرير وبصمته المطبوعة؛ يعيد التطبيق الحساب من الحركات ويقارن. */
+119:     private void verifyDialog(long day) {
+120:         final android.widget.EditText code = new android.widget.EditText(a);
+121:         code.setHint("XXXX-XXXX-XXXX");
+122:         code.setTextDirection(android.view.View.TEXT_DIRECTION_LTR);
+123:         LinearLayout l = new LinearLayout(a);
+124:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+125:         l.addView(code, new LinearLayout.LayoutParams(-1, -2));
+126:         new android.app.AlertDialog.Builder(a).setTitle("التحقق من بصمة تقرير يوم " + Model.day(day))
+127:                 .setMessage("اكتب البصمة المطبوعة في أعلى التقرير اليومي ليوم " + Model.day(day) + ". (لتقرير يوم آخر اختر اليوم أولًا من الأعلى.)")
+128:                 .setView(l).setPositiveButton("تحقق", (d, w) -> {
+129:                     String want = a.db.dayCode(day, nextDay(day));
+130:                     boolean ok = want.equals(DayClose.normalize(code.getText().toString()));
+131:                     a.db.audit("DAY_CODE_VERIFY", "daily", day, ok ? "ok" : "mismatch");
+132:                     new android.app.AlertDialog.Builder(a).setTitle(ok ? "مطابقة ✓" : "غير مطابقة")
+133:                             .setMessage(ok ? "التقرير يطابق حركات ذلك اليوم كما هي في التطبيق: لم يُعدَّل بعد إصداره."
+134:                                     : "البصمة لا تطابق. إما أن الملف عُدّل بعد خروجه من التطبيق، أو أن حركة من ذلك اليوم أُلغيت أو عُدّلت بعد إصدار التقرير (راجع سجل العمليات)، أو أن الرمز كُتب خطأً.")
+135:                             .setPositiveButton("حسنًا", null).show();
+136:                 }).setNegativeButton("إلغاء", null).show();
+137:     }
+138: }

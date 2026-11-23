@@ -1,0 +1,124 @@
+1: package android.content;
+2: 
+3: import java.awt.Toolkit;
+4: import java.awt.datatransfer.*;
+5: import java.util.ArrayList;
+6: import java.util.List;
+7: import java.util.concurrent.CopyOnWriteArrayList;
+8: 
+9: /**
+10:  * حافظة النظام: النص العادي، و12.1: نسخة HTML (واتساب ديسكتوب والمتصفح يضعان كل فقاعة في عنصر مستقل)،
+11:  * وتنبيه تغيّر الحافظة (يفحصها كل ثانية تقريبًا ما دام هناك مستمع؛ الماك وويندوز لا يرسلان تنبيهًا لـJava).
+12:  */
+13: public class ClipboardManager extends android.text.ClipboardManager {
+14:     public interface OnPrimaryClipChangedListener { void onPrimaryClipChanged(); }
+15: 
+16:     private static final DataFlavor[] HTML = htmlFlavors();
+17:     private static final List<OnPrimaryClipChangedListener> LISTENERS = new CopyOnWriteArrayList<>();
+18:     private static javax.swing.Timer poll;
+19:     private static String lastSeen;
+20:     /** ما نسخه البرنامج نفسه: لا يُعدّ تغيّرًا من الخارج. */
+21:     private static String ownText;
+22: 
+23:     private static DataFlavor[] htmlFlavors() {
+24:         List<DataFlavor> l = new ArrayList<>();
+25:         try { l.add(new DataFlavor("text/html;class=java.lang.String;document=all")); } catch (Exception ignored) { }
+26:         try { l.add(new DataFlavor("text/html;class=java.lang.String;document=fragment")); } catch (Exception ignored) { }
+27:         try { l.add(new DataFlavor("text/html;class=java.lang.String")); } catch (Exception ignored) { }
+28:         return l.toArray(new DataFlavor[0]);
+29:     }
+30: 
+31:     private Clipboard cb() { return Toolkit.getDefaultToolkit().getSystemClipboard(); }
+32: 
+33:     public void setPrimaryClip(ClipData c) {
+34:         StringBuilder b = new StringBuilder();
+35:         for (int i = 0; i < c.getItemCount(); i++) { if (i > 0) b.append('\n'); b.append(c.getItemAt(i).coerceToText(null)); }
+36:         try {
+37:             ownText = b.toString();
+38:             lastSeen = ownText;
+39:             cb().setContents(new StringSelection(b.toString()), null);
+40:         } catch (Exception ignored) { }
+41:     }
+42: 
+43:     public ClipData getPrimaryClip() {
+44:         String s = text();
+45:         if (s == null) return null;
+46:         String h = html();
+47:         return h == null ? ClipData.newPlainText("", s) : ClipData.newHtmlText("", s, h);
+48:     }
+49: 
+50:     public ClipDescription getPrimaryClipDescription() {
+51:         if (!hasPrimaryClip()) return null;
+52:         List<String> m = new ArrayList<>();
+53:         m.add(ClipDescription.MIMETYPE_TEXT_PLAIN);
+54:         if (html() != null) m.add(ClipDescription.MIMETYPE_TEXT_HTML);
+55:         return new ClipDescription("", m.toArray(new String[0]));
+56:     }
+57: 
+58:     public boolean hasPrimaryClip() { return text() != null; }
+59:     public boolean hasText() { return hasPrimaryClip(); }
+60:     public CharSequence getText() { return text(); }
+61:     public void setText(CharSequence t) { setPrimaryClip(ClipData.newPlainText("", t)); }
+62:     public void clearPrimaryClip() { try { cb().setContents(new StringSelection(""), null); } catch (Exception ignored) { } }
+63: 
+64:     public void addPrimaryClipChangedListener(OnPrimaryClipChangedListener l) {
+65:         if (l == null || LISTENERS.contains(l)) return;
+66:         LISTENERS.add(l);
+67:         startPoll();
+68:     }
+69: 
+70:     public void removePrimaryClipChangedListener(OnPrimaryClipChangedListener l) {
+71:         LISTENERS.remove(l);
+72:         if (LISTENERS.isEmpty() && poll != null) { poll.stop(); poll = null; }
+73:     }
+74: 
+75:     private void startPoll() {
+76:         if (poll != null || java.awt.GraphicsEnvironment.isHeadless()) return;
+77:         lastSeen = text();
+78:         poll = new javax.swing.Timer(900, e -> {
+79:             String now = text();
+80:             if (now == null || now.equals(lastSeen)) return;
+81:             lastSeen = now;
+82:             if (now.equals(ownText)) return;
+83:             for (OnPrimaryClipChangedListener x : LISTENERS) {
+84:                 try { x.onPrimaryClipChanged(); } catch (Throwable ignored) { }
+85:             }
+86:         });
+87:         poll.start();
+88:     }
+89: 
+90:     /** أنواع ما في الحافظة كما يسميها النظام (لـ«فحص الحافظة»). */
+91:     public static List<String> flavors() {
+92:         List<String> out = new ArrayList<>();
+93:         try {
+94:             for (DataFlavor f : Toolkit.getDefaultToolkit().getSystemClipboard().getAvailableDataFlavors()) {
+95:                 String s = f.getMimeType();
+96:                 int semi = s.indexOf(';');
+97:                 String base = semi < 0 ? s : s.substring(0, semi);
+98:                 if (!out.contains(base)) out.add(base);
+99:             }
+100:         } catch (Exception ignored) { }
+101:         return out;
+102:     }
+103: 
+104:     private String text() {
+105:         try {
+106:             Transferable t = cb().getContents(null);
+107:             if (t != null && t.isDataFlavorSupported(DataFlavor.stringFlavor)) return (String) t.getTransferData(DataFlavor.stringFlavor);
+108:         } catch (Exception ignored) { }
+109:         return null;
+110:     }
+111: 
+112:     private String html() {
+113:         try {
+114:             Transferable t = cb().getContents(null);
+115:             if (t == null) return null;
+116:             for (DataFlavor f : HTML) {
+117:                 if (!t.isDataFlavorSupported(f)) continue;
+118:                 Object o = t.getTransferData(f);
+119:                 if (o instanceof String && !((String) o).trim().isEmpty()) return (String) o;
+120:             }
+121:         } catch (Exception ignored) { }
+122:         return null;
+123:     }
+124: }

@@ -1,0 +1,113 @@
+158:             JCheckBox confirm = Ui.check("نافذة تأكيد قبل تسجيل كل حركة", "1".equals(db.setting("confirm_tx", "1")));
+159:             confirm.addActionListener(e -> db.setSetting("confirm_tx", confirm.isSelected() ? "1" : "0"));
+160:             tx.add(confirm);
+161:             tx.add(Ui.para("اعتماد الحركات صار لكل مستخدم: «المستخدمون ← الصلاحيات والتعديل ← حركاته تحتاج اعتمادًا».", 13, Ui.muted, 520));
+162:             tx.add(Ui.gap(10));
+163:             long lockBefore = db.settingLong("lock_before", 0);
+164:             tx.add(Ui.label(lockBefore > 0 ? "الحركات قبل " + Model.day(lockBefore) + " مقفلة: لا تُلغى ولا تُعدَّل ولا تُسجَّل حركة بتاريخ قبلها." : "لا توجد فترة محاسبية مقفلة.", 14, Ui.ink, false));
+165:             Ui.DateField lockDate = new Ui.DateField(lockBefore > 0 ? lockBefore - 1 : 0);
+166:             lockDate.setMaximumSize(new Dimension(260, 40));
+167:             tx.add(Ui.row(Ui.label("إقفال حتى نهاية يوم", 13, Ui.muted, true), lockDate, Ui.ghost("إقفال", e -> {
+168:                 try {
+169:                     long until = lockDate.endExclusive();
+170:                     if (until <= 0) throw new IllegalArgumentException("اختر التاريخ");
+171:                     if (until > Clock.now() + 86400000L) throw new IllegalArgumentException("لا يمكن إقفال تاريخ في المستقبل");
+172:                     if (!Ui.confirm(this, "إقفال الفترة", "لن يمكن إلغاء أو تعديل أي حركة قبل " + Model.day(until) + "، ولا تسجيل حركة بتاريخ قبله. متابعة؟", "إقفال")) return;
+173:                     db.setLockBefore(until);
+174:                     refresh();
+175:                 } catch (Exception ex) {
+176:                     Ui.error(this, ex);
+177:                 }
+178:             }), Ui.ghost("فتح الإقفال", e -> {
+179:                 if (Ui.confirm(this, "فتح الإقفال", "تُفتح كل الفترات للتعديل. متابعة؟", "فتح")) {
+180:                     db.setLockBefore(0);
+181:                     refresh();
+182:                 }
+183:             })));
+184:             tx.add(Ui.gap(10));
+185:             // 10.16: مفتاح استخراج معلومات رسائل واتساب (كان على الهاتف وحده)
+186:             JCheckBox waParse = Ui.check("استخراج معلومات رسائل واتساب عند لصقها في تسجيل الحركة (المبلغ والعملة والاسم…)", !"0".equals(db.setting("wa_parse", "1")));
+187:             waParse.addActionListener(e -> db.setSetting("wa_parse", waParse.isSelected() ? "1" : "0"));
+188:             tx.add(waParse);
+189:             JCheckBox clip = Ui.check("عرض الرسالة المنسوخة في الصفحة الرئيسية عند العودة إلى البرنامج", !"0".equals(db.setting("desk_clip_peek", "1")));
+190:             clip.addActionListener(e -> db.setSettingQuiet("desk_clip_peek", clip.isSelected() ? "1" : "0"));
+191:             tx.add(clip);
+192:             tx.add(Ui.gap(10));
+193:             Ui.Field cc2 = Ui.field("963");
+194:             cc2.setText(db.setting("wa_country", "963"));
+195:             cc2.setMaximumSize(new Dimension(120, 40));
+196:             tx.add(Ui.row(Ui.label("رمز الدولة لأرقام المكاتب المحلية (واتساب)", 13, Ui.muted, true), cc2, Ui.ghost("حفظ", e -> {
+197:                 db.setSetting("wa_country", cc2.val().replaceAll("[^0-9]", ""));
+198:                 Ui.toast("حُفظ");
+199:             })));
+200:             add(tx);
+201:             space(12);
+202:         }
+203: 
+204:         // 10.16: قفل البرنامج بكلمة سر (بلا نظام مستخدمين) ومهلة القفل بعد الخمول
+205:         if (can(Auth.Perm.SETTINGS)) {
+206:             Ui.Card lc = Ui.card();
+207:             lc.add(Ui.heading("قفل البرنامج"));
+208:             boolean users = db.usersEnabled();
+209:             lc.add(Ui.para(users ? "نظام المستخدمين مفعّل: الدخول برمز كل مستخدم. المهلة أدناه تقفل البرنامج بعد الخمول."
+210:                     : DeskLock.on(db) ? "البرنامج مقفل بكلمة سر على هذا الجهاز: تُطلب عند الفتح وبعد الخمول." : "البرنامج يُفتح بلا قفل على هذا الجهاز. يمكنك تعيين كلمة سر تُطلب عند الفتح وبعد الخمول.",
+211:                     13.5f, Ui.muted, w));
+212:             final long[] vals = {0, 1, 2, 5, 10, 15, 30, 60};
+213:             String[] names = {"لا يقفل تلقائيًا", "دقيقة", "دقيقتان", "5 دقائق", "10 دقائق", "15 دقيقة", "30 دقيقة", "ساعة"};
+214:             JComboBox<String> mins = Ui.combo(names);
+215:             long cur = db.settingLong("desk_lock_min", 5);
+216:             for (int i = 0; i < vals.length; i++) if (vals[i] == cur) mins.setSelectedIndex(i);
+217:             mins.addActionListener(e -> db.setSettingQuiet("desk_lock_min", "" + vals[mins.getSelectedIndex()]));
+218:             mins.setMaximumSize(new Dimension(220, 40));
+219:             lc.add(Ui.row(Ui.label("القفل بعد الخمول", 13, Ui.muted, true), mins, users ? Box.createHorizontalStrut(1)
+220:                     : Ui.ghost(DeskLock.on(db) ? "تغيير كلمة السر أو إلغاء القفل…" : "تعيين كلمة سر…", e -> DeskLock.setup(this, db, this::refresh))));
+221:             add(lc);
+222:             space(12);
+223:         }
+224: 
+225:         // 10.16: الإشعارات والتذكيرات (كانت على الهاتف وحده)
+226:         {
+227:             Ui.Card nc = Ui.card();
+228:             nc.add(Ui.heading("الإشعارات والتذكيرات"));
+229:             nc.add(Ui.para("إشعار النظام (ويندوز/ماك) مع رسالة داخل البرنامج. التذكيرات مرة في اليوم داخل ساعات الإشعار. إعدادات هذا الجهاز وحده.", 13.5f, Ui.muted, w));
+230:             String[][] tg = {{"notif_on", "تشغيل الإشعارات على هذا الجهاز"}, {"notif_sync_pending", "حركة من جهاز آخر بانتظار اعتمادي"},
+231:                     {"notif_sync_review", "تعارضات المزامنة وتنبيهاتها"}, {"notif_sync_devices", "دخول جهاز إلى المزامنة أو خروجه (للمدير)"},
+232:                     {"notif_idle", "مكتب لم تُسجَّل عليه حركات منذ يوم كامل"}, {"notif_recon", "مكتب لم تُرسل له مطابقة رصيد"},
+233:                     {"notif_backup", "عند إنشاء نسخة احتياطية تلقائية"}};
+234:             JPanel ng = new JPanel(new GridLayout(0, 2, 12, 2));
+235:             ng.setOpaque(false);
+236:             ng.setAlignmentX(Component.RIGHT_ALIGNMENT);
+237:             for (String[] tog : tg) {
+238:                 JCheckBox cb = Ui.check(tog[1], !"0".equals(db.setting(tog[0], "1")));
+239:                 cb.addActionListener(e -> db.setSettingQuiet(tog[0], cb.isSelected() ? "1" : "0"));
+240:                 ng.add(cb);
+241:             }
+242:             nc.add(ng);
+243:             Ui.Field rd = Ui.numeric("7"), hf = Ui.numeric("9"), ht = Ui.numeric("21"), br = Ui.numeric("3"), bt = Ui.numeric("0");
+244:             bt.setText("" + db.settingLong("desk_backup_remind_tx", 0));
+245:             rd.setText("" + db.settingLong("notif_recon_days", 7));
+246:             hf.setText("" + db.settingLong("notif_hour_from", 9));
+247:             ht.setText("" + db.settingLong("notif_hour_to", 21));
+248:             br.setText("" + db.settingLong("desk_backup_remind_days", 3));
+249:             JPanel nf = new JPanel(new GridLayout(0, 4, 12, 8));
+250:             nf.setOpaque(false);
+251:             nf.setAlignmentX(Component.RIGHT_ALIGNMENT);
+252:             nf.add(Ui.labeled("تذكير المطابقة بعد (أيام)", rd));
+253:             nf.add(Ui.labeled("ساعات الإشعار: من", hf));
+254:             nf.add(Ui.labeled("إلى", ht));
+255:             nf.add(Ui.labeled("ذكّرني بالنسخ كل (أيام، 0 = لا)", br));
+256:             nf.add(Ui.labeled("وبعد كل (حركة جديدة، 0 = لا)", bt));
+257:             nc.add(nf);
+258:             nc.add(Ui.flow(Ui.primary("حفظ", e -> {
+259:                 try {
+260:                     db.setSettingQuiet("notif_recon_days", "" + Math.max(1, Math.min(60, Long.parseLong(rd.val()))));
+261:                     db.setSettingQuiet("notif_hour_from", "" + Math.max(0, Math.min(23, Long.parseLong(hf.val()))));
+262:                     db.setSettingQuiet("notif_hour_to", "" + Math.max(1, Math.min(24, Long.parseLong(ht.val()))));
+263:                     db.setSettingQuiet("desk_backup_remind_days", "" + Math.max(0, Math.min(60, Long.parseLong(br.val()))));
+264:                     db.setSettingQuiet("desk_backup_remind_tx", "" + Math.max(0, Math.min(5000, Long.parseLong(bt.val().isEmpty() ? "0" : bt.val()))));
+265:                     Ui.toast("حُفظت إعدادات الإشعارات");
+266:                 } catch (NumberFormatException ex) {
+267:                     Ui.toast("اكتب أرقامًا صحيحة");
+268:                 }
+269:             }), Ui.ghost("إشعار تجريبي", e -> DeskNotify.show("المحاسب الذكي", "هكذا تظهر الإشعارات على هذا الجهاز.")),
+270:                     Ui.ghost("استثناء مكاتب من التذكير…", e -> officeNotifs()), Ui.ghost("سجل الإشعارات…", e -> NotifLog.open(this, db))));

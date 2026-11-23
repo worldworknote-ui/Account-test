@@ -1,0 +1,186 @@
+1: package com.smart.hawala;
+2: 
+3: import java.math.BigDecimal;
+4: import java.util.ArrayList;
+5: import java.util.Arrays;
+6: import java.util.HashMap;
+7: import java.util.HashSet;
+8: import java.util.LinkedHashMap;
+9: import java.util.List;
+10: import java.util.Locale;
+11: import java.util.Map;
+12: import java.util.Set;
+13: import java.util.regex.Matcher;
+14: import java.util.regex.Pattern;
+15: 
+16: /**
+17:  * يستخرج من رسالة حوالة (من واتساب) اسم المستفيد والمبلغ والعملة والهاتف والمدينة، أيًّا كان ترتيب الأسطر.
+18:  * منطق بحت بلا أندرويد حتى يُختبر على الكمبيوتر. لا يغيّر النص الأصلي؛ يقترح القيم فقط.
+19:  */
+20: public final class MessageParser {
+21:     private MessageParser() {}
+22: 
+23:     /** عملة كما هي معرّفة في البرنامج. */
+24:     public static final class Cur {
+25:         public final String code, name;
+26:         /** 10.5: منازل العملة (−1 = غير معروفة): عملة بثلاث منازل لا يُخمَّن فيها «1.250». */
+27:         public final int decimals;
+28: 
+29:         public Cur(String code, String name) { this(code, name, -1); }
+30: 
+31:         public Cur(String code, String name, int decimals) {
+32:             this.code = code;
+33:             this.name = name == null ? "" : name;
+34:             this.decimals = decimals;
+35:         }
+36:     }
+37: 
+38:     public static final class Result {
+39:         public String person = "";
+40:         /** المبلغ كرقم عادي مثل 500 أو 1250.5 */
+41:         public String amount = "";
+42:         /** رمز العملة من عملات البرنامج، أو null إن لم تُعرف. */
+43:         public String currency;
+44:         /** الكلمة التي دلّت على العملة في الرسالة (للتنبيه إن لم تكن مفعّلة). */
+45:         public String currencyWord = "";
+46:         public String phone = "";
+47:         public String city = "";
+48:         public String sender = "";
+49:         public String fee = "";
+50:         /**
+51:          * «راجع» بلغة المكاتب: أجرة يدفعها المكتب لنا. «راجع 1%» أو «راجع ١ بالمية» = 1 بالمئة من المبلغ لنا،
+52:          * «راجع 5 بالألف» = 5 بالألف، «راجع 50 دولار» = أجرة محددة 50. فارغ = لم يُذكر راجع بنسبة أو مبلغ واضح.
+53:          */
+54:         public String rajeRate = "";
+55:         /** 100 (بالمئة) أو 1000 (بالألف) مع rajeRate. */
+56:         public int rajePer = 100;
+57:         /** مبلغ راجع محدد (بعملة المبلغ). */
+58:         public String rajeAmount = "";
+59:         /** ذُكرت كلمة «راجع» (حتى بلا رقم واضح). */
+60:         public boolean raje;
+61:         /** رقم بعد «راجع» بلا وحدة (لا يُخمَّن: نسبة أم مبلغ؟). */
+62:         public String rajeHint = "";
+63:         public boolean net;
+64:         /** كلمة بعد المبلغ لم يعرفها البرنامج (قد تكون اسم عملة عامي مثل «يوز»)، ليربطها المستخدم بعملة. */
+65:         public String unknownWord = "";
+66:         /** 10.5: نص المبلغ كما ورد في الرسالة (مثل «50000 الف»)، وتنبيه حين يحتاج تفسيره مراجعة المحاسب. */
+67:         public String amountText = "", amountNote = "";
+68: 
+69:         public boolean any() { return !person.isEmpty() || !amount.isEmpty() || currency != null; }
+70:     }
+71: 
+72:     // ===================================================================================
+73:     // التطبيع
+74:     // ===================================================================================
+75: 
+76:     /** الأرقام العربية والفارسية إلى 0-9، وفواصلها إلى , و . */
+77:     static String digits(String s) {
+78:         StringBuilder sb = new StringBuilder(s.length());
+79:         for (char ch : s.toCharArray()) {
+80:             if (ch >= '٠' && ch <= '٩') sb.append((char) ('0' + ch - '٠'));
+81:             else if (ch >= '۰' && ch <= '۹') sb.append((char) ('0' + ch - '۰'));
+82:             else if (ch == '٫') sb.append('.');
+83:             else if (ch == '٬') sb.append(',');
+84:             else sb.append(ch);
+85:         }
+86:         return sb.toString();
+87:     }
+88: 
+89:     /** يحذف التطويل والتشكيل ويجمع المسافات، مع إبقاء الحروف كما كُتبت (للعرض). */
+90:     static String clean(String s) {
+91:         StringBuilder sb = new StringBuilder(s.length());
+92:         for (char ch : digits(s).toCharArray()) {
+93:             if (ch == 'ـ') continue;                         // تطويل
+94:             if (ch >= 'ً' && ch <= 'ٟ') continue;       // تشكيل
+95:             if (ch == 'ٰ' || ch == '\u200F' || ch == '\u200E' || ch == '​' || ch == '\u202A' || ch == '\u202B' || ch == '\u202C') continue;
+96:             if (ch == '*' || ch == '~' || ch == '_') continue;     // تنسيق واتساب (عريض/مشطوب/مائل)
+97:             if (ch == '\u00a0' || ch == '\t') ch = ' ';
+98:             sb.append(ch);
+99:         }
+100:         return sb.toString().replaceAll(" {2,}", " ").trim();
+101:     }
+102: 
+103:     /**
+104:      * للتطابق: كالتنظيف + توحيد الألف والتاء المربوطة والياء، وحروف صغيرة بلا علامات:
+105:      * Yılmaz ← yilmaz، Ștefan ← stefan، Müller ← muller، Señor ← senor، Ёлка ← елка.
+106:      */
+107:     static String norm(String s) {
+108:         String c = clean(s).replace('İ', 'i').toLowerCase(Locale.ROOT);
+109:         StringBuilder sb = new StringBuilder(c.length());
+110:         for (char ch : c.toCharArray()) {
+111:             if (ch == 'أ' || ch == 'إ' || ch == 'آ' || ch == 'ٱ') ch = 'ا';
+112:             else if (ch == 'ة') ch = 'ه';
+113:             else if (ch == 'ى' || ch == 'ی') ch = 'ي';    // ی الفارسية
+114:             else if (ch == 'ک') ch = 'ك';
+115:             else if (ch == 'ё') ch = 'е';
+116:             else if (ch >= '̀' && ch <= 'ͯ') continue;   // علامات مركّبة (مثل نقطة i التركية)
+117:             else if ((ch >= 'À' && ch <= 'ɏ') || (ch >= 'Ḁ' && ch <= 'ỿ')) {
+118:                 sb.append(foldLatin(ch));
+119:                 continue;
+120:             }
+121:             sb.append(ch);
+122:         }
+123:         return sb.toString();
+124:     }
+125: 
+126:     private static String foldLatin(char ch) {
+127:         switch (ch) {
+128:             case 'ı': return "i";
+129:             case 'ß': return "ss";
+130:             case 'æ': return "ae";
+131:             case 'œ': return "oe";
+132:             case 'ø': return "o";
+133:             case 'đ': return "d";
+134:             case 'ł': return "l";
+135:             case 'þ': return "th";
+136:             default:
+137:                 String d = java.text.Normalizer.normalize(String.valueOf(ch), java.text.Normalizer.Form.NFD);
+138:                 StringBuilder o = new StringBuilder();
+139:                 for (char x : d.toCharArray()) if (Character.getType(x) != Character.NON_SPACING_MARK) o.append(x);
+140:                 return o.length() == 0 ? String.valueOf(ch) : o.toString();
+141:         }
+142:     }
+143: 
+144:     private static List<String> words(String s) {
+145:         List<String> out = new ArrayList<>();
+146:         for (String w : s.split("[\\s،,:;؛\\-–—/\\\\|*()\\[\\]\"'«»!؟?.]+")) if (!w.isEmpty()) out.add(w);
+147:         return out;
+148:     }
+149: 
+150:     private static boolean hasDigit(String s) {
+151:         for (char ch : s.toCharArray()) if (ch >= '0' && ch <= '9') return true;
+152:         return false;
+153:     }
+154: 
+155:     /** هل تحتوي العبارة (مطبّعة) على الكلمة/العبارة كاملة؟ */
+156:     static boolean hasPhrase(String normLine, String phrase) {
+157:         String hay = " " + String.join(" ", words(normLine)) + " ";
+158:         String nee = " " + String.join(" ", words(phrase)) + " ";
+159:         return hay.contains(nee);
+160:     }
+161: 
+162:     private static boolean startsWithPhrase(List<String> w, List<String> p) {
+163:         if (p.isEmpty() || w.size() < p.size()) return false;
+164:         for (int i = 0; i < p.size(); i++) if (!w.get(i).equals(p.get(i))) return false;
+165:         return true;
+166:     }
+167: 
+168:     // ===================================================================================
+169:     // القوائم
+170:     // ===================================================================================
+171: 
+172:     private static Set<String> set(String... a) {
+173:         Set<String> s = new HashSet<>();
+174:         for (String x : a) s.add(norm(x));
+175:         return s;
+176:     }
+177: 
+178:     private static List<String> list(String... a) {
+179:         List<String> s = new ArrayList<>();
+180:         for (String x : a) s.add(norm(x));
+181:         return s;
+182:     }
+183: 
+184:     static final List<String> GREETINGS = list("السلام عليكم", "سلام عليكم", "السلام عليكم ورحمة الله", "مرحبا", "مرحباً", "صباح الخير", "مساء الخير",
+185:             "اهلا", "أهلا وسهلا", "تحية طيبة", "هلا", "يا هلا", "صباح النور", "مساء النور", "كيفكم", "كيف الحال",
+186:             "hi", "hello", "hey", "good morning", "good evening", "good afternoon", "dear", "salam", "salaam", "salam alaikum", "salamu alaikum",

@@ -1,0 +1,75 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import javax.swing.*;
+6: 
+7: /**
+8:  * 10.4: «إعادة تعيين البرنامج» على الماك والويندوز: يصبح البرنامج على هذا الجهاز كأنه مثبت للتو.
+9:  * خياران: حذف البيانات مع إبقاء الرخصة، أو حذف كل شيء. للمدير (أو صاحب الجهاز بلا نظام مستخدمين)، برمزه وبكتابة «حذف».
+10:  * الأجهزة الأخرى في المزامنة لا تتأثر: يرسل هذا الجهاز ما لم يُرسل ثم يعلن خروجه.
+11:  */
+12: final class DeskReset {
+13:     private DeskReset() {}
+14: 
+15:     static boolean allowed(Db db) { return !db.usersEnabled() || Auth.isAdmin(SmartApp.currentUser); }
+16: 
+17:     static void start(App app, Component parent) {
+18:         Db db = app.db;
+19:         if (!allowed(db)) {
+20:             Ui.info(parent, "إعادة تعيين البرنامج", "لمدير المكتب فقط.");
+21:             return;
+22:         }
+23:         int k = Ui.choose(parent, "إعادة تعيين البرنامج", "ماذا تريد أن تحذف من هذا الجهاز؟",
+24:                 new String[]{"حذف البيانات وإبقاء الرخصة", "حذف كل شيء بما فيه الرخصة", "إلغاء"});
+25:         if (k != 0 && k != 1) return;
+26:         boolean keep = k == 0;
+27:         boolean sync = SyncEngine.enabled(db);
+28:         JPanel c = Ui.column();
+29:         c.add(Ui.para("يُحذف من هذا الجهاز نهائيًا:\n• كل الحركات والمكاتب والأرصدة والصناديق والعملاء والصور\n• المستخدمون والإعدادات والتصميم\n• النسخ الاحتياطية الداخلية"
+30:                 + (keep ? "" : "\n• الرخصة (تحتاج إدخال رمز التفعيل من جديد)")
+31:                 + (sync ? "\n\nالمزامنة: يرسل الجهاز ما لم يُرسل ثم يخرج منها. بيانات الأجهزة الأخرى لا تتأثر." : "")
+32:                 + "\n\nالنسخ الاحتياطية التي حفظتها في مجلد من اختيارك تبقى.", 14, Ui.ink, 460));
+33:         c.add(Ui.gap(8));
+34:         c.add(Ui.flow(Ui.ghost("نسخة احتياطية أولًا…", e -> app.go("backup"))));
+35:         JPasswordField pin = Ui.password();
+36:         if (db.usersEnabled()) c.add(Ui.labeled("رمز المدير", pin));
+37:         Ui.Field word = Ui.field(AppReset.CONFIRM_WORD);
+38:         c.add(Ui.labeled("للتأكيد اكتب: " + AppReset.CONFIRM_WORD, word));
+39:         if (!Ui.form(parent, keep ? "حذف البيانات (تبقى الرخصة)" : "حذف كل شيء", Ui.rtl(c), "حذف نهائي")) return;
+40:         if (!AppReset.CONFIRM_WORD.equals(word.val().trim())) {
+41:             Ui.info(parent, "إعادة تعيين البرنامج", "لم تُكتب كلمة «" + AppReset.CONFIRM_WORD + "»؛ لم يُحذف شيء.");
+42:             return;
+43:         }
+44:         if (db.usersEnabled() && !db.verifyPin(SmartApp.currentUser.id, new String(pin.getPassword()))) {
+45:             Ui.info(parent, "إعادة تعيين البرنامج", "رمز المدير غير صحيح؛ لم يُحذف شيء.");
+46:             return;
+47:         }
+48:         db.audit("APP_RESET", "app", 0, keep ? "إعادة تعيين: حذف البيانات وإبقاء الرخصة" : "إعادة تعيين: حذف كل شيء");
+49:         Ui.busy(parent, "جارٍ إعادة تعيين البرنامج…", p -> {
+50:             if (SyncEngine.enabled(db)) {
+51:                 SyncFolder f = SyncView.folder(db);
+52:                 if (f != null) {
+53:                     try {
+54:                         new SyncEngine(db, f).retire();
+55:                     } catch (Throwable ignored) {
+56:                         // يظهر للأجهزة الأخرى غائبًا فيُزال من هناك
+57:                     }
+58:                 }
+59:             }
+60:             AppReset.wipe(app.ctx, db, keep);
+61:             if (!keep) {
+62:                 try {
+63:                     SecretStore.delete(DeskDriveAuth.REFRESH);
+64:                 } catch (Throwable ignored) {
+65:                     // لا شيء محفوظ
+66:                 }
+67:             }
+68:             Db fresh = new Db(app.ctx);
+69:             fresh.getWritableDatabase();
+70:             return fresh;
+71:         }, fresh -> {
+72:             Main.restart(app, fresh, "أُعيد تعيين البرنامج: يبدأ كأنه مثبت للتو");
+73:         });
+74:     }
+75: }

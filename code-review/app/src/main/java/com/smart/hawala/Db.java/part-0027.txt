@@ -1,0 +1,163 @@
+3945:         u.nick = c.getColumnCount() > 6 && !c.isNull(6) ? c.getString(6) : "";
+3946:         return u;
+3947:     }
+3948: 
+3949:     // ===================================================================================
+3950:     // 10.17: «الاسم الظاهر» — المحاسبون يرون الاسم الذي اختاره زميلهم لا اسم دخوله؛ المدير يرى الاسم الحقيقي
+3951:     // ===================================================================================
+3952: 
+3953:     private volatile Map<String, String> nickCache;
+3954: 
+3955:     void invalidateNicks() { nickCache = null; }
+3956: 
+3957:     private Map<String, String> nicks() {
+3958:         Map<String, String> m = nickCache;
+3959:         if (m != null) return m;
+3960:         m = new HashMap<>();
+3961:         try (Cursor c = getReadableDatabase().rawQuery("SELECT name,nick FROM users WHERE nick IS NOT NULL AND nick<>''", null)) {
+3962:             while (c.moveToNext()) m.put(c.getString(0), c.getString(1));
+3963:         } catch (Exception ignored) {
+3964:             // قاعدة قبل الترحيل: بلا أسماء ظاهرة
+3965:         }
+3966:         nickCache = m;
+3967:         return m;
+3968:     }
+3969: 
+3970:     /**
+3971:      * اسم مستخدم كما يُعرض للمستخدم الحالي: المدير (وبلا نظام مستخدمين، وعمليات النظام) يرى اسم الدخول الحقيقي، وصاحب
+3972:      * الاسم يرى اسمه، وغيرهما يرى «الاسم الظاهر» إن اختير. يُطبَّق عند قراءة الحركات والتحققات والمطابقات وحركات الصندوق،
+3973:      * فيشمل كل الشاشات والتقارير والتصدير.
+3974:      */
+3975:     public String shown(String real) {
+3976:         if (real == null || real.isEmpty()) return "";
+3977:         Map<String, String> m = nicks();
+3978:         if (m.isEmpty() || isSystem()) return real;
+3979:         Model.User me = SmartApp.currentUser;
+3980:         if (me == null || Auth.isAdmin(me) || real.equals(me.name)) return real;
+3981:         String n = m.get(real);
+3982:         return n == null || n.isEmpty() ? real : n;
+3983:     }
+3984: 
+3985:     /** الاسم الظاهر لمستخدم: يضعه صاحبه لنفسه، أو من يملك إدارة المستخدمين (وحساب المدير يعدّله مدير). فارغ = يُلغى. */
+3986:     public void setNick(long id, String nick) {
+3987:         Model.User target = user(id), me = SmartApp.currentUser;
+3988:         if (target == null) throw new IllegalArgumentException("المستخدم غير موجود");
+3989:         if (me == null || me.id != id) {
+3990:             require(Auth.Perm.USERS);
+3991:             if (Auth.isAdmin(target)) requireAdmin("حساب المدير يعدّله مدير فقط.");
+3992:         }
+3993:         String n = nick == null ? "" : nick.trim();
+3994:         if (n.length() > 30) throw new IllegalArgumentException("الاسم الظاهر طويل (30 حرفًا على الأكثر)");
+3995:         if (!n.isEmpty()) for (Model.User u : users(false)) {
+3996:             if (u.id == id) continue;
+3997:             if (Sanity.norm(u.name).equals(Sanity.norm(n)) || Sanity.norm(Model.nz(u.nick)).equals(Sanity.norm(n)))
+3998:                 throw new IllegalArgumentException("هذا الاسم يستعمله مستخدم آخر. اختر اسمًا ظاهرًا مختلفًا.");
+3999:         }
+4000:         SQLiteDatabase d = getWritableDatabase();
+4001:         d.beginTransaction();
+4002:         try {
+4003:             ContentValues v = new ContentValues();
+4004:             if (n.isEmpty()) v.putNull("nick");
+4005:             else v.put("nick", n);
+4006:             d.update("users", v, "id=?", new String[]{"" + id});
+4007:             audit(d, "USER_NICK", "users", id, n.isEmpty() ? "أُلغي الاسم الظاهر" : "الاسم الظاهر: " + n);
+4008:             d.setTransactionSuccessful();
+4009:         } finally {
+4010:             d.endTransaction();
+4011:         }
+4012:         invalidateNicks();
+4013:         if (me != null && me.id == id) me.nick = n;
+4014:     }
+4015: 
+4016:     // ===================================================================================
+4017:     // 10.17: رسائل المدير إلى المحاسبين (للكل أو لواحد): تنتقل بالمزامنة وتظهر إشعارًا وفي الرئيسية حتى «قرأتها»
+4018:     // ===================================================================================
+4019: 
+4020:     public static final class AdminMsg {
+4021:         public String uuid, from = "", body = "", toName = "";
+4022:         public long at;
+4023:         public Long toUser, fromUser;
+4024:         public boolean deleted;
+4025:     }
+4026: 
+4027:     private AdminMsg readMsg(Cursor c) {
+4028:         AdminMsg m = new AdminMsg();
+4029:         m.uuid = c.getString(0);
+4030:         m.at = c.getLong(1);
+4031:         m.fromUser = c.isNull(2) ? null : c.getLong(2);
+4032:         m.from = Model.nz(Crypto.dec(c.getString(3)));
+4033:         m.toUser = c.isNull(4) ? null : c.getLong(4);
+4034:         m.body = Model.nz(Crypto.dec(c.getString(5)));
+4035:         m.deleted = c.getInt(6) == 1;
+4036:         return m;
+4037:     }
+4038: 
+4039:     /** يرسل المدير رسالة: toUser = null للكل، أو رقم محاسب واحد. */
+4040:     public String sendAdminMsg(Long toUser, String body) {
+4041:         if (!usersEnabled()) throw new IllegalStateException("الرسائل تعمل مع نظام المستخدمين. فعّله من «المستخدمون» أولًا.");
+4042:         requireAdmin("إرسال رسالة للمحاسبين للمدير وحده.");
+4043:         String b = body == null ? "" : body.trim();
+4044:         if (b.isEmpty()) throw new IllegalArgumentException("اكتب نص الرسالة");
+4045:         if (b.length() > 500) throw new IllegalArgumentException("الرسالة طويلة (500 حرف على الأكثر)");
+4046:         if (toUser != null) {
+4047:             Model.User t = user(toUser);
+4048:             if (t == null || t.deleted || !t.active) throw new IllegalArgumentException("المستخدم غير موجود أو موقوف");
+4049:         }
+4050:         Model.User me = SmartApp.currentUser;
+4051:         String uuid = java.util.UUID.randomUUID().toString();
+4052:         SQLiteDatabase d = getWritableDatabase();
+4053:         d.beginTransaction();
+4054:         try {
+4055:             ContentValues v = new ContentValues();
+4056:             v.put("uuid", uuid);
+4057:             v.put("created_at", Clock.now());
+4058:             if (me != null) v.put("from_user", me.id);
+4059:             v.put("from_name", Crypto.enc(me == null ? "المدير" : me.name));
+4060:             if (toUser != null) v.put("to_user", toUser);
+4061:             v.put("body", Crypto.enc(b));
+4062:             v.put("deleted", 0);
+4063:             d.insertOrThrow("admin_msgs", null, v);
+4064:             audit(d, "ADMIN_MSG", "admin_msgs", 0, (toUser == null ? "للكل" : "إلى " + user(toUser).name) + ": " + (b.length() > 80 ? b.substring(0, 80) + "…" : b));
+4065:             d.setTransactionSuccessful();
+4066:         } finally {
+4067:             d.endTransaction();
+4068:         }
+4069:         return uuid;
+4070:     }
+4071: 
+4072:     /** رسائل لم يقرأها المستخدم الحالي بعد (له أو للكل، وليست منه). */
+4073:     public List<AdminMsg> unreadAdminMsgs() { return unreadAdminMsgs(SmartApp.currentUser); }
+4074: 
+4075:     public List<AdminMsg> unreadAdminMsgs(Model.User me) {
+4076:         List<AdminMsg> out = new ArrayList<>();
+4077:         if (me == null || !usersEnabled()) return out;
+4078:         try (Cursor c = getReadableDatabase().rawQuery("SELECT m.uuid,m.created_at,m.from_user,m.from_name,m.to_user,m.body,m.deleted FROM admin_msgs m "
+4079:                 + "WHERE m.deleted=0 AND (m.to_user IS NULL OR m.to_user=?) AND (m.from_user IS NULL OR m.from_user<>?) "
+4080:                 + "AND NOT EXISTS(SELECT 1 FROM admin_msg_state s WHERE s.uuid=m.uuid AND s.user_id=? AND s.read_at IS NOT NULL) ORDER BY m.created_at",
+4081:                 new String[]{"" + me.id, "" + me.id, "" + me.id})) {
+4082:             while (c.moveToNext()) out.add(readMsg(c));
+4083:         }
+4084:         return out;
+4085:     }
+4086: 
+4087:     /** غير المقروءة التي لم يُشعَر بها هذا المستخدم على هذا الجهاز بعد؛ تُعلَّم «أُشعر بها» فلا يتكرر الإشعار. */
+4088:     public List<AdminMsg> adminMsgsToNotify() { return adminMsgsToNotify(SmartApp.currentUser); }
+4089: 
+4090:     /** 11.5: لمستخدم محدد (في الخلفية: آخر من دخل على هذا الجهاز). */
+4091:     public List<AdminMsg> adminMsgsToNotify(Model.User me) {
+4092:         List<AdminMsg> out = new ArrayList<>();
+4093:         if (me == null) return out;
+4094:         SQLiteDatabase d = getWritableDatabase();
+4095:         for (AdminMsg m : unreadAdminMsgs(me)) {
+4096:             try (Cursor c = d.rawQuery("SELECT notified FROM admin_msg_state WHERE uuid=? AND user_id=?", new String[]{m.uuid, "" + me.id})) {
+4097:                 if (c.moveToFirst() && c.getInt(0) == 1) continue;
+4098:             }
+4099:             d.execSQL("INSERT OR REPLACE INTO admin_msg_state(uuid,user_id,notified,read_at) VALUES(?,?,1,NULL)", new Object[]{m.uuid, me.id});
+4100:             out.add(m);
+4101:         }
+4102:         return out;
+4103:     }
+4104: 
+4105:     public void markAdminMsgRead(String uuid) {
+4106:         Model.User me = SmartApp.currentUser;
+4107:         if (me == null) return;

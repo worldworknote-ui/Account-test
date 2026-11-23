@@ -1,0 +1,131 @@
+959:             // 10.5 (AUDIT-027): يُحفظ عبر changeOwnPin الذي يتحقق من الرمز الحالي في طبقة البيانات، بلا صلاحية «المستخدمون»
+960:             newPinDialog(me, "الرمز الجديد", true, null, old.getText().toString());
+961:         }));
+962:         dlg.show();
+963:     }
+964: 
+965:     /** 10.8: حذف حساب مستخدم: يُغلق ويُزال من المكاتب، وكل ما سجّله يبقى كما هو باسمه «(حساب محذوف)». */
+966:     private void deleteDialog(final Model.User u) {
+967:         final EditText name = a.field("اكتب «" + u.name + "» للتأكيد");
+968:         LinearLayout l = new LinearLayout(a);
+969:         l.setOrientation(LinearLayout.VERTICAL);
+970:         l.setPadding(a.dp(18), a.dp(6), a.dp(18), 0);
+971:         l.addView(a.text("يُحذف حساب «" + u.name + "» نهائيًا: لا يستطيع الدخول بعد الآن من أي جهاز، ويُزال من فرز المكاتب.\n\n"
+972:                 + "لا يُحذف شيء مما سجّله: حركاته وتحققاته ومطابقاته تبقى كما هي، والأرصدة لا تتغير، ويظهر اسمه عليها «(حساب محذوف)».", 14, a.ink, false));
+973:         l.addView(name, a.lp(-1, 50, 6));
+974:         final AlertDialog dlg = new AlertDialog.Builder(a).setTitle("حذف حساب " + u.name).setView(l).setPositiveButton("حذف الحساب", null).setNegativeButton("إلغاء", null).create();
+975:         dlg.setOnShowListener(d -> dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+976:             if (!name.getText().toString().trim().equals(u.name.trim())) {
+977:                 name.setError("الاسم غير مطابق");
+978:                 return;
+979:             }
+980:             try {
+981:                 a.db.deleteUser(u.id);
+982:                 dlg.dismiss();
+983:                 a.toast("حُذف حساب " + u.name + " — بقيت حركاته كما هي");
+984:                 showManager();
+985:             } catch (Exception e) {
+986:                 a.error(e);
+987:             }
+988:         }));
+989:         dlg.show();
+990:     }
+991: 
+992:     /**
+993:      * 10.5 (§7): مكاتب المحاسب. 10.7: المختارة أولًا، وبحث، وتنبيه للمكتب المشترك.
+994:      * 10.8: لكل مكتب دور: «يسجّل» حركاته ومطابقاته، أو «يتحقق» منها.
+995:      */
+996:     private void officesDialog(final Model.User u) {
+997:         final List<Model.Office> all = a.db.offices();
+998:         final java.util.Map<Long, String> roles = new java.util.LinkedHashMap<>(a.db.officeRoles(u.id));
+999:         final java.util.Map<Long, List<String>> others = a.db.officeHolders(u.id);
+1000:         final boolean canCheck = Auth.can(u, Auth.Perm.VERIFY);
+1001:         LinearLayout box = new LinearLayout(a);
+1002:         box.setOrientation(LinearLayout.VERTICAL);
+1003:         box.setPadding(a.dp(16), a.dp(6), a.dp(16), 0);
+1004:         box.addView(a.text("«يسجّل»: يُدخل حركات المكتب ومطابقاته ويراه في «مكاتبي». «يتحقق»: يراجع ما سجّله غيره ويؤكد سلامته. لا يجمع الدورين في مكتب واحد.", 13, a.muted, false));
+1005:         final EditText q = a.field("ابحث عن مكتب");
+1006:         box.addView(q, a.lp(-1, 48, 4));
+1007:         final TextView count = a.text("", 13, a.primaryInk, true);
+1008:         box.addView(count);
+1009:         final LinearLayout list = new LinearLayout(a);
+1010:         list.setOrientation(LinearLayout.VERTICAL);
+1011:         android.widget.ScrollView sv = new android.widget.ScrollView(a);
+1012:         sv.addView(list);
+1013:         box.addView(sv, new LinearLayout.LayoutParams(-1, a.dp(400)));
+1014:         final int gray = Color.rgb(120, 120, 120);
+1015:         final Runnable[] render = new Runnable[1];
+1016:         render[0] = () -> {
+1017:             list.removeAllViews();
+1018:             String f = OwnerReports.norm(q.getText().toString());
+1019:             // المختارة أولًا (آخر اختيار في الأعلى)، ثم الباقي
+1020:             List<Model.Office> order = new ArrayList<>();
+1021:             for (Long id : roles.keySet()) for (Model.Office o : all) if (o.id == id) order.add(o);
+1022:             for (Model.Office o : all) if (!roles.containsKey(o.id)) order.add(o);
+1023:             int own = 0, chk = 0;
+1024:             for (String r : roles.values()) if (Db.ROLE_CHECK.equals(r)) chk++;
+1025:             else own++;
+1026:             for (final Model.Office o : order) {
+1027:                 if (!f.isEmpty() && !OwnerReports.norm(o.name).contains(f)) continue;
+1028:                 String role = roles.get(o.id);
+1029:                 LinearLayout row = new LinearLayout(a);
+1030:                 row.setOrientation(LinearLayout.VERTICAL);
+1031:                 row.setPadding(a.dp(6), a.dp(4), a.dp(6), a.dp(4));
+1032:                 if (role != null) row.setBackground(a.round(a.primarySoft, a.primarySoft, 10));
+1033:                 row.addView(a.text(o.name + (o.active ? "" : " (موقوف)"), 15, a.ink, role != null));
+1034:                 final Ui.Seg s = a.new Seg(new String[]{"—", "يسجّل", "يتحقق"}, new int[]{gray, a.green, a.primary},
+1035:                         role == null ? 0 : Db.ROLE_CHECK.equals(role) ? 2 : 1, false);
+1036:                 for (android.widget.Button b : s.buttons) b.setTextSize(13);
+1037:                 s.listener = i -> {
+1038:                     if (i == 2 && !canCheck) {
+1039:                         a.toast("«" + u.name + "» ليست لديه صلاحية «التحقق من الحركات»");
+1040:                         list.post(render[0]);
+1041:                         return;
+1042:                     }
+1043:                     if (i == 0) roles.remove(o.id);
+1044:                     else {
+1045:                         // المختار يرتفع إلى أول القائمة
+1046:                         java.util.Map<Long, String> n = new java.util.LinkedHashMap<>();
+1047:                         n.put(o.id, i == 2 ? Db.ROLE_CHECK : Db.ROLE_OWN);
+1048:                         for (java.util.Map.Entry<Long, String> e : roles.entrySet()) if (e.getKey() != o.id) n.put(e.getKey(), e.getValue());
+1049:                         roles.clear();
+1050:                         roles.putAll(n);
+1051:                         List<String> h = others.get(o.id);
+1052:                         if (i == 1 && h != null && !h.isEmpty()) a.toast("تنبيه: «" + o.name + "» يسجّله " + Model.join(h, "، ") + " أيضًا");
+1053:                     }
+1054:                     list.post(render[0]);
+1055:                 };
+1056:                 row.addView(s.view);
+1057:                 List<String> h = others.get(o.id);
+1058:                 if (h != null && !h.isEmpty())
+1059:                     row.addView(a.text("⚠ يسجّله أيضًا: " + Model.join(h, "، "), 12, Db.ROLE_OWN.equals(role) ? a.red : a.warnInk, Db.ROLE_OWN.equals(role)));
+1060:                 list.addView(row, a.lp(-1, -2, 2));
+1061:             }
+1062:             count.setText("يسجّل " + own + " مكتب • يتحقق من " + chk);
+1063:         };
+1064:         q.addTextChangedListener(Ui.watcher(render[0]));
+1065:         render[0].run();
+1066:         new AlertDialog.Builder(a).setTitle("مكاتب " + u.name).setView(box).setPositiveButton("حفظ", (d, w) -> {
+1067:             List<String> shared = new ArrayList<>();
+1068:             for (java.util.Map.Entry<Long, String> e : roles.entrySet()) {
+1069:                 if (!Db.ROLE_OWN.equals(e.getValue())) continue;
+1070:                 List<String> h = others.get(e.getKey());
+1071:                 Model.Office o = a.db.office(e.getKey());
+1072:                 if (h != null && !h.isEmpty() && o != null) shared.add("• «" + o.name + "» يسجّله أيضًا: " + Model.join(h, "، "));
+1073:             }
+1074:             final Runnable save = () -> {
+1075:                 try {
+1076:                     a.db.setUserOffices(u.id, new java.util.LinkedHashMap<>(roles));
+1077:                     a.toast("حُفظت مكاتب " + u.name);
+1078:                     showManager();
+1079:                 } catch (Exception e) {
+1080:                     a.error(e);
+1081:                 }
+1082:             };
+1083:             if (shared.isEmpty()) save.run();
+1084:             else new AlertDialog.Builder(a).setTitle("مكاتب يسجّلها محاسب آخر أيضًا")
+1085:                     .setMessage(Model.join(shared, "\n") + "\n\nيجوز ذلك، لكن الأوضح أن يسجّل كل مكتبَ محاسبٌ واحد ويتحقق منه غيره. تأكد أن هذا مقصود.")
+1086:                     .setPositiveButton("حفظ رغم ذلك", (x, y) -> save.run()).setNegativeButton("رجوع", null).show();
+1087:         }).setNegativeButton("إلغاء", null).show();
+1088:     }
+1089: }

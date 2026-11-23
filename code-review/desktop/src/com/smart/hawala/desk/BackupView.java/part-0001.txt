@@ -1,0 +1,129 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.io.File;
+6: import java.util.ArrayList;
+7: import java.util.Arrays;
+8: import java.util.LinkedHashSet;
+9: import java.util.Map;
+10: import java.util.Set;
+11: import java.util.List;
+12: import javax.swing.*;
+13: 
+14: /**
+15:  * النسخ الاحتياطي على الماك — الصيغة نفسها (.sba) التي في الهاتف في الاتجاهين:
+16:  * نسخة الهاتف تُستعاد هنا، ونسخة الماك تُستعاد في الهاتف (استعادة نسخة من ملف). كل نسخة تُفك كاملة للتحقق قبل اعتمادها.
+17:  */
+18: final class BackupView extends View {
+19:     BackupView(App app) {
+20:         super(app, "النسخ الاحتياطي");
+21:     }
+22: 
+23:     @Override void refresh() {
+24:         clear();
+25:         int w = textWidth();
+26:         action(Ui.primary("نسخة احتياطية الآن", e -> create()));
+27:         action(Ui.ghost("استعادة من ملف…", e -> restoreFromFile()));
+28:         if (can(Auth.Perm.RESTORE)) action(Ui.ghost("مساعد النقل من برنامج آخر…", e -> migrationWizard()));
+29: 
+30:         Ui.Card info = Ui.tinted(Ui.primarySoft, null);
+31:         info.add(Ui.label("نسخة واحدة تعمل على الهاتف والكمبيوتر", 16, Ui.primaryInk, true));
+32:         info.add(Ui.para("الملف \u200E.sba الذي تنشئه هنا يُستعاد في تطبيق الهاتف (النسخ الاحتياطي ← استعادة نسخة من ملف)، ونسخة الهاتف تُستعاد هنا. "
+33:                 + "الحقول الحساسة تُفك داخل الملف المشفّر بكلمة مرورك، وتُشفَّر من جديد بمفتاح الجهاز الذي يستعيدها. احفظ كلمة المرور خارج الجهاز.", 13.5f, Ui.ink, w));
+34:         add(info);
+35:         space(12);
+36: 
+37:         long last = db.settingLong("last_backup", 0);
+38:         Ui.Card st = Ui.card();
+39:         st.add(Ui.label("آخر نسخة: " + (last == 0 ? "لا توجد بعد" : Model.date(last)) + ("verified".equals(db.setting("last_backup_status", "")) ? " — متحقَّق منها ✓" : ""), 15, last == 0 ? Ui.red : Ui.ink, true));
+40:         List<Db.BackupRecord> hist = db.backupHistory(8);
+41:         for (Db.BackupRecord r : hist)
+42:             st.add(Ui.label(Model.date(r.createdAt) + " · " + r.status + " · " + BackupManager.size(r.size) + (r.tx > 0 ? " · " + r.tx + " حركة" : "") + (r.path == null || r.path.isEmpty() ? "" : " · " + new File(r.path).getName()),
+43:                     12.5f, Ui.muted, false));
+44:         add(st);
+45:         space(12);
+46: 
+47:         // النسخ التلقائي
+48:         Ui.Card ab = Ui.card();
+49:         ab.add(Ui.heading("النسخ التلقائي إلى مجلد"));
+50:         ab.add(Ui.para("اختر مجلدًا في iCloud Drive أو Dropbox أو قرصًا خارجيًا: تصير كل نسخة تلقائية نسخة سحابية أيضًا. "
+51:                 + (License.current.pro ? "النسخة الكاملة: حتى كل 6 ساعات أو بعد كل 25 حركة." : "النسخة المجانية: مرة يوميًا على الأكثر."), 13, Ui.muted, w));
+52:         ab.add(Ui.gap(6));
+53:         String dir = db.setting("desk_backup_dir", "");
+54:         JCheckBox on = Ui.check("تشغيل النسخ التلقائي", "1".equals(db.setting("auto_backup_on", "0")));
+55:         on.addActionListener(e -> {
+56:             if (on.isSelected() && !DeskBackup.configured(db)) {
+57:                 on.setSelected(false);
+58:                 Ui.toast("اختر المجلد وكلمة المرور أولًا");
+59:                 return;
+60:             }
+61:             db.setSetting("auto_backup_on", on.isSelected() ? "1" : "0");
+62:             refresh();
+63:         });
+64:         ab.add(on);
+65:         ab.add(Ui.label("المجلد: " + (dir.isEmpty() ? "لم يُختر" : dir), 13.5f, dir.isEmpty() ? Ui.red : Ui.ink, false));
+66:         ab.add(Ui.label("كلمة المرور: " + (db.setting("auto_backup_pw", "").isEmpty() ? "لم تُحدَّد" : "محفوظة (مشفّرة بمفتاح هذا الجهاز)"), 13.5f, Ui.ink, false));
+67:         JComboBox<String> every = Ui.combo(new String[]{"كل 6 ساعات", "يوميًا", "كل 3 أيام", "أسبوعيًا"});
+68:         long hours = DeskBackup.intervalHours(db);
+69:         for (int i = 0; i < BackupPolicy.HOURS.length; i++) if (BackupPolicy.HOURS[i] == hours) every.setSelectedIndex(i);
+70:         every.addActionListener(e -> {
+71:             long h = BackupPolicy.HOURS[every.getSelectedIndex()];
+72:             if (h < License.current.autoBackupMinHours()) {
+73:                 Ui.toast("كل 6 ساعات في النسخة الكاملة؛ المجانية يوميًا على الأكثر");
+74:                 h = License.current.autoBackupMinHours();
+75:             }
+76:             db.setSettingQuiet("auto_backup_hours", "" + h);
+77:             refresh();
+78:         });
+79:         every.setMaximumSize(new Dimension(220, 38));
+80:         JCheckBox perTx = Ui.check("ونسخة بعد كل 25 حركة (النسخة الكاملة)", DeskBackup.everyTx(db) > 0);
+81:         perTx.setEnabled(License.current.autoBackupEveryTx() > 0);
+82:         perTx.addActionListener(e -> db.setSettingQuiet("auto_backup_every_tx", perTx.isSelected() ? "25" : "0"));
+83:         JCheckBox readable = Ui.check("نسخة مقروءة شهرية (Excel غير مشفّر بالأرصدة وحركات الشهر الماضي)", "1".equals(db.setting("readable_export", "0")));
+84:         readable.addActionListener(e -> db.setSettingQuiet("readable_export", readable.isSelected() ? "1" : "0"));
+85:         ab.add(Ui.row(Ui.label("التكرار", 13, Ui.muted, true), every));
+86:         ab.add(perTx);
+87:         ab.add(readable);
+88:         String err = db.setting("auto_backup_error", "");
+89:         if (!err.isEmpty()) ab.add(Ui.para("! " + err, 13, Ui.red, w));
+90:         long la = db.settingLong("last_auto_backup", 0);
+91:         if (la > 0) ab.add(Ui.label("آخر نسخة تلقائية: " + Model.date(la), 13, Ui.muted, false));
+92:         ab.add(Ui.gap(6));
+93:         ab.add(Ui.flow(Ui.ghost("اختيار المجلد…", e -> pickDir()), Ui.ghost("تعيين كلمة المرور…", e -> setAutoPw()),
+94:                 Ui.ghost("اختبار تذكّرها…", e -> testAutoPw()),
+95:                 Ui.ghost("نسيتها؟ عرضها (للمدير)…", e -> revealAutoPw()),
+96:                 Ui.ghost("نسخة تلقائية الآن", e -> Ui.busy(this, "جارٍ النسخ والتحقق…", p -> DeskBackup.runNow(app), r -> {
+97:                     Ui.toast("✓ " + r);
+98:                     refresh();
+99:                 })), Ui.ghost("فتح المجلد", e -> {
+100:                     try {
+101:                         if (!dir.isEmpty()) Desktop.getDesktop().open(new File(dir));
+102:                     } catch (Exception ex) {
+103:                         Ui.error(this, ex);
+104:                     }
+105:                 })));
+106:         add(ab);
+107:         space(12);
+108: 
+109:         // 10.14: رمز استرداد النسخ
+110:         Ui.Card rc = Ui.card();
+111:         rc.add(Ui.heading("رمز استرداد النسخ"));
+112:         boolean rcOn = BackupRecovery.on(db);
+113:         rc.add(Ui.para(rcOn ? "✓ مفعّل منذ " + Model.date(BackupRecovery.createdAt(db)) + ". كل نسخة من هذا الجهاز (التلقائية واليدوية) تُفتح بكلمة مرورها أو بهذا الرمز."
+114:                 : "غير مفعّل. إن نسيت كلمة مرور النسخ فلا تُفتح النسخ أبدًا. فعّل رمز الاسترداد واحفظه على ورقة بعيدًا عن الجهاز: يفتح كل نسخة تُؤخذ بعده.", 13.5f, rcOn ? Ui.green : Ui.ink, w));
+115:         if (isAdmin()) {
+116:             if (!rcOn) rc.add(Ui.flow(Ui.primary("إنشاء رمز استرداد النسخ…", e -> UsersView.confirmAdmin(this, db, "رمز استرداد النسخ", this::newBackupCode))));
+117:             else rc.add(Ui.flow(Ui.ghost("رمز جديد…", e -> {
+118:                 if (Ui.confirm(this, "رمز استرداد جديد", "النسخ القادمة تُفتح بالرمز الجديد. النسخ السابقة تبقى تُفتح بالرمز القديم وبكلمة مرورها، فاحتفظ بالقديم ما دمت تحتاج تلك النسخ.", "متابعة"))
+119:                     UsersView.confirmAdmin(this, db, "رمز استرداد النسخ", this::newBackupCode);
+120:             }), Ui.danger("إيقاف الرمز…", e -> {
+121:                 if (Ui.confirm(this, "إيقاف رمز استرداد النسخ", "النسخ القادمة تُفتح بكلمة مرورها وحدها. النسخ السابقة تبقى تُفتح بالرمز القديم.", "إيقاف"))
+122:                     UsersView.confirmAdmin(this, db, "إيقاف رمز استرداد النسخ", () -> {
+123:                         BackupRecovery.disable(db);
+124:                         Ui.toast("أُوقف رمز استرداد النسخ");
+125:                         refresh();
+126:                     });
+127:             })));
+128:         } else rc.add(Ui.label("للمدير وحده.", 12.5f, Ui.muted, false));
+129:         rc.add(Ui.para("الرمز لا يُحفظ على الجهاز ولا يظهر إلا مرة واحدة. النسخ المأخوذة بإصدار أقدم من 10.14، أو قبل تفعيل الرمز، تُفتح بكلمة مرورها فقط. "

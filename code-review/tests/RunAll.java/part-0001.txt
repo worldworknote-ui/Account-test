@@ -1,0 +1,57 @@
+1: import java.io.File;
+2: import java.nio.charset.StandardCharsets;
+3: import java.util.ArrayList;
+4: import java.util.Arrays;
+5: import java.util.List;
+6: import java.util.concurrent.TimeUnit;
+7: 
+8: /**
+9:  * يشغّل كل اختبارات *Test كلًّا في عملية مستقلة (بعضها ينهي نفسه بـ System.exit) ويفشل إن فشل واحد.
+10:  * RunAll &lt;مجلد المخرجات&gt; [مجلد البيانات: ملفات \u200e.sba وexpect.json وnode-tokens.json]
+11:  * الاختبارات التي تحتاج بيانات النقل تُتخطى إن لم يوجد مجلد البيانات (وتُذكر).
+12:  */
+13: public class RunAll {
+14:     public static void main(String[] a) throws Exception {
+15:         File out = new File(a.length > 0 ? a[0] : "build/pure-tests/out");
+16:         File data = a.length > 1 ? new File(a[1]) : null;
+17:         File dir = new File(RunAll.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+18:         String[] names = dir.list((d, n) -> n.endsWith("Test.class") && !n.contains("$"));
+19:         if (names == null || names.length == 0) throw new IllegalStateException("لا اختبارات في " + dir);
+20:         Arrays.sort(names);
+21:         String java = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
+22:         String cp = System.getProperty("java.class.path");
+23:         List<String> failed = new ArrayList<>();
+24:         int ran = 0;
+25:         for (String n : names) {
+26:             String t = n.substring(0, n.length() - 6);
+27:             List<String> cmd = new ArrayList<>(Arrays.asList(java, "-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-cp", cp, t));
+28:             if (t.equals("MigrationTest") || t.equals("MergePlanTest")) {
+29:                 if (data == null || !data.isDirectory()) {
+30:                     System.out.println("[" + t + "] تُخطّي: يحتاج مجلد بيانات النقل (tests/data)");
+31:                     continue;
+32:                 }
+33:                 cmd.add(data.getAbsolutePath());
+34:             } else if (t.equals("LicenseTest")) {
+35:                 if (data != null && data.isDirectory()) cmd.add(data.getAbsolutePath());
+36:             } else {
+37:                 File o = new File(out, t);
+38:                 o.mkdirs();
+39:                 cmd.add(o.getAbsolutePath());
+40:             }
+41:             Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
+42:             byte[] buf = p.getInputStream().readAllBytes();
+43:             boolean done = p.waitFor(10, TimeUnit.MINUTES);
+44:             String text = new String(buf, StandardCharsets.UTF_8);
+45:             boolean ok = done && p.exitValue() == 0 && !text.contains("  FAIL ") && !text.contains("FAILED");
+46:             ran++;
+47:             String[] lines = text.trim().split("\n");
+48:             System.out.println("[" + t + "] " + (ok ? "✓ " : "✗ ") + lines[lines.length - 1]);
+49:             if (!ok) {
+50:                 failed.add(t);
+51:                 for (String l : lines) if (l.contains("FAIL") || l.contains("Exception")) System.out.println("    " + l);
+52:             }
+53:         }
+54:         System.out.println(failed.isEmpty() ? "كل الاختبارات نجحت (" + ran + ")" : "فشل: " + failed);
+55:         if (!failed.isEmpty()) System.exit(1);
+56:     }
+57: }

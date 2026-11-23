@@ -1,0 +1,125 @@
+411:         html += "<span>" + esc(vals[k].text) + "</span><span>" + vals[k].n + '</span><select data-curmap="' + esc(k) + '"' + (!v ? ' style="border-color:#AD2E36"' : "") + ">" +
+412:           codeOptions(v, '<option value=""' + (!v ? " selected" : "") + '>— اختر —</option><option value="__skip"' + (v === "__skip" ? " selected" : "") + ">" + (stm ? "استبعاد هذه الكشوفات" : "استبعاد هذه الصفوف") + "</option>") + "</select>";
+413:       });
+414:       html += "</div>";
+415:     }
+416:     // أنواع الحركات
+417:     if (!stm && S.tx.enabled && S.tx.layout === "typed") {
+418:       var tvals = collect(S.tx, S.tx.sheets, S.tx.cols.type);
+419:       var tk = Object.keys(tvals);
+420:       tk.forEach(function (k) { if (!(k in S.typeMap)) S.typeMap[k] = C.guessDirection(tvals[k].text) || ""; });
+421:       html += '<h3>أنواع الحركات</h3><p class="hint">«لنا» = المكتب أصبح مدينًا لنا بهذا المبلغ. «علينا» = نحن أصبحنا مدينين للمكتب.</p><div class="mapgrid"><span class="h">في الملف</span><span class="h">عدد</span><span class="h">في التطبيق</span>';
+422:       tk.slice(0, 80).forEach(function (k) {
+423:         var v = S.typeMap[k];
+424:         html += "<span>" + esc(tvals[k].text) + "</span><span>" + tvals[k].n + '</span><select data-typemap="' + esc(k) + '"' + (!v ? ' style="border-color:#AD2E36"' : "") + ">" +
+425:           [["", "— اختر —"], ["D", "لنا (مدين)"], ["C", "علينا (دائن)"], ["X", "استبعاد هذه الصفوف"]].map(function (x) {
+426:             return '<option value="' + x[0] + '"' + (v === x[0] ? " selected" : "") + ">" + x[1] + "</option>"; }).join("") + "</select>";
+427:       });
+428:       html += "</div>";
+429:     }
+430:     // تعريف العملات المستخدمة
+431:     var used = {};
+432:     Object.keys(S.currencyMap).forEach(function (k) { var c = S.currencyMap[k]; if (c && c !== "__skip") used[c] = true; });
+433:     if (!stm && S.open.enabled && S.open.layout === "wide") S.open.wide.forEach(function (w) { if (w.code) used[w.code] = true; });
+434:     if (!stm && S.open.enabled && S.open.layout !== "wide" && S.open.currencyFrom === "fixed") used[S.open.fixedCurrency] = true;
+435:     if (!stm && S.tx.enabled && S.tx.currencyFrom === "fixed") used[S.tx.fixedCurrency] = true;
+436:     Object.keys(used).forEach(ensureDef);
+437:     var uc = Object.keys(used).sort();
+438:     if (uc.length) {
+439:       html += '<h3>العملات التي ستُنشأ في التطبيق</h3><p class="hint">عدد المنازل العشرية مهم: المبالغ بمنازل أكثر منه تُرفض بدل تقريبها بصمت.</p><div class="curdefs"><span class="h hint">الرمز</span><span class="h hint">الاسم</span><span class="h hint">منازل عشرية</span>';
+440:       uc.forEach(function (c) {
+441:         var d = S.currencyDefs[c];
+442:         html += '<b class="ltr">' + esc(c) + '</b><input type="text" data-curname="' + c + '" value="' + esc(d.name) + '"><select data-curdec="' + c + '">' +
+443:           [0, 1, 2, 3, 4, 5, 6].map(function (n) { return "<option" + (d.dec === n ? " selected" : "") + ">" + n + "</option>"; }).join("") + "</select>";
+444:       });
+445:       html += "</div>";
+446:     }
+447:     if (stm) html += '<h3>أسماء المكاتب</h3><p class="hint">اسم المكتب من سطر الحساب أعلى كل كشف (بدون رمزه؛ الرمز يُحفظ في ملاحظات المكتب). تظهر القائمة في الخطوة 4 ويمكن تعديلها هناك.</p>';
+448:     else html += '<h3>أسماء المكاتب</h3><label class="check"><input type="checkbox" id="mergeSimilar"' + (S.mergeSimilar ? " checked" : "") +
+449:       '> دمج الأسماء المتشابهة في الكتابة (أ/ا، ة/ه، ى/ي) كمكتب واحد</label><div id="officeNames" class="hint">تظهر قائمة المكاتب بعد التحليل في الخطوة 4، ويمكن تعديل أسمائها هناك.</div>';
+450:     box.innerHTML = html || '<p class="hint">لا توجد قيم تحتاج مطابقة.</p>';
+451:   }
+452: 
+453:   // ===================================================================================
+454:   // 4. التحليل والمراجعة
+455:   // ===================================================================================
+456: 
+457:   function config() {
+458:     var o = S.open, t = S.tx;
+459:     function cols(c) { var r = {}; Object.keys(c).forEach(function (k) { if (c[k] !== undefined && c[k] !== null && c[k] !== "" && !isNaN(c[k])) r[k] = +c[k]; }); return r; }
+460:     var oDate = null;
+461:     if (o.date) { var p = o.date.split("-"); oDate = new Date(+p[0], +p[1] - 1, +p[2], 12, 0, 0).getTime(); }
+462:     return {
+463:       now: Date.now(), reverse: S.reverse, mergeSimilar: S.mergeSimilar, currencyMap: S.currencyMap, typeMap: S.typeMap, currencies: S.currencyDefs,
+464:       rename: S.rename, sourceName: S.fileName, officeName: $("myOffice").value.trim(),
+465:       statements: { balancesOnly: S.st.balancesOnly, mergeCom: S.st.mergeCom && !S.st.balancesOnly, positiveIs: S.st.positiveIs },
+466:       openings: { enabled: o.enabled, headerRow: o.headerRow, layout: o.layout === "single" ? "signed" : o.layout, positiveIs: o.positiveIs, cols: cols(o.cols),
+467:         currencyFrom: o.currencyFrom, fixedCurrency: o.fixedCurrency, wide: o.wide.filter(function (w) { return w.code; }), date: oDate },
+468:       txs: { enabled: t.enabled, headerRow: t.headerRow, officeFrom: t.officeFrom, layout: t.layout, currencyFrom: t.currencyFrom, fixedCurrency: t.fixedCurrency,
+469:         positiveIs: t.positiveIs, dateOrder: t.dateOrder, fillDate: t.fillDate, feeDir: t.feeDir, balancePositiveIs: t.balancePositiveIs,
+470:         cols: cols(t.cols), descCols: t.descCols.filter(function (c) { return c !== undefined && c !== null && !isNaN(c); }) }
+471:     };
+472:   }
+473: 
+474:   function missingSetup() {
+475:     var m = [];
+476:     if (S.mode === "statements") {
+477:       if (!S.stmts.length) m.push("لا توجد كشوفات حساب. اختر الملفات في الخطوة 1.");
+478:       return m;
+479:     }
+480:     if (!S.open.enabled && !S.tx.enabled) m.push("حدّد في الخطوة 2 ما تريد نقله: الأرصدة أو الحركات أو كلاهما.");
+481:     if (S.open.enabled) {
+482:       var oc = S.open.cols;
+483:       if (oc.office === undefined) m.push("الأرصدة: اختر عمود اسم المكتب.");
+484:       if (S.open.layout === "single" && oc.amount === undefined) m.push("الأرصدة: اختر عمود الرصيد.");
+485:       if (S.open.layout === "split" && (oc.debit === undefined || oc.credit === undefined)) m.push("الأرصدة: اختر عمودي «لنا» و«علينا».");
+486:       if (S.open.layout === "wide" && !S.open.wide.some(function (w) { return w.code; })) m.push("الأرصدة: حدّد عملة عمود واحد على الأقل.");
+487:       if (S.open.layout !== "wide" && S.open.currencyFrom === "column" && oc.currency === undefined) m.push("الأرصدة: اختر عمود العملة أو «عملة واحدة».");
+488:     }
+489:     if (S.tx.enabled) {
+490:       var tc = S.tx.cols;
+491:       if (!S.tx.sheets.length) m.push("الحركات: حدّد ورقة واحدة على الأقل.");
+492:       if (S.tx.officeFrom === "column" && tc.office === undefined) m.push("الحركات: اختر عمود المكتب.");
+493:       if (tc.date === undefined) m.push("الحركات: اختر عمود التاريخ.");
+494:       if (S.tx.layout === "split" && (tc.debit === undefined || tc.credit === undefined)) m.push("الحركات: اختر عمودي «لنا» و«علينا».");
+495:       if (S.tx.layout !== "split" && tc.amount === undefined) m.push("الحركات: اختر عمود المبلغ.");
+496:       if (S.tx.layout === "typed" && tc.type === undefined) m.push("الحركات: اختر عمود النوع.");
+497:       if (S.tx.currencyFrom === "column" && tc.currency === undefined) m.push("الحركات: اختر عمود العملة أو «عملة واحدة».");
+498:     }
+499:     return m;
+500:   }
+501: 
+502:   function serialToDate(v) {
+503:     var p = XLSX.SSF.parse_date_code(v);
+504:     return p ? { y: p.y, m: p.m, d: p.d, H: p.H, M: p.M, S: p.S } : null;
+505:   }
+506: 
+507:   function rand(n) { return crypto.getRandomValues(new Uint8Array(n)); }
+508: 
+509:   function analyze() {
+510:     var miss = missingSetup();
+511:     var box = $("review");
+512:     S.result = null;
+513:     if (miss.length) {
+514:       box.innerHTML = '<div class="msg warn"><b>أكمل الإعداد:</b><ul>' + miss.map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") + "</ul></div>";
+515:       updateMake();
+516:       return;
+517:     }
+518:     var cfg = config();
+519:     var stm = S.mode === "statements";
+520:     var input = stm ? null : {
+521:       openingSheets: S.open.enabled ? [{ name: S.open.sheet, rows: S.rows[S.open.sheet] }] : [],
+522:       txSheets: S.tx.enabled ? S.tx.sheets.map(function (n) { return { name: n, rows: S.rows[n] }; }) : []
+523:     };
+524:     var model, T, rep;
+525:     try {
+526:       model = stm ? C.buildStatements(cfg, S.stmts, serialToDate) : C.build(cfg, input, serialToDate);
+527:       T = C.tables(model, cfg, rand);
+528:       rep = C.report(model, T, cfg);
+529:       var unbalanced = C.checkBalanced(T);
+530:       if (unbalanced.length) throw new Error("قيد غير متوازن — لا يجب أن يحدث، أرسل الملف للمطوّر");
+531:     } catch (e) {
+532:       box.innerHTML = '<div class="msg err">تعذر التحليل: ' + esc(e.message || e) + "</div>";
+533:       updateMake();
+534:       return;
+535:     }

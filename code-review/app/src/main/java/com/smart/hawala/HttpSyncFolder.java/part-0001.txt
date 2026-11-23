@@ -1,0 +1,194 @@
+1: package com.smart.hawala;
+2: 
+3: import java.io.ByteArrayOutputStream;
+4: import java.io.IOException;
+5: import java.io.InputStream;
+6: import java.io.OutputStream;
+7: import java.net.HttpURLConnection;
+8: import java.net.URL;
+9: import java.net.URLEncoder;
+10: import java.nio.charset.StandardCharsets;
+11: import java.util.ArrayList;
+12: import java.util.List;
+13: import org.json.JSONArray;
+14: import org.json.JSONObject;
+15: 
+16: /**
+17:  * 10.2: ناقل المزامنة عبر خادم خاص بك (sync-server/server.js): نفس ملفات المجلد المشترك المشفّرة، لكن عبر HTTPS مباشرة،
+18:  * فتصل التغييرات خلال ثوانٍ. الخادم لا يرى إلا ملفات مشفّرة بأسماء معتمة، ولا يكتب في خزنة إلا من يملك رمزًا مشتقًا
+19:  * من مفتاحها (يحفظ الخادم بصمة الرمز فقط).
+20:  *
+21:  * <p>رابط الانضمام: {@code https://الخادم/v1/vault/<رمز الخزنة>} — يحمل العنوان ورمز الخزنة معًا.
+22:  */
+23: public final class HttpSyncFolder implements SyncFolder {
+24:     public static final String VAULT_PATH = "/v1/vault/";
+25:     private final String base;
+26:     private final String serverKey;
+27:     private String vault;
+28:     private String token;
+29:     int timeoutMs = 30000;
+30: 
+31:     public HttpSyncFolder(String base, String vault, String serverKey) {
+32:         String b = base == null ? "" : base.trim();
+33:         while (b.endsWith("/")) b = b.substring(0, b.length() - 1);
+34:         this.base = b;
+35:         this.vault = vault == null || vault.isEmpty() ? null : vault;
+36:         this.serverKey = serverKey == null ? "" : serverKey.trim();
+37:     }
+38: 
+39:     /** يفك رابط الانضمام إلى [العنوان، رمز الخزنة]، أو [العنوان، null] لعنوان خادم بلا خزنة. */
+40:     public static String[] parseLink(String link) {
+41:         String s = link == null ? "" : link.trim();
+42:         int i = s.indexOf(VAULT_PATH);
+43:         if (i < 0) return new String[]{s, null};
+44:         String v = s.substring(i + VAULT_PATH.length()).replaceAll("[/?#].*$", "");
+45:         return new String[]{s.substring(0, i), v.isEmpty() ? null : v};
+46:     }
+47: 
+48:     public static String link(String base, String vault) {
+49:         String b = base.trim();
+50:         while (b.endsWith("/")) b = b.substring(0, b.length() - 1);
+51:         return b + VAULT_PATH + vault;
+52:     }
+53: 
+54:     /** للعرض والمشاركة: رابط الانضمام لهذه الخزنة. */
+55:     public String joinLink() { return vault == null ? base : link(base, vault); }
+56: 
+57:     public static void checkUrl(String base) {
+58:         String b = base == null ? "" : base.trim().toLowerCase(java.util.Locale.ROOT);
+59:         if (!b.startsWith("https://") && !(b.startsWith("http://") && Model.localUrl(b))) throw new IllegalArgumentException("عنوان الخادم يجب أن يبدأ بـ https://");
+60:     }
+61: 
+62:     @Override public void unlock(SyncCrypto.Keys keys) {
+63:         if (vault == null) vault = keys.vaultId;
+64:         token = keys.serverToken();
+65:     }
+66: 
+67:     @Override public String kind() { return "server"; }
+68: 
+69:     private String fileUrl(String name) throws IOException {
+70:         if (vault == null) throw new IOException("رمز الخزنة غير معروف");
+71:         return base + VAULT_PATH + vault + "/file/" + URLEncoder.encode(name, "UTF-8");
+72:     }
+73: 
+74:     private HttpURLConnection open(String url, String method, boolean auth) throws IOException {
+75:         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+76:         c.setRequestMethod(method);
+77:         c.setConnectTimeout(timeoutMs);
+78:         c.setReadTimeout(timeoutMs * 4);
+79:         c.setUseCaches(false);
+80:         c.setRequestProperty("User-Agent", "SmartAccountant/" + BuildInfo.VERSION);
+81:         if (!serverKey.isEmpty()) c.setRequestProperty("X-Server-Key", serverKey);
+82:         if (auth && token != null) c.setRequestProperty("Authorization", "Bearer " + token);
+83:         return c;
+84:     }
+85: 
+86:     static byte[] readAll(InputStream in) throws IOException {
+87:         if (in == null) return new byte[0];
+88:         try (InputStream i = in; ByteArrayOutputStream o = new ByteArrayOutputStream()) {
+89:             byte[] b = new byte[16384];
+90:             int n;
+91:             while ((n = i.read(b)) > 0) o.write(b, 0, n);
+92:             return o.toByteArray();
+93:         }
+94:     }
+95: 
+96:     private IOException fail(HttpURLConnection c, int code) {
+97:         String msg = "";
+98:         try {
+99:             msg = new String(readAll(c.getErrorStream()), StandardCharsets.UTF_8);
+100:             JSONObject j = new JSONObject(msg);
+101:             msg = j.optString("error", msg);
+102:         } catch (Exception ignored) {
+103:             // النص كما هو
+104:         }
+105:         if (code == 401 || code == 403) return new IOException("الخادم رفض الوصول (" + code + "): " + (msg.isEmpty() ? "رمز الخادم أو الخزنة غير صحيح" : msg));
+106:         if (code == 413) return new IOException("الملف أكبر مما يقبله الخادم");
+107:         return new IOException("خطأ من خادم المزامنة (" + code + ")" + (msg.isEmpty() ? "" : ": " + msg));
+108:     }
+109: 
+110:     @Override public List<String> list(String prefix) throws IOException {
+111:         List<String> out = new ArrayList<>();
+112:         if (vault == null) return out;
+113:         HttpURLConnection c = open(base + VAULT_PATH + vault + "/list?prefix=" + URLEncoder.encode(prefix, "UTF-8"), "GET", true);
+114:         try {
+115:             int code = c.getResponseCode();
+116:             if (code == 404) return out;
+117:             if (code != 200) throw fail(c, code);
+118:             JSONArray a = new JSONObject(new String(readAll(c.getInputStream()), StandardCharsets.UTF_8)).getJSONArray("files");
+119:             for (int i = 0; i < a.length(); i++) out.add(a.getJSONObject(i).getString("n"));
+120:             return out;
+121:         } catch (org.json.JSONException e) {
+122:             throw new IOException("رد غير مفهوم من خادم المزامنة");
+123:         } finally {
+124:             c.disconnect();
+125:         }
+126:     }
+127: 
+128:     @Override public boolean exists(String name) throws IOException { return read(name) != null; }
+129: 
+130:     @Override public byte[] read(String name) throws IOException {
+131:         if (vault == null) return null;
+132:         HttpURLConnection c = open(fileUrl(name), "GET", !SyncEngine.HEADER.equals(name));
+133:         try {
+134:             int code = c.getResponseCode();
+135:             if (code == 404) return null;
+136:             if (code != 200) throw fail(c, code);
+137:             return readAll(c.getInputStream());
+138:         } finally {
+139:             c.disconnect();
+140:         }
+141:     }
+142: 
+143:     @Override public void write(String name, byte[] data) throws IOException {
+144:         if (token == null) throw new IOException("الخزنة مقفلة: لا كتابة على الخادم قبل فتحها");
+145:         HttpURLConnection c = open(fileUrl(name), "PUT", true);
+146:         c.setDoOutput(true);
+147:         c.setFixedLengthStreamingMode(data.length);
+148:         c.setRequestProperty("Content-Type", "application/octet-stream");
+149:         try {
+150:             try (OutputStream o = c.getOutputStream()) {
+151:                 o.write(data);
+152:             }
+153:             int code = c.getResponseCode();
+154:             if (code != 200 && code != 201 && code != 204) throw fail(c, code);
+155:             readAll(c.getInputStream());
+156:         } finally {
+157:             c.disconnect();
+158:         }
+159:     }
+160: 
+161:     @Override public boolean canDelete() { return true; }
+162: 
+163:     /** 10.4: حذف ملف (يحتاج خادم 10.4؛ الخادم الأقدم يرد 405 فيُبلَّغ المستخدم بتحديثه). */
+164:     @Override public void delete(String name) throws IOException {
+165:         if (token == null) throw new IOException("الخزنة مقفلة");
+166:         HttpURLConnection c = open(fileUrl(name), "DELETE", true);
+167:         try {
+168:             int code = c.getResponseCode();
+169:             if (code == 405) throw new OldServer();
+170:             if (code != 200 && code != 204 && code != 404) throw fail(c, code);
+171:         } finally {
+172:             c.disconnect();
+173:         }
+174:     }
+175: 
+176:     /** 10.4: خادم من إصدار أقدم لا يدعم الحذف. */
+177:     public static final class OldServer extends IOException {
+178:         OldServer() { super("خادم المزامنة من إصدار أقدم لا يدعم التنظيف: حدّث server.js على الخادم إلى 10.4"); }
+179:     }
+180: 
+181:     @Override public java.util.Map<String, long[]> stat(String prefix) throws IOException {
+182:         java.util.Map<String, long[]> out = new java.util.HashMap<>();
+183:         if (vault == null) return out;
+184:         HttpURLConnection c = open(base + VAULT_PATH + vault + "/list?prefix=" + URLEncoder.encode(prefix, "UTF-8"), "GET", true);
+185:         try {
+186:             int code = c.getResponseCode();
+187:             if (code == 404) return out;
+188:             if (code != 200) throw fail(c, code);
+189:             JSONArray a = new JSONObject(new String(readAll(c.getInputStream()), StandardCharsets.UTF_8)).getJSONArray("files");
+190:             for (int i = 0; i < a.length(); i++) {
+191:                 JSONObject f = a.getJSONObject(i);
+192:                 out.put(f.getString("n"), new long[]{f.optLong("s"), f.optLong("m")});
+193:             }
+194:             return out;

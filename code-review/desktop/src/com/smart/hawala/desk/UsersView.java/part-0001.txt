@@ -1,0 +1,137 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.awt.datatransfer.StringSelection;
+6: import javax.swing.*;
+7: 
+8: /** المستخدمون والصلاحيات (كالهاتف): مدير برمز 6–8 أرقام ورمز استرداد يُعرض مرة، وأدوار، وتأكيد المدير قبل التغييرات. */
+9: final class UsersView extends View {
+10:     static long reauthAt;
+11:     static final long REAUTH_MS = 120000L;
+12: 
+13:     UsersView(App app) {
+14:         super(app, "المستخدمون والصلاحيات");
+15:     }
+16: 
+17:     @Override void refresh() {
+18:         clear();
+19:         int w = textWidth();
+20:         if (!db.usersEnabled()) {
+21:             Ui.Card c = Ui.card();
+22:             c.add(Ui.heading("نظام المستخدمين غير مفعّل"));
+23:             c.add(Ui.gap(6));
+24:             c.add(Ui.para("حاليًا يعمل البرنامج بصلاحيات كاملة لأي شخص يفتحه على هذا الكمبيوتر.\n\nعند التفعيل: لكل شخص اسم ورمز سري، ويختار المدير صلاحياته واحدة واحدة، "
+25:                     + "وتظهر شاشة دخول، ويُقفل البرنامج بعد الخمول، وتُسجَّل كل حركة باسم من سجّلها.", 14, Ui.ink, w));
+26:             c.add(Ui.gap(10));
+27:             String block = db.founderBlock();
+28:             if (block != null) c.add(Ui.para(block, 13.5f, Ui.goldInk, w));
+29:             else {
+30:                 if (SyncEngine.enabled(db)) c.add(Ui.para("هذا هو الجهاز الرئيسي في المزامنة: الحسابات التي تنشئها هنا تصل إلى كل الأجهزة المنضمة، ويُطلب فيها الدخول.", 13, Ui.muted, w));
+31:                 c.add(Ui.flow(Ui.primary("تفعيل: إنشاء حساب المدير", e -> userDialog(null, true))));
+32:             }
+33:             add(c);
+34:             done();
+35:             return;
+36:         }
+37:         boolean has = db.hasRecoveryCode();
+38:         Ui.Card rc = Ui.tinted(has ? Ui.creditBg : Ui.debitBg, null);
+39:         rc.add(Ui.label(has ? "✓ رمز استرداد المدير محفوظ" : "! لا يوجد رمز استرداد للمدير", 16, has ? Ui.green : Ui.red, true));
+40:         rc.add(Ui.para(has ? "إن فُقد الرمز المكتوب أنشئ رمزًا جديدًا؛ القديم يتوقف فورًا." : "بدونه لا يمكن استعادة دخول المدير إن نُسي رمزه. أنشئه الآن واكتبه على ورقة.", 13, Ui.ink, w));
+41:         rc.add(Ui.gap(6));
+42:         rc.add(Ui.flow(Ui.button(has ? "إنشاء رمز استرداد جديد" : "إنشاء رمز الاسترداد", has ? Ui.accent : Ui.red,
+43:                 e -> confirmAdmin("رمز استرداد جديد", () -> showRecoveryCode(this, db.newRecoveryCode(), "رمز استرداد المدير الجديد (أي رمز سابق توقف):")))));
+44:         add(rc);
+45:         space(10);
+46:         Ui.Card lock = Ui.card();
+47:         lock.add(Ui.label("القفل بعد الخمول", 15, Ui.primaryInk, true));
+48:         JComboBox<String> mins = Ui.combo(new String[]{"دقيقتان", "5 دقائق", "10 دقائق", "30 دقيقة", "ساعة", "لا يُقفل تلقائيًا"});
+49:         long[] vals = {2, 5, 10, 30, 60, 0};
+50:         long cur = db.settingLong("desk_lock_min", 5);
+51:         for (int i = 0; i < vals.length; i++) if (vals[i] == cur) mins.setSelectedIndex(i);
+52:         mins.addActionListener(e -> db.setSettingQuiet("desk_lock_min", "" + vals[mins.getSelectedIndex()]));
+53:         lock.add(mins);
+54:         add(lock);
+55:         space(10);
+56:         action(Ui.primary("إضافة مستخدم", e -> confirmAdmin("إضافة مستخدم", () -> userDialog(null, false))));
+57:         // 10.8: من يسجّل كل مكتب ومن يتحقق منه
+58:         action(Ui.ghost("فرز المكاتب بين المحاسبين", e -> confirmAdmin("فرز المكاتب", () -> app.go("team"))));
+59:         // 10.17: رسالة يكتبها المدير وتظهر إشعارًا عند المحاسبين (الكل أو واحد)
+60:         if (SmartApp.currentUser != null && Auth.isAdmin(SmartApp.currentUser)) action(Ui.ghost("رسالة إلى المحاسبين…", e -> adminMessages(this, app)));
+61:         Model.User me = SmartApp.currentUser;
+62:         final boolean meAdmin = me == null || Auth.isAdmin(db.user(me.id));
+63:         for (final Model.User u : db.users(false)) {
+64:             Ui.Card x = Ui.card();
+65:             boolean self = me != null && me.id == u.id;
+66:             x.add(Ui.label(u.name + (self ? " (أنت)" : "") + (u.active ? "" : " — موقوف"), 17, u.active ? Ui.primaryInk : Ui.muted, true));
+67:             x.add(Ui.para(Auth.describe(u), 13, Ui.ink, w));
+68:             // 10.5 (§7): مكاتب المحاسب
+69:             String roles = db.rolesLine(u.id);
+70:             if (!roles.isEmpty()) x.add(Ui.para(roles, 13, Ui.goldInk, w));
+71:             x.add(Ui.gap(6));
+72:             // 10.5 (AUDIT-023): حساب المدير يعدّله ويغيّر رمزه المدير وحده
+73:             if (!Auth.isAdmin(u) || meAdmin) x.add(Ui.flow(Ui.ghost("الصلاحيات والتعديل", e -> confirmAdmin("تعديل " + u.name, () -> userDialog(u, false))),
+74:                     Ui.ghost("تغيير الرمز", e -> confirmAdmin("تغيير رمز " + u.name, () -> newPin(u))),
+75:                     Ui.ghost("المكاتب…", e -> confirmAdmin("مكاتب " + u.name, () -> officesDialog(u))),
+76:                     // 10.8: حذف الحساب دون المساس بما سجّله
+77:                     self ? Box.createHorizontalStrut(1) : Ui.danger("حذف الحساب…", e -> confirmAdmin("حذف حساب " + u.name, () -> deleteUser(u)))));
+78:             else x.add(Ui.para("حساب المدير يعدّله المدير وحده", 12, Ui.muted, w));
+79:             add(x);
+80:             space(8);
+81:         }
+82:         space(6);
+83:         if (SyncEngine.enabled(db)) add(Ui.para("الحسابات والصلاحيات متزامنة: أي تعديل هنا يصل إلى كل الأجهزة. أرسل لكل شخص اسمه ورمزه ليدخل من جهازه.", 13, Ui.muted, w));
+84:         space(10);
+85:         if (db.founderBlock() == null) add(Ui.flow(Ui.danger("إيقاف نظام المستخدمين", e -> confirmAdmin("إيقاف نظام المستخدمين", () -> {
+86:             if (!Ui.confirm(this, "إيقاف نظام المستخدمين", "ستُوقف كل الحسابات ويعود البرنامج للعمل بدون دخول وبصلاحيات كاملة. يمكنك إعادة التفعيل لاحقًا.", "إيقاف")) return;
+87:             try {
+88:                 db.disableUsers();
+89:             } catch (Exception ex) {
+90:                 Ui.error(this, ex);
+91:                 return;
+92:             }
+93:             SmartApp.currentUser = null;
+94:             Db.currentUserName = "المستخدم المحلي";
+95:             app.updateFoot();
+96:             Ui.toast("تم إيقاف نظام المستخدمين");
+97:             refresh();
+98:         }))));
+99:         done();
+100:     }
+101: 
+102:     /** 10.8: حذف حساب: يُغلق ويُزال من المكاتب، وكل ما سجّله يبقى كما هو باسمه «(حساب محذوف)». */
+103:     void deleteUser(Model.User u) {
+104:         String typed = Ui.input(this, "حذف حساب " + u.name, "يُحذف حساب «" + u.name + "» نهائيًا: لا يستطيع الدخول بعد الآن من أي جهاز، ويُزال من فرز المكاتب.\n\n"
+105:                 + "لا يُحذف شيء مما سجّله: حركاته وتحققاته ومطابقاته تبقى كما هي، والأرصدة لا تتغير، ويظهر اسمه عليها «(حساب محذوف)».\n\nاكتب اسمه للتأكيد:", "");
+106:         if (typed == null) return;
+107:         if (!typed.trim().equals(u.name.trim())) {
+108:             Ui.toast("الاسم غير مطابق؛ لم يُحذف شيء");
+109:             return;
+110:         }
+111:         try {
+112:             db.deleteUser(u.id);
+113:             Ui.toast("حُذف حساب " + u.name + " — بقيت حركاته كما هي");
+114:             refresh();
+115:         } catch (Exception ex) {
+116:             Ui.error(this, ex);
+117:         }
+118:     }
+119: 
+120:     /**
+121:      * 10.5 (§7): مكاتب المحاسب. 10.7: المختارة أولًا، وبحث، وتنبيه للمكتب المشترك.
+122:      * 10.8: لكل مكتب دور: «يسجّل» حركاته ومطابقاته، أو «يتحقق» منها.
+123:      */
+124:     void officesDialog(Model.User u) {
+125:         java.util.Map<Long, String> roles = new java.util.LinkedHashMap<>(db.officeRoles(u.id));
+126:         java.util.Map<Long, java.util.List<String>> others = db.officeHolders(u.id);
+127:         java.util.List<Model.Office> all = db.offices();
+128:         boolean canCheck = Auth.can(u, Auth.Perm.VERIFY);
+129:         JPanel c = Ui.column();
+130:         c.add(Ui.para("«يسجّل»: يُدخل حركات المكتب ومطابقاته ويراه في «مكاتبي». «يتحقق»: يراجع ما سجّله غيره ويؤكد سلامته. لا يجمع الدورين في مكتب واحد.", 13, Ui.muted, 460));
+131:         c.add(Ui.gap(6));
+132:         Ui.Field q = Ui.field("ابحث عن مكتب");
+133:         c.add(q);
+134:         JLabel count = Ui.label(" ", 13, Ui.primaryInk, true);
+135:         c.add(count);
+136:         JPanel list = Ui.column();
+137:         Runnable[] render = new Runnable[1];

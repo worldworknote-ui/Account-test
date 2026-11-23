@@ -1,0 +1,93 @@
+772:         l.addView(note, a.lp(-1, 50, 4));
+773:         android.widget.ScrollView sv = new android.widget.ScrollView(a);
+774:         sv.addView(l);
+775:         new AlertDialog.Builder(a).setTitle("أمانة أو تجميد — " + o.name).setView(sv).setPositiveButton("حفظ", (d, w) -> {
+776:             try {
+777:                 String code = curs.get(cur.selected);
+778:                 a.db.addHold(o.id, code, kind.selected == 0 ? Db.HOLD_TRUST : Db.HOLD_FREEZE, side.selected == 0 ? Db.SIDE_THEIRS : Db.SIDE_OURS,
+779:                         Db.minor(amount.getText().toString(), a.db.decimals(code)), note.getText().toString());
+780:                 a.toast("حُفظ ✓");
+781:                 refresh.run();
+782:             } catch (Exception e) {
+783:                 a.error(e);
+784:             }
+785:         }).setNegativeButton("إلغاء", null).show();
+786:     }
+787: 
+788:     private void infoTab(final Model.Office o, LinearLayout content) {
+789:         LinearLayout g = new LinearLayout(a);
+790:         g.setOrientation(LinearLayout.VERTICAL);
+791:         g.setBackground(a.round(a.surface, a.line, 16));
+792:         g.setClipToOutline(true);
+793:         content.addView(g, a.lp(-1, -2, 4));
+794:         if (!Model.nz(o.phone).isEmpty()) {
+795:             a.groupRow(g, R.drawable.ic_phone, a.primaryInk, o.phone, "الهاتف — اضغط للاتصال", null, v -> {
+796:                 Intent i = new Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + o.phone.replaceAll("[^0-9+]", "")));
+797:                 if (!a.startOwn(i)) a.toast("لا يوجد تطبيق اتصال");
+798:             });
+799:         }
+800:         if (!Model.nz(o.shortName).isEmpty()) a.groupRow(g, R.drawable.ic_tag, a.primaryInk, o.shortName, "الاسم المختصر", null, null);
+801:         if (!Model.nz(o.location).isEmpty()) a.groupRow(g, R.drawable.ic_offices, a.primaryInk, o.location, "الموقع", null, null);
+802:         if (!Model.nz(o.contact).isEmpty()) a.groupRow(g, R.drawable.ic_user, a.primaryInk, o.contact, "جهة الاتصال", null, null);
+803:         List<String> curs = a.db.officeCurrencies(o.id);
+804:         a.groupRow(g, R.drawable.ic_coins, a.primaryInk, curs.isEmpty() ? "لا توجد" : Model.join(curs, " • "), "العملات المفعّلة", null, null);
+805:         Map<String, Db.Limit> lim = a.db.officeLimits(o.id);
+806:         List<String> ls = new ArrayList<>();
+807:         for (Map.Entry<String, Db.Limit> e : lim.entrySet()) {
+808:             Db.Limit l = e.getValue();
+809:             int d = a.db.decimals(e.getKey());
+810:             if (l.receivable != null && l.receivable > 0) ls.add(e.getKey() + " لنا ≤ " + Model.fmt(l.receivable, d));
+811:             if (l.payable != null && l.payable > 0) ls.add(e.getKey() + " علينا ≤ " + Model.fmt(l.payable, d));
+812:         }
+813:         if (o.usdLimit != null && o.usdLimit > 0) ls.add("مجموع لنا ≤ " + Model.fmt(o.usdLimit, 2) + " USD");
+814:         if (o.usdOweLimit != null && o.usdOweLimit > 0) ls.add("مجموع علينا ≤ " + Model.fmt(o.usdOweLimit, 2) + " USD");
+815:         if (!ls.isEmpty()) a.groupRow(g, R.drawable.ic_scale, a.primaryInk, Model.join(ls, "\n"), "حدود التنبيه", null, null);
+816:         if (!Model.nz(o.notes).isEmpty()) a.groupRow(g, R.drawable.ic_doc, a.primaryInk, o.notes, "ملاحظات", null, null);
+817:         a.groupRow(g, R.drawable.ic_list, a.primaryInk, String.valueOf(a.db.officeTxCount(o.id)), "عدد الحركات المسجّلة", null, null);
+818:         // 9.0: إشعارات هذا المكتب
+819:         notifRow(g, o, "notif_idle_off", "إشعار إن لم تُسجَّل له حركات منذ يوم كامل");
+820:         notifRow(g, o, "notif_recon_off", "إشعار إن لم تُرسل له مطابقة رصيد منذ " + Notifier.reconDays(a.db) + " أيام");
+821:         if (a.can(Auth.Perm.OFFICES)) {
+822:             LinearLayout r = a.row();
+823:             r.addView(a.smallButton("تعديل البيانات", a.primary, v -> a.officesScreen.form(o)), a.weight(44, 1, 2));
+824:             r.addView(a.smallButton(o.active ? "إيقاف المكتب" : "تفعيل المكتب", Color.rgb(120, 120, 120), v -> toggleActive(o)), a.weight(44, 1, 2));
+825:             content.addView(r, a.lp(-1, -2, 4));
+826:         }
+827:         // 10.5 (§7): علامة «آخر رسالة واتساب نُقلت» لهذا المكتب
+828:         LinearLayout mk = a.card();
+829:         mk.addView(a.text("آخر رسالة واتساب نُقلت", 15, a.primaryInk, true));
+830:         a.mineScreen.markCard(mk, o, () -> showOffice(o));
+831:         // card() يضيفها إلى الصفحة؛ مكانها هنا داخل تبويب المعلومات
+832:         if (mk.getParent() instanceof android.view.ViewGroup) ((android.view.ViewGroup) mk.getParent()).removeView(mk);
+833:         content.addView(mk, a.lp(-1, -2, 5));
+834:         LinearLayout r2 = a.row();
+835:         if (o.active && a.can(Auth.Perm.TX_ADD)) r2.addView(a.smallButton("حركة بين مكتبين", a.accent, v -> a.fxScreen.transfer(o)), a.weight(44, 1, 2));
+836:         if (o.active && a.can(Auth.Perm.TX_ADD) && a.can(Auth.Perm.FX)) r2.addView(a.smallButton("قص عملات", a.accent, v -> a.fxScreen.show(o)), a.weight(44, 1, 2));
+837:         if (a.can(Auth.Perm.DELETE)) r2.addView(a.smallButton("دمج في مكتب آخر", Color.rgb(120, 120, 120), v -> a.fxScreen.mergeDialog(o)), a.weight(44, 1, 2));
+838:         if (r2.getChildCount() > 0) {
+839:             content.addView(r2, a.lp(-1, -2, 4));
+840:             content.addView(a.text("الدمج لاسمين لحساب واحد (مثل «الأمل» و«مكتب الأمل»): تنتقل الحركات كما هي ويُتحقق من الأرصدة.", 12, a.muted, false));
+841:         }
+842:     }
+843: 
+844:     private void toggleActive(final Model.Office o) {
+845:         if (o.active) a.officesScreen.stopDialog(o, () -> showOffice(o));
+846:         else {
+847:             a.db.setOfficeActive(o.id, true);
+848:             a.toast("تم تفعيل المكتب «" + o.name + "»");
+849:             showOffice(o);
+850:         }
+851:     }
+852: 
+853:     private void optionsMenu(final Model.Office o) {
+854:         final String[] items = {"تعديل بيانات المكتب", o.active ? "إيقاف المكتب" : "تفعيل المكتب", "قص عملات مع هذا المكتب", "دمج في مكتب آخر…", "حذف المكتب…", "حركة بين مكتبين (هذا المكتب طالبها)"};
+855:         new AlertDialog.Builder(a).setTitle(o.name).setItems(items, (d, w) -> {
+856:             if (w == 0) a.officesScreen.form(o);
+857:             else if (w == 1) toggleActive(o);
+858:             else if (w == 2) a.fxScreen.show(o);
+859:             else if (w == 3) a.fxScreen.mergeDialog(o);
+860:             else if (w == 5) a.fxScreen.transfer(o);
+861:             else a.officesScreen.deleteDialog(o);
+862:         }).show();
+863:     }
+864: }

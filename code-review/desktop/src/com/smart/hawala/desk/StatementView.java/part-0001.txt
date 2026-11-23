@@ -1,0 +1,208 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.util.*;
+6: import java.util.List;
+7: import javax.swing.*;
+8: 
+9: /**
+10:  * كشف حساب مكتب: الفترة (أو «بعد آخر مطابقة»)، العملات، والرصيد المتراكم — بالدالة نفسها التي يصدّر بها الهاتف (Reports.statement)،
+11:  * فالكشف على الشاشة = PDF = Excel. مع خيارات التصميم (إظهار المستفيد، البيان، الملغاة…).
+12:  */
+13: final class StatementView extends View {
+14:     /** كشف ما بعد مطابقة. */
+15:     static final class Since {
+16:         final long office, recon;
+17: 
+18:         Since(long office, long recon) {
+19:             this.office = office;
+20:             this.recon = recon;
+21:         }
+22:     }
+23: 
+24:     final JComboBox<Model.Office> office = Ui.pickCombo();
+25:     final JComboBox<String> period = Ui.combo(Ui.PERIODS);
+26:     final Ui.DateField from = new Ui.DateField(0), to = new Ui.DateField(0);
+27:     final JPanel curBox = Ui.flow();
+28:     final Map<String, JCheckBox> curChecks = new LinkedHashMap<>();
+29:     final JCheckBox hideCancelled = Ui.check("إخفاء الملغاة", true), images = Ui.check("مع صور الوصل", false), newest = Ui.check("الأحدث أولًا", false);
+30:     final JCheckBox showPerson = Ui.check("المستفيد", true), showDesc = Ui.check("البيان", true), showNotes = Ui.check("الملاحظات", false);
+31:     final JPanel out = Ui.column();
+32:     JPanel custom;
+33:     Long sinceRecon;
+34:     boolean loading;
+35: 
+36:     StatementView(App app) {
+37:         super(app, "كشف حساب");
+38:     }
+39: 
+40:     @Override void build() {
+41:         office.setFont(Ui.font(14, true));
+42:         office.setComponentOrientation(Ui.RTL);
+43:         office.setMaximumSize(new Dimension(300, 38));
+44:         office.setRenderer(new DefaultListCellRenderer() {
+45:             @Override public Component getListCellRendererComponent(JList<?> l, Object v, int i, boolean s, boolean f) {
+46:                 JLabel c = (JLabel) super.getListCellRendererComponent(l, v instanceof Model.Office ? ((Model.Office) v).name : "— اختر المكتب —", i, s, f);
+47:                 c.setHorizontalAlignment(SwingConstants.RIGHT);
+48:                 return c;
+49:             }
+50:         });
+51:         period.setSelectedIndex(8);
+52:         period.setMaximumSize(new Dimension(170, 38));
+53:         custom = Ui.row(Ui.label("من", 13, Ui.muted, true), from, Ui.label("إلى", 13, Ui.muted, true), to);
+54:         custom.setMaximumSize(new Dimension(520, 40));
+55:         custom.setVisible(false);
+56:         Ui.Card opts = Ui.card();
+57:         opts.add(Ui.row(office, period, custom));
+58:         opts.add(Ui.gap(8));
+59:         opts.add(curBox);
+60:         opts.add(Ui.flow(hideCancelled, newest, images, Ui.label("  |  يظهر:", 13, Ui.muted, true), showPerson, showDesc, showNotes));
+61:         body.add(opts);
+62:         body.add(Ui.gap(14));
+63:         body.add(out);
+64:         scroll = Ui.scroll(body);
+65:         add(scroll, BorderLayout.CENTER);
+66:         Runnable re = () -> {
+67:             if (!loading) showReport();
+68:         };
+69:         office.addActionListener(e -> {
+70:             if (loading) return;
+71:             sinceRecon = null;
+72:             loadCurrencies();
+73:             showReport();
+74:         });
+75:         period.addActionListener(e -> {
+76:             custom.setVisible(period.getSelectedIndex() == Ui.PERIODS.length - 1);
+77:             sinceRecon = null;
+78:             re.run();
+79:         });
+80:         from.onChange = re;
+81:         to.onChange = re;
+82:         for (JCheckBox c : new JCheckBox[]{hideCancelled, images, newest, showPerson, showDesc, showNotes}) c.addActionListener(e -> re.run());
+83:     }
+84: 
+85:     @Override void open(Object arg) {
+86:         loading = true;
+87:         loadOffices();
+88:         long id = arg instanceof Since ? ((Since) arg).office : arg instanceof Long ? (Long) arg : -1;
+89:         for (int i = 0; i < office.getItemCount(); i++) if (office.getItemAt(i) != null && office.getItemAt(i).id == id) office.setSelectedIndex(i);
+90:         sinceRecon = arg instanceof Since ? ((Since) arg).recon : null;
+91:         loading = false;
+92:         loadCurrencies();
+93:         refreshActions();
+94:         showReport();
+95:         done();
+96:     }
+97: 
+98:     @Override void refresh() {
+99:         loading = true;
+100:         Model.Office cur = (Model.Office) office.getSelectedItem();
+101:         loadOffices();
+102:         if (cur != null) for (int i = 0; i < office.getItemCount(); i++) if (office.getItemAt(i) != null && office.getItemAt(i).id == cur.id) office.setSelectedIndex(i);
+103:         loading = false;
+104:         loadCurrencies();
+105:         refreshActions();
+106:         showReport();
+107:         done();
+108:     }
+109: 
+110:     void refreshActions() {
+111:         actions.removeAll();
+112:         action(Ui.primary("تصدير / طباعة…", e -> export()));
+113:         action(Ui.ghost("مطابقة الرصيد", e -> {
+114:             Model.Office o = (Model.Office) office.getSelectedItem();
+115:             if (o != null) app.go("office", o.id);
+116:         }));
+117:     }
+118: 
+119:     void loadOffices() {
+120:         DefaultComboBoxModel<Model.Office> m = new DefaultComboBoxModel<>();
+121:         m.addElement(null);
+122:         for (Model.Office o : db.offices()) m.addElement(o);
+123:         office.setModel(m);
+124:     }
+125: 
+126:     void loadCurrencies() {
+127:         curBox.removeAll();
+128:         curChecks.clear();
+129:         Model.Office o = (Model.Office) office.getSelectedItem();
+130:         if (o == null) return;
+131:         Set<String> codes = new TreeSet<>(db.officeCurrencies(o.id));
+132:         codes.addAll(db.balances(o.id).keySet());
+133:         curBox.add(Ui.label("العملات:", 13, Ui.muted, true));
+134:         for (String c : codes) {
+135:             JCheckBox cb = Ui.check(c, true);
+136:             cb.addActionListener(e -> showReport());
+137:             curChecks.put(c, cb);
+138:             curBox.add(cb);
+139:         }
+140:         curBox.revalidate();
+141:     }
+142: 
+143:     ExportStyle style() {
+144:         ExportStyle st = Export.style(db);
+145:         st.hideCancelled = hideCancelled.isSelected();
+146:         st.newestFirst = newest.isSelected();
+147:         st.showPerson = showPerson.isSelected();
+148:         st.showDesc = showDesc.isSelected();
+149:         st.showNotes = showNotes.isSelected();
+150:         return st;
+151:     }
+152: 
+153:     Report build(boolean forExport) {
+154:         Model.Office o = (Model.Office) office.getSelectedItem();
+155:         if (o == null) throw new IllegalArgumentException("اختر المكتب");
+156:         ExportStyle st = style();
+157:         Reports.StatementInput in = new Reports.StatementInput();
+158:         in.officeName = o.name;
+159:         in.issuer = db.setting("office_name", "");
+160:         in.currencyNames = db.currencyNames();
+161:         in.decimals = db.decimalsMap();
+162:         in.fullBalance = db.balances(o.id);
+163:         Set<String> only = new LinkedHashSet<>();
+164:         for (Map.Entry<String, JCheckBox> e : curChecks.entrySet()) if (e.getValue().isSelected()) only.add(e.getKey());
+165:         in.onlyCurrencies = only.size() == curChecks.size() ? null : only;
+166:         List<Model.Line> lines;
+167:         if (sinceRecon != null) {
+168:             Model.Recon since = db.recon(sinceRecon);
+169:             in.periodLabel = "بعد مطابقة " + Model.date(since.createdAt) + " (" + since.statusLabel() + ")";
+170:             in.periodHasStart = true;
+171:             in.opening = db.balanceUpTo(o.id, since);
+172:             in.openingLabel = "رصيد المطابقة بتاريخ " + Model.date(since.createdAt);
+173:             in.openingKv = "رصيد آخر مطابقة";
+174:             in.openingCol = "رصيد المطابقة";
+175:             List<Model.Line> after = db.statementLinesAfter(o.id, since);
+176:             Set<Long> originalsAfter = new HashSet<>();
+177:             for (Model.Line l : after) if (l.txId != null && !"REVERSAL".equals(l.kind)) originalsAfter.add(l.txId);
+178:             lines = new ArrayList<>();
+179:             for (Model.Line l : after) {
+180:                 if (st.hideCancelled && l.cancelledTx() && l.txId != null && originalsAfter.contains(l.txId)) continue;
+181:                 lines.add(l);
+182:             }
+183:         } else {
+184:             long[] r = range();
+185:             in.periodLabel = (String) period.getSelectedItem();
+186:             if (period.getSelectedIndex() == Ui.PERIODS.length - 1) in.periodLabel = (r[0] > 0 ? Model.day(r[0]) : "البداية") + " ← " + (r[1] < Long.MAX_VALUE ? Model.day(r[1] - 1) : "الآن");
+187:             in.periodHasStart = r[0] > 0;
+188:             if (r[0] > 0) in.opening = db.balanceBefore(o.id, r[0], st.hideCancelled);
+189:             lines = db.statementLines(o.id, r[0], r[1]);
+190:         }
+191:         in.lines = lines;
+192:         if (forExport && images.isSelected()) {
+193:             Map<Long, List<Long>> m = new HashMap<>();
+194:             for (Model.Line l : lines) if (l.txId != null && "PRINCIPAL".equals(l.kind) && !m.containsKey(l.txId)) {
+195:                 List<Long> ids = db.attachmentIds(l.txId);
+196:                 if (!ids.isEmpty()) m.put(l.txId, ids);
+197:             }
+198:             in.attachments = m;
+199:         }
+200:         return Reports.statement(in, st);
+201:     }
+202: 
+203:     long[] range() {
+204:         int p = period.getSelectedIndex();
+205:         if (p == Ui.PERIODS.length - 1) {
+206:             long f = 0, t = 0;
+207:             try {
+208:                 f = from.start();

@@ -1,0 +1,150 @@
+174:         up.addUpdateListener(a -> {
+175:             lift = (float) a.getAnimatedValue();
+176:             invalidate();
+177:         });
+178:         anim = up;
+179:         up.start();
+180:     }
+181: 
+182:     /** لون الدائرة في الموضع p (بين تبويبين أثناء الانزلاق يتدرج). */
+183:     private int circleAt(float p) {
+184:         int n = circles.length;
+185:         if (n == 0) return 0xFF2C7058;
+186:         float q = Math.max(0, Math.min(n - 1, p));
+187:         int i = (int) Math.floor(q), j = Math.min(n - 1, i + 1);
+188:         return NavPrefs.mix(circles[i], circles[j], q - i);
+189:     }
+190: 
+191:     /** خط التطبيق لأسماء التبويبات. */
+192:     void typeface(android.graphics.Typeface tf) {
+193:         if (tf != null) label.setTypeface(android.graphics.Typeface.create(tf, android.graphics.Typeface.BOLD));
+194:     }
+195: 
+196:     /** مركز دائرة التبويب i (بإحداثيات الشريط) لتنطلق منه قائمة «+». */
+197:     float[] circleCenter(int i) { return new float[]{cx(i), barTop() + 2 * dp}; }
+198: 
+199:     @Override
+200:     protected void onDraw(Canvas c) {
+201:         float w = getWidth(), top = barTop(), bot = barBottom(), s = side(), rad = radius();
+202:         float x = cx(pos);
+203:         // الشريط: مستطيل مستدير ناقص التجويف (قرب الأطراف يصنع «أذنًا» ناعمة كما في الفيديو)
+204:         round.reset();
+205:         if (st.barFloat) {
+206:             r.set(s, top, w - s, bot);
+207:             float cornerR = barH() / 2f - 2 * dp;
+208:             round.addRoundRect(r, cornerR, cornerR, Path.Direction.CW);
+209:         } else {
+210:             r.set(s - 2 * dp, top, w - s + 2 * dp, bot + 30 * dp);
+211:             float cornerR = 28 * dp * z();
+212:             round.addRoundRect(r, new float[]{cornerR, cornerR, cornerR, cornerR, 0, 0, 0, 0}, Path.Direction.CW);
+213:         }
+214:         float L = Math.max(0f, lift), Lc = Math.min(1f, L);
+215:         float hw = (rad + 20 * dp * z()) * (0.35f + 0.65f * Lc), depth = (rad + 7 * dp * z()) * L;
+216:         cut.reset();
+217:         cut.moveTo(x - hw, top - 60 * dp);
+218:         cut.lineTo(x - hw, top - 0.5f * dp);
+219:         cut.cubicTo(x - hw * 0.45f, top - 0.5f * dp, x - rad * 1.12f, top + depth, x, top + depth);
+220:         cut.cubicTo(x + rad * 1.12f, top + depth, x + hw * 0.45f, top - 0.5f * dp, x + hw, top - 0.5f * dp);
+221:         cut.lineTo(x + hw, top - 60 * dp);
+222:         cut.close();
+223:         barPath.reset();
+224:         if (depth > 0.5f * dp) barPath.op(round, cut, Path.Op.DIFFERENCE);
+225:         else barPath.set(round);
+226: 
+227:         c.save();
+228:         c.translate(0, 4 * dp);
+229:         c.drawPath(barPath, shadow);
+230:         c.restore();
+231:         // زجاج داكن: أغمق في الأعلى وأفتح (بني رمادي) في الأسفل
+232:         barFill.setShader(new LinearGradient(0, top, 0, bot, barGrad,
+233:                 new float[]{0f, 0.55f, 1f}, Shader.TileMode.CLAMP));
+234:         c.drawPath(barPath, barFill);
+235:         // لمعة زجاجية خفيفة في النصف العلوي
+236:         sheen.setShader(new LinearGradient(0, top, 0, top + 30 * dp, Color.argb(46, 255, 255, 255), Color.argb(0, 255, 255, 255), Shader.TileMode.CLAMP));
+237:         c.drawPath(barPath, sheen);
+238:         c.drawPath(barPath, barStroke);
+239: 
+240:         // الأيقونات: تختفي أيقونة التبويب الذي تقف عليه الدائرة وتظهر داخلها
+241:         int is = (int) (24 * dp * (0.5f + 0.5f * z()));
+242:         float cyBar = top + barH() / 2f - 2 * dp * z();
+243:         // 10.15: مع الأسماء ترتفع الأيقونات قليلًا وتحتها الاسم
+244:         float iconY = st.labels ? top + barH() * 0.40f : cyBar;
+245:         int ink = iconColor;
+246:         for (int i = 0; i < icons.size(); i++) {
+247:             float d = Math.abs(pos - i);
+248:             int alpha = d > 0.5f ? 255 : (int) (255 * Math.min(1f, Math.max(0f, 1f - Lc * 1.6f)));
+249:             if (alpha <= 0) continue;
+250:             Drawable ic = icons.get(i);
+251:             float ix = cx(i);
+252:             ic.setBounds((int) (ix - is / 2f), (int) (iconY - is / 2f), (int) (ix + is / 2f), (int) (iconY + is / 2f));
+253:             ic.setTint(ink);
+254:             ic.setAlpha(alpha);
+255:             ic.draw(c);
+256:             if (st.labels) {
+257:                 label.setColor(ink);
+258:                 label.setAlpha((int) (alpha * 0.92f));
+259:                 c.drawText(names.get(i), ix, top + barH() * 0.80f, label);
+260:             }
+261:         }
+262:         // الدائرة الخضراء البارزة مع توهج
+263:         if (L < 0.05f) return;
+264:         float cy = cyBar + (top + 2 * dp - cyBar) * L;
+265:         int cc = circleAt(pos);
+266:         glow.setColor(withAlpha(NavPrefs.mix(cc, 0xFFFFFFFF, 0.3f), 150));
+267:         ring.setColor(withAlpha(NavPrefs.mix(cc, 0xFFFFFFFF, 0.55f), 110));
+268:         float cr = rad * (0.55f + 0.45f * Lc);
+269:         c.save();
+270:         // الدائرة وهي داخل الشريط تُقصّ عند حافته السفلية فتبدو صاعدة من داخله
+271:         c.clipRect(0, 0, w, bot - 1 * dp);
+272:         glow.setAlpha((int) (150 * Lc));
+273:         c.drawCircle(x, cy + 3 * dp, cr * 0.95f, glow);
+274:         circle.setShader(new RadialGradient(x - rad * 0.3f, cy - rad * 0.45f, rad * 1.6f, new int[]{NavPrefs.mix(cc, 0xFFFFFFFF, 0.25f), cc, NavPrefs.mix(cc, 0xFF000000, 0.4f)},
+275:                 new float[]{0f, 0.55f, 1f}, Shader.TileMode.CLAMP));
+276:         c.drawCircle(x, cy, cr, circle);
+277:         c.drawCircle(x, cy, cr - 0.5f * dp, ring);
+278:         int sel = Math.round(Math.max(0, Math.min(icons.size() - 1, pos)));
+279:         Drawable ic = icons.get(sel);
+280:         int cs = (int) (25 * dp * z() * (0.6f + 0.4f * Lc));
+281:         ic.setBounds((int) (x - cs / 2f), (int) (cy - cs / 2f), (int) (x + cs / 2f), (int) (cy + cs / 2f));
+282:         ic.setTint(NavPrefs.light(cc) ? 0xFF16325C : 0xFFFFFFFF);
+283:         ic.setAlpha((int) (255 * Lc));
+284:         ic.draw(c);
+285:         ic.setAlpha(255);
+286:         c.restore();
+287:     }
+288: 
+289:     @SuppressLint("ClickableViewAccessibility")
+290:     @Override
+291:     public boolean onTouchEvent(MotionEvent e) {
+292:         if (e.getY() < barTop() - radius() - 6 * dp) return false;
+293:         if (e.getAction() == MotionEvent.ACTION_UP) {
+294:             float x = e.getX();
+295:             int best = 0;
+296:             float bd = Float.MAX_VALUE;
+297:             for (int i = 0; i < icons.size(); i++) {
+298:                 float d = Math.abs(cx(i) - x);
+299:                 if (d < bd) {
+300:                     bd = d;
+301:                     best = i;
+302:                 }
+303:             }
+304:             if (getContext() instanceof Ui) ((Ui) getContext()).tick(this);
+305:             // الشاشة الجديدة تبني شريطها وتحرّك الدائرة من التبويب السابق (lastPos)
+306:             onTab.picked(best);
+307:             return true;
+308:         }
+309:         return true;
+310:     }
+311: 
+312:     int target() { return target; }
+313: 
+314:     static int withAlpha(int c, int a) { return (Math.max(0, Math.min(255, a)) << 24) | (c & 0xFFFFFF); }
+315: 
+316:     /** لون شريط النظام تحت الشريط: لون أسفل الزجاج فوق خلفية الشاشة، فيبدوان قطعة واحدة. */
+317:     static int navColor(int bg, NavPrefs st, int base) {
+318:         if (st.barFloat) return bg;
+319:         int al = NavPrefs.ALPHA[st.barAlpha];
+320:         int botC = NavPrefs.light(base) ? base : NavPrefs.mix(base, 0xFFFFFFFF, 0.35f);
+321:         return NavPrefs.mix(bg, botC, al / 255f);
+322:     }
+323: }

@@ -1,0 +1,207 @@
+1: /* أداة البائع — الواجهة. كل نص قادم من العميل (الطلب، الإيصال) يُعرض نصًا لا HTML. */
+2: (function () {
+3:   "use strict";
+4:   var VT = window.VT;
+5:   var $ = function (id) { return document.getElementById(id); };
+6:   var LS_LEDGER = "sa8v.ledger", LS_KEY = "sa8v.key", LS_STATUS = "sa8v.status", LS_TPL = "sa8v.templates";
+7: 
+8:   var S = { signer: null, ledger: load(LS_LEDGER, VT.newLedger()), status: load(LS_STATUS, null), sale: null, move: { lid: "", receipt: null, review: null } };
+9: 
+10:   function load(k, def) {
+11:     try {
+12:       var v = localStorage.getItem(k);
+13:       return v ? JSON.parse(v) : def;
+14:     } catch (e) {
+15:       return def;
+16:     }
+17:   }
+18: 
+19:   function save(k, v) {
+20:     try {
+21:       localStorage.setItem(k, typeof v === "string" ? v : JSON.stringify(v));
+22:       return true;
+23:     } catch (e) {
+24:       return false;
+25:     }
+26:   }
+27: 
+28:   function saveLedger() {
+29:     if (!save(LS_LEDGER, S.ledger)) alert("تعذر حفظ السجل في المتصفح. نزّل نسخة احتياطية منه الآن.");
+30:   }
+31: 
+32:   function esc(s) {
+33:     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; });
+34:   }
+35: 
+36:   function el(tag, cls, text) {
+37:     var e = document.createElement(tag);
+38:     if (cls) e.className = cls;
+39:     if (text != null) e.textContent = text;
+40:     return e;
+41:   }
+42: 
+43:   function msg(box, kind, text) {
+44:     var d = el("div", "msg " + kind, text);
+45:     box.appendChild(d);
+46:     return d;
+47:   }
+48: 
+49:   function download(name, text, type) {
+50:     var a = document.createElement("a");
+51:     a.href = URL.createObjectURL(new Blob([text], { type: type || "application/json" }));
+52:     a.download = name;
+53:     document.body.appendChild(a);
+54:     a.click();
+55:     setTimeout(function () {
+56:       URL.revokeObjectURL(a.href);
+57:       a.remove();
+58:     }, 1000);
+59:   }
+60: 
+61:   function copy(text, btn) {
+62:     var done = function () {
+63:       if (!btn) return;
+64:       var t = btn.textContent;
+65:       btn.textContent = "✓ نُسخ";
+66:       setTimeout(function () { btn.textContent = t; }, 1500);
+67:     };
+68:     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback);
+69:     else fallback();
+70:     function fallback() {
+71:       var ta = el("textarea");
+72:       ta.value = text;
+73:       document.body.appendChild(ta);
+74:       ta.select();
+75:       try {
+76:         document.execCommand("copy");
+77:         done();
+78:       } catch (e) {
+79:         alert("انسخ النص يدويًا");
+80:       }
+81:       ta.remove();
+82:     }
+83:   }
+84: 
+85:   /** نص لاتيني/أرقام داخل جملة عربية: يُعزل اتجاهه فلا ينقلب «2026-0153». */
+86:   function iso(s) { return "\u2066" + String(s == null ? "" : s) + "\u2069"; }
+87:   function dateInput(yyyymmdd) { var s = String(yyyymmdd); return s.substring(0, 4) + "-" + s.substring(4, 6) + "-" + s.substring(6, 8); }
+88:   function fromDateInput(v) { return Number(String(v).replace(/-/g, "")); }
+89:   function fmtDate(t) { var d = new Date(t); return d.getFullYear() + "/" + String(d.getMonth() + 1).padStart(2, "0") + "/" + String(d.getDate()).padStart(2, "0"); }
+90:   function fmtUu(u) { var s = String(u); return s.substring(0, 4) + "/" + s.substring(4, 6) + "/" + s.substring(6); }
+91: 
+92:   // ------------------------------------------------------------------ التبويبات
+93:   document.querySelectorAll(".tabs button").forEach(function (b) {
+94:     b.addEventListener("click", function () {
+95:       document.querySelectorAll(".tabs button").forEach(function (x) { x.classList.toggle("on", x === b); });
+96:       document.querySelectorAll(".tab").forEach(function (t) { t.classList.toggle("hidden", t.id !== "tab-" + b.dataset.tab); });
+97:       if (b.dataset.tab === "ledger") renderLedger();
+98:       if (b.dataset.tab === "move") renderMoveList();
+99:     });
+100:   });
+101: 
+102:   // ------------------------------------------------------------------ المفتاح
+103:   function keyState() {
+104:     var pill = $("keyPill"), box = $("keyState");
+105:     box.innerHTML = "";
+106:     if (S.signer && S.signer.kid) {
+107:       pill.textContent = "مفتاح " + S.signer.kid + " جاهز";
+108:       pill.className = "pill on";
+109:       msg(box, "ok", "المفتاح محمّل: " + S.signer.kid + (S.signer.kid === "k2" ? " (الاحتياطي)" : "") + ". يطابق المفتاح العام المضمّن في التطبيق.");
+110:     } else {
+111:       pill.textContent = "لا يوجد مفتاح";
+112:       pill.className = "pill off";
+113:       msg(box, "warn", "لم يُحمَّل مفتاح بعد: يمكنك فحص الطلبات، ولا يمكن إصدار رموز.");
+114:     }
+115:     var sealed = load(LS_KEY, null);
+116:     if (sealed) msg(box, "info", "يوجد مفتاح محفوظ مشفّرًا في هذا المتصفح. افتحه بعبارة المرور.");
+117:     updateIssue();
+118:   }
+119: 
+120:   $("keyFile").addEventListener("change", function (ev) {
+121:     var f = ev.target.files[0];
+122:     ev.target.value = "";
+123:     if (!f) return;
+124:     f.text().then(VT.importPrivatePem).then(function (k) {
+125:       if (!k.kid) {
+126:         $("keyMsg").innerHTML = "";
+127:         msg($("keyMsg"), "err", "هذا المفتاح ليس من مفاتيح التطبيق (k1 أو k2): الرموز الموقّعة به لن تعمل.");
+128:         return;
+129:       }
+130:       S.signer = k;
+131:       keyState();
+132:       $("keyMsg").innerHTML = "";
+133:       msg($("keyMsg"), "ok", "حُمّل المفتاح " + k.kid + ". للحفظ في هذا المتصفح اكتب عبارة مرور واضغط «حفظ مشفّرًا».");
+134:     }).catch(function (e) {
+135:       $("keyMsg").innerHTML = "";
+136:       msg($("keyMsg"), "err", "تعذر قراءة المفتاح: " + (e.message || e));
+137:     });
+138:   });
+139: 
+140:   $("keyForget").addEventListener("click", function () {
+141:     S.signer = null;
+142:     keyState();
+143:   });
+144: 
+145:   $("keySeal").addEventListener("click", function () {
+146:     var box = $("keyMsg");
+147:     box.innerHTML = "";
+148:     if (!S.signer) return msg(box, "err", "حمّل ملف المفتاح أولًا.");
+149:     if ($("kp1").value !== $("kp2").value) return msg(box, "err", "العبارتان غير متطابقتين.");
+150:     VT.sealKey(S.signer.pkcs8, $("kp1").value).then(function (sealed) {
+151:       save(LS_KEY, sealed);
+152:       $("kp1").value = $("kp2").value = "";
+153:       msg(box, "ok", "حُفظ المفتاح مشفّرًا. في المرة القادمة افتحه بعبارة المرور. احتفظ بملف ‎.pem الأصلي في مكان آمن أيضًا.");
+154:       keyState();
+155:     }).catch(function (e) { msg(box, "err", e.message); });
+156:   });
+157: 
+158:   $("keyOpen").addEventListener("click", function () {
+159:     var box = $("keyMsg"), sealed = localStorage.getItem(LS_KEY);
+160:     box.innerHTML = "";
+161:     if (!sealed) return msg(box, "err", "لا يوجد مفتاح محفوظ في هذا المتصفح.");
+162:     VT.openKey(sealed, $("kp1").value).then(function (k) {
+163:       S.signer = k;
+164:       $("kp1").value = $("kp2").value = "";
+165:       keyState();
+166:       msg(box, "ok", "فُتح المفتاح " + k.kid + ".");
+167:     }).catch(function (e) { msg(box, "err", e.message); });
+168:   });
+169: 
+170:   $("keyDrop").addEventListener("click", function () {
+171:     if (!confirm("حذف المفتاح المحفوظ من هذا المتصفح؟ (ملف ‎.pem الأصلي لا يتأثر)")) return;
+172:     localStorage.removeItem(LS_KEY);
+173:     keyState();
+174:   });
+175: 
+176:   // ------------------------------------------------------------------ حالة الإلغاء من Google
+177:   function statusState() {
+178:     var box = $("statusState");
+179:     box.innerHTML = "";
+180:     if (!S.status) msg(box, "info", "لم يُحمَّل ملف حالة الإلغاء (اختياري).");
+181:     else msg(box, "ok", "ملف حالة الإلغاء محمّل: " + Object.keys(S.status.entries || {}).length + " شهادة ملغاة.");
+182:   }
+183: 
+184:   $("statusFile").addEventListener("change", function (ev) {
+185:     var f = ev.target.files[0];
+186:     ev.target.value = "";
+187:     if (!f) return;
+188:     f.text().then(function (t) {
+189:       var j = JSON.parse(t);
+190:       if (!j.entries) throw new Error("الملف لا يحوي entries");
+191:       S.status = { entries: j.entries };
+192:       save(LS_STATUS, S.status);
+193:       statusState();
+194:     }).catch(function (e) { alert("ملف غير صالح: " + e.message); });
+195:   });
+196: 
+197:   // ------------------------------------------------------------------ عرض نتيجة الفحص
+198:   function showReview(box, rv) {
+199:     box.innerHTML = "";
+200:     if (rv.req) {
+201:       var r = rv.req, d = el("div", "facts");
+202:       d.textContent = "رقم الطلب: " + iso(r.order) + " • " + (r.platform === "mac" ? "الماك" : "الهاتف") + ": " + iso(r.model || "—") + " • البرنامج " + iso((r.ver || "") + " (" + (r.build || "") + ")");
+203:       box.appendChild(d);
+204:     }
+205:     rv.errors.forEach(function (t) { msg(box, "err", "✗ " + t); });
+206:     rv.warnings.forEach(function (t) { msg(box, "warn", "⚠ " + t); });
+207:     rv.info.forEach(function (t) { msg(box, "ok", "✓ " + t); });

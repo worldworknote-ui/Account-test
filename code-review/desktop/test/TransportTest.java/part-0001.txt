@@ -1,0 +1,170 @@
+1: import com.smart.hawala.*;
+2: import com.sun.net.httpserver.HttpExchange;
+3: import com.sun.net.httpserver.HttpServer;
+4: import java.io.ByteArrayOutputStream;
+5: import java.io.File;
+6: import java.io.InputStream;
+7: import java.io.OutputStream;
+8: import java.net.InetSocketAddress;
+9: import java.nio.charset.StandardCharsets;
+10: import java.nio.file.Files;
+11: import java.util.*;
+12: import org.json.JSONArray;
+13: import org.json.JSONObject;
+14: 
+15: /**
+16:  * 10.2: نواقل المزامنة الجديدة على Db الحقيقي:
+17:  * 1) خادم المزامنة الخاص (sync-server/server.js الحقيقي على Node): إنشاء، انضمام برابط، كتابة في الاتجاهين، رفض الرمز الخاطئ ورمز الخادم.
+18:  * 2) Google Drive مباشرة على خادم يحاكي واجهة Drive v3 (القائمة، التنزيل، الرفع بطلب واحد والمستأنف، الحذف، رمز منتهي 401).
+19:  * 3) نقل خزنة قائمة من المجلد المشترك إلى الخادم ثم إلى Drive دون فقد شيء.
+20:  */
+21: public class TransportTest {
+22:     static int fails, passes;
+23: 
+24:     static void check(boolean c, String m) {
+25:         if (c) passes++;
+26:         else fails++;
+27:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+28:     }
+29: 
+30:     // ---------------------------------------------------------------- محاكي Google Drive
+31:     static final class FakeDrive {
+32:         final Map<String, Object[]> files = new LinkedHashMap<>(); // id -> {name, bytes, modified}
+33:         final Map<String, Object[]> sessions = new HashMap<>();
+34:         int seq, tokenGen = 1, expireAfter = -1, calls, uploads, resumables;
+35:         HttpServer srv;
+36: 
+37:         String valid() { return "tok-" + tokenGen; }
+38: 
+39:         int start() throws Exception {
+40:             srv = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+41:             srv.createContext("/", this::handle);
+42:             srv.start();
+43:             return srv.getAddress().getPort();
+44:         }
+45: 
+46:         static byte[] body(HttpExchange x) throws java.io.IOException {
+47:             try (InputStream in = x.getRequestBody()) {
+48:                 return in.readAllBytes();
+49:             }
+50:         }
+51: 
+52:         static void send(HttpExchange x, int code, byte[] b, String type) throws java.io.IOException {
+53:             x.getResponseHeaders().set("Content-Type", type);
+54:             x.sendResponseHeaders(code, b.length == 0 ? -1 : b.length);
+55:             if (b.length > 0) try (OutputStream o = x.getResponseBody()) {
+56:                 o.write(b);
+57:             }
+58:             x.close();
+59:         }
+60: 
+61:         static void json(HttpExchange x, int code, Object o) throws java.io.IOException { send(x, code, o.toString().getBytes(StandardCharsets.UTF_8), "application/json"); }
+62: 
+63:         synchronized void handle(HttpExchange x) throws java.io.IOException {
+64:             calls++;
+65:             String auth = x.getRequestHeaders().getFirst("Authorization");
+66:             if (expireAfter == 0) {
+67:                 tokenGen++;
+68:                 expireAfter = -1;
+69:             } else if (expireAfter > 0) expireAfter--;
+70:             if (auth == null || !auth.equals("Bearer " + valid())) {
+71:                 json(x, 401, new JSONObject().put("error", new JSONObject().put("code", 401).put("message", "Invalid Credentials")));
+72:                 return;
+73:             }
+74:             String path = x.getRequestURI().getPath(), q = x.getRequestURI().getRawQuery() == null ? "" : x.getRequestURI().getRawQuery();
+75:             String m = x.getRequestMethod();
+76:             if (m.equals("GET") && path.equals("/drive/v3/files")) {
+77:                 if (!q.contains("spaces=appDataFolder")) {
+78:                     json(x, 403, new JSONObject().put("error", new JSONObject().put("message", "space")));
+79:                     return;
+80:                 }
+81:                 JSONArray a = new JSONArray();
+82:                 for (Map.Entry<String, Object[]> e : files.entrySet())
+83:                     a.put(new JSONObject().put("id", e.getKey()).put("name", e.getValue()[0]).put("modifiedTime", e.getValue()[2]));
+84:                 json(x, 200, new JSONObject().put("files", a));
+85:                 return;
+86:             }
+87:             if (m.equals("GET") && path.startsWith("/drive/v3/files/") && q.contains("alt=media")) {
+88:                 Object[] f = files.get(path.substring("/drive/v3/files/".length()));
+89:                 if (f == null) json(x, 404, new JSONObject().put("error", new JSONObject().put("message", "nf")));
+90:                 else send(x, 200, (byte[]) f[1], "application/octet-stream");
+91:                 return;
+92:             }
+93:             if (m.equals("DELETE") && path.startsWith("/drive/v3/files/")) {
+94:                 files.remove(path.substring("/drive/v3/files/".length()));
+95:                 send(x, 204, new byte[0], "text/plain");
+96:                 return;
+97:             }
+98:             if (m.equals("POST") && path.equals("/upload/drive/v3/files") && q.contains("uploadType=multipart")) {
+99:                 uploads++;
+100:                 String ct = x.getRequestHeaders().getFirst("Content-Type");
+101:                 String boundary = ct.substring(ct.indexOf("boundary=") + 9);
+102:                 byte[] b = body(x);
+103:                 String all = new String(b, StandardCharsets.ISO_8859_1);
+104:                 String sep = "--" + boundary;
+105:                 int p1 = all.indexOf(sep), h1 = all.indexOf("\r\n\r\n", p1) + 4, p2 = all.indexOf("\r\n" + sep, h1);
+106:                 JSONObject meta = new JSONObject(new String(Arrays.copyOfRange(b, h1, p2), StandardCharsets.UTF_8));
+107:                 int h2 = all.indexOf("\r\n\r\n", p2 + 2) + 4, p3 = all.lastIndexOf("\r\n" + sep + "--");
+108:                 byte[] data = Arrays.copyOfRange(b, h2, p3);
+109:                 if (!meta.getJSONArray("parents").getString(0).equals("appDataFolder")) throw new IllegalStateException("parent");
+110:                 String id = "f" + (++seq);
+111:                 files.put(id, new Object[]{meta.getString("name"), data, String.format("2026-10-21T10:%02d:%02d.%03dZ", seq / 60 % 60, seq % 60, seq % 1000)});
+112:                 json(x, 200, new JSONObject().put("id", id).put("name", meta.getString("name")).put("modifiedTime", files.get(id)[2]));
+113:                 return;
+114:             }
+115:             if (m.equals("POST") && path.equals("/upload/drive/v3/files") && q.contains("uploadType=resumable")) {
+116:                 resumables++;
+117:                 JSONObject meta = new JSONObject(new String(body(x), StandardCharsets.UTF_8));
+118:                 String sid = "s" + (++seq);
+119:                 sessions.put(sid, new Object[]{meta.getString("name")});
+120:                 x.getResponseHeaders().set("Location", "http://127.0.0.1:" + srv.getAddress().getPort() + "/upload/session/" + sid);
+121:                 send(x, 200, new byte[0], "text/plain");
+122:                 return;
+123:             }
+124:             if (m.equals("PUT") && path.startsWith("/upload/session/")) {
+125:                 Object[] s = sessions.remove(path.substring("/upload/session/".length()));
+126:                 byte[] data = body(x);
+127:                 String id = "f" + (++seq);
+128:                 files.put(id, new Object[]{s[0], data, String.format("2026-10-21T11:%02d:%02d.%03dZ", seq / 60 % 60, seq % 60, seq % 1000)});
+129:                 json(x, 200, new JSONObject().put("id", id).put("name", s[0]).put("modifiedTime", files.get(id)[2]));
+130:                 return;
+131:             }
+132:             json(x, 400, new JSONObject().put("error", new JSONObject().put("message", "unsupported " + m + " " + path)));
+133:         }
+134:     }
+135: 
+136:     static String bal(Db db) { return SyncDbTest.bal(db); }
+137: 
+138:     static void syncAll(SyncEngine... es) throws Exception {
+139:         for (int r = 0; r < 3; r++) for (SyncEngine e : es) e.sync();
+140:     }
+141: 
+142:     public static void main(String[] args) throws Exception {
+143:         System.setProperty("sa.secrets", "file");
+144:         File serverJs = new File(args.length > 0 ? args[0] : "sync-server/server.js");
+145:         Object[] first = DeskCoreTest.device("trA");
+146:         Db A = (Db) first[1];
+147:         License.current = Entitlements.of(DeskCoreTest.fullGrant(), BuildInfo.BUILD_DATE);
+148:         List<String> ue = Arrays.asList("USD", "EUR");
+149:         long nour = A.addOffice("النور", "", "", "", "", "", null, null, ue, new HashMap<>(), Arrays.asList(new Db.Opening("USD", "لنا", 50000)));
+150:         A.addTx(SyncDbTest.tx(nour, true, 100000, "USD", "سامر"), Arrays.asList(new byte[]{1, 2, 3}));
+151: 
+152:         System.out.println("== 1) خادم المزامنة الخاص (Node الحقيقي)");
+153:         File data = Files.createTempDirectory("sa-sync-srv").toFile();
+154:         int port = 18000 + new Random().nextInt(2000);
+155:         ProcessBuilder pb = new ProcessBuilder("node", serverJs.getAbsolutePath());
+156:         pb.environment().put("PORT", "" + port);
+157:         pb.environment().put("DATA_DIR", data.getAbsolutePath());
+158:         pb.environment().put("SERVER_KEY", "server-key-123");
+159:         pb.environment().put("RATE_PER_MIN", "100000");
+160:         pb.redirectErrorStream(true);
+161:         Process node = pb.start();
+162:         try {
+163:             String base = "http://127.0.0.1:" + port;
+164:             for (int i = 0; i < 50; i++) {
+165:                 try {
+166:                     new HttpSyncFolder(base, null, "server-key-123").ping();
+167:                     break;
+168:                 } catch (Exception e) {
+169:                     Thread.sleep(100);
+170:                 }

@@ -1,0 +1,145 @@
+605:         Ui.Field amount = Ui.numeric("الكمية"), rate = Ui.numeric("السعر"), toAmt = Ui.numeric("المقابل (فارغ = الكمية × السعر)"), party = Ui.field("مع من؟ (اختياري)"),
+606:                 desc = Ui.field("البيان (اختياري)");
+607:         JLabel market = Ui.label("", 12.5f, Ui.primaryInk, true);
+608:         Runnable mk = () -> {
+609:             BigDecimal r = CashBox.crossRate((String) cur.getSelectedItem(), (String) counter.getSelectedItem(), db.usdRates());
+610:             market.setText(r == null ? "لا يوجد سعر سوق لهما" : "سعر السوق: " + Ui.ltr("1 " + cur.getSelectedItem() + " = " + r.toPlainString() + " " + counter.getSelectedItem()));
+611:         };
+612:         cur.addActionListener(e -> mk.run());
+613:         counter.addActionListener(e -> mk.run());
+614:         mk.run();
+615:         Ui.DateField date = new Ui.DateField(Clock.now());
+616:         JPanel c = new JPanel(new GridLayout(0, 2, 12, 10));
+617:         c.setOpaque(false);
+618:         c.add(Ui.labeled(buy ? "1) العملة التي تشتريها (تدخل)" : "1) العملة التي تبيعها (تخرج)", cur));
+619:         c.add(Ui.labeled("الكمية", amount));
+620:         c.add(Ui.labeled(buy ? "2) تدفع مقابلها بـ (تخرج)" : "2) تستلم مقابلها بـ (تدخل)", counter));
+621:         c.add(Ui.labeled("3) السعر: كم من المقابلة لكل 1", rate));
+622:         c.add(Ui.labeled("المقابل", toAmt));
+623:         c.add(Ui.labeled("مع من", party));
+624:         c.add(Ui.labeled("البيان", desc));
+625:         c.add(Ui.labeled("التاريخ", date));
+626:         JPanel wrap = Ui.column();
+627:         wrap.add(market);
+628:         wrap.add(Ui.gap(6));
+629:         wrap.add(c);
+630:         if (!Ui.form(this, buy ? "شراء عملة" : "بيع عملة", Ui.rtl(wrap), "مراجعة")) return;
+631:         try {
+632:             CashBox.Input x = new CashBox.Input();
+633:             x.kind = CashBox.EXCHANGE;
+634:             x.side = side;
+635:             x.boxId = cfg.id;
+636:             x.currency = (String) cur.getSelectedItem();
+637:             x.toCurrency = (String) counter.getSelectedItem();
+638:             int d1 = db.decimals(x.currency), d2 = db.decimals(x.toCurrency);
+639:             x.amount = Db.minor(amount.val(), d1);
+640:             if (toAmt.val().isEmpty()) {
+641:                 Long ca = CashBox.counterAmount(x.amount, d1, rate.val(), d2);
+642:                 if (ca == null) throw new IllegalArgumentException("اكتب السعر أو المبلغ المقابل");
+643:                 x.toAmount = ca;
+644:             } else x.toAmount = Db.minor(toAmt.val(), d2);
+645:             BigDecimal rv = CashBox.rateDecimal(rate.val());
+646:             if (!rate.val().isEmpty() && rv == null) throw new IllegalArgumentException("السعر غير مفهوم: اكتبه مثل 0.92 أو 13500");
+647:             x.rate = rv == null ? ClientBook.rateOf(x.amount, d1, x.toAmount, d2) : rv.toPlainString();
+648:             x.party = party.val();
+649:             x.description = desc.val();
+650:             x.when = when(date);
+651:             save(x);
+652:         } catch (Exception e) {
+653:             Ui.error(this, e);
+654:         }
+655:     }
+656: 
+657:     void transfer() {
+658:         CashBox.Config cfg = db.cashConfig();
+659:         List<CashBox.Config> others = new ArrayList<>();
+660:         for (CashBox.Config b : activeBoxes()) if (b.id != cfg.id) others.add(b);
+661:         if (others.isEmpty()) return;
+662:         String[] names = new String[others.size()];
+663:         for (int i = 0; i < names.length; i++) names[i] = others.get(i).name;
+664:         JComboBox<String> to = Ui.combo(names), cur = Ui.combo(cfg.currencies.toArray(new String[0]));
+665:         Ui.Field amount = Ui.numeric("المبلغ"), desc = Ui.field("البيان (اختياري)");
+666:         Ui.DateField date = new Ui.DateField(Clock.now());
+667:         JPanel c = new JPanel(new GridLayout(0, 2, 12, 10));
+668:         c.setOpaque(false);
+669:         c.add(Ui.labeled("إلى الصندوق", to));
+670:         c.add(Ui.labeled("العملة", cur));
+671:         c.add(Ui.labeled("المبلغ", amount));
+672:         c.add(Ui.labeled("البيان", desc));
+673:         c.add(Ui.labeled("التاريخ", date));
+674:         if (!Ui.form(this, "تحويل من «" + cfg.name + "»", Ui.rtl(c), "مراجعة")) return;
+675:         try {
+676:             CashBox.Input x = new CashBox.Input();
+677:             x.kind = CashBox.TRANSFER;
+678:             x.boxId = cfg.id;
+679:             x.toBox = others.get(to.getSelectedIndex()).id;
+680:             x.currency = (String) cur.getSelectedItem();
+681:             x.amount = Db.minor(amount.val(), db.decimals(x.currency));
+682:             x.description = desc.val();
+683:             x.when = when(date);
+684:             save(x);
+685:         } catch (Exception e) {
+686:             Ui.error(this, e);
+687:         }
+688:     }
+689: 
+690:     // ===================================================================================
+691:     // الجرد ومراجعته وسجله
+692:     // ===================================================================================
+693: 
+694:     void count() {
+695:         CashBox.Config cfg = db.cashConfig();
+696:         // 10.5 (AUDIT-028): المسجّل = الرصيد + نقد حركات مكاتب بانتظار الاعتماد (موجود فعلًا ولم يُحسب بعد)
+697:         Map<String, Long> bal = db.cashExpected(cfg.id);
+698:         Map<String, Long> pend = db.cashPending(cfg.id);
+699:         Map<String, Ui.Field> fields = new LinkedHashMap<>();
+700:         JPanel c = new JPanel(new GridLayout(0, 2, 12, 10));
+701:         c.setOpaque(false);
+702:         for (String cur : cfg.currencies) {
+703:             Ui.Field f = Ui.numeric("المعدود فعلًا");
+704:             fields.put(cur, f);
+705:             c.add(Ui.labeled(cur + " — المسجّل " + Model.fmt(bal.getOrDefault(cur, 0L), db.decimals(cur))
+706:                     + (pend.containsKey(cur) ? " (منه معلّق " + Model.fmt(pend.get(cur), db.decimals(cur)) + ")" : ""), f));
+707:         }
+708:         Ui.Field note = Ui.field("ملاحظة (اختياري)");
+709:         c.add(Ui.labeled("ملاحظة", note));
+710:         JPanel wrap = Ui.column();
+711:         wrap.add(Ui.para("اعدد النقد الموجود واكتبه لكل عملة، ثم «مراجعة»: يظهر العجز والزيادة، ويُقارن زيادة عملة بعجز أخرى (هل هي عملية بيع لم تُسجَّل؟). اترك العملة التي لم تعدّها فارغة.", 13, Ui.muted, 560));
+712:         if (!pend.isEmpty()) wrap.add(Ui.para("في الصندوق نقد لحركات مكاتب بانتظار الاعتماد، وهو داخل في «المسجّل» لأنه موجود فعلًا: لا تُسجَّل له تسوية، ولا يُحسب مرة ثانية عند اعتماده.", 13, Ui.goldInk, 560));
+713:         wrap.add(Ui.gap(8));
+714:         wrap.add(c);
+715:         if (!Ui.form(this, "جرد «" + cfg.name + "»", Ui.rtl(wrap), "مراجعة الجرد")) return;
+716:         try {
+717:             Map<String, Long> counted = new LinkedHashMap<>();
+718:             for (Map.Entry<String, Ui.Field> e : fields.entrySet()) if (!e.getValue().val().isEmpty()) counted.put(e.getKey(), Db.minor(e.getValue().val(), db.decimals(e.getKey())));
+719:             if (counted.isEmpty()) return;
+720:             review(cfg, counted, note.val());
+721:         } catch (Exception e) {
+722:             Ui.error(this, e);
+723:         }
+724:     }
+725: 
+726:     void review(CashBox.Config cfg, Map<String, Long> counted, String note) {
+727:         Map<String, Integer> dec = db.decimalsMap();
+728:         Map<String, Long> bal = db.cashExpected(cfg.id);
+729:         Map<String, BigDecimal> rates = db.usdRates();
+730:         List<CashBox.CountLine> lines = new ArrayList<>();
+731:         for (Map.Entry<String, Long> e : counted.entrySet()) lines.add(new CashBox.CountLine(e.getKey(), bal.getOrDefault(e.getKey(), 0L), e.getValue()));
+732:         JPanel p = Ui.column();
+733:         BigDecimal up = BigDecimal.ZERO, down = BigDecimal.ZERO;
+734:         for (CashBox.CountLine l : lines) {
+735:             int d = CashBox.dec(dec, l.currency);
+736:             long df = l.diff();
+737:             BigDecimal u = CashBox.usd(Math.abs(df), l.currency, rates, dec);
+738:             if (u != null && df > 0) up = up.add(u);
+739:             if (u != null && df < 0) down = down.add(u);
+740:             p.add(Ui.label(l.currency + ": المسجّل " + Ui.ltr(Model.fmt(l.recorded, d)) + " • المعدود " + Ui.ltr(Model.fmt(l.counted, d)) + " • "
+741:                     + (df == 0 ? "مطابق ✓" : (df > 0 ? "زيادة " : "عجز ") + Ui.ltr(Model.fmt(Math.abs(df), d)) + (u != null && !"USD".equals(l.currency) ? " (≈ " + Ui.ltr(u.setScale(2, RoundingMode.HALF_EVEN) + " $") + ")" : "")),
+742:                     14, df == 0 ? Ui.green : df > 0 ? Ui.primaryInk : Ui.red, true));
+743:         }
+744:         BigDecimal net = CashBox.netUsd(lines, rates, dec, null);
+745:         p.add(Ui.gap(6));
+746:         p.add(Ui.label("مجموع الزيادة ≈ " + Ui.ltr(up.setScale(2, RoundingMode.HALF_EVEN) + " $") + " • مجموع العجز ≈ " + Ui.ltr(down.setScale(2, RoundingMode.HALF_EVEN) + " $")
+747:                 + " • الصافي: " + (net.signum() == 0 ? "متساويان" : (net.signum() > 0 ? "زيادة ≈ " : "عجز ≈ ") + Ui.ltr(net.abs().setScale(2, RoundingMode.HALF_EVEN) + " $")), 13.5f, Ui.ink, true));
+748:         List<CashBox.Suggestion> sugg = CashBox.analyze(lines, rates, dec);
+749:         List<JCheckBox> picks = new ArrayList<>();

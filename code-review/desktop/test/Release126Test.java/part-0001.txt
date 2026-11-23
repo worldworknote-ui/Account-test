@@ -1,0 +1,147 @@
+1: import android.content.Context;
+2: import android.database.Cursor;
+3: import com.smart.hawala.*;
+4: import java.io.File;
+5: import java.math.BigDecimal;
+6: import java.nio.file.Files;
+7: import java.sql.Connection;
+8: import java.sql.DriverManager;
+9: import java.util.*;
+10: 
+11: /**
+12:  * 12.6 على Db الحقيقي وبيانات اصطناعية: تشفير القاعدة كاملة (وترحيل قاعدة 10.4 غير مشفّرة)، ضياع المفتاح دون حذف شيء،
+13:  * الصلاحيات المفصلة (المعادن، الأسعار أونلاين، الصندوق) واشتقاقها للحسابات القديمة، سقوف المجانية الجديدة (الصناديق والعملاء
+14:  * والمستخدمون)، رخصة مخصصة بالأرقام، وصرامة حسابات المعادن (عيار واحد لكل حساب).
+15:  * الاستعمال: java Release126Test tests/data/db-10.4
+16:  */
+17: public class Release126Test {
+18:     static int fails, passes;
+19: 
+20:     static void check(boolean c, String m) {
+21:         if (c) passes++;
+22:         else fails++;
+23:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+24:     }
+25: 
+26:     static boolean throwsMsg(Runnable r, String part) {
+27:         try {
+28:             r.run();
+29:             return false;
+30:         } catch (RuntimeException e) {
+31:             String all = "";
+32:             for (Throwable t = e; t != null; t = t.getCause()) all += t.getMessage() + " | ";
+33:             if (part != null && !all.contains(part)) System.out.println("      رسالة: " + all);
+34:             return part == null || all.contains(part);
+35:         }
+36:     }
+37: 
+38:     static boolean plain(File f) throws Exception {
+39:         byte[] h = Files.readAllBytes(f.toPath());
+40:         return h.length >= 15 && new String(h, 0, 15, java.nio.charset.StandardCharsets.US_ASCII).equals("SQLite format 3");
+41:     }
+42: 
+43:     static boolean opensWithoutKey(File f) {
+44:         try (Connection c = DriverManager.getConnection("jdbc:sqlite:" + f.getPath())) {
+45:             c.createStatement().executeQuery("SELECT count(*) FROM tx").next();
+46:             return true;
+47:         } catch (Exception e) {
+48:             return false;
+49:         }
+50:     }
+51: 
+52:     static Model.User user(Db db, String name, String perms) {
+53:         for (Model.User u : db.users(false)) if (u.name.equals(name)) return u;
+54:         return null;
+55:     }
+56: 
+57:     public static void main(String[] a) throws Exception {
+58:         System.setProperty("sa.secrets", "file");
+59:         File src = new File(a[a.length - 1]);
+60: 
+61:         System.out.println("== 1) قاعدة 10.4 غير مشفّرة تُشفَّر عند أول فتح، وكل شيء كما هو");
+62:         File home = Files.createTempDirectory("sa-126-cipher").toFile();
+63:         MigrationTest.copy(src, home);
+64:         File dbf = new File(home, "databases/" + Db.NAME);
+65:         check(plain(dbf), "قبل: الملف عادي (رأس SQLite ظاهر)");
+66:         DeskCoreTest.resetCrypto();
+67:         Db M = MigrationTest.open(home);
+68:         Map<Long, Map<String, Long>> bal = new TreeMap<>(M.officeBalances());
+69:         check(!plain(dbf) && M.encrypted(), "بعد: الملف كله مشفّر");
+70:         check(Db.cipherNote.isEmpty() && Db.lockedAside == null, "بلا ملاحظات ولا نقل جانبي");
+71:         check(bal.toString().equals("{1={EUR=-10000, USD=136700}, 2={EUR=-25000}}"), "أرصدة المكاتب كما في قاعدة 10.4: " + bal);
+72:         check(M.users(false).size() == 2 && M.cashBalances().get("USD") == 500000, "المستخدمان والصندوق كما هم");
+73:         String[] left = new File(home, "databases").list();
+74:         boolean clean = true;
+75:         for (String n : left) if (n.contains("plain") || n.contains("pre-encrypt") || n.contains("enc-tmp")) clean = false;
+76:         check(clean, "لا نسخة غير مشفّرة متروكة بجانب القاعدة: " + Arrays.toString(left));
+77:         check(!opensWithoutKey(dbf), "الملف لا يُقرأ بلا المفتاح (برنامج SQLite عادي يرفضه)");
+78:         String name1 = M.office(1).name;
+79:         M.close();
+80:         DeskCoreTest.resetCrypto();
+81:         Db M2 = MigrationTest.open(home);
+82:         check(M2.office(1).name.equals(name1) && new TreeMap<>(M2.officeBalances()).equals(bal), "يُفتح مرة ثانية بالمفتاح نفسه، والأسماء المشفّرة تُقرأ");
+83:         try (Cursor c = M2.getReadableDatabase().rawQuery("PRAGMA user_version", null)) {
+84:             c.moveToFirst();
+85:             check(c.getInt(0) == Db.VER, "رقم المخطط " + Db.VER);
+86:         }
+87:         M2.close();
+88: 
+89:         System.out.println("== 2) ضياع مفتاح الجهاز: القاعدة تُنقل جانبًا ولا تُحذف، وتعود مع المفتاح");
+90:         File keys = new File(home, "keys");
+91:         File keysAway = new File(home, "keys-away");
+92:         keys.renameTo(keysAway);
+93:         keys.mkdirs();
+94:         DeskCoreTest.resetCrypto();
+95:         SecretStore.fallback(keys);
+96:         Context ctx = new Context(home);
+97:         Crypto.init(ctx);   // لا مفتاح والقاعدة «موجودة»؟ — نقلناها؟ لا: Crypto يرى القاعدة فلا يولّد مفتاحًا
+98:         Db L = new Db(ctx);
+99:         check(Db.lockedAside != null && Db.lockedAside.exists(), "القاعدة المشفّرة نُقلت جانبًا كما هي: " + (Db.lockedAside == null ? "" : Db.lockedAside.getName()));
+100:         check(!Crypto.healthy(ctx) || Db.lockedAside != null, "الشاشة تعرض «مفتاح التشفير غير متاح» (الإدخال والنسخ التلقائي موقوفان)");
+101:         // عاد المفتاح
+102:         deleteTree(keys);
+103:         keysAway.renameTo(keys);
+104:         DeskCoreTest.resetCrypto();
+105:         SecretStore.fallback(keys);
+106:         Crypto.init(ctx);
+107:         Db back = Db.restoreLockedAside(ctx, L);
+108:         check(back != null && Db.lockedAside == null && new TreeMap<>(back.officeBalances()).equals(bal), "بعد عودة المفتاح: «إعادة المحاولة» تعيد القاعدة كاملة بأرصدتها");
+109:         back.close();
+110: 
+111:         System.out.println("== 3) مفتاح جديد قبل الاستعادة: القديمة تبقى على القرص، والجديدة تعمل");
+112:         DeskCoreTest.resetCrypto();
+113:         SecretStore.fallback(keys);
+114:         Crypto.init(ctx);
+115:         Db cur = new Db(ctx);
+116:         Crypto.resetForRestore(ctx);
+117:         Db fresh = Db.reopenAfterKeyReset(ctx, cur);
+118:         int lockedFiles = 0;
+119:         for (String n : new File(home, "databases").list()) if (n.startsWith("smart_accountant.locked-") && n.endsWith(".db")) lockedFiles++;
+120:         check(lockedFiles >= 1 && Db.lockedAside == null, "القديمة محفوظة باسم locked-… (لا تُحذف) ولا تمنع العمل");
+121:         check(fresh.offices().isEmpty() && fresh.encrypted(), "قاعدة جديدة فارغة مشفّرة بالمفتاح الجديد، جاهزة للاستعادة");
+122:         fresh.close();
+123: 
+124:         System.out.println("== 4) الصلاحيات المفصلة واشتقاقها للحسابات القديمة");
+125:         Set<String> old = Auth.expand(Auth.parse("VIEW,CURRENCIES,CASH"));
+126:         check(old.contains("METALS") && old.contains("RATES") && old.contains("RATES_ONLINE"), "حساب قديم بـ«العملات»: المعادن والأسعار اليدوية والأونلاين كما كانت");
+127:         check(old.contains("CASH_EXPENSE") && old.contains("CASH_FX") && old.contains("CASH_COUNT") && old.contains("CLIENTS"), "حساب قديم بـ«الصندوق»: المصاريف والبيع والشراء والجرد والعملاء");
+128:         Set<String> d12 = Auth.expand(Auth.parse("VIEW,CURRENCIES,RATES,CASH,P12"));
+129:         check(d12.contains("METALS") && d12.contains("RATES_ONLINE") && d12.contains("CASH_FX"), "قائمة 12.0–12.5 (P12 بلا P126): تُشتق الجديدة فلا ينقص شيء");
+130:         Set<String> d126 = Auth.expand(Auth.parse("VIEW,CURRENCIES,CASH,P12,P126"));
+131:         check(!d126.contains("METALS") && !d126.contains("RATES_ONLINE") && !d126.contains("CASH_FX"), "قائمة 12.6: كما اختارها المدير تمامًا");
+132:         check(Auth.csv(Auth.parse("CURRENCIES,P12,P126")).contains("P126"), "العلامة تُحفظ");
+133: 
+134:         Object[] dv = DeskCoreTest.device("r126p");
+135:         Db P = (Db) dv[1];
+136:         License.current = Entitlements.of(DeskCoreTest.fullGrant(), BuildInfo.BUILD_DATE);
+137:         Model.User admin = P.user(P.addUser("المدير", Auth.ADMIN, null, "112233"));
+138:         SmartApp.currentUser = admin;
+139:         Db.currentUserName = admin.name;
+140:         final Model.User am = P.user(P.addUser("أمين", Auth.CUSTOM, "VIEW,CURRENCIES,RATES,CASH,P12,P126", "4455"));
+141:         SmartApp.currentUser = am;
+142:         Db.currentUserName = am.name;
+143:         check(throwsMsg(() -> P.saveMetal("XAU21", "ذهب 21", Metals.GOLD, 875, "g", false, true), "صلاحية"), "بلا «المعادن»: إضافة معدن مرفوضة في طبقة البيانات");
+144:         P.saveCurrency("TRY", "ليرة تركية", 2, true);
+145:         check(P.currencies(true).stream().anyMatch(c -> c.code.equals("TRY")), "و«العملات» وحدها تكفي لإضافة عملة");
+146:         Map<String, BigDecimal> on = new HashMap<>();
+147:         on.put("TRY", new BigDecimal("0.03"));

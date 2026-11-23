@@ -1,0 +1,94 @@
+187:                     + "&state=" + enc(state);
+188:             lastUrl = url;
+189:             Desktop.getDesktop().browse(new URI(url));
+190:             while (true) {
+191:                 Socket acc;
+192:                 try {
+193:                     acc = ss.accept();
+194:                 } catch (java.net.SocketTimeoutException te) {
+195:                     throw new IOException("انتهت مهلة الدخول (3 دقائق) دون إكماله في المتصفح. أعد المحاولة عندما تكون جاهزًا.");
+196:                 } catch (java.net.SocketException se) {
+197:                     if (ss.isClosed()) throw new IOException("أُلغي الدخول إلى Google.");
+198:                     throw se;
+199:                 }
+200:                 try (Socket s = acc) {
+201:                     s.setSoTimeout(10000);
+202:                     String line = readLine(s.getInputStream());
+203:                     // GET /?state=..&code=.. HTTP/1.1
+204:                     String q = line.contains("?") ? line.substring(line.indexOf('?') + 1).split(" ")[0] : "";
+205:                     String code = param(q, "code"), err = param(q, "error"), gotState = param(q, "state");
+206:                     if (code == null && err == null) {
+207:                         reply(s, "…");
+208:                         continue;
+209:                     }
+210:                     if (err != null || !state.equals(gotState)) {
+211:                         reply(s, "لم يكتمل الدخول. ارجع إلى البرنامج وأعد المحاولة.");
+212:                         throw new IOException("لم يكتمل الدخول إلى Google (" + (err == null ? "state" : err) + ")");
+213:                     }
+214:                     JSONObject r = post("code=" + enc(code) + "&client_id=" + enc(c[0]) + "&client_secret=" + enc(c[1]) + "&redirect_uri=" + enc(redirect)
+215:                             + "&grant_type=authorization_code&code_verifier=" + enc(verifier));
+216:                     if (r.has("error") || r.optString("refresh_token").isEmpty()) {
+217:                         reply(s, "تعذر إكمال الدخول. ارجع إلى البرنامج.");
+218:                         throw new IOException("تعذر إكمال الدخول إلى Google: " + r.optString("error_description", r.optString("error", "بلا رمز تجديد")));
+219:                     }
+220:                     SecretStore.put(key, r.getString("refresh_token"));
+221:                     reply(s, "تم ✓ — يمكنك إغلاق هذه الصفحة والرجوع إلى «المحاسب الذكي».");
+222:                     return email(r.optString("access_token"));
+223:                 }
+224:             }
+225:         }
+226:     }
+227: 
+228:     static String aboutUrl = "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)";
+229: 
+230:     /** 10.14: بريد الحساب المتصل (واجهة Drive «about» بالصلاحية نفسها). "" إن تعذّر. */
+231:     public static String email(String access) {
+232:         if (access == null || access.isEmpty()) return "";
+233:         try {
+234:             HttpURLConnection c = (HttpURLConnection) new URL(aboutUrl).openConnection();
+235:             c.setConnectTimeout(20000);
+236:             c.setReadTimeout(30000);
+237:             c.setRequestProperty("Authorization", "Bearer " + access);
+238:             try {
+239:                 if (c.getResponseCode() >= 400) return "";
+240:                 JSONObject j = new JSONObject(new String(c.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+241:                 return j.optJSONObject("user") == null ? "" : j.getJSONObject("user").optString("emailAddress");
+242:             } finally {
+243:                 c.disconnect();
+244:             }
+245:         } catch (Exception e) {
+246:             return "";
+247:         }
+248:     }
+249: 
+250:     private static String readLine(InputStream in) throws IOException {
+251:         StringBuilder b = new StringBuilder();
+252:         int ch;
+253:         while ((ch = in.read()) >= 0 && ch != '\n') b.append((char) ch);
+254:         return b.toString().trim();
+255:     }
+256: 
+257:     private static String param(String q, String k) {
+258:         for (String kv : q.split("&")) {
+259:             int i = kv.indexOf('=');
+260:             if (i > 0 && kv.substring(0, i).equals(k)) {
+261:                 try {
+262:                     return URLDecoder.decode(kv.substring(i + 1), "UTF-8");
+263:                 } catch (Exception e) {
+264:                     return kv.substring(i + 1);
+265:                 }
+266:             }
+267:         }
+268:         return null;
+269:     }
+270: 
+271:     private static void reply(Socket s, String msg) throws IOException {
+272:         String html = "<!doctype html><html dir=rtl lang=ar><meta charset=utf-8><title>المحاسب الذكي</title>"
+273:                 + "<body style='font-family:sans-serif;text-align:center;padding:60px;font-size:20px'>" + msg + "</body></html>";
+274:         byte[] b = html.getBytes(StandardCharsets.UTF_8);
+275:         OutputStream o = s.getOutputStream();
+276:         o.write(("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " + b.length + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+277:         o.write(b);
+278:         o.flush();
+279:     }
+280: }

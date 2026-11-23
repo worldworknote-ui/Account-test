@@ -1,0 +1,53 @@
+1: package android.text;
+2: 
+3: /** تخطيط نص متعدد الأسطر (يُستعمل في رسم البطاقات والتقارير). */
+4: public class Layout {
+5:     public enum Alignment { ALIGN_NORMAL, ALIGN_OPPOSITE, ALIGN_CENTER }
+6:     public static final int BREAK_STRATEGY_SIMPLE = 0, BREAK_STRATEGY_HIGH_QUALITY = 1, BREAK_STRATEGY_BALANCED = 2,
+7:             HYPHENATION_FREQUENCY_NONE = 0, HYPHENATION_FREQUENCY_NORMAL = 1, JUSTIFICATION_MODE_NONE = 0, JUSTIFICATION_MODE_INTER_WORD = 1,
+8:             DIR_LEFT_TO_RIGHT = 1, DIR_RIGHT_TO_LEFT = -1;
+9: 
+10:     protected final android.widget.TextLines lines;
+11:     protected final CharSequence text;
+12:     protected final TextPaint paint;
+13:     protected final int width;
+14:     protected final Alignment align;
+15: 
+16:     protected Layout(CharSequence text, TextPaint p, int width, Alignment a, float mult, float add, boolean rtl, int maxLines, TextUtils.TruncateAt ell) {
+17:         this.text = text;
+18:         this.paint = p;
+19:         this.width = width;
+20:         this.align = a;
+21:         this.lines = android.widget.TextLines.build(text, p, width, mult, add, rtl, maxLines, ell);
+22:     }
+23:     public int getLineCount() { return lines.count(); }
+24:     public int getHeight() { return Math.round(lines.height()); }
+25:     public int getWidth() { return width; }
+26:     public float getLineWidth(int i) { return lines.lineWidth(i); }
+27:     public float getLineMax(int i) { return lines.lineWidth(i); }
+28:     public int getLineTop(int i) { return Math.round(lines.lineTop(i)); }
+29:     public int getLineBottom(int i) { return Math.round(lines.lineTop(i) + lines.lineHeight(i)); }
+30:     public int getLineBaseline(int i) { return Math.round(lines.lineTop(i) + lines.lineAscent(i)); }
+31:     public int getLineAscent(int i) { return -Math.round(lines.lineAscent(i)); }
+32:     public int getLineDescent(int i) { return Math.round(lines.lineHeight(i) - lines.lineAscent(i)); }
+33:     public int getLineStart(int i) { return lines.lineStart(i); }
+34:     public int getLineEnd(int i) { return lines.lineEnd(i); }
+35:     public float getLineLeft(int i) { return lines.lineLeft(i, width, align == Alignment.ALIGN_CENTER ? 1 : align == Alignment.ALIGN_OPPOSITE ? 2 : 0); }
+36:     public float getLineRight(int i) { return getLineLeft(i) + getLineWidth(i); }
+37:     public int getEllipsisCount(int i) { return lines.ellipsized(i) ? 1 : 0; }
+38:     public int getParagraphDirection(int i) { return lines.lineRtl(i) ? DIR_RIGHT_TO_LEFT : DIR_LEFT_TO_RIGHT; }
+39:     public int getLineForVertical(int y) { for (int i = 0; i < lines.count(); i++) if (y < lines.lineTop(i) + lines.lineHeight(i)) return i; return Math.max(0, lines.count() - 1); }
+40:     public int getLineForOffset(int off) { for (int i = 0; i < lines.count(); i++) if (off < lines.lineEnd(i)) return i; return Math.max(0, lines.count() - 1); }
+41:     public CharSequence getText() { return text; }
+42:     public TextPaint getPaint() { return paint; }
+43:     public Alignment getAlignment() { return align; }
+44:     public void draw(android.graphics.Canvas c) {
+45:         int mode = align == Alignment.ALIGN_CENTER ? 1 : align == Alignment.ALIGN_OPPOSITE ? 2 : 0;
+46:         lines.draw(c, 0, 0, width, mode, paint.getColor());
+47:     }
+48:     public static float getDesiredWidth(CharSequence s, TextPaint p) {
+49:         float m = 0;
+50:         for (String line : s.toString().split("\n", -1)) m = Math.max(m, p.measureText(line));
+51:         return m;
+52:     }
+53: }

@@ -1,0 +1,155 @@
+1: import com.smart.hawala.Model;
+2: import com.smart.hawala.OwnerReports;
+3: import com.smart.hawala.Report;
+4: import com.smart.hawala.XlsxWriter;
+5: import java.io.ByteArrayOutputStream;
+6: import java.nio.charset.StandardCharsets;
+7: import java.nio.file.Files;
+8: import java.nio.file.Path;
+9: import java.nio.file.Paths;
+10: import java.util.ArrayList;
+11: import java.util.HashMap;
+12: import java.util.List;
+13: import java.util.Map;
+14: import java.util.TimeZone;
+15: import org.json.JSONArray;
+16: import org.json.JSONObject;
+17: 
+18: /**
+19:  * 8.0: تقارير صاحب المكتب. بيانات اصطناعية بأرقام معروفة، ثم (اختياريًا) ملف حقيقي \u200e*.tables.json تُقارن أرقامه بالدراسة.
+20:  * وسيط 1: مجلد مخرجات (يُكتب فيه ملف Excel للتقارير). وسيط 2 (اختياري): ملف جداول حقيقي.
+21:  */
+22: public class OwnerReportsTest {
+23:     static int fails = 0, passes = 0;
+24:     static JSONObject lastFile;
+25: 
+26:     static void check(boolean c, String m) {
+27:         if (c) passes++;
+28:         else fails++;
+29:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+30:     }
+31: 
+32:     static final long DAY = 86400000L;
+33:     static long ids = 1;
+34: 
+35:     static Model.Tx tx(long office, boolean us, long amount, String cur, long at) {
+36:         Model.Tx t = new Model.Tx();
+37:         t.id = ids++;
+38:         t.uuid = "u" + t.id;
+39:         t.officeId = office;
+40:         t.type = us ? Model.TYPE_DEBIT : Model.TYPE_CREDIT;
+41:         t.amount = amount;
+42:         t.currency = cur;
+43:         t.feeType = Model.FEE_NONE;
+44:         t.feeCurrency = cur;
+45:         t.createdAt = at;
+46:         t.status = "ACTIVE";
+47:         t.person = "";
+48:         t.description = "";
+49:         t.notes = "";
+50:         t.userName = "";
+51:         return t;
+52:     }
+53: 
+54:     public static void main(String[] a) throws Exception {
+55:         TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+56:         long now = 1791936000000L;   // 2026-10-14 00:00 UTC
+57:         OwnerReports.Input in = new OwnerReports.Input();
+58:         in.now = now;
+59:         in.decimals.put("USD", 2);
+60:         in.decimals.put("EUR", 2);
+61:         in.names.put(1L, "الأمل");
+62:         in.names.put(2L, "النور");
+63:         in.names.put(3L, "الريان");
+64:         in.names.put(4L, "الريان التجاري");
+65:         in.names.put(5L, "12");
+66: 
+67:         System.out.println("== عمر الأرصدة (الأقدم يُسدَّد أولًا)");
+68:         // الأمل: لنا 1000 قبل 200 يوم، 500 قبل 100 يوم، 300 قبل 10 أيام، وسدّد 800 قبل 5 أيام → الرصيد 1000
+69:         in.txs.add(tx(1, true, 100000, "USD", now - 200 * DAY));
+70:         in.txs.add(tx(1, true, 50000, "USD", now - 100 * DAY));
+71:         in.txs.add(tx(1, true, 30000, "USD", now - 10 * DAY));
+72:         in.txs.add(tx(1, false, 80000, "USD", now - 5 * DAY));
+73:         List<OwnerReports.Aging> ag = OwnerReports.aging(in, true);
+74:         OwnerReports.Aging g = ag.get(0);
+75:         check(g.balance == 100000 && g.buckets[0] == 30000 && g.buckets[2] == 50000 && g.buckets[3] == 20000 && g.buckets[1] == 0,
+76:                 "رصيد 1000: 300 حديثة، 500 من 100 يوم، و200 من 200 يوم " + java.util.Arrays.toString(g.buckets));
+77:         check(g.over90() == 70000 && g.oldestDays == 200, "أقدم من 90 يومًا: 700");
+78:         Model.Tx cancelled = tx(1, true, 999900, "USD", now - 400 * DAY);
+79:         cancelled.status = "CANCELLED";
+80:         in.txs.add(cancelled);
+81:         check(OwnerReports.aging(in, true).get(0).balance == 100000, "الحركة الملغاة خارج الحساب");
+82:         in.openings.add(new OwnerReports.Opening(2, "EUR", -200000, now - 300 * DAY));
+83:         in.txs.add(tx(2, false, 50000, "EUR", now - 20 * DAY));
+84:         List<OwnerReports.Aging> pay = OwnerReports.aging(in, false);
+85:         check(pay.size() == 1 && pay.get(0).balance == 250000 && pay.get(0).buckets[3] == 200000 && pay.get(0).buckets[0] == 50000, "ما علينا: الرصيد السابق يُعمَّر بتاريخه");
+86: 
+87:         System.out.println("== الحسابات الخاملة");
+88:         in.txs.add(tx(5, true, 12300, "USD", now - 538 * DAY));
+89:         List<OwnerReports.Dormant> dm = OwnerReports.dormant(in, 90);
+90:         check(dm.size() == 1 && dm.get(0).office == 5 && dm.get(0).days == 538, "الحساب «12» بلا حركة منذ 538 يومًا، والنور تحرّك باليورو قبل 20 يومًا فليس متوقفًا");
+91:         Model.Tx eurOnly = tx(1, true, 7700, "EUR", now - 400 * DAY);
+92:         in.txs.add(eurOnly);
+93:         List<OwnerReports.Dormant> dm2 = OwnerReports.dormant(in, 90);
+94:         boolean amal = false;
+95:         for (OwnerReports.Dormant d : dm2) amal |= d.office == 1 && d.balances.containsKey("EUR") && !d.balances.containsKey("USD");
+96:         check(amal, "رصيد يورو متوقف على مكتب نشط بالدولار يُحتسب وحده");
+97:         in.txs.remove(eurOnly);
+98: 
+99:         System.out.println("== الاتجاهات");
+100:         for (int i = 0; i < 30; i++) in.txs.add(tx(3, false, 1000, "EUR", now - (100 + i) * DAY));   // قبل: 30
+101:         for (int i = 0; i < 10; i++) in.txs.add(tx(3, false, 1000, "EUR", now - (10 + i) * DAY));    // بعد: 10
+102:         for (int i = 0; i < 5; i++) in.txs.add(tx(4, true, 1000, "EUR", now - (2 + i) * DAY));       // جديد
+103:         Map<Long, String> kinds = new HashMap<>();
+104:         for (OwnerReports.Trend t : OwnerReports.trends(in, 90)) kinds.put(t.office, t.kind);
+105:         check("declining".equals(kinds.get(3L)) && "new".equals(kinds.get(4L)), "الريان متراجع (30 → 10)، الريان التجاري جديد " + kinds);
+106: 
+107:         System.out.println("== الأجور وحجم الحوالة والتركّز والجودة");
+108:         Model.Tx f1 = tx(1, true, 5000, "USD", now - 30 * DAY);
+109:         f1.description = "أجور حوالة";
+110:         Model.Tx f2 = tx(2, false, 9000, "USD", now - 40 * DAY);
+111:         f2.description = "اجور10 الاف";
+112:         Model.Tx f3 = tx(1, true, 200000, "USD", now - 50 * DAY);
+113:         f3.feeType = Model.FEE_THEM;
+114:         f3.fee = 1500;
+115:         f3.feeCurrency = "USD";
+116:         in.txs.add(f1);
+117:         in.txs.add(f2);
+118:         in.txs.add(f3);
+119:         OwnerReports.Fees fe = OwnerReports.fees(in, now - 365 * DAY);
+120:         long[] usd = fe.perCurrency.get("USD");
+121:         check(usd[0] == 5000 && usd[1] == 10500 && fe.fromDescription == 2, "قبضت 50 ودفعت 105 (خانة الأجرة + بيان «أجور») " + java.util.Arrays.toString(usd));
+122:         Map<String, OwnerReports.Size> sz = OwnerReports.sizes(in, now - 365 * DAY);
+123:         check(sz.get("USD").max == 200000 && sz.get("USD").count == 5, "حجم الحوالة دون حركات الأجور: " + sz.get("USD").count);
+124:         Model.Tx notFee = tx(1, false, 2800000, "USD", now - 30 * DAY);
+125:         notFee.description = "عمان مع أجور";
+126:         Model.Tx typo = tx(1, false, 3700, "USD", now - 30 * DAY);
+127:         typo.description = "اجر3700";
+128:         Model.Tx name = tx(1, false, 100, "USD", now - 30 * DAY);
+129:         name.description = "اجرت الشقة";
+130:         check(!OwnerReports.feeRow(notFee) && OwnerReports.feeRow(typo) && !OwnerReports.feeRow(name), "«عمان مع أجور» حوالة لا أجرة، و«اجر3700» أجرة");
+131:         System.out.println("== «راجع» = أجرة (لا إرجاع)");
+132:         Model.Tx r1 = tx(2, true, 38500, "EUR", now - 15 * DAY);
+133:         r1.description = "راجع154 الف";
+134:         Model.Tx r2 = tx(2, false, 6000, "EUR", now - 16 * DAY);
+135:         r2.description = "راجع 40 الف";
+136:         Model.Tx r3 = tx(2, true, 6600, "EUR", now - 17 * DAY);
+137:         r3.description = "راجع33";                       // المذكور بالآلاف: 66 ÷ 33,000 = 0.2%
+138:         Model.Tx r4 = tx(2, true, 34000, "USD", now - 18 * DAY);
+139:         r4.description = "راجع35 الف+ 50125";             // 85,125
+140:         Model.Tx back = tx(2, true, 70000, "EUR", now - 19 * DAY);
+141:         back.description = "حوالة مرتجع";
+142:         Model.Tx call = tx(2, true, 5000, "EUR", now - 19 * DAY);
+143:         call.description = "راجعني بخصوص الحوالة";
+144:         check(OwnerReports.feeRow(r1) && OwnerReports.rajeRow(r1) && !OwnerReports.returnRow(r1), "«راجع154 الف» أجرة لا إرجاع");
+145:         check(OwnerReports.returnRow(back) && !OwnerReports.feeRow(back), "«مرتجع» إرجاع لا أجرة");
+146:         check(!OwnerReports.rajeRow(call) && !OwnerReports.feeRow(call), "«راجعني» ليست راجع");
+147:         check(OwnerReports.rajeBase("راجع154 الف").compareTo(new java.math.BigDecimal(154000)) == 0
+148:                 && OwnerReports.rajeBase("راجع35 الف+ 50125").compareTo(new java.math.BigDecimal(85125)) == 0
+149:                 && OwnerReports.rajeBase("راجع ٥٠٠٠").compareTo(new java.math.BigDecimal(5000)) == 0 && OwnerReports.rajeBase("راجع بوخارست") == null, "المبلغ المذكور بعد «راجع»");
+150:         check(OwnerReports.rajeRate(r1, 2).compareTo(new java.math.BigDecimal("0.25")) == 0 && OwnerReports.rajeRate(r3, 2).compareTo(new java.math.BigDecimal("0.2")) == 0,
+151:                 "النسبة الفعلية: 385 ÷ 154,000 = 0.25% و66 ÷ 33 ألفًا = 0.2%");
+152:         in.txs.add(r1);
+153:         in.txs.add(r2);
+154:         in.txs.add(r3);
+155:         in.txs.add(r4);

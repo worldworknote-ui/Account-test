@@ -1,0 +1,109 @@
+536:     S.result = { model: model, T: T, rep: rep, cfg: cfg };
+537:     var html = "";
+538:     if (stm) {
+539:       var okF = model.files.filter(function (f) { return f.ok; });
+540:       var lines = okF.reduce(function (a, f) { return a + (f.checked || 0); }, 0);
+541:       var badF = model.files.length - okF.length;
+542:       html += badF ? '<div class="msg err"><b>✗ ' + badF + " كشف من " + model.files.length + " لم يُنقل.</b> أسبابها في القائمة أدناه وفي جدول الخطوة 2. صحّحها (أو احذف الملف) ثم اختر الملفات مجددًا.</div>"
+543:         : '<div class="msg ok"><b>✓ كل الكشوفات (' + okF.length + ") صحيحة:</b> " + lines.toLocaleString("en-US") + " رصيدًا في الكشوفات طابق الحساب سطرًا بسطر" +
+544:           (okF.filter(function (f) { return f.footer; }).length ? "، و«اجمالي الرصيد» طابق في " + okF.filter(function (f) { return f.footer; }).length + " كشف." : ".") + "</div>";
+545:     }
+546:     html += '<div class="stats">' +
+547:       stat(T.offices.length, "مكتب") + stat(T.tx.length, "حركة") + stat(T.opening_balances.length, "رصيد سابق") +
+548:       stat(model.rowsRead, "صف مقروء") + stat(model.skipped.length, "صف متخطى") + stat(model.errors.length, "صف مرفوض", model.errors.length > 0) + "</div>";
+549:     if (model.errors.length) {
+550:       html += '<div class="msg err"><b>صفوف مرفوضة (' + model.errors.length + "):</b> لن تُنقل حتى تُصحَّح في الملف أو في الإعداد. صحّحها ثم اختر الملف مجددًا.<ul>" +
+551:         model.errors.slice(0, 200).map(function (e) { return "<li>" + esc(e.sheet) + " — صف " + e.row + ": " + esc(e.msg) + "</li>"; }).join("") + "</ul></div>";
+552:     }
+553:     if (model.warnings.length) html += '<div class="msg warn"><b>ملاحظات:</b><ul>' + model.warnings.map(function (w) { return "<li>" + esc(w) + "</li>"; }).join("") + "</ul></div>";
+554:     if (model.skipped.length) {
+555:       var reasons = {};
+556:       model.skipped.forEach(function (s) { reasons[s.reason] = (reasons[s.reason] || 0) + 1; });
+557:       html += '<div class="msg info"><b>صفوف تُخطّيت (لا تؤثر على الأرصدة):</b> ' + Object.keys(reasons).map(function (r) { return esc(r) + " (" + reasons[r] + ")"; }).join("، ") +
+558:         ' <a href="#" id="showSkipped">عرضها</a><ul class="hidden" id="skippedList">' + model.skipped.slice(0, 300).map(function (s) { return "<li>" + esc(s.sheet) + " — صف " + s.row + ": " + esc(s.reason) + "</li>"; }).join("") + "</ul></div>";
+559:     }
+560:     var checks = rep.rows.filter(function (r) { return r.match !== null; });
+561:     var bad = checks.filter(function (r) { return !r.match; });
+562:     if (checks.length) {
+563:       if (!stm) html += bad.length ? '<div class="msg err"><b>✗ ' + bad.length + " رصيد لا يطابق عمود الرصيد في ملفك.</b> راجع اتجاه «لنا/علينا» أو الصفوف المرفوضة.</div>"
+564:         : '<div class="msg ok"><b>✓ كل الأرصدة (' + checks.length + ") تطابق عمود الرصيد في ملفك.</b></div>";
+565:       else if (bad.length) html += '<div class="msg err"><b>✗ ' + bad.length + " رصيد بعد النقل لا يطابق الكشف.</b> أرسل الكشوفات للمطوّر.</div>";
+566:     }
+567:     if (!stm) html += '<div class="row" style="margin:6px 0 10px"><label class="check" style="margin:0"><input type="checkbox" id="reverse"' + (S.reverse ? " checked" : "") +
+568:       '> عكس اتجاه «لنا/علينا» في كل البيانات</label><span class="hint">استخدمه إن ظهرت كل الأرصدة معكوسة عن برنامجك.</span></div>';
+569:     // جدول الأرصدة
+570:     html += "<h3>أرصدة المكاتب بعد النقل</h3><div class=\"tablebox\"><table><tr><th>المكتب</th><th>العملة</th><th class=\"num\">رصيد سابق</th><th class=\"num\">حركات لنا</th><th class=\"num\">حركات علينا</th><th>الرصيد النهائي</th>" +
+571:       (checks.length ? "<th>في ملفك</th><th></th>" : "") + "</tr>";
+572:     rep.rows.forEach(function (r) {
+573:       html += "<tr><td>" + esc(r.office) + '</td><td class="ltr">' + r.code + '</td><td class="num">' + bw(r.opening, r.dec) + '</td><td class="num">' + C.fmtMinor(r.debit, r.dec) +
+574:         '</td><td class="num">' + C.fmtMinor(r.credit, r.dec) + "</td><td>" + balCell(r.balance, r.dec) + "</td>" +
+575:         (checks.length ? "<td>" + (r.expected === null ? "" : balCell(r.expected, r.dec)) + "</td><td>" + (r.match === null ? "" : r.match ? '<span class="chip ok">مطابق</span>' : '<span class="chip bad">غير مطابق</span>') + "</td>" : "") + "</tr>";
+576:     });
+577:     html += "</table></div>";
+578:     html += "<h3>الإجمالي لكل عملة</h3><div class=\"tablebox\"><table><tr><th>العملة</th><th class=\"num\">مجموع ما لنا</th><th>مكاتب</th><th class=\"num\">مجموع ما علينا</th><th>مكاتب</th><th>الصافي</th></tr>";
+579:     rep.totals.forEach(function (t) {
+580:       html += '<tr><td class="ltr">' + t.code + '</td><td class="num us">' + C.fmtMinor(t.receivable, t.dec) + "</td><td>" + t.nr + '</td><td class="num them">' + C.fmtMinor(t.payable, t.dec) +
+581:         "</td><td>" + t.np + "</td><td>" + balCell(t.receivable - t.payable, t.dec) + "</td></tr>";
+582:     });
+583:     html += "</table></div>";
+584:     // أسماء المكاتب
+585:     html += "<h3>أسماء المكاتب في التطبيق</h3><p class=\"hint\">عدّل الاسم إن أردت؛ إعطاء مكتبين الاسم نفسه يدمجهما.</p><div class=\"tablebox\" style=\"max-height:300px\"><table><tr><th>الاسم في الملف</th><th>الاسم في التطبيق</th><th>حركات</th><th>أرصدة سابقة</th></tr>";
+586:     model.offices.forEach(function (o) {
+587:       Object.keys(o.variants).forEach(function (v, i) {
+588:         var k = C.officeKey(v);
+589:         html += "<tr><td>" + esc(v) + '</td><td><input type="text" data-rename="' + esc(k) + '" value="' + esc(S.rename[k] || o.name) + '"></td><td>' + (i === 0 ? o.tx : "") + "</td><td>" + (i === 0 ? o.openings : "") + "</td></tr>";
+590:       });
+591:     });
+592:     html += "</table></div>";
+593:     // عينة الحركات
+594:     if (T.tx.length) {
+595:       var names = {};
+596:       T.offices.forEach(function (o) { names[o.id] = o.name; });
+597:       var dec = {};
+598:       T.currencies.forEach(function (c) { dec[c.code] = c.decimals; });
+599:       html += "<h3>أول الحركات كما ستظهر</h3><div class=\"tablebox\" style=\"max-height:300px\"><table><tr><th>التاريخ</th><th>المكتب</th><th>النوع</th><th class=\"num\">المبلغ</th><th>المستفيد</th><th>البيان</th><th>الأجرة</th></tr>";
+600:       T.tx.slice(0, 25).forEach(function (t) {
+601:         var us = t.type.indexOf("لنا") >= 0;
+602:         html += "<tr><td>" + C.fmtDate(t.created_at) + "</td><td>" + esc(names[t.office_id]) + '</td><td><span class="chip ' + (us ? "us" : "them") + '">' + (us ? "لنا" : "علينا") + '</span></td><td class="num">' +
+603:           C.fmtMinor(BigInt(t.amount_minor), dec[t.currency]) + " " + t.currency + "</td><td>" + esc(t.person) + "</td><td>" + esc(String(t.description).slice(0, 50)) + "</td><td>" +
+604:           (t.fee_minor ? esc(t.fee_type) + " " + C.fmtMinor(BigInt(t.fee_minor), dec[t.currency]) : "") + "</td></tr>";
+605:       });
+606:       html += "</table></div>";
+607:     }
+608:     box.innerHTML = html;
+609:     var sk = $("showSkipped");
+610:     if (sk) sk.onclick = function (e) { e.preventDefault(); $("skippedList").classList.toggle("hidden"); };
+611:     $("step4").classList.add("done");
+612:     if (stm) renderStmtTable();
+613:     updateMake();
+614:   }
+615: 
+616:   function stat(n, label, err) { return '<div class="stat' + (err ? " err" : "") + '"><b>' + n + "</b><span>" + label + "</span></div>"; }
+617:   function bw(m, dec) { return m === 0n ? "0" : (m > 0n ? "لنا " : "علينا ") + C.fmtMinor(m > 0n ? m : -m, dec); }
+618:   function balCell(m, dec) {
+619:     if (m === 0n) return '<span class="hint">0</span>';
+620:     return '<span class="chip ' + (m > 0n ? "us" : "them") + '">' + (m > 0n ? "لنا" : "علينا") + '</span> <span class="ltr ' + (m > 0n ? "us" : "them") + '">' + C.fmtMinor(m > 0n ? m : -m, dec) + "</span>";
+621:   }
+622: 
+623:   // ===================================================================================
+624:   // 5. الإنشاء
+625:   // ===================================================================================
+626: 
+627:   function updateMake() {
+628:     var r = S.result;
+629:     var ok = !!r && (r.T.tx.length + r.T.opening_balances.length + r.T.offices.length) > 0;
+630:     var hasErr = ok && r.model.errors.length > 0;
+631:     $("forceBox").classList.toggle("hidden", !hasErr);
+632:     var pw1 = $("pw1").value, pw2 = $("pw2").value;
+633:     var can = ok && $("confirmed").checked && pw1.length >= 6 && pw1 === pw2 && (!hasErr || $("force").checked);
+634:     $("make").disabled = !can;
+635:     $("csv").disabled = !ok;
+636:     $("print").disabled = !ok;
+637:     var m = $("makeMsg");
+638:     if (!ok) m.innerHTML = "";
+639:     else if (pw1 && pw2 && pw1 !== pw2) m.innerHTML = '<div class="msg err">كلمتا السر غير متطابقتين.</div>';
+640:     else if (pw1 && pw1.length < 6) m.innerHTML = '<div class="msg warn">كلمة السر قصيرة: 6 أحرف على الأقل.</div>';
+641:     else if (m.dataset.done !== "1") m.innerHTML = "";
+642:   }
+643: 
+644:   function download(bytes, name, type) {

@@ -1,0 +1,158 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.Context;
+4: import java.io.File;
+5: import java.io.FileOutputStream;
+6: import java.net.HttpURLConnection;
+7: import java.net.URL;
+8: import java.nio.charset.StandardCharsets;
+9: import java.security.SecureRandom;
+10: import java.text.SimpleDateFormat;
+11: import java.util.Date;
+12: import java.util.Locale;
+13: import java.util.TimeZone;
+14: import org.json.JSONArray;
+15: import org.json.JSONObject;
+16: 
+17: /**
+18:  * 12.7: حماية الرخصة دون خادم — مشتركة بين الهاتف والكمبيوتر (التوقيع بمفتاح الجهاز من License في كل منصة).
+19:  * <ul>
+20:  *   <li><b>هوية المكتب</b>: رقم عشوائي يُنشأ مرة واحدة ويتزامن مع بيانات المكتب. الرمز الصادر بحقل «of» يعمل على بيانات
+21:  *   هذا المكتب وحده؛ على بيانات مكتب آخر (انضمام لمزامنة أخرى، قاعدة مستقلة، نسخة مكتب آخر) يعمل الجهاز بالمجاني فورًا،
+22:  *   وتُسجَّل المحاولة في سجل مختوم بمفتاح الجهاز يصل إلى البائع مع طلب التجديد أو الجهاز الإضافي.</li>
+23:  *   <li><b>الوقت الموثوق</b>: تاريخ من الإنترنت (رأس Date لموقع كبير عبر HTTPS؛ يكفي واحد). بين مرة وأخرى يُكمَّل بعدّاد
+24:  *   الجهاز منذ الإقلاع (لا تغيّره الساعة)، ولا يرجع التاريخ عن أكبر يوم رآه التطبيق ولا عن أوقات أجهزة المزامنة.
+25:  *   حقل «tc» في الرمز = كل كم يوم يلزم تأكيد الوقت من الإنترنت، و«tg» = المهلة بعدها قبل حدود المجاني (0 = لا يلزم).</li>
+26:  * </ul>
+27:  * لا شيء هنا يحذف بيانات أو يحجزها: الفشل = حدود المجاني للإضافة فقط.
+28:  */
+29: public final class LicenseGuard {
+30:     private LicenseGuard() {}
+31: 
+32:     public static final String K_OFFICE = "of", K_CHECK_DAYS = "tc", K_GRACE_DAYS = "tg", K_DEVICES = "md";
+33:     static final String OFFICE_UID = "office_uid";
+34:     /** إعداد خاص بالجهاز: آخر وقت موثوق من الإنترنت ووقت العدّاد عنده. */
+35:     static final String TIME = "license_time";
+36:     static final String[] TIME_SOURCES = {"https://www.google.com", "https://www.cloudflare.com", "https://www.microsoft.com"};
+37:     private static final String MISUSE_FILE = "license-misuse.json";
+38:     static final long DAY = 86_400_000L;
+39: 
+40:     /** للاختبار: مصادر بديلة (خادم محلي وهمي). */
+41:     static volatile String[] testSources;
+42: 
+43:     // ===================================================================================
+44:     // هوية المكتب
+45:     // ===================================================================================
+46: 
+47:     /** هوية المكتب لهذه البيانات (تُنشأ مرة واحدة وتتزامن مع بقية الإعدادات). */
+48:     public static String officeUid(Db db) {
+49:         String v = db.setting(OFFICE_UID, "").trim();
+50:         if (!v.isEmpty()) return v;
+51:         // جهاز منضم لا يُنشئ هوية بنفسه: تصله من الجهاز الرئيسي بالمزامنة (فلا تتعارض هويتان لمكتب واحد)
+52:         try {
+53:             if (SyncEngine.enabled(db) && !SyncStore.founder(db.getReadableDatabase())) return "";
+54:         } catch (Throwable ignored) {
+55:             // بلا مزامنة
+56:         }
+57:         byte[] r = new byte[9];
+58:         new SecureRandom().nextBytes(r);
+59:         v = "OF-" + BackupFormat.hex(r).toUpperCase(Locale.ROOT);
+60:         db.setSettingQuiet(OFFICE_UID, v);
+61:         return v;
+62:     }
+63: 
+64:     /** الهوية الحالية دون إنشاء (فارغ = لم تُنشأ بعد). */
+65:     public static String currentUid(Db db) { return db.setting(OFFICE_UID, "").trim(); }
+66: 
+67:     /** 12.7: «مسح كل البيانات» يبدأ مكتبًا جديدًا: هوية جديدة (رخصة المكتب القديم لا تنتقل للبيانات الجديدة). */
+68:     public static void rotateOffice(Db db) {
+69:         db.deleteSetting(OFFICE_UID);
+70:         officeUid(db);
+71:     }
+72: 
+73:     // ===================================================================================
+74:     // القرار
+75:     // ===================================================================================
+76: 
+77:     /** حالة تأكيد الوقت للعرض: 0 = لا يلزم/سليم، 1 = حان التأكيد (مهلة)، 2 = انتهت المهلة. */
+78:     public static volatile int timeState;
+79:     public static volatile String timeNote = "";
+80: 
+81:     /** ما يحق للجهاز من رمز صالح: الاشتراك واليوم الموثوق، ثم المكتب، ثم مدة تأكيد الوقت. */
+82:     /** آخر رمز صالح على هذا الجهاز (ولو صار الجهاز بالمجاني لسبب هنا): لمعرفة هل يلزم جلب الوقت. */
+83:     static volatile LicenseToken.Grant lastGrant;
+84: 
+85:     public static Entitlements decide(Context ctx, Db db, LicenseToken.Grant g) {
+86:         lastGrant = g;
+87:         long now = trustedNow(db);
+88:         long today = Long.parseLong(dayOf(now));
+89:         long floor = db.licenseDay();
+90:         if (today > floor) db.setSettingQuiet("license_day", String.valueOf(today));   // اليوم الموثوق لا يرجع بعدها
+91:         Entitlements e = Entitlements.of(g, BuildInfo.BUILD_DATE, Math.max(today, floor));
+92:         timeState = 0;
+93:         timeNote = "";
+94:         if (!e.pro) return e;
+95:         String of = g.get(K_OFFICE).trim();
+96:         if (!of.isEmpty()) {
+97:             String mine = officeUid(db);
+98:             if (mine.isEmpty())
+99:                 return Entitlements.free("لم تصل «هوية المكتب» من الجهاز الرئيسي إلى هذا الجهاز بعد. اضغط «مزامنة الآن»؛ تعود الرخصة فور وصولها.");
+100:             if (!of.equals(mine)) {
+101:                 recordMisuse(ctx, g.lid(), of, mine);
+102:                 return Entitlements.free("هذه الرخصة (" + g.lid() + ") صادرة لمكتب آخر (" + of + ")، والبيانات المفتوحة على هذا الجهاز لمكتب «" + mine
+103:                         + "». تعمل الرخصة على بيانات مكتبها فقط؛ هنا حدود المجاني. إن انضممت إلى مزامنة مكتبك بعد التفعيل فاطلب من البائع رمزًا جديدًا.");
+104:             }
+105:         }
+106:         long tc = g.num(K_CHECK_DAYS), tg = g.num(K_GRACE_DAYS);
+107:         if (tc > 0) {
+108:             long last = lastTrusted(db);
+109:             long since = last <= 0 ? Long.MAX_VALUE : now - last;
+110:             if (since > (tc + Math.max(0, tg)) * DAY) {
+111:                 timeState = 2;
+112:                 timeNote = "انتهت مهلة تأكيد الرخصة: اتصل بالإنترنت مرة واحدة (يكفي فتح التطبيق والإنترنت متصل) لتعود الرخصة فورًا. بياناتك كلها كما هي.";
+113:                 return Entitlements.free(timeNote);
+114:             }
+115:             if (since > tc * DAY) {
+116:                 timeState = 1;
+117:                 long left = Math.max(0, (tc + Math.max(0, tg)) * DAY - since) / DAY;
+118:                 timeNote = "اتصل بالإنترنت لتأكيد الرخصة: بقي " + left + " يومًا قبل العمل بحدود المجاني.";
+119:             }
+120:         }
+121:         return e;
+122:     }
+123: 
+124:     // ===================================================================================
+125:     // الوقت الموثوق
+126:     // ===================================================================================
+127: 
+128:     /** آخر وقت موثوق (ملّي ثانية) أو 0. */
+129:     public static long lastTrusted(Db db) {
+130:         String[] p = db.setting(TIME, "").split("\\|");
+131:         try {
+132:             return p.length >= 2 ? Long.parseLong(p[0]) : 0;
+133:         } catch (Exception e) {
+134:             return 0;
+135:         }
+136:     }
+137: 
+138:     /**
+139:      * أفضل تقدير للوقت الآن: الأكبر من ساعة الجهاز، والوقت الموثوق + ما مضى بعدّاد الإقلاع (إن لم يُعد تشغيل الجهاز)،
+140:      * وأوقات أجهزة المزامنة (بحد 3 أيام فوق تقديرنا حتى لا تُنهي ساعة جهاز آخر خاطئة رخصة هذا الجهاز مبكرًا).
+141:      */
+142:     public static long trustedNow(Db db) {
+143:         long dev = Clock.now();
+144:         long best = dev;
+145:         String[] p = db.setting(TIME, "").split("\\|");
+146:         if (p.length >= 2) {
+147:             try {
+148:                 long t = Long.parseLong(p[0]), at = Long.parseLong(p[1]), el = android.os.SystemClock.elapsedRealtime();
+149:                 long est = el >= at ? t + (el - at) : t;   // أُعيد تشغيل الجهاز: لا يقل عن آخر وقت موثوق
+150:                 best = Math.max(best, est);
+151:             } catch (Exception ignored) {
+152:                 // قيمة تالفة
+153:             }
+154:         }
+155:         try {
+156:             String h = SyncStore.meta(db.getReadableDatabase(), "hlc");
+157:             if (h != null && h.length() >= 16) {
+158:                 long w = Long.parseLong(h.substring(0, 16));

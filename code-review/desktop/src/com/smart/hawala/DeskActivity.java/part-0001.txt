@@ -1,0 +1,65 @@
+1: package com.smart.hawala;
+2: 
+3: import java.awt.event.InputEvent;
+4: import java.awt.event.KeyEvent;
+5: 
+6: /**
+7:  * 11.0: شاشة الهاتف نفسها (MainActivity) على الماك والويندوز، مع اختصارات لوحة المفاتيح فقط:
+8:  * ⌘/Ctrl+N حركة جديدة، ⌘/Ctrl+F بحث، ⌘/Ctrl+1…9 تبويبات الشريط السفلي، ⌘/Ctrl+[ رجوع، ⌘/Ctrl+H الرئيسية.
+9:  */
+10: public class DeskActivity extends MainActivity {
+11:     // 12.1: «إطار الالتقاط» متاح على الكمبيوتر فقط
+12:     static { DeskCapture.install(); }
+13: 
+14:     /** لون خلفية الشاشة (لما حول العمود في النافذة). */
+15:     public int bgColor() { return bg; }
+16:     public int headerColor() { return header; }
+17:     public boolean isNight() { return night; }
+18:     public Db database() { return db; }
+19:     /** 11.0: بعد تغيير الوضع (فاتح/ليلي) من معالج الشكل. */
+20:     public void restyleAll() { restyle(null); }
+21: 
+22:     @Override protected boolean shortcutKey(KeyEvent e) {
+23:         if (e.getID() != KeyEvent.KEY_PRESSED) return false;
+24:         int menu = (e.getModifiersEx() & (InputEvent.META_DOWN_MASK | InputEvent.CTRL_DOWN_MASK));
+25:         if (menu == 0 || !unlocked || db == null || (db.usersEnabled() && SmartApp.currentUser == null)) return false;
+26:         int k = e.getKeyCode();
+27:         try {
+28:             switch (k) {
+29:                 case KeyEvent.VK_N:
+30:                     if (can(Auth.Perm.TX_ADD)) { beforeScreenChange(); txScreen.showNew(); }
+31:                     return true;
+32:                 case KeyEvent.VK_F:
+33:                     if (can(Auth.Perm.VIEW)) { beforeScreenChange(); logScreen.searchFor(""); }
+34:                     return true;
+35:                 case KeyEvent.VK_V:
+36:                     // 11.3: Ctrl/⌘+V خارج خانات الكتابة = «لصق رسائل واتساب» (رسالة ← نموذج، عدة رسائل ← قائمتها)
+37:                     if (can(Auth.Perm.TX_ADD)) { beforeScreenChange(); homeScreen.pasteFromClipboard(); }
+38:                     return true;
+39:                 case KeyEvent.VK_G:
+40:                     // 12.1: Ctrl/⌘+G = «إطار الالتقاط» (يرقّم فقاعات واتساب تحت الإطار)
+41:                     if (can(Auth.Perm.TX_WA)) waMove.openCapture(false);
+42:                     return true;
+43:                 case KeyEvent.VK_H:
+44:                     beforeScreenChange();
+45:                     showHome();
+46:                     return true;
+47:                 case KeyEvent.VK_OPEN_BRACKET:
+48:                 case KeyEvent.VK_LEFT:
+49:                     onBackPressed();
+50:                     return true;
+51:                 default:
+52:                     if (k >= KeyEvent.VK_1 && k <= KeyEvent.VK_9) {
+53:                         java.util.List<String> tabs = tabKeys();
+54:                         int i = k - KeyEvent.VK_1;
+55:                         if (i < tabs.size()) { beforeScreenChange(); openTab(tabs.get(i)); }
+56:                         return true;
+57:                     }
+58:                     return false;
+59:             }
+60:         } catch (Throwable t) {
+61:             error(t);
+62:             return true;
+63:         }
+64:     }
+65: }

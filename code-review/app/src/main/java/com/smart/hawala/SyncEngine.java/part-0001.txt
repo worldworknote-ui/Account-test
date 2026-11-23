@@ -1,0 +1,152 @@
+1: package com.smart.hawala;
+2: 
+3: import android.database.Cursor;
+4: import net.zetetic.database.sqlcipher.SQLiteDatabase;
+5: import java.io.ByteArrayInputStream;
+6: import java.io.ByteArrayOutputStream;
+7: import java.io.File;
+8: import java.io.FileOutputStream;
+9: import java.io.IOException;
+10: import java.io.InputStream;
+11: import java.nio.charset.StandardCharsets;
+12: import java.security.GeneralSecurityException;
+13: import java.security.SecureRandom;
+14: import java.util.ArrayList;
+15: import java.util.Arrays;
+16: import java.util.Base64;
+17: import java.util.HashSet;
+18: import java.util.Iterator;
+19: import java.util.LinkedHashMap;
+20: import java.util.List;
+21: import java.util.Map;
+22: import java.util.Set;
+23: import java.util.TreeMap;
+24: import java.util.UUID;
+25: import org.json.JSONArray;
+26: import org.json.JSONObject;
+27: 
+28: /**
+29:  * 10.0: محرك المزامنة بين الأجهزة (مشترك: الهاتف والماك والويندوز) عبر مجلد مشترك لا يرى إلا ملفات مشفّرة.
+30:  *
+31:  * <p>الملفات في المجلد:
+32:  * <ul>
+33:  *   <li>رأس الخزنة (نص مكشوف بلا أي بيانات): معرّفها، والملح، ومفتاح الخزنة مغلّفًا بكلمة السر وبرمز الاسترداد.</li>
+34:  *   <li>m-… لكل جهاز ملف عضوية (مشفّر): اسمه ومنصته وبادئة أرقامه وآخر حزمة له وما طبّقه من غيره وبصمة دفتره.</li>
+35:  *   <li>p-… حزم كل جهاز بالتسلسل، كل حزمة تحمل بصمة السابقة (سلسلة): حذف حزمة أو تبديل ترتيبها أو تغيير بايت = يُكتشف.</li>
+36:  *   <li>s-… لقطة كاملة مشفّرة يبدأ منها الجهاز المنضم، مع المؤشرات التي تمثلها.</li>
+37:  * </ul>
+38:  *
+39:  * <p>كل جهاز يكتب ملفاته فقط (لا يكتب جهازان في ملف واحد أبدًا). الحزمة تُطبَّق كاملة أو لا تُطبَّق، ولا تُطبَّق قبل ما تعتمد عليه
+40:  * من حزم الأجهزة الأخرى (ترتيب سببي)، وتطبيقها مرتين مستحيل (المؤشر يتقدم في المعاملة نفسها).
+41:  */
+42: public final class SyncEngine {
+43:     public static final String HEADER = "smart-accountant-sync-vault.json";
+44:     /**
+45:      * صيغة الخزنة. 2 (10.4): الصور ملفات مستقلة (a-…) لا تتكرر، واللقطة بلا صور، والملفات القديمة تُحذف تلقائيًا بعد أن
+46:      * تصل إلى كل الأجهزة. الأجهزة بإصدار أقدم تُطلب منها الترقية (لا تقرأ خزنة صيغتها أحدث).
+47:      * 3 (10.5): الإزالة لا تحذف حزمًا لم تصل (حد upTo يحترمه الجميع)، ودور الجهاز الرئيسي ينتقل، وجداول التحقق والمكاتب والعلامة.
+48:      * جهاز 10.4 كان سيحذف حزم جهاز يزيله ولا يعرف الجداول الجديدة، فيتوقف عن المزامنة ويُطلب منه التحديث؛ بياناته وتغييراته
+49:      * غير المرسلة تبقى عليه وتُرسل بعد التحديث.
+50:      */
+51:     /**
+52:      * 4 (10.16): جدول سجل العمليات المشترك (audit_feed). جهاز 10.15 لا يعرفه فكان سيتجاوز أسطره؛ يُطلب منه التحديث.
+53:      */
+54:     /** 5 (10.17): جدول رسائل المدير admin_msgs وعمود users.nick. */
+55:     /* 6 (10.18): جدول الأمانات office_holds. */
+56:     public static final int FORMAT = 6;
+57:     /** لقطة جديدة بعد هذا العدد من حزم هذا الجهاز. */
+58:     static final int SNAPSHOT_EVERY = 150;
+59:     /** 10.4: جهاز لم يظهر منذ هذه المدة يُنبَّه عنه (يمنع حذف ما لم يستلمه). */
+60:     public static final long STALE_MS = 30L * 24 * 3600 * 1000;
+61:     /** 10.4: صورة بلا مرجع تُحذف بعد هذه المدة (هامش أمان لحزم في الطريق). */
+62:     static final long BLOB_GRACE_MS = 7L * 24 * 3600 * 1000;
+63:     /** 10.4: حزمة صورتها لم تصل بعد هذه المدة تُطبَّق دونها (مع تنبيه) كي لا تتوقف المزامنة. */
+64:     static final long BLOB_WAIT_MS = 3L * 24 * 3600 * 1000;
+65: 
+66:     /**
+67:      * 10.16: قفل واحد لكل عمليات الخزنة على هذا الجهاز (الجولة، النقل، الحذف، كلمة السر، الإزالة…). كل استدعاء ينشئ كائنًا
+68:      * جديدًا، فقفل الكائن لم يكن يمنع جولتين معًا (الزر اليدوي مع التلقائية). العملية الثانية تنتظر الأولى ثم تعمل.
+69:      */
+70:     static final java.util.concurrent.locks.ReentrantLock VAULT = new java.util.concurrent.locks.ReentrantLock();
+71: 
+72:     /** هل تعمل عملية على الخزنة الآن (للواجهة: «المزامنة جارية»). */
+73:     public static boolean busy() { return VAULT.isLocked(); }
+74: 
+75:     final Db db;
+76:     final SyncFolder folder;
+77: 
+78:     public SyncEngine(Db db, SyncFolder folder) {
+79:         this.db = db;
+80:         this.folder = folder;
+81:     }
+82: 
+83:     // ===================================================================================
+84:     // الحالة
+85:     // ===================================================================================
+86: 
+87:     public static boolean enabled(Db db) { return SyncStore.meta(db.getReadableDatabase(), "vault_id") != null; }
+88: 
+89:     public static final class Status {
+90:         public boolean enabled;
+91:         public String vaultId = "", device = "", deviceName = "", folder = "", lastError = "", digestAlert = "", leftReason = "", lastErrorWith = "";
+92:         public long lastErrorAt;
+93:         public long lastSync, mySeq, pending, unsent;
+94:         public int conflicts;
+95:         /** 10.16: المفتوح للمراجعة غير الحركات المكررة (تعارضات وتنبيهات)، وتحذير الساعة إن وُجد. */
+96:         public int review;
+97:         public String clockWarn = "";
+98:         public final List<JSONObject> members = new ArrayList<>();
+99:         public final Map<String, JSONObject> peers = new java.util.HashMap<>();
+100:         public String note = "";
+101:         /** 10.14: نُقلت المزامنة من المكان الحالي إلى آخر (نص للمستخدم)، وهل هي مزامنة جديدة (يلزم الانضمام) أم الخزنة نفسها (يكفي الدخول بالمكان الجديد). */
+102:         public String movedTo = "", movedTarget = "";
+103:         public boolean movedFresh;
+104:         public boolean founder;
+105:         public String founderDev = "";
+106:         /** 10.4: أجهزة لم تظهر منذ 30 يومًا (تمنع حذف الملفات القديمة حتى تعود أو تُزال). */
+107:         public final List<JSONObject> stale = new ArrayList<>();
+108:         /** 10.4: آخر تنظيف. */
+109:         public String lastClean = "";
+110:         public boolean paused;
+111: 
+112:         /** اسم الجهاز الرئيسي للواجهة. */
+113:         public String founderName() {
+114:             if (founder) return deviceName;
+115:             for (JSONObject m : members) if (m.optString("dev").equals(founderDev)) return m.optString("name");
+116:             return "الجهاز الرئيسي";
+117:         }
+118:     }
+119: 
+120:     public static Status status(Db db) {
+121:         SQLiteDatabase d = db.getReadableDatabase();
+122:         Status s = new Status();
+123:         s.enabled = SyncStore.meta(d, "vault_id") != null;
+124:         s.leftReason = nz(SyncStore.meta(d, "left_reason"));
+125:         if (!s.enabled) return s;
+126:         s.vaultId = nz(SyncStore.meta(d, "vault_id"));
+127:         s.device = nz(SyncStore.meta(d, "device"));
+128:         s.deviceName = nz(SyncStore.meta(d, "device_name"));
+129:         s.folder = nz(SyncStore.meta(d, "folder"));
+130:         s.lastError = nz(SyncStore.meta(d, "last_error"));
+131:         s.lastErrorWith = nz(SyncStore.meta(d, "last_error_with"));
+132:         s.lastErrorAt = lng(SyncStore.meta(d, "last_error_at"));
+133:         s.digestAlert = nz(SyncStore.meta(d, "digest_alert"));
+134:         s.movedTo = nz(SyncStore.meta(d, "moved_to"));
+135:         s.movedFresh = "1".equals(SyncStore.meta(d, "moved_fresh"));
+136:         s.movedTarget = nz(SyncStore.meta(d, "moved_target"));
+137:         s.lastSync = lng(SyncStore.meta(d, "last_sync"));
+138:         s.mySeq = lng(SyncStore.meta(d, "my_seq"));
+139:         try (Cursor c = d.rawQuery("SELECT tbl,rid FROM sync_chg", null)) {
+140:             while (c.moveToNext()) if (!("settings".equals(c.getString(0)) && SyncStore.localSetting(c.getString(1)))) s.pending++;
+141:         }
+142:         try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM sync_outbox WHERE uploaded=0", null)) {
+143:             if (c.moveToFirst()) s.unsent = c.getLong(0);
+144:         }
+145:         try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM sync_conflicts WHERE resolved=0", null)) {
+146:             if (c.moveToFirst()) s.conflicts = (int) c.getLong(0);
+147:         }
+148:         try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM sync_conflicts WHERE resolved=0 AND kind<>'DUPLICATE'", null)) {
+149:             if (c.moveToFirst()) s.review = (int) c.getLong(0);
+150:         }
+151:         s.clockWarn = nz(SyncStore.meta(d, "clock_warn"));
+152:         try {

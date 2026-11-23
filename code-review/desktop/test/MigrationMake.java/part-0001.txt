@@ -1,0 +1,88 @@
+1: import android.content.Context;
+2: import com.smart.hawala.*;
+3: import java.io.File;
+4: import java.nio.charset.StandardCharsets;
+5: import java.nio.file.Files;
+6: import java.util.*;
+7: import org.json.JSONObject;
+8: 
+9: /**
+10:  * 10.5: ترحيل قاعدة بيانات حقيقية البنية من الإصدار 10.4 (لا من نسخة احتياطية): يُنشئها كود 10.4 نفسه («make»)،
+11:  * ثم يفتحها كود 10.5 («check»): الأرصدة والحركات والمستخدمون والصندوق كما هي بالضبط، والأعمدة والجداول الجديدة أُضيفت،
+12:  * والميزات الجديدة تعمل على البيانات القديمة (التحقق من حركة قديمة بلا رقم مستخدم، والتحويل، والعلامة)، وفحص الصحة سليم.
+13:  * هذا الجزء يُبنى ويُشغَّل بكود 10.4 (قبل التعديل).
+14:  */
+15: public class MigrationMake {
+16:     static int fails, passes;
+17: 
+18:     static void check(boolean c, String m) {
+19:         if (c) passes++;
+20:         else fails++;
+21:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+22:     }
+23: 
+24:     static Db open(File home) throws Exception {
+25:         SecretStore.fallback(new File(home, "keys"));
+26:         Context ctx = new Context(home);
+27:         Crypto.init(ctx);
+28:         Db db = new Db(ctx);
+29:         SmartApp.db = db;
+30:         SmartApp.ctx = ctx;
+31:         License.current = Entitlements.of(DeskCoreTest.fullGrant(), BuildInfo.BUILD_DATE);
+32:         return db;
+33:     }
+34: 
+35:     static Db.TxInput tx(long office, boolean us, long amount, String cur, String person) {
+36:         Db.TxInput t = new Db.TxInput();
+37:         t.office = office;
+38:         t.type = us ? Model.TYPE_DEBIT : Model.TYPE_CREDIT;
+39:         t.amount = amount;
+40:         t.currency = cur;
+41:         t.person = person;
+42:         t.when = System.currentTimeMillis() - 60_000;
+43:         return t;
+44:     }
+45: 
+46:     static JSONObject state(Db db) throws Exception {
+47:         JSONObject o = new JSONObject();
+48:         o.put("bal", String.valueOf(new TreeMap<>(db.officeBalances())));
+49:         o.put("cash", String.valueOf(new TreeMap<>(db.cashBalances())));
+50:         o.put("tx", db.recentTx(100).size());
+51:         o.put("pending", db.pendingTx().size());
+52:         o.put("users", db.users(false).size());
+53:         o.put("offices", db.offices().size());
+54:         return o;
+55:     }
+56: 
+57:     public static void main(String[] a) throws Exception {
+58:         System.setProperty("sa.secrets", "file");
+59:         File home = new File(a[1]);
+60:         if ("make".equals(a[0])) {
+61:             home.mkdirs();
+62:             Db db = open(home);
+63:             List<String> ue = Arrays.asList("USD", "EUR");
+64:             long A = db.addOffice("القديم أ", "", "", "", "", "", null, null, ue, new HashMap<>(), Arrays.asList(new Db.Opening("USD", "لنا", 30000)));
+65:             long B = db.addOffice("القديم ب", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+66:             Map<String, Long> op = new HashMap<>();
+67:             op.put("USD", 500000L);
+68:             db.cashSetup("الصندوق", ue, op, false, true);
+69:             long admin = db.addUser("المدير القديم", Auth.ADMIN, null, "123456");
+70:             SmartApp.currentUser = db.user(admin);
+71:             Db.currentUserName = SmartApp.currentUser.name;
+72:             long clerk = db.addUser("موظف قديم", Auth.CUSTOM, "VIEW,TX_ADD,REVIEW", "1111");
+73:             db.addTx(tx(A, true, 100000, "USD", "سامر"), Arrays.asList(new byte[]{1, 2, 3}));
+74:             db.addTx(tx(B, false, 25000, "EUR", "أحمد"), null);
+75:             long t3 = db.addTx(tx(A, false, 4000, "USD", "للتعديل"), null);
+76:             db.editTx(t3, tx(A, false, 4500, "USD", "للتعديل"), null, null, "تصحيح");
+77:             db.addFx(A, "USD", 11200, "EUR", 10000, "0.89285714", "تبديل قديم", System.currentTimeMillis() - 30_000);
+78:             SmartApp.currentUser = db.user(clerk);
+79:             Db.currentUserName = SmartApp.currentUser.name;
+80:             db.addTx(tx(B, true, 7000, "USD", "معلّقة"), null);
+81:             SmartApp.currentUser = null;
+82:             Files.write(new File(home, "expect.json").toPath(), state(db).toString(1).getBytes(StandardCharsets.UTF_8));
+83:             db.close();
+84:             System.out.println("MADE with app " + BuildInfo.VERSION);
+85:             return;
+86:         }
+87:     }
+88: }

@@ -1,0 +1,123 @@
+288:       html += '<label class="f">عمود «علينا» <small>دائن / له — نحن مدينون للمكتب</small><select data-tc="credit">' + colOptions(rows, hr, t.cols.credit) + "</select></label>";
+289:     } else {
+290:       html += '<label class="f">عمود المبلغ<select data-tc="amount">' + colOptions(rows, hr, t.cols.amount) + "</select></label>";
+291:       if (t.layout === "typed") html += '<label class="f">عمود النوع <small>تطابق قيمه في الخطوة 3</small><select data-tc="type">' + colOptions(rows, hr, t.cols.type) + "</select></label>";
+292:     }
+293:     html += '<label class="f">العملة' + seg("tcurfrom", [["column", "من عمود"], ["fixed", "عملة واحدة"]], t.currencyFrom) + "</label>";
+294:     html += t.currencyFrom === "column" ? '<label class="f">عمود العملة<select data-tc="currency">' + colOptions(rows, hr, t.cols.currency) + "</select></label>"
+295:       : '<label class="f">العملة الثابتة<select data-t="fixedCurrency">' + codeOptions(t.fixedCurrency) + "</select></label>";
+296:     html += "</div>";
+297:     if (t.layout === "signed") html += "<h3>المبلغ الموجب يعني</h3>" + seg("tpos", [["D", "لنا — المكتب مدين لنا"], ["C", "علينا — نحن مدينون للمكتب"]], t.positiveIs);
+298:     html += '<h3>أعمدة اختيارية</h3><div class="grid">' +
+299:       '<label class="f">المستفيد<select data-tc="person">' + colOptions(rows, hr, t.cols.person, true) + "</select></label>" +
+300:       '<label class="f">البيان<select data-desc="0">' + colOptions(rows, hr, t.descCols[0], true) + "</select></label>" +
+301:       '<label class="f">بيان إضافي <small>يُضاف للبيان</small><select data-desc="1">' + colOptions(rows, hr, t.descCols[1], true) + "</select></label>" +
+302:       '<label class="f">الملاحظات<select data-tc="notes">' + colOptions(rows, hr, t.cols.notes, true) + "</select></label>" +
+303:       '<label class="f">المرجع / رقم السند<select data-tc="ref">' + colOptions(rows, hr, t.cols.ref, true) + "</select></label>" +
+304:       '<label class="f">الأجرة<select data-tc="fee">' + colOptions(rows, hr, t.cols.fee, true) + "</select></label>" +
+305:       (t.cols.fee !== undefined ? '<label class="f">الأجرة' + seg("tfeedir", [["D", "لنا"], ["C", "علينا"]], t.feeDir) + "</label>" : "") +
+306:       '<label class="f">عمود الرصيد <small>للتحقق فقط: يقارن آخر رصيد في الملف بما سيحسبه التطبيق</small><select data-tc="balance">' + colOptions(rows, hr, t.cols.balance, true) + "</select></label>" +
+307:       "</div>";
+308:     if (t.cols.balance !== undefined) html += "<h3>الرصيد الموجب في عمود الرصيد يعني</h3>" + seg("tbalpos", [["D", "لنا"], ["C", "علينا"]], t.balancePositiveIs);
+309:     html += "<h3>معاينة (" + esc(t.sheets[0] || "") + ")</h3>" + preview(rows, hr, [t.cols.office, t.cols.date, t.cols.debit, t.cols.credit, t.cols.amount, t.cols.type, t.cols.currency]);
+310:     p.innerHTML = html;
+311:   }
+312: 
+313:   // ===================================================================================
+314:   // 2ب. الكشوفات
+315:   // ===================================================================================
+316: 
+317:   function dmy(d) { return d ? d.y + "/" + (d.m < 10 ? "0" : "") + d.m + "/" + (d.d < 10 ? "0" : "") + d.d : ""; }
+318: 
+319:   function decOf(code) {
+320:     var d = code && (S.currencyDefs[code] || C.KNOWN[code]);
+321:     return d ? d.dec : 2;
+322:   }
+323: 
+324:   function renderStmt() {
+325:     var on = S.mode === "statements";
+326:     $("stmtPanel").classList.toggle("hidden", !on);
+327:     $("singleSetup").classList.toggle("hidden", on);
+328:     if (!on) return;
+329:     var html = '<p class="lead" style="margin-top:0">كل كشف = حساب واحد بعملة واحدة. كشوفات الحساب نفسه بعملات مختلفة تُجمع في مكتب واحد (برمز الحساب). ' +
+330:       "كل سطر يُتحقق منه بعمود الرصيد، وآخر الكشف بسطر «اجمالي الرصيد»؛ الكشف الذي لا يطابق لا يُنقل.</p>";
+331:     html += '<div class="row"><label class="btn sec" style="cursor:pointer">إضافة ملفات أخرى<input type="file" id="moreFiles" multiple accept="' + ACCEPT + '" hidden></label>' +
+332:       '<span class="hint">ملف بالاسم نفسه يحلّ محل السابق.</span></div>';
+333:     html += "<h3>ما الذي يُنقل؟</h3>" + seg("stwhat", [["all", "الرصيد السابق وكل حركات الكشوفات"], ["bal", "الأرصدة النهائية فقط"]], S.st.balancesOnly ? "bal" : "all");
+334:     html += '<p class="hint">' + (S.st.balancesOnly
+335:       ? "رصيد واحد لكل مكتب وعملة بتاريخ نهاية كشفه، وتبدأ الحركات الجديدة في التطبيق. يكفيك لهذا كشف لفترة قصيرة (يوم واحد مثلًا)."
+336:       : "«Pre Balance» رصيدًا سابقًا بتاريخ بداية الكشف، ثم كل حركة كما هي في برنامجك.") + "</p>";
+337:     if (!S.st.balancesOnly) html += '<label class="check"><input type="checkbox" id="mergeCom"' + (S.st.mergeCom ? " checked" : "") +
+338:       "> دمج سطور العمولة «Com …» مع حركتها في اليوم نفسه كأجرة (الأرصدة لا تتغير). اتركه دون تحديد لتبقى الحركات سطرًا بسطر كما في برنامجك.</label>";
+339:     html += '<h3>الكشوفات (' + S.stmts.length + ')</h3><div id="stmtTable"></div>';
+340:     $("stmtPanel").innerHTML = html;
+341:     renderStmtTable();
+342:   }
+343: 
+344:   function renderStmtTable() {
+345:     var box = $("stmtTable");
+346:     if (!box) return;
+347:     var res = S.result && S.result.model && S.result.model.files ? S.result.model.files : [];
+348:     var h = '<div class="tablebox" style="max-height:440px"><table><tr><th>الملف</th><th>الحساب</th><th>العملة في الملف</th><th>الفترة</th><th class="num">سطور</th><th>الرصيد النهائي</th><th>التحقق</th></tr>';
+349:     S.stmts.forEach(function (st, i) {
+350:       var r = res[i];
+351:       var acc = st.account ? (st.account.code ? '<span class="ltr hint">' + esc(st.account.code) + "</span> " : "") + esc(st.account.name) : "";
+352:       h += "<tr><td>" + esc(st.file) + "</td><td>" + (acc || '<span class="them">غير معروف</span>') + "</td><td>" + esc(st.curText || "—") + (r && r.code ? ' <span class="ltr hint">' + r.code + "</span>" : "") +
+353:         '</td><td class="ltr">' + esc(dmy(st.from) + (st.to ? " → " + dmy(st.to) : "")) + '</td><td class="num">' + st.rows.length + "</td><td>" +
+354:         (r && r.ok ? balCell(r.final, decOf(r.code)) : "") + "</td><td>" +
+355:         (!r ? "" : r.ok ? '<span class="chip ok">✓ ' + r.checked + " رصيدًا مطابقًا" + (st.footer ? " + الإجمالي" : "") + "</span>" : '<span class="chip bad">' + esc(r.status) + "</span>") + "</td></tr>";
+356:     });
+357:     box.innerHTML = h + "</table></div>";
+358:   }
+359: 
+360:   // ===================================================================================
+361:   // 3. المطابقة
+362:   // ===================================================================================
+363: 
+364:   function collect(sec, sheets, col) {
+365:     var m = {};
+366:     if (col === undefined) return m;
+367:     sheets.forEach(function (n) {
+368:       (S.rows[n] || []).slice(sec.headerRow + 1).forEach(function (r) {
+369:         var v = C.text(r[col]);
+370:         if (!v) return;
+371:         var k = C.officeKey(v);
+372:         m[k] = m[k] || { text: v, n: 0 };
+373:         m[k].n++;
+374:       });
+375:     });
+376:     return m;
+377:   }
+378: 
+379:   function ensureDef(code) {
+380:     if (!code || code === "__skip" || S.currencyDefs[code]) return;
+381:     var k = C.KNOWN[code];
+382:     S.currencyDefs[code] = { name: k ? k.name : code, dec: k ? k.dec : 2 };
+383:   }
+384: 
+385:   function renderMap() {
+386:     var box = $("mapBox");
+387:     var html = "";
+388:     // العملات
+389:     var vals = {};
+390:     var stm = S.mode === "statements";
+391:     if (stm) {
+392:       S.stmts.forEach(function (st) {
+393:         if (!st.curText) return;
+394:         var k = C.officeKey(st.curText);
+395:         vals[k] = vals[k] || { text: st.curText, n: 0 };
+396:         vals[k].n++;
+397:       });
+398:     }
+399:     if (!stm && S.open.enabled && S.open.layout !== "wide" && S.open.currencyFrom === "column") Object.assign(vals, collect(S.open, [S.open.sheet], S.open.cols.currency));
+400:     if (!stm && S.tx.enabled && S.tx.currencyFrom === "column") {
+401:       var tv = collect(S.tx, S.tx.sheets, S.tx.cols.currency);
+402:       Object.keys(tv).forEach(function (k) { if (vals[k]) vals[k].n += tv[k].n; else vals[k] = tv[k]; });
+403:     }
+404:     var keys = Object.keys(vals);
+405:     keys.forEach(function (k) { if (!(k in S.currencyMap)) S.currencyMap[k] = C.guessCurrency(vals[k].text) || ""; });
+406:     if (keys.length) {
+407:       if (keys.length > 60) html += '<div class="msg warn">عمود العملة فيه ' + keys.length + " قيمة مختلفة؛ تأكد أنك اخترت عمود العملة الصحيح.</div>";
+408:       html += '<h3>العملات كما وردت في ' + (stm ? "الكشوفات" : "الملف") + '</h3><div class="mapgrid"><span class="h">في الملف</span><span class="h">' + (stm ? "كشوفات" : "عدد") + '</span><span class="h">العملة في التطبيق</span>';
+409:       keys.slice(0, 120).forEach(function (k) {
+410:         var v = S.currencyMap[k];

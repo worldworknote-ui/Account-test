@@ -1,0 +1,143 @@
+673:         form.feeKind = a.new Seg(new String[]{"مبلغ محدد", "نسبة من المبلغ"}, null, lastKind, false);
+674:         form.feeBox.addView(form.feeKind.view, a.lp(-1, -2, 4));
+675:         form.rateBox = new LinearLayout(a);
+676:         form.rateBox.setOrientation(LinearLayout.VERTICAL);
+677:         LinearLayout rr = a.row();
+678:         rr.setGravity(Gravity.CENTER_VERTICAL);
+679:         form.rate = a.field("النسبة");
+680:         Ui.numeric(form.rate);
+681:         form.rate.setGravity(Gravity.CENTER);
+682:         rr.addView(form.rate, new LinearLayout.LayoutParams(a.dp(96), a.dp(50)));
+683:         form.ratePer = a.new Seg(new String[]{"٪ بالمئة", "‰ بالألف"}, null, "1000".equals(a.db.setting("fee_per_last", "100")) ? 1 : 0, false);
+684:         rr.addView(form.ratePer.view, new LinearLayout.LayoutParams(0, -2, 1));
+685:         form.rateBox.addView(rr, a.lp(-1, -2, 4));
+686:         form.rateChips = a.flow();
+687:         form.rateBox.addView(form.rateChips, a.lp(-1, -2, 2));
+688:         form.rateResult = a.text("", 14, a.ink, true);
+689:         form.rateResult.setPadding(a.dp(4), a.dp(4), a.dp(4), a.dp(2));
+690:         form.rateBox.addView(form.rateResult);
+691:         form.feeBox.addView(form.rateBox);
+692:         form.fee = a.field("مبلغ الأجرة");
+693:         Ui.numeric(form.fee);
+694:         form.fee.addTextChangedListener(Ui.watcher(this::updateSummary));
+695:         form.feeBox.addView(form.fee, a.lp(-1, 50, 4));
+696:         form.feeCurLabel = a.text("عملة الأجرة (تتبع عملة المبلغ تلقائيًا)", 13, a.dark, true);
+697:         form.feeBox.addView(form.feeCurLabel);
+698:         form.feeCurHolder = new LinearLayout(a);
+699:         form.feeBox.addView(form.feeCurHolder);
+700:         form.feeKind.listener = i -> applyFeeKind();
+701:         form.ratePer.listener = i -> recalcFee();
+702:         form.rate.addTextChangedListener(Ui.watcher(this::recalcFee));
+703:         fillRateChips(form);
+704:         applyFeeKind(form);
+705:         form.feeBox.setVisibility(View.GONE);
+706:         a.body.addView(form.feeBox, a.lp(-1, -2, 4));
+707:         form.feeMode.listener = i -> {
+708:             form.feeBox.setVisibility(i == 1 ? View.VISIBLE : View.GONE);
+709:             if (i == 1 && form.feeCur != null && form.feeCur.none() && form.cur != null && !form.cur.none()) form.feeCur.set(form.cur.selected, false);
+710:             if (i == 1) (form.feeKind.selected == 1 ? form.rate : form.fee).requestFocus();
+711:             if (feeByRate()) recalcFee();
+712:             else updateSummary();
+713:         };
+714: 
+715:         final TextView imgLabel = a.add(a.label("صور الوصل"));
+716:         form.imgMode = a.new Seg(new String[]{"بدون صور", "مع صور"}, null, 0, false);
+717:         a.body.addView(form.imgMode.view, a.lp(-1, -2, 2));
+718:         form.imgBox = new LinearLayout(a);
+719:         form.imgBox.setOrientation(LinearLayout.VERTICAL);
+720:         LinearLayout ib = a.row();
+721:         ib.addView(a.smallButton("من الاستديو", a.accent, v -> pickImages()), a.weight(46, 1, 3));
+722:         ib.addView(a.smallButton("بالكاميرا", a.accent, v -> takePhoto()), a.weight(46, 1, 3));
+723:         form.imgBox.addView(ib);
+724:         HorizontalScrollView hs = new HorizontalScrollView(a);
+725:         form.thumbs = a.row();
+726:         hs.addView(form.thumbs);
+727:         form.imgBox.addView(hs, new LinearLayout.LayoutParams(-1, -2));
+728:         form.imgBox.setVisibility(View.GONE);
+729:         a.body.addView(form.imgBox, a.lp(-1, -2, 2));
+730:         form.imgMode.listener = i -> form.imgBox.setVisibility(i == 1 ? View.VISIBLE : View.GONE);
+731: 
+732:         // 10.9: الحقول الاختيارية في «تفاصيل إضافية» — كل الميزات باقية، والشاشة أبسط. تُفتح تلقائيًا إن كان فيها شيء
+733:         form.more = new LinearLayout(a);
+734:         form.more.setOrientation(LinearLayout.VERTICAL);
+735:         form.more.setVisibility(View.GONE);
+736:         int at = a.body.indexOfChild(form.notes);
+737:         View[] opt = {form.notes, form.service, svcChips, form.dest, form.dateBtn, imgLabel, form.imgMode.view, form.imgBox};
+738:         for (View v : opt) {
+739:             ViewGroup.LayoutParams lpv = v.getLayoutParams();
+740:             a.body.removeView(v);
+741:             form.more.addView(v, lpv);
+742:         }
+743:         // الأجرة قبلها (مالية وأساسية)، ثم «تفاصيل إضافية»
+744:         int feeAt = a.body.indexOfChild(form.feeBox) + 1;
+745:         form.moreToggle = a.text("", 14, a.primaryInk, true);
+746:         form.moreToggle.setPadding(a.dp(14), a.dp(12), a.dp(14), a.dp(12));
+747:         form.moreToggle.setBackground(a.ripple(a.round(a.surface, a.cardStroke, 14), 14));
+748:         Ui.springy(form.moreToggle, 0.97f);
+749:         form.moreToggle.setOnClickListener(v -> showMore(form, form.more.getVisibility() != View.VISIBLE));
+750:         a.body.addView(form.moreToggle, Math.min(feeAt, a.body.getChildCount()), a.lp(-1, -2, 6));
+751:         a.body.addView(form.more, Math.min(feeAt + 1, a.body.getChildCount()), a.lp(-1, -2, 0));
+752:         showMore(form, false);
+753: 
+754:         // 12.0: بطاقات بتنسيق «قص العملات»: رسالة واتساب، والحركة (بلون نوعها)، والأجرة
+755:         if (form.wa && waHead != null) wrapCard(waHead, form.parseBox, a.surface, a.cardStroke);
+756:         View lastTx = form.wa ? form.person : form.desc;
+757:         form.txCard = wrapCard(splitMark, a.body.indexOfChild(lastTx) > a.body.indexOfChild(form.person) ? lastTx : form.person, a.surface, a.cardStroke);
+758:         wrapCard(feeHead, form.feeBox, Color.rgb(250, 248, 242), Color.rgb(225, 220, 205));
+759:         tintTxCard();
+760:         waHead = null;
+761: 
+762:         // 12.4: «حركة خاصة»: ناقصة أجور، تحتاج مراجعة، بانتظار التنفيذ… تظهر تحت «الأمانات والخاصة» في المكتب
+763:         if (a.can(Auth.Perm.SPECIAL) && !approving && !(editing != null && (editing.isLinked() || editing.isPending()))) buildSpecial(form);
+764: 
+765:         // ملخص ما سيُسجَّل قبل التسجيل: بطاقة مرتبة، عنوانها أحمر، والناقص بالأحمر مع ✗
+766:         form.summary = new LinearLayout(a);
+767:         form.summary.setOrientation(LinearLayout.VERTICAL);
+768:         form.summary.setPadding(a.dp(14), a.dp(10), a.dp(14), a.dp(10));
+769:         form.summary.setBackground(a.round(Ui.mix(a.surface, a.red, a.night ? 0.12f : 0.045f), Ui.mix(a.line, a.red, 0.55f), 16));
+770:         a.body.addView(form.summary, a.lp(-1, -2, 8));
+771: 
+772:         // الشريط الثابت أسفل الشاشة: ملخص مختصر وزر التسجيل ظاهران دائمًا حتى مع لوحة المفاتيح
+773:         LinearLayout foot = new LinearLayout(a);
+774:         foot.setOrientation(LinearLayout.VERTICAL);
+775:         form.footerLine = a.text("", 13, a.red, true);
+776:         form.footerLine.setSingleLine(true);
+777:         form.footerLine.setEllipsize(android.text.TextUtils.TruncateAt.END);
+778:         form.footerLine.setPadding(a.dp(4), 0, a.dp(4), a.dp(2));
+779:         foot.addView(form.footerLine, new LinearLayout.LayoutParams(-1, -2));
+780:         a.hideWithKeyboard = form.footerLine;
+781:         form.saveBtn = a.makeButton(editing == null ? "تسجيل الحركة" : approving ? "حفظ التصحيح واعتماد" : "حفظ التعديل", a.primary, v -> save());
+782:         // 10.9: اضغط مطوّلًا حتى يمتلئ الزر، ثم تظهر نافذة التأكيد نفسها
+783:         a.holdToConfirm(form.saveBtn);
+784:         LinearLayout.LayoutParams sbp = new LinearLayout.LayoutParams(-1, a.dp(50));
+785:         sbp.topMargin = a.dp(4);
+786:         foot.addView(form.saveBtn, sbp);
+787:         a.footer(foot);
+788:         // 12.3: «مسح النموذج» صار في شريط أدوات الرسالة أعلى النموذج (وفي الأسفل إن لم يكن التسجيل من واتساب متاحًا)
+789:         if (editing == null && !form.wa) {
+790:             Button clear = a.smallButton("مسح النموذج", Color.rgb(130, 130, 130), v -> clearForm());
+791:             clear.setTextSize(13);
+792:             LinearLayout cr = a.row();
+793:             cr.setGravity(Gravity.CENTER);
+794:             cr.addView(clear, new LinearLayout.LayoutParams(-2, a.dp(38)));
+795:             a.body.addView(cr, a.lp(-1, -2, 6));
+796:         }
+797:         // 10.13: على التابلت: الرسالة والمكتب في عمود، والحقول والملخص في العمود المقابل
+798:         if (form.wa) a.splitBody(form.txCard != null ? form.txCard : splitMark);
+799:     }
+800: 
+801:     private View waHead;
+802: 
+803:     private void buildSpecial(final Form form) {
+804:         LinearLayout c = new LinearLayout(a);
+805:         c.setOrientation(LinearLayout.VERTICAL);
+806:         c.setPadding(a.dp(14), a.dp(8), a.dp(14), a.dp(10));
+807:         c.setBackground(a.round(a.surface, a.cardStroke, 18));
+808:         LinearLayout hd = a.row();
+809:         hd.setGravity(Gravity.CENTER_VERTICAL);
+810:         LinearLayout tc = new LinearLayout(a);
+811:         tc.setOrientation(LinearLayout.VERTICAL);
+812:         tc.addView(a.text("حركة خاصة", 15, a.ink, true));
+813:         tc.addView(a.text("ناقصة أجور، تحتاج مراجعة، بانتظار التنفيذ… تظهر في «الأمانات والخاصة» بالمكتب حتى تحوّلها لعادية", 12, a.muted, false));
+814:         hd.addView(tc, new LinearLayout.LayoutParams(0, -2, 1));
+815:         form.specialSw = new android.widget.Switch(a);

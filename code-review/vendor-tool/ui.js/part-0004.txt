@@ -1,0 +1,160 @@
+606:     VT.issueToken(S.signer, fields).then(function (token) {
+607:       var lic = VT.record(S.ledger, withLimits({
+608:         lid: lid, order: rv.req.order, customer: $("sCustomer").value.trim(), phone: $("sPhone").value.trim(), price: $("sPrice").value.trim(),
+609:         note: $("sNote").value.trim(), uu: uu, ft: f.ft, ed: f.ed, dk: rv.req.dk, pub: rv.req.pub, model: rv.req.model, attest: attestLabel(rv), token: token,
+610:         of: rv.req.of || ""
+611:       }, f), Date.now());
+612:       if (seat.n) msg(box, "info", "هذا الجهاز رقم " + seat.n + (f.md ? " من " + f.md : "") + " لهذا المكتب.");
+613:       saveLedger();
+614:       tokenBox(box, token, lic);
+615:       $("issue").disabled = true;
+616:       $("sLid").value = VT.nextLid(S.ledger, Date.now());
+617:     }).catch(function (e) { msg(box, "err", e.message); });
+618:   });
+619: 
+620:   // ------------------------------------------------------------------ نقل رخصة
+621:   function renderMoveList() {
+622:     var box = $("mList"), q = $("mFind").value.trim().toLowerCase();
+623:     box.innerHTML = "";
+624:     var list = S.ledger.licenses.filter(function (l) { return l.status === "active" || l.status === "released"; })
+625:       .filter(function (l) { return !q || (l.lid + " " + l.customer + " " + l.order + " " + l.phone).toLowerCase().indexOf(q) >= 0; });
+626:     if (!list.length) return msg(box, "info", S.ledger.licenses.length ? "لا رخصة مطابقة." : "السجل فارغ.");
+627:     list.slice(-50).reverse().forEach(function (l) {
+628:       var b = el("button", "pick" + (S.move.lid === l.lid ? " on" : ""));
+629:       b.textContent = l.lid + " — " + (l.customer || "بلا اسم") + " — " + (l.model || "") + (l.status === "released" ? " (محرَّرة)" : "");
+630:       b.addEventListener("click", function () {
+631:         S.move = { lid: l.lid, receipt: null, review: null };
+632:         $("relText").value = "";
+633:         $("mReqText").value = "";
+634:         $("relOut").innerHTML = $("mReqOut").innerHTML = $("mIssueOut").innerHTML = "";
+635:         renderMoveList();
+636:         moveInfo();
+637:       });
+638:       box.appendChild(b);
+639:     });
+640:   }
+641:   $("mFind").addEventListener("input", renderMoveList);
+642: 
+643:   function moveAllowed() {
+644:     if (!S.move.lid) return { ok: false, reason: "اختر رخصة" };
+645:     return VT.canTransfer(S.ledger, S.move.lid, Date.now(), !!S.move.receipt);
+646:   }
+647: 
+648:   function moveInfo() {
+649:     var box = $("mInfo"), l = VT.findLicense(S.ledger, S.move.lid);
+650:     box.innerHTML = "";
+651:     $("mOld").classList.toggle("off", !l);
+652:     $("mNew").classList.toggle("off", !l);
+653:     if (!l) return;
+654:     var n = VT.transfersInYear(S.ledger, l.base, Date.now());
+655:     msg(box, "info", "الرخصة " + l.lid + " • العميل: " + (l.customer || "—") + " • منذ " + fmtDate(l.issuedAt) + " • التحديثات حتى " + fmtUu(l.uu)
+656:       + " • النقلات هذه السنة: " + n + " من 2" + (l.lostAt ? " • سُجّل الفقد في " + fmtDate(l.lostAt) : ""));
+657:     var a = moveAllowed();
+658:     msg(box, a.ok ? "ok" : "warn", a.ok ? "النقل مسموح الآن برقم " + a.nextLid + "." : a.reason);
+659:     updateIssue();
+660:   }
+661: 
+662:   $("relCheck").addEventListener("click", function () {
+663:     var box = $("relOut"), l = VT.findLicense(S.ledger, S.move.lid);
+664:     box.innerHTML = "";
+665:     if (!l) return msg(box, "err", "اختر الرخصة أولًا.");
+666:     VT.verifyRelease($("relText").value, l.pub).then(function (r) {
+667:       if (!r.ok) return msg(box, "err", r.error);
+668:       if (r.lid !== l.lid) return msg(box, "err", "الإيصال لرخصة أخرى: " + r.lid);
+669:       S.move.receipt = r;
+670:       l.status = "released";
+671:       l.releasedAt = r.at;
+672:       saveLedger();
+673:       msg(box, "ok", "إيصال صحيح: حُرّرت الرخصة من الهاتف القديم في " + fmtDate(r.at) + ".");
+674:       moveInfo();
+675:     });
+676:   });
+677: 
+678:   $("lost").addEventListener("click", function () {
+679:     var l = VT.findLicense(S.ledger, S.move.lid);
+680:     if (!l) return;
+681:     if (l.lostAt && !confirm("سُجّل الفقد من قبل في " + fmtDate(l.lostAt) + ". إعادة التسجيل تبدأ مهلة 7 أيام من جديد. متابعة؟")) return;
+682:     if (!l.lostAt && !confirm("تسجيل الهاتف مفقودًا؟ يُسمح بنقل الرخصة بعد 7 أيام، ويُضاف رقمها القديم إلى قائمة الإلغاء عند النقل.")) return;
+683:     l.lostAt = Date.now();
+684:     saveLedger();
+685:     moveInfo();
+686:   });
+687: 
+688:   $("mReqCheck").addEventListener("click", function () {
+689:     var box = $("mReqOut");
+690:     box.innerHTML = "";
+691:     VT.reviewRequest($("mReqText").value, { ledger: S.ledger, status: S.status }).then(function (rv) {
+692:       S.move.review = rv;
+693:       showReview(box, rv);
+694:       $("mOverrideBox").classList.toggle("hidden", !rv.errors.length);
+695:       $("mOverride").checked = false;
+696:       updateIssue();
+697:     });
+698:   });
+699:   $("mOverride").addEventListener("change", updateIssue);
+700: 
+701:   $("mIssue").addEventListener("click", function () {
+702:     var box = $("mIssueOut"), l = VT.findLicense(S.ledger, S.move.lid), rv = S.move.review, a = moveAllowed();
+703:     box.innerHTML = "";
+704:     if (!a.ok) return msg(box, "err", a.reason);
+705:     VT.issueToken(S.signer, withLimits({ lid: a.nextLid, ed: l.ed, ft: l.ft, uu: l.uu, dk: rv.req.dk, of: rv.req.of || l.of || "" }, l.lim)).then(function (token) {
+706:       var lic = VT.record(S.ledger, withLimits({
+707:         lid: a.nextLid, order: rv.req.order, customer: l.customer, phone: l.phone, price: "", note: "نقل من " + l.lid + (S.move.receipt ? " (بإيصال)" : " (هاتف مفقود)"),
+708:         uu: l.uu, ft: l.ft, ed: l.ed, dk: rv.req.dk, pub: rv.req.pub, model: rv.req.model, attest: attestLabel(rv), token: token,
+709:         of: rv.req.of || l.of || ""
+710:       }, l.lim), Date.now());
+711:       VT.markMoved(S.ledger, l.lid, a.nextLid);
+712:       saveLedger();
+713:       tokenBox(box, token, lic);
+714:       S.move = { lid: "", receipt: null, review: null };
+715:       $("mIssue").disabled = true;
+716:       $("mInfo").innerHTML = "";
+717:       renderMoveList();
+718:       if (S.ledger.revoked.length) msg(box, "info", "أُضيف " + l.lid + " إلى قائمة الإلغاء. إن كان لديك خادم ترخيص فارفع إليه «سجل الخادم» من تبويب السجل.");
+719:     }).catch(function (e) { msg(box, "err", e.message); });
+720:   });
+721: 
+722:   // ------------------------------------------------------------------ السجل
+723:   var STATUS = { active: "فعّالة", released: "محرَّرة", moved: "منقولة", revoked: "ملغاة" };
+724: 
+725:   function renderLedger() {
+726:     var L = S.ledger, q = $("lFind").value.trim().toLowerCase();
+727:     var st = $("lStats");
+728:     st.innerHTML = "";
+729:     var sales = L.licenses.filter(function (l) { return l.lid === l.base; }).length;
+730:     var active = L.licenses.filter(function (l) { return l.status === "active"; }).length;
+731:     [[sales, "بيع"], [active, "رخصة فعّالة"], [L.licenses.length - sales, "نقل"], [L.revoked.length, "في قائمة الإلغاء"]].forEach(function (x) {
+732:       var d = el("div", "stat");
+733:       d.appendChild(el("b", null, String(x[0])));
+734:       d.appendChild(el("span", null, x[1]));
+735:       st.appendChild(d);
+736:     });
+737:     var t = $("lTable");
+738:     t.innerHTML = "<tr><th>رقم الرخصة</th><th>العميل</th><th>الطلب</th><th>الإصدار</th><th>التحديثات حتى</th><th>الحالة</th><th>الهاتف</th><th>التصديق</th><th></th></tr>";
+739:     L.licenses.slice().reverse().filter(function (l) {
+740:       return !q || (l.lid + " " + l.customer + " " + l.order + " " + l.phone + " " + l.model).toLowerCase().indexOf(q) >= 0;
+741:     }).forEach(function (l) {
+742:       var tr = document.createElement("tr");
+743:       tr.innerHTML = "<td class='ltr'>" + esc(l.lid) + "</td><td>" + esc(l.customer) + "</td><td class='ltr'>" + esc(l.order) + "</td><td>" + esc(fmtDate(l.issuedAt))
+744:         + "</td><td>" + esc(fmtUu(l.uu)) + "</td><td><span class='chip " + (l.status === "active" ? "ok" : "bad") + "'>" + esc(STATUS[l.status] || l.status)
+745:         + "</span></td><td>" + esc(l.model) + "</td><td>" + esc(l.attest) + "</td><td></td>";
+746:       var b = el("button", "btn sec mini", "الرمز");
+747:       b.addEventListener("click", function () { copy(l.token || "", b); });
+748:       tr.lastChild.appendChild(b);
+749:       t.appendChild(tr);
+750:     });
+751:     if (!L.licenses.length) {
+752:       var tr = document.createElement("tr");
+753:       tr.innerHTML = "<td colspan='9'>لا مبيعات بعد.</td>";
+754:       t.appendChild(tr);
+755:     }
+756:   }
+757:   $("lFind").addEventListener("input", renderLedger);
+758: 
+759:   function stamp() { var d = new Date(); return d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0"); }
+760: 
+761:   function backupLedger() { download("سجل-تراخيص-المحاسب-الذكي-" + stamp() + ".json", JSON.stringify(S.ledger, null, 1)); }
+762: 
+763:   $("lCsv").addEventListener("click", function () { download("مبيعات-المحاسب-الذكي-" + stamp() + ".csv", VT.ledgerCsv(S.ledger), "text/csv;charset=utf-8"); });
+764:   $("lBackup").addEventListener("click", backupLedger);
+765:   $("lServer").addEventListener("click", function () { download("licenses.json", VT.serverExport(S.ledger)); });

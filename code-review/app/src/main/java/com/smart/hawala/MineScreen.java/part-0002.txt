@@ -1,0 +1,144 @@
+176:             LinearLayout top = a.row();
+177:             top.setGravity(Gravity.CENTER_VERTICAL);
+178:             if (drag != null) {
+179:                 TextView h = drag.handle();
+180:                 top.addView(h, new LinearLayout.LayoutParams(a.dp(36), a.dp(40)));
+181:                 drag.bind(c, h, o.id);
+182:             }
+183:             TextView nm = a.text(o.name, 16, a.primaryInk, true);
+184:             nm.setSingleLine(true);
+185:             nm.setEllipsize(android.text.TextUtils.TruncateAt.END);
+186:             top.addView(nm, new LinearLayout.LayoutParams(0, -2, 1));
+187:             int wc = workColor(w.status);
+188:             TextView st = a.chip(Db.workLabel(w.status) + (w.manual != null ? " ✎" : ""), wc, Ui.mix(a.surface, wc, a.night ? 0.22f : 0.12f));
+189:             st.setTextSize(12);
+190:             st.setContentDescription("الحالة: " + Db.workLabel(w.status) + (w.manual != null ? " (وضعها " + w.byName + ")" : " (تلقائية)"));
+191:             if (a.db.canSetWork(o.id)) st.setOnClickListener(v -> pickStatus(o, w));
+192:             top.addView(st, new LinearLayout.LayoutParams(-2, -2));
+193:             c.addView(top);
+194:             // العلامات: سجّلتُ، أرسلتُ، تحققتُ / بانتظاري
+195:             List<String> marks = new java.util.ArrayList<>();
+196:             if (P_CHK.equals(page)) {
+197:                 Integer n = waitMine.get(o.id);
+198:                 marks.add(n == null || n == 0 ? "✓ تحققتُ" : "⏳ " + n + " بانتظار تحققي");
+199:                 Db.Team t = teams.get(o.id);
+200:                 marks.add("يسجّله: " + (t == null || t.owners.isEmpty() ? "—" : TeamScreen.names(t.owners)));
+201:             } else {
+202:                 if (w.myTxToday > 0) marks.add("✓ سجّلتُ " + w.myTxToday);
+203:                 else if (w.txToday > 0) marks.add("✓ سُجّلت " + w.txToday);
+204:                 if (w.reconToday) marks.add(w.myReconToday ? "✓ أرسلتُ مطابقة" : "✓ أُرسلت مطابقة");
+205:                 if (w.txToday > 0) marks.add(w.unverifiedToday == 0 ? "✓ تُحقِّق منها" : "⏳ " + w.unverifiedToday + " بلا تحقق");
+206:                 if (P_ALL.equals(page)) {
+207:                     Db.Team t = teams.get(o.id);
+208:                     marks.add("يسجّله: " + (t == null || t.owners.isEmpty() ? "—" : TeamScreen.names(t.owners))
+209:                             + " • يتحقق: " + (t == null || t.checkers.isEmpty() ? "—" : TeamScreen.names(t.checkers)));
+210:                 }
+211:             }
+212:             if (w.manual != null && !w.byName.isEmpty()) marks.add("✎ " + w.byName);
+213:             if (!marks.isEmpty()) c.addView(a.text(Model.join(marks, "   "), 12, a.muted, false));
+214:             StringBuilder bal = new StringBuilder();
+215:             for (Map.Entry<String, Long> e : a.db.balances(o.id).entrySet()) {
+216:                 if (e.getValue() == 0) continue;
+217:                 bal.append(bal.length() > 0 ? "  •  " : "").append("\u2066").append(Model.bal(e.getValue(), dec.containsKey(e.getKey()) ? dec.get(e.getKey()) : 2))
+218:                         .append(" ").append(e.getKey()).append("\u2069");
+219:             }
+220:             c.addView(a.text(bal.length() == 0 ? "متوازن" : bal.toString(), 12, a.ink, false));
+221:             LinearLayout r = a.row();
+222:             r.addView(a.smallButton("فتح", a.accent, v -> a.officeHub.showOffice(o)), a.weight(36, 1, 2));
+223:             if (!P_CHK.equals(page) && a.can(Auth.Perm.TX_ADD))
+224:                 r.addView(a.smallButton("تسجيل", a.primary, v -> a.openRecord("tx", o)), a.weight(36, 1, 2));
+225:             r.addView(a.smallButton("آخر رسالة", Color.rgb(120, 120, 120), v -> markDialog(o)), a.weight(36, 1, 2));
+226:             c.addView(r, a.lp(-1, -2, 2));
+227:         }
+228:     }
+229: 
+230:     /** اختيار حالة المكتب اليوم، أو إعادتها تلقائية. */
+231:     private void pickStatus(final Model.Office o, final Db.Work w) {
+232:         String[] items = new String[Db.WORK_KEYS.length + 1];
+233:         for (int i = 0; i < Db.WORK_KEYS.length; i++) items[i] = Db.workLabel(Db.WORK_KEYS[i]) + (Db.WORK_KEYS[i].equals(w.status) ? "  ✓" : "");
+234:         items[Db.WORK_KEYS.length] = "تلقائية (" + Db.workLabel(w.auto) + ")" + (w.manual == null ? "  ✓" : "");
+235:         new AlertDialog.Builder(a).setTitle("حالة «" + o.name + "» اليوم").setItems(items, (d, i) -> {
+236:             try {
+237:                 a.db.setOfficeWork(o.id, i < Db.WORK_KEYS.length ? Db.WORK_KEYS[i] : null);
+238:                 a.tick(a.body);
+239:                 show();
+240:             } catch (Exception e) {
+241:                 a.error(e);
+242:             }
+243:         }).setNegativeButton("إلغاء", null).show();
+244:     }
+245: 
+246:     /** علامة آخر رسالة نُقلت في نافذة (بدل بطاقة كبيرة في كل مكتب). */
+247:     private void markDialog(final Model.Office o) {
+248:         LinearLayout l = new LinearLayout(a);
+249:         l.setOrientation(LinearLayout.VERTICAL);
+250:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+251:         final AlertDialog[] dlg = {null};
+252:         markCard(l, o, () -> {
+253:             if (dlg[0] != null) dlg[0].dismiss();
+254:             show();
+255:         });
+256:         android.widget.ScrollView sv = new android.widget.ScrollView(a);
+257:         sv.addView(l);
+258:         dlg[0] = new AlertDialog.Builder(a).setTitle("آخر رسالة نُقلت — " + o.name).setView(sv).setPositiveButton("إغلاق", null).show();
+259:     }
+260: 
+261:     /** مطابقات للتحقق: بانتظار تحققي، وما تحققتُ منه مؤخرًا. */
+262:     private void recons() {
+263:         Map<String, Integer> dec = a.db.decimalsMap();
+264:         Map<Long, String> on = a.db.officeNames();
+265:         final List<Model.Recon> recs = a.db.awaitingMyRecons(60, 100);
+266:         a.section("بانتظار تحققي (" + recs.size() + ")", null, null);
+267:         if (recs.isEmpty()) a.add(a.text("لا مطابقات بانتظار تحققك ✓", 14, a.green, true));
+268:         for (final Model.Recon r : recs) {
+269:             LinearLayout c = a.card();
+270:             c.addView(a.text("«" + Model.nz(on.get(r.officeId)) + "» — " + Model.date(r.createdAt), 15, a.primaryInk, true));
+271:             StringBuilder b = new StringBuilder();
+272:             for (Map.Entry<String, Long> e : r.balances.entrySet())
+273:                 b.append(b.length() > 0 ? "  •  " : "").append("\u2066").append(Model.bal(e.getValue(), dec.containsKey(e.getKey()) ? dec.get(e.getKey()) : 2)).append(" ")
+274:                         .append(e.getKey()).append("\u2069");
+275:             c.addView(a.text(b.toString(), 13, a.ink, false));
+276:             c.addView(a.text("✓ أُرسلت • " + a.db.reconPeople(r) + " • " + r.statusLabel(), 12, a.muted, false));
+277:             c.addView(a.smallButton("تحققتُ من المطابقة ✓", a.primary, v -> {
+278:                 try {
+279:                     a.db.verifyRecon(r.id);
+280:                     a.toast("سُجّل تحققك من المطابقة ✓");
+281:                     show();
+282:                 } catch (Exception e) {
+283:                     a.error(e);
+284:                 }
+285:             }), a.lp(-1, 40, 3));
+286:         }
+287:         List<Model.Recon> done = a.db.reconsCheckedByMe(14, 50);
+288:         if (!done.isEmpty()) {
+289:             a.section("تحققتُ منها (آخر 14 يومًا)", null, null);
+290:             for (Model.Recon r : done)
+291:                 a.add(a.text("✓ «" + Model.nz(on.get(r.officeId)) + "» — " + Model.date(r.createdAt), 13, a.green, false));
+292:         }
+293:     }
+294: 
+295:     /** تسجيلات المحاسبين للتحقق: حركات أدخلها غيري في مكاتب أتحقق منها، وما تحققتُ منه مؤخرًا. */
+296:     private void txs() {
+297:         final List<Model.Tx> wait = a.db.awaitingMyCheck(60, 200);
+298:         a.section("بانتظار تحققي (" + wait.size() + ")", null, null);
+299:         a.hint("التحقق لا يُنشئ قيدًا ولا يغيّر الأرصدة، وتعديل المبلغ أو العملة أو الاتجاه أو المكتب يُبطله.");
+300:         if (wait.isEmpty()) a.add(a.text("لا حركات بانتظار تحققك ✓", 14, a.green, true));
+301:         Map<Long, String> names = a.db.officeNames();
+302:         // 10.16: تحديد عدة حركات أو الكل والتحقق منها دفعة واحدة
+303:         final java.util.Set<Long> picked = new java.util.LinkedHashSet<>();
+304:         final List<android.widget.CheckBox> boxes = new java.util.ArrayList<>();
+305:         final android.widget.Button[] go = new android.widget.Button[1];
+306:         final Runnable count = () -> {
+307:             if (go[0] != null) go[0].setText(picked.isEmpty() ? "تحققتُ من المحدد" : "تحققتُ من المحدد (" + picked.size() + ")");
+308:         };
+309:         if (wait.size() > 1) {
+310:             LinearLayout br = a.row();
+311:             br.addView(a.smallButton("تحديد الكل", a.accent, v -> {
+312:                 boolean all = picked.size() < wait.size();
+313:                 for (android.widget.CheckBox cb : boxes) cb.setChecked(all);
+314:             }), a.weight(42, 1, 2));
+315:             go[0] = a.smallButton("تحققتُ من المحدد", a.primary, v -> {
+316:                 if (picked.isEmpty()) {
+317:                     a.toast("حدّد حركة واحدة على الأقل (أو «تحديد الكل»)");
+318:                     return;
+319:                 }

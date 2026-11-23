@@ -1,0 +1,60 @@
+1: package android.content;
+2: 
+3: import java.io.*;
+4: import java.util.*;
+5: 
+6: /** تفضيلات بسيطة في ملف properties (بيانات الجهاز فقط). */
+7: final class Prefs implements SharedPreferences {
+8:     private static final Map<String, Prefs> all = new HashMap<>();
+9:     private final File f;
+10:     private final Properties p = new Properties();
+11:     private Prefs(File f) {
+12:         this.f = f;
+13:         try (InputStream in = new FileInputStream(f)) { p.load(new InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8)); } catch (IOException ignored) { }
+14:     }
+15:     static synchronized Prefs get(File f) { return all.computeIfAbsent(f.getAbsolutePath(), k -> new Prefs(f)); }
+16:     private synchronized void save() {
+17:         try (OutputStream o = new FileOutputStream(f)) { p.store(new OutputStreamWriter(o, java.nio.charset.StandardCharsets.UTF_8), null); } catch (IOException ignored) { }
+18:     }
+19:     @Override public synchronized String getString(String k, String d) { return p.getProperty(k, d); }
+20:     @Override public synchronized int getInt(String k, int d) { try { return Integer.parseInt(p.getProperty(k)); } catch (Exception e) { return d; } }
+21:     @Override public synchronized long getLong(String k, long d) { try { return Long.parseLong(p.getProperty(k)); } catch (Exception e) { return d; } }
+22:     @Override public synchronized boolean getBoolean(String k, boolean d) { String v = p.getProperty(k); return v == null ? d : Boolean.parseBoolean(v); }
+23:     @Override public synchronized float getFloat(String k, float d) { try { return Float.parseFloat(p.getProperty(k)); } catch (Exception e) { return d; } }
+24:     @Override public synchronized Set<String> getStringSet(String k, Set<String> d) {
+25:         String v = p.getProperty(k);
+26:         if (v == null) return d;
+27:         Set<String> s = new LinkedHashSet<>();
+28:         for (String x : v.split("\u001F", -1)) if (!x.isEmpty()) s.add(x);
+29:         return s;
+30:     }
+31:     @Override public synchronized boolean contains(String k) { return p.containsKey(k); }
+32:     @Override public synchronized Map<String, ?> getAll() { Map<String, Object> m = new HashMap<>(); for (String k : p.stringPropertyNames()) m.put(k, p.getProperty(k)); return m; }
+33:     @Override public Editor edit() {
+34:         final Map<String, String> put = new LinkedHashMap<>();
+35:         final Set<String> rm = new HashSet<>();
+36:         final boolean[] clear = {false};
+37:         return new Editor() {
+38:             public Editor putString(String k, String v) { if (v == null) rm.add(k); else put.put(k, v); return this; }
+39:             public Editor putInt(String k, int v) { put.put(k, String.valueOf(v)); return this; }
+40:             public Editor putLong(String k, long v) { put.put(k, String.valueOf(v)); return this; }
+41:             public Editor putBoolean(String k, boolean v) { put.put(k, String.valueOf(v)); return this; }
+42:             public Editor putFloat(String k, float v) { put.put(k, String.valueOf(v)); return this; }
+43:             public Editor putStringSet(String k, Set<String> v) { put.put(k, String.join("\u001F", v)); return this; }
+44:             public Editor remove(String k) { rm.add(k); return this; }
+45:             public Editor clear() { clear[0] = true; return this; }
+46:             public boolean commit() {
+47:                 synchronized (Prefs.this) {
+48:                     if (clear[0]) p.clear();
+49:                     for (String k : rm) p.remove(k);
+50:                     p.putAll(put);
+51:                     save();
+52:                 }
+53:                 return true;
+54:             }
+55:             public void apply() { commit(); }
+56:         };
+57:     }
+58:     @Override public void registerOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener l) {}
+59:     @Override public void unregisterOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener l) {}
+60: }

@@ -1,0 +1,143 @@
+341:             r1.addView(c.tile(R.drawable.ic_upload, "تسليم له", "يخرج من الصندوق", c.red(), v -> c.form(CashBox.OUT, null, k)), a.weight(-2, 1, 4));
+342:             r2.addView(c.tile(R.drawable.ic_edit, "قيد بلا نقد", "رصيد سابق أو تسوية", c.gray(), v -> entry(k)), a.weight(-2, 1, 4));
+343:             r2.addView(c.tile(R.drawable.ic_coins, "تبديل عملة", "رصيده بعملة أخرى", c.teal(), v -> swap(k)), a.weight(-2, 1, 4));
+344:             a.body.addView(r1, a.lp(-1, -2, 2));
+345:             a.body.addView(r2, a.lp(-1, -2, 2));
+346:         }
+347: 
+348:         a.section("الحركات", "كشف الحساب", v -> statement(k, a.reportsScreen.range()[0], a.reportsScreen.range()[1]));
+349:         if (moves.isEmpty()) {
+350:             a.hint("لا حركات بعد. «تسليم له» أو «استلام منه» يسجّل النقد في الصندوق وعلى حسابه معًا.");
+351:             return;
+352:         }
+353:         // الرصيد المتراكم لكل عملة بعد كل حركة
+354:         Map<String, Long> run = new HashMap<>();
+355:         long[] after = new long[moves.size()];
+356:         for (int i = 0; i < moves.size(); i++) {
+357:             ClientBook.Move m = moves.get(i);
+358:             long nb = (run.containsKey(m.currency) ? run.get(m.currency) : 0) + m.effect();
+359:             run.put(m.currency, nb);
+360:             after[i] = nb;
+361:         }
+362:         int shown = 0;
+363:         for (int i = moves.size() - 1; i >= 0 && shown < 200; i--, shown++) a.body.addView(moveRow(moves.get(i), after[i], k), a.lp(-1, -2, 2));
+364:         if (moves.size() > 200) a.hint("تظهر آخر 200 حركة؛ كلها في «كشف الحساب».");
+365:     }
+366: 
+367:     private View moveRow(final ClientBook.Move m, long after, final ClientBook.Client k) {
+368:         Map<String, Integer> dec = a.db.decimalsMap();
+369:         LinearLayout r = a.row();
+370:         r.setPadding(a.dp(12), a.dp(10), a.dp(12), a.dp(10));
+371:         r.setBackground(a.ripple(a.round(a.surface, a.line, 14), 14));
+372:         int col = !m.counts() ? a.muted : m.dir > 0 ? a.green : a.red;
+373:         LinearLayout ic = new LinearLayout(a);
+374:         ic.setGravity(Gravity.CENTER);
+375:         GradientDrawable cg = new GradientDrawable();
+376:         cg.setColor(Ui.mix(a.surface, col, a.night ? 0.3f : 0.12f));
+377:         cg.setCornerRadius(a.dp(12));
+378:         ic.setBackground(cg);
+379:         int icon = ClientBook.CASH.equals(m.kind) ? (m.cashDir > 0 ? R.drawable.ic_download : R.drawable.ic_upload)
+380:                 : ClientBook.SWAP.equals(m.kind) ? R.drawable.ic_coins : R.drawable.ic_edit;
+381:         ic.addView(a.icon(icon, col, 20), new LinearLayout.LayoutParams(a.dp(20), a.dp(20)));
+382:         r.addView(ic, new LinearLayout.LayoutParams(a.dp(40), a.dp(40)));
+383:         LinearLayout cc = new LinearLayout(a);
+384:         cc.setOrientation(LinearLayout.VERTICAL);
+385:         cc.setPadding(a.dp(10), 0, a.dp(6), 0);
+386:         cc.addView(a.text(ClientBook.text(m, dec, true), 14, m.counts() ? a.ink : a.muted, true));
+387:         String sub = (m.description.isEmpty() ? "" : m.description + "\n") + Model.date(m.createdAt) + (m.cancelled() ? "   •   ملغاة" : "")
+388:                 + (m.counts() ? "\nالرصيد بعدها: " + bal(after, m.currency) : "");
+389:         TextView s = a.text(sub, 12, a.muted, false);
+390:         s.setMaxLines(4);
+391:         cc.addView(s);
+392:         r.addView(cc, new LinearLayout.LayoutParams(0, -2, 1));
+393:         LinearLayout amt = new LinearLayout(a);
+394:         amt.setOrientation(LinearLayout.VERTICAL);
+395:         amt.setGravity(Gravity.LEFT);
+396:         TextView av = a.text(a.amountsHidden() ? "••••" : (m.dir > 0 ? "+" : "−") + Model.fmt(m.amount, CashBox.dec(dec, m.currency)), 16, col, true);
+397:         av.setTextDirection(View.TEXT_DIRECTION_LTR);
+398:         amt.addView(av);
+399:         amt.addView(a.text(m.currency + "  " + (m.dir > 0 ? "لنا" : "علينا"), 11, a.muted, false));
+400:         r.addView(amt, new LinearLayout.LayoutParams(-2, -2));
+401:         r.setOnClickListener(v -> details(m, k));
+402:         return r;
+403:     }
+404: 
+405:     private void details(final ClientBook.Move m, final ClientBook.Client k) {
+406:         Map<String, Integer> dec = a.db.decimalsMap();
+407:         List<String[]> rows = new ArrayList<>();
+408:         rows.add(new String[]{"العميل", k.name});
+409:         rows.add(new String[]{"الحركة", ClientBook.text(m, dec, true)});
+410:         rows.add(new String[]{"على حسابه", (m.dir > 0 ? "لنا عليه " : "علينا له ") + c.money(m.amount, m.currency)});
+411:         if (m.cashCurrency != null) rows.add(new String[]{m.cashDir > 0 ? "دخل الصندوق" : "خرج من الصندوق", c.money(m.cashAmount, m.cashCurrency)});
+412:         if (!Model.nz(m.rate).isEmpty() && m.cashCurrency != null && !m.cashCurrency.equals(m.currency))
+413:             rows.add(new String[]{"السعر", CashScreen.iso("1 " + m.currency + " = " + m.rate + " " + m.cashCurrency)});
+414:         if (!m.description.isEmpty()) rows.add(new String[]{"البيان", m.description});
+415:         rows.add(new String[]{"التاريخ", Model.date(m.createdAt)});
+416:         rows.add(new String[]{"بواسطة", m.userName});
+417:         if (m.cancelled()) rows.add(new String[]{"الحالة", "ملغاة" + (m.cancelReason.isEmpty() ? "" : " — " + m.cancelReason)});
+418:         AlertDialog.Builder b = new AlertDialog.Builder(a).setView(c.detailView("حركة على حساب العميل", rows, null)).setPositiveButton("إغلاق", null);
+419:         if (m.counts() && a.can(Auth.Perm.TX_CANCEL)) b.setNegativeButton("إلغاء الحركة", (x, w) -> {
+420:             final EditText reason = a.field("سبب الإلغاء");
+421:             LinearLayout l = new LinearLayout(a);
+422:             l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+423:             l.addView(reason, new LinearLayout.LayoutParams(-1, a.dp(50)));
+424:             new AlertDialog.Builder(a).setTitle("إلغاء الحركة").setView(l)
+425:                     .setMessage(m.cashUuid != null ? "تُلغى معها حركة الصندوق (يعود النقد كما كان)." : ClientBook.SWAP.equals(m.kind) ? "يُلغى التبديل بسطريه." : null)
+426:                     .setPositiveButton("إلغاء الحركة", (d2, w2) -> {
+427:                         try {
+428:                             a.db.cancelClientMove(m.id, reason.getText().toString().trim());
+429:                             a.toast("أُلغيت الحركة");
+430:                             pageImpl(k.id);
+431:                         } catch (Exception e) {
+432:                             a.error(e);
+433:                         }
+434:                     }).setNegativeButton("رجوع", null).show();
+435:         });
+436:         b.show();
+437:     }
+438: 
+439:     private void options(final ClientBook.Client k) {
+440:         final List<String> acts = new ArrayList<>();
+441:         acts.add("تعديل البيانات");
+442:         acts.add(k.active ? "أرشفة الحساب (رصيده صفر)" : "إعادة الحساب");
+443:         new AlertDialog.Builder(a).setTitle(k.name).setItems(acts.toArray(new String[0]), (d, w) -> {
+444:             try {
+445:                 if (w == 0) edit(k, x -> pageImpl(x.id));
+446:                 else {
+447:                     a.db.setClientActive(k.id, !k.active);
+448:                     a.toast(k.active ? "أُرشف الحساب" : "أُعيد الحساب");
+449:                     pageImpl(k.id);
+450:                 }
+451:             } catch (Exception e) {
+452:                 a.error(e);
+453:             }
+454:         }).show();
+455:     }
+456: 
+457:     // ===================================================================================
+458:     // قيد بلا نقد
+459:     // ===================================================================================
+460: 
+461:     private void entry(final ClientBook.Client k) {
+462:         c.screen("قيد على حساب " + k.name, () -> pageImpl(k.id));
+463:         a.hint("يسجّل على حساب العميل دون أن يمس الصندوق: رصيد قديم قبل استخدام التطبيق، أو تسوية متفق عليها.");
+464:         a.add(a.label("الجهة"));
+465:         final Ui.Seg side = a.new Seg(new String[]{"لنا عليه (مدين لنا)", "علينا له (له عندنا)"}, new int[]{a.green, a.red}, -1, false);
+466:         a.body.addView(side.view, a.lp(-1, -2, 2));
+467:         a.add(a.label("العملة"));
+468:         final List<String> curs = new ArrayList<>();
+469:         for (Model.Currency x : a.db.currencies(false)) curs.add(x.code);
+470:         final Ui.Seg cur = a.new Seg(curs.toArray(new String[0]), null, -1, curs.size() > 4);
+471:         a.body.addView(cur.view, a.lp(-1, -2, 2));
+472:         final EditText amount = a.amountInput("المبلغ");
+473:         amount.setTextSize(20);
+474:         final EditText desc = a.input("البيان (مثل: رصيد سابق)");
+475:         c.dateButton(null);
+476:         a.footer(a.makeButton("مراجعة القيد", a.primary, v -> {
+477:             try {
+478:                 if (side.none()) throw new Exception("حدّد: لنا عليه أم علينا له");
+479:                 if (cur.none()) throw new Exception("اختر العملة");
+480:                 final String cu = cur.label();
+481:                 final long am = Db.minor(amount.getText().toString(), a.db.decimals(cu));
+482:                 if (am <= 0) throw new Exception("المبلغ يجب أن يكون أكبر من صفر");
+483:                 final int dir = side.selected == 0 ? 1 : -1;

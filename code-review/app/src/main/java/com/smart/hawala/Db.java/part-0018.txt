@@ -1,0 +1,160 @@
+2445:                     + " AND NOT EXISTS(SELECT 1 FROM tx_checks k WHERE k.tx_id=tx.id AND k.user_id=" + u.id + " AND k.status='VALID')", null)) {
+2446:                 if (c.moveToFirst()) wait = c.getLong(0);
+2447:             }
+2448:             String roles = rolesLine(u.id);
+2449:             if (rec == 0 && did == 0 && wait == 0 && roles.isEmpty()) continue;
+2450:             su.row(wait > 0 ? Report.NORMAL : Report.MUTED, u.name, rec, recOk, did, wait, roles.isEmpty() ? "—" : roles);
+2451:         }
+2452:         // ---- المطابقات
+2453:         Report.Section sr = r.section("مطابقات الفترة", "المطابقات");
+2454:         sr.col("المكتب", 2f, Report.TEXT).col("المطابقات", 1f, Report.INT).col("تحقق منها محاسب آخر", 1.4f, Report.INT).col("بانتظار التحقق", 1.2f, Report.INT);
+2455:         long ra = 0, rv = 0;
+2456:         try (Cursor c = d.rawQuery("SELECT o.name,COUNT(*),SUM(CASE WHEN r.checked_by IS NOT NULL THEN 1 ELSE 0 END) FROM reconciliations r JOIN offices o ON o.id=r.office_id"
+2457:                 + " WHERE r.created_at>=" + from + " AND r.created_at<" + to + " GROUP BY r.office_id ORDER BY o.name", null)) {
+2458:             while (c.moveToNext()) {
+2459:                 long n = c.getLong(1), v = c.getLong(2);
+2460:                 ra += n;
+2461:                 rv += v;
+2462:                 sr.row(n > v ? Report.NORMAL : Report.MUTED, c.getString(0), n, v, n - v);
+2463:             }
+2464:         }
+2465:         if (ra > 0) sr.row(Report.TOTAL, "المجموع", ra, rv, ra - rv);
+2466:         else sr.note = "لا مطابقات في هذه الفترة.";
+2467:         return r;
+2468:     }
+2469: 
+2470:     private static String pct(long part, long whole) {
+2471:         if (whole <= 0) return "—";
+2472:         return Math.round(part * 100.0 / whole) + "%";
+2473:     }
+2474: 
+2475:     // ===================================================================================
+2476:     // 10.13: حالة عمل كل مكتب اليوم («مكاتبي»): تلقائية من حركات اليوم ومطابقاته، ويغيّرها المحاسب يدويًا، وتبدأ كل يوم من جديد
+2477:     // ===================================================================================
+2478: 
+2479:     public static final String W_NONE = "NONE", W_DOING = "DOING", W_DONE = "DONE", W_RECON = "RECON";
+2480:     public static final String[] WORK_KEYS = {W_NONE, W_DOING, W_DONE, W_RECON};
+2481: 
+2482:     public static String workLabel(String s) {
+2483:         if (W_DOING.equals(s)) return "جاري التسجيل";
+2484:         if (W_DONE.equals(s)) return "تم التسجيل";
+2485:         if (W_RECON.equals(s)) return "أُرسلت مطابقة";
+2486:         return "لم يُسجَّل";
+2487:     }
+2488: 
+2489:     /** ترتيب الحالة (للفرز: ما يحتاج عملًا أولًا). */
+2490:     public static int workRank(String s) {
+2491:         if (W_DOING.equals(s)) return 1;
+2492:         if (W_DONE.equals(s)) return 2;
+2493:         if (W_RECON.equals(s)) return 3;
+2494:         return 0;
+2495:     }
+2496: 
+2497:     /** حالة مكتب اليوم: الفعلية، والتلقائية، واليدوية (إن وُضعت) ومن وضعها، وعلامات اليوم. */
+2498:     public static final class Work {
+2499:         public long officeId;
+2500:         public String status = W_NONE, auto = W_NONE, manual;
+2501:         public String byName = "";
+2502:         public long at;
+2503:         /** حركات اليوم في المكتب (كلها، ومنها ما سجّلتُه أنا)، وما لم يتحقق منه محاسب غير مُدخله، ومطابقة اليوم. */
+2504:         public int txToday, myTxToday, unverifiedToday;
+2505:         public boolean reconToday, myReconToday;
+2506:     }
+2507: 
+2508:     static String workDay(long t) { return Model.sdf(new java.text.SimpleDateFormat("yyyyMMdd", Locale.US)).format(new java.util.Date(t)); }
+2509: 
+2510:     /** حالات كل المكاتب النشطة اليوم (بالمعرّف). القراءة فقط. */
+2511:     public Map<Long, Work> officeWork() {
+2512:         SQLiteDatabase d = getReadableDatabase();
+2513:         long now = Clock.now(), start = ReportBuilder.startOfDay(now);
+2514:         Model.User me = actor();
+2515:         Map<Long, Work> out = new LinkedHashMap<>();
+2516:         for (Model.Office o : offices()) {
+2517:             if (!o.active) continue;
+2518:             Work w = new Work();
+2519:             w.officeId = o.id;
+2520:             out.put(o.id, w);
+2521:         }
+2522:         try (Cursor c = d.rawQuery("SELECT office_id,COUNT(*),SUM(CASE WHEN user_id=" + (me == null ? -1 : me.id) + " THEN 1 ELSE 0 END),"
+2523:                 + "SUM(CASE WHEN EXISTS(SELECT 1 FROM tx_checks k WHERE k.tx_id=tx.id AND k.status='VALID' AND (tx.user_id IS NULL OR k.user_id<>tx.user_id)) THEN 0 ELSE 1 END)"
+2524:                 + " FROM tx WHERE status='ACTIVE' AND created_at>=" + start + " GROUP BY office_id", null)) {
+2525:             while (c.moveToNext()) {
+2526:                 Work w = out.get(c.getLong(0));
+2527:                 if (w == null) continue;
+2528:                 w.txToday = c.getInt(1);
+2529:                 w.myTxToday = c.getInt(2);
+2530:                 w.unverifiedToday = c.getInt(3);
+2531:             }
+2532:         }
+2533:         try (Cursor c = d.rawQuery("SELECT office_id,MAX(CASE WHEN user_id=" + (me == null ? -1 : me.id) + " THEN 1 ELSE 0 END) FROM reconciliations WHERE created_at>=" + start
+2534:                 + " GROUP BY office_id", null)) {
+2535:             while (c.moveToNext()) {
+2536:                 Work w = out.get(c.getLong(0));
+2537:                 if (w == null) continue;
+2538:                 w.reconToday = true;
+2539:                 w.myReconToday = c.getInt(1) == 1;
+2540:             }
+2541:         }
+2542:         for (Work w : out.values()) w.auto = w.reconToday ? W_RECON : w.txToday > 0 ? W_DOING : W_NONE;
+2543:         try (Cursor c = d.rawQuery("SELECT office_id,status,user_name,at FROM office_work WHERE day=?", new String[]{workDay(now)})) {
+2544:             while (c.moveToNext()) {
+2545:                 Work w = out.get(c.getLong(0));
+2546:                 if (w == null || !Arrays.asList(WORK_KEYS).contains(c.getString(1))) continue;
+2547:                 w.manual = c.getString(1);
+2548:                 w.byName = shown(Model.nz(Crypto.dec(c.getString(2))));
+2549:                 w.at = c.getLong(3);
+2550:             }
+2551:         }
+2552:         for (Work w : out.values()) w.status = w.manual != null ? w.manual : w.auto;
+2553:         return out;
+2554:     }
+2555: 
+2556:     /** 10.13: حركات تحققتُ منها خلال آخر days يومًا (الأحدث أولًا) — علامة «تحققت» في «مكاتبي». */
+2557:     public List<Model.Tx> checkedByMe(int days, int limit) {
+2558:         List<Model.Tx> out = new ArrayList<>();
+2559:         Model.User me = actor();
+2560:         if (me == null) return out;
+2561:         List<Long> ids = new ArrayList<>();
+2562:         try (Cursor c = getReadableDatabase().rawQuery("SELECT tx_id FROM tx_checks WHERE status='VALID' AND user_id=" + me.id + " AND created_at>="
+2563:                 + (Clock.now() - days * 86_400_000L) + " ORDER BY created_at DESC LIMIT " + Math.max(1, limit), null)) {
+2564:             while (c.moveToNext()) ids.add(c.getLong(0));
+2565:         }
+2566:         for (Long id : ids) {
+2567:             Model.Tx t = tx(id);
+2568:             if (t != null && t.isActive()) out.add(t);
+2569:         }
+2570:         return out;
+2571:     }
+2572: 
+2573:     /** 10.13: مطابقات تحققتُ منها خلال آخر days يومًا (الأحدث أولًا). */
+2574:     public List<Model.Recon> reconsCheckedByMe(int days, int limit) {
+2575:         List<Model.Recon> out = new ArrayList<>();
+2576:         Model.User me = actor();
+2577:         if (me == null) return out;
+2578:         List<Long> ids = new ArrayList<>();
+2579:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id FROM reconciliations WHERE checked_by=" + me.id + " AND checked_at>="
+2580:                 + (Clock.now() - days * 86_400_000L) + " ORDER BY checked_at DESC LIMIT " + Math.max(1, limit), null)) {
+2581:             while (c.moveToNext()) ids.add(c.getLong(0));
+2582:         }
+2583:         for (Long id : ids) {
+2584:             Model.Recon r = recon(id);
+2585:             if (r != null) out.add(r);
+2586:         }
+2587:         return out;
+2588:     }
+2589: 
+2590:     /** هل يغيّر المستخدم الحالي حالة هذا المكتب: المدير ومدير المستخدمين، ومن يسجّل المكتب أو يتحقق منه، وكل من يسجّل حين لا فرز. */
+2591:     public boolean canSetWork(long office) {
+2592:         Model.User me = actor();
+2593:         if (me == null) return true;
+2594:         if (Auth.isAdmin(me) || Auth.can(me, Auth.Perm.USERS)) return true;
+2595:         if (!Auth.can(me, Auth.Perm.TX_ADD) && !Auth.can(me, Auth.Perm.VERIFY)) return false;
+2596:         Map<Long, String> roles = officeRoles(me.id);
+2597:         if (roles.containsKey(office)) return true;
+2598:         return roles.isEmpty() && !teamMode();
+2599:     }
+2600: 
+2601:     /** يضع حالة المكتب اليوم يدويًا؛ status = null يعيدها تلقائية. لا قيد ولا أثر على الأرصدة. */
+2602:     public void setOfficeWork(long office, String status) {
+2603:         if (office(office) == null) throw new IllegalArgumentException("المكتب غير موجود");
+2604:         if (status != null && !Arrays.asList(WORK_KEYS).contains(status)) throw new IllegalArgumentException("حالة غير معروفة");

@@ -1,0 +1,109 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.util.List;
+6: import javax.swing.*;
+7: import javax.swing.table.DefaultTableModel;
+8: 
+9: /** التقارير الجاهزة: بطاقات تفتح كل تقرير، وقوالب منشئ التقارير، وسجل العمليات (من فعل ماذا ومتى). */
+10: final class ReportsView extends View {
+11:     /** 10.12: فترة تقرير التحقق (افتراضيًا هذا الشهر). */
+12:     int teamPeriod = ReportBuilder.P_MONTH;
+13: 
+14:     ReportsView(App app) {
+15:         super(app, "تقارير جاهزة");
+16:     }
+17: 
+18:     @Override void refresh() {
+19:         clear();
+20:         int w = textWidth();
+21:         JPanel g = new JPanel(new GridLayout(0, 3, 12, 12));
+22:         g.setOpaque(false);
+23:         g.setAlignmentX(Component.RIGHT_ALIGNMENT);
+24:         g.add(card("كشف حساب مكتب", "حركات مكتب لفترة أو بعد آخر مطابقة، برصيد متراكم لكل عملة.", () -> app.go("statement")));
+25:         g.add(card("أرصدة كل المكاتب", "لنا وعلينا والرصيد لكل مكتب وعملة، مع الإجماليات.", () -> app.go("balances")));
+26:         g.add(card("التقرير اليومي", "حركات يوم واحد ومجاميعه، مع بصمة تكشف أي تعديل لاحق.", () -> app.go("daily")));
+27:         g.add(card("سجل الحركات", "تصفية وبحث في كل الحركات وتصديرها.", () -> app.go("log")));
+28:         g.add(card("تقارير صاحب المكتب", "النمو، التركّز، عمر الديون، المكاتب الصاعدة والمتراجعة، الأجور والراجع.", () -> app.go("owner")));
+29:         g.add(card("منشئ التقارير", "تقرير بخياراتك: 16 طريقة تجميع، جدول متقاطع، مقارنة بفترة سابقة، قوالب.", () -> app.go("builder")));
+30:         add(g);
+31:         space(18);
+32:         add(Ui.heading("قوالب جاهزة في منشئ التقارير"));
+33:         space(8);
+34:         JPanel q = new JPanel(new GridLayout(0, 3, 10, 10));
+35:         q.setOpaque(false);
+36:         q.setAlignmentX(Component.RIGHT_ALIGNMENT);
+37:         for (Object[] b : BuilderView.builtIn()) {
+38:             final String name = BuilderView.READY + b[0];
+39:             Ui.Btn bt = Ui.ghost((String) b[0], e -> {
+40:                 app.go("builder");
+41:                 View v = app.views.get("builder");
+42:                 if (v instanceof BuilderView) ((BuilderView) v).presets.setSelectedItem(name);
+43:             });
+44:             q.add(bt);
+45:         }
+46:         add(q);
+47:         // 10.12: التسجيل والتحقق بين المحاسبين (مع نظام المستخدمين) — التقرير نفسه في الهاتف
+48:         if (db.usersEnabled()) {
+49:             space(18);
+50:             add(Ui.heading("التسجيل والتحقق بين المحاسبين"));
+51:             add(Ui.para("لكل مكتب من يسجّله ومن يتحقق منه، وكم حركة تحقق منها محاسب آخر وكم تنتظر؛ ولكل محاسب ما سجّله وما تحقق منه؛ ومطابقات الفترة.", 13, Ui.muted, w));
+52:             space(6);
+53:             String[] ps = java.util.Arrays.copyOf(ReportBuilder.PERIODS, ReportBuilder.P_CUSTOM);
+54:             final JComboBox<String> per = Ui.combo(ps);
+55:             per.setSelectedIndex(teamPeriod);
+56:             final JPanel out = Ui.column();
+57:             final java.util.function.Supplier<Report> make = () -> {
+58:                 long[] r = ReportBuilder.period(per.getSelectedIndex(), Clock.now());
+59:                 Report rep = db.teamCheckReport(r[0], r[1], (String) per.getSelectedItem());
+60:                 rep.stamp(License.current.watermark(), License.current.lid);
+61:                 return rep;
+62:             };
+63:             Runnable show = () -> {
+64:                 teamPeriod = per.getSelectedIndex();
+65:                 out.removeAll();
+66:                 try {
+67:                     out.add(ReportPanel.render(make.get(), w));
+68:                 } catch (Exception ex) {
+69:                     out.add(Ui.label(Ui.friendly(ex), 14, Ui.red, false));
+70:                 }
+71:                 Ui.rtl(out);
+72:                 out.revalidate();
+73:                 out.repaint();
+74:             };
+75:             per.addActionListener(e -> show.run());
+76:             add(Ui.flow(Ui.labeled("الفترة", per), Ui.primary("تصدير / طباعة…", e -> Export.dialog(this, app, "التسجيل والتحقق بين المحاسبين", make))));
+77:             space(6);
+78:             add(out);
+79:             show.run();
+80:         }
+81:         space(18);
+82:         add(Ui.heading("سجل العمليات (آخر 300)"));
+83:         add(Ui.para("كل إضافة وتعديل وإلغاء ودخول ونسخ واستعادة باسم من فعلها. السجل متسلسل بالبصمات: أي حذف أو تعديل فيه يظهر في «الاعتمادية».", 13, Ui.muted, w));
+84:         space(6);
+85:         List<String[]> log = db.auditLogAll(300);
+86:         if (SyncEngine.enabled(db)) add(Ui.para("يشمل ما جرى على كل أجهزة المزامنة (العمود «الجهاز»).", 13, Ui.muted, w));
+87:         DefaultTableModel m = new DefaultTableModel(new Object[]{"الوقت", "العملية", "المستخدم", "الجهاز", "التفاصيل"}, 0) {
+88:             @Override public boolean isCellEditable(int r, int c) { return false; }
+89:         };
+90:         for (String[] r : log) m.addRow(new Object[]{r[0], r[1], r[4], r[6], (r[2].isEmpty() ? "" : r[2] + " " + r[3] + " ") + Ui.cut(r[5], 160)});
+91:         JTable t = Ui.table(m);
+92:         Ui.widths(t, 150, 200, 130, 130, 460);
+93:         JScrollPane sp = Ui.tableBox(t);
+94:         sp.setPreferredSize(new Dimension(800, 420));
+95:         sp.setMaximumSize(new Dimension(Integer.MAX_VALUE, 420));
+96:         add(sp);
+97:         done();
+98:     }
+99: 
+100:     JComponent card(String title, String desc, Runnable go) {
+101:         Ui.Card c = Ui.card();
+102:         c.add(Ui.label(title, 16, Ui.primaryInk, true));
+103:         c.add(Ui.gap(4));
+104:         c.add(Ui.para(desc, 13, Ui.muted, 260));
+105:         c.add(Ui.gap(8));
+106:         c.add(Ui.flow(Ui.primary("فتح", e -> go.run())));
+107:         return c;
+108:     }
+109: }

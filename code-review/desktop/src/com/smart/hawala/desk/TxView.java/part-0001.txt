@@ -1,0 +1,194 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.awt.datatransfer.DataFlavor;
+6: import java.awt.event.KeyEvent;
+7: import java.awt.image.BufferedImage;
+8: import java.io.ByteArrayOutputStream;
+9: import java.io.File;
+10: import java.math.BigDecimal;
+11: import java.util.*;
+12: import java.util.List;
+13: import javax.imageio.ImageIO;
+14: import javax.swing.*;
+15: import javax.swing.border.EmptyBorder;
+16: import javax.swing.event.DocumentEvent;
+17: import javax.swing.event.DocumentListener;
+18: 
+19: /**
+20:  * تسجيل حركة (أو تعديلها): الصق رسالة واتساب (أو عدة رسائل) فتُستخرج المعلومات (المستفيد، المبلغ، العملة، المدينة، «راجع»)
+21:  * وتُضاف للحقول بزر، ثم اختيار «لنا/علينا» إلزامي، والأجرة بمبلغ أو نسبة، وملخص حي، وتنبيهات قبل الحفظ (مبلغ غير معتاد،
+22:  * تكرار، تجاوز حد، رسالة مسجّلة سابقًا)، واعتماد المحاسب لحركات الموظف فوق الحد. الحساب والقيود في Db.addTx كالهاتف تمامًا.
+23:  */
+24: final class TxView extends View {
+25:     /** فتح النموذج على مكتب محدد. */
+26:     static final class Prefill {
+27:         final long office;
+28: 
+29:         Prefill(long office) { this.office = office; }
+30:     }
+31: 
+32:     /** فتح النموذج لتعديل حركة. */
+33:     static final class Edit {
+34:         final long txId;
+35:         /** 10.2: تصحيح حركة معلّقة ثم اعتمادها. */
+36:         final boolean approve;
+37: 
+38:         Edit(long txId) { this(txId, false); }
+39: 
+40:         Edit(long txId, boolean approve) {
+41:             this.txId = txId;
+42:             this.approve = approve;
+43:         }
+44:     }
+45: 
+46:     boolean approving;
+47:     /** 10.10: «تفاصيل إضافية» (الخدمة، الوجهة، ملاحظات، التاريخ، الصور). */
+48:     final JPanel more = Ui.column();
+49:     Ui.Btn moreToggle;
+50: 
+51:     void showMore(boolean open) {
+52:         if (more.isVisible() != open) {
+53:             more.setVisible(open);
+54:             body.revalidate();
+55:         }
+56:         List<String> used = new ArrayList<>();
+57:         if (!service.getEditor().getItem().toString().trim().isEmpty()) used.add("الخدمة");
+58:         if (!dest.val().isEmpty()) used.add("الوجهة");
+59:         if (!notes.val().isEmpty()) used.add("ملاحظات");
+60:         try {
+61:             long d0 = date.start();
+62:             if (d0 > 0 && !Model.day(d0).equals(Model.day(Clock.now()))) used.add("التاريخ");
+63:         } catch (Exception ignored) {
+64:             // تاريخ غير مكتمل
+65:         }
+66:         if (!imageData.isEmpty()) used.add("الصور");
+67:         if (moreToggle != null) moreToggle.setText((open ? "-  " : "+  ") + "تفاصيل إضافية" + (used.isEmpty() ? ": الخدمة، الوجهة، ملاحظات، التاريخ، الصور" : " — " + String.join("، ", used)));
+68:     }
+69:     /** 10.7: أزرار نوع الحركة (تُخفى عند التعديل والتصحيح). */
+70:     Ui.Seg kinds;
+71: 
+72:     // الحقول
+73:     final Ui.Field officeSearch = Ui.field("ابحث عن المكتب…");
+74:     final JPanel recentOffices = Ui.flow(), rateChips = Ui.flow();
+75: 
+76:     /** 10.16: أزرار آخر المكاتب التي سُجّلت لها حركات على هذا الجهاز (حتى 6). */
+77:     void fillRecentOffices() {
+78:         recentOffices.removeAll();
+79:         int n = 0;
+80:         for (String x : db.setting("recent_offices", "").split(",")) {
+81:             if (x.trim().isEmpty() || n >= 6) continue;
+82:             try {
+83:                 final Model.Office o = db.office(Long.parseLong(x.trim()));
+84:                 if (o == null || !o.active) continue;
+85:                 Ui.Btn b = Ui.ghost(o.name, e -> selectOffice(o.id));
+86:                 b.setFont(Ui.font(12.5f, false));
+87:                 recentOffices.add(b);
+88:                 n++;
+89:             } catch (NumberFormatException ignored) {
+90:                 // قيمة قديمة غير رقمية
+91:             }
+92:         }
+93:         recentOffices.setVisible(n > 0 && editing == null);
+94:         recentOffices.revalidate();
+95:     }
+96: 
+97:     void rememberOffice(long id) {
+98:         List<String> l = new ArrayList<>();
+99:         l.add("" + id);
+100:         for (String x : db.setting("recent_offices", "").split(",")) if (!x.trim().isEmpty() && !x.trim().equals("" + id) && l.size() < 8) l.add(x.trim());
+101:         db.setSettingQuiet("recent_offices", String.join(",", l));
+102:     }
+103: 
+104:     /** 10.16: آخر النسب المستعملة («1|100,1.5|1000» كالهاتف) أزرارًا تملأ النسبة ونوعها. */
+105:     void fillRateChips() {
+106:         rateChips.removeAll();
+107:         for (String item : db.setting("fee_rates_recent", "").split(",")) {
+108:             String[] p = item.split("\\|");
+109:             if (p.length != 2) continue;
+110:             final java.math.BigDecimal r = Model.parseRate(p[0]);
+111:             if (r == null) continue;
+112:             final int per = "1000".equals(p[1]) ? Model.PER_MILLE : Model.PER_CENT;
+113:             Ui.Btn b = Ui.ghost(Model.rateLabel(r, per), e -> {
+114:                 ratePer.set(per == Model.PER_MILLE ? 1 : 0);
+115:                 rate.setText(r.stripTrailingZeros().toPlainString());
+116:                 recalcFee();
+117:             });
+118:             b.setFont(Ui.font(12.5f, false));
+119:             rateChips.add(b);
+120:         }
+121:         rateChips.setVisible(rateChips.getComponentCount() > 0);
+122:         rateChips.revalidate();
+123:     }
+124: 
+125:     void rememberRate() {
+126:         if (feeKind.selected != 1) return;
+127:         java.math.BigDecimal r = Model.parseRate(rate.getText());
+128:         if (r == null) return;
+129:         String key = r.stripTrailingZeros().toPlainString() + "|" + per();
+130:         List<String> l = new ArrayList<>();
+131:         l.add(key);
+132:         for (String item : db.setting("fee_rates_recent", "").split(",")) if (!item.isEmpty() && !item.equals(key) && l.size() < 4) l.add(item);
+133:         db.setSettingQuiet("fee_rates_recent", String.join(",", l));
+134:     }
+135:     final JComboBox<Model.Office> office = Ui.pickCombo();
+136:     Ui.Seg type;
+137:     final Ui.Field amount = Ui.numeric("المبلغ");
+138:     final JComboBox<String> currency = Ui.combo(new String[0]);
+139:     Ui.Seg feeMode, feeSide, feeKind, ratePer;
+140:     final Ui.Field fee = Ui.numeric("مبلغ الأجرة"), rate = Ui.numeric("النسبة");
+141:     final JComboBox<String> feeCur = Ui.combo(new String[0]);
+142:     final JLabel rateResult = Ui.label("", 13, Ui.muted, false);
+143:     final Ui.Field person = Ui.field("اسم المستفيد");
+144:     final JTextArea desc = Ui.area(6);
+145:     final JComboBox<String> service = Ui.combo(new String[0]);
+146:     final Ui.Field dest = Ui.field("المدينة أو البلد");
+147:     final Ui.Field notes = Ui.field("ملاحظات داخلية (لا تظهر في الكشف إلا إن اخترت)");
+148:     final Ui.DateField date = new Ui.DateField(0);
+149:     final JPanel feeBox = Ui.column(), rateBox = Ui.column(), images = Ui.flow();
+150:     final List<byte[]> imageData = new ArrayList<>();
+151:     final JPanel parseBox = Ui.column();
+152:     final JLabel summary = Ui.label("", 14.5f, Ui.ink, true);
+153:     final JLabel queueLabel = Ui.label("", 13, Ui.goldInk, true);
+154:     /** 10.5 (§5): المكتب المثبّت لرسائل واتساب (بالأحمر مع كلمة «المكتب»). */
+155:     final JLabel pinLabel = new JLabel();
+156:     Ui.Btn save;
+157: 
+158:     // الحالة
+159:     Model.Tx editing;
+160:     MessageParser.Result parsed;
+161:     boolean filled;
+162:     Model.Tx duplicate;
+163:     List<WaText.Msg> queue = new ArrayList<>();
+164:     int queueAt;
+165:     javax.swing.Timer parseTimer;
+166:     Map<String, Model.Tx> prints;
+167:     long printsAt;
+168:     boolean building;
+169: 
+170:     TxView(App app) {
+171:         super(app, "تسجيل حركة");
+172:     }
+173: 
+174:     @Override void build() {
+175:         type = new Ui.Seg(new String[]{"لنا (مدين)", "علينا (دائن)"}, new Color[]{Ui.green, Ui.red}, -1);
+176:         feeMode = new Ui.Seg(new String[]{"بدون أجرة", "مع أجرة"}, null, 0);
+177:         feeSide = new Ui.Seg(new String[]{"الأجرة لنا", "الأجرة علينا"}, new Color[]{Ui.green, Ui.red}, 0);
+178:         feeKind = new Ui.Seg(new String[]{"مبلغ محدد", "نسبة من المبلغ"}, null, 0);
+179:         ratePer = new Ui.Seg(new String[]{"٪ بالمئة", "‰ بالألف"}, null, "1000".equals(db.setting("fee_per_last", "100")) ? 1 : 0);
+180:         office.setFont(Ui.font(14, false));
+181:         office.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
+182:         office.setAlignmentX(Component.RIGHT_ALIGNMENT);
+183:         office.setComponentOrientation(Ui.RTL);
+184:         office.setRenderer(new DefaultListCellRenderer() {
+185:             @Override public Component getListCellRendererComponent(JList<?> l, Object v, int i, boolean s, boolean f) {
+186:                 JLabel c = (JLabel) super.getListCellRendererComponent(l, v instanceof Model.Office ? ((Model.Office) v).name : "— اختر المكتب —", i, s, f);
+187:                 c.setHorizontalAlignment(SwingConstants.RIGHT);
+188:                 c.setFont(Ui.font(14, false));
+189:                 return c;
+190:             }
+191:         });
+192:         service.setEditable(true);
+193: 
+194:         JPanel form = Ui.column();

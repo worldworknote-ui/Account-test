@@ -1,0 +1,194 @@
+412:       if (!L.explicitFree) on = flagOn || n > 0;
+413:       else if (!L.flag) on = n !== L.free;
+414:       else on = flagOn || (n !== L.free);   // بلا علم ولا رقم = رخصة 12.5 وأقدم: مفتوحة
+415:       t.lim[L.k] = { on: !!on, n: on && n ? n : "" };
+416:     });
+417:     VT.SWITCHES.forEach(function (w) { t.sw[w.k] = all || ft.indexOf("," + w.k + ",") >= 0; });
+418:     return t;
+419:   }
+420: 
+421:   var salePanel = contentPanel($("sContent"), function () { $("issueOut").innerHTML = ""; });
+422: 
+423:   $("reqCheck").addEventListener("click", function () {
+424:     var box = $("reqOut");
+425:     box.innerHTML = "";
+426:     msg(box, "info", "جارٍ الفحص…");
+427:     VT.reviewRequest($("reqText").value, { ledger: S.ledger, status: S.status }).then(function (rv) {
+428:       S.sale = rv;
+429:       showReview(box, rv);
+430:       var ok = !!rv.req;
+431:       $("saleForm").classList.toggle("off", !ok);
+432:       $("sLid").value = VT.nextLid(S.ledger, Date.now());
+433:       $("overrideBox").classList.toggle("hidden", !rv.errors.length);
+434:       $("sOverride").checked = false;
+435:       $("issueOut").innerHTML = "";
+436:       updateIssue();
+437:     });
+438:   });
+439:   $("sOverride").addEventListener("change", updateIssue);
+440: 
+441:   function updateIssue() {
+442:     if ($("aIssue")) updateAmend();
+443:     var rv = S.sale;
+444:     $("issue").disabled = !(S.signer && S.signer.kid && rv && rv.req && (!rv.errors.length || $("sOverride").checked));
+445:     var mv = S.move.review;
+446:     $("mIssue").disabled = !(S.signer && S.signer.kid && mv && mv.req && S.move.lid && moveAllowed().ok && (!mv.errors.length || $("mOverride").checked));
+447:   }
+448: 
+449:   function features() { return VT.fieldsOf(salePanel.get()); }
+450: 
+451:   /** 12.6: حقول الرمز من سجل رخصة (للنقل: تنتقل الحدود كلها). */
+452:   function withLimits(base, lim) {
+453:     var o = {};
+454:     for (var k in base) o[k] = base[k];
+455:     lim = lim || {};
+456:     VT.NUM_KEYS.forEach(function (k) { if (lim[k]) o[k] = lim[k]; });
+457:     if (lim.ex) o.ex = lim.ex;
+458:     return o;
+459:   }
+460: 
+461:   /** 11.5: ملف الطلب من العميل: يُقرأ نصه في خانة الطلب ثم يُفحص. */
+462:   function reqFile(inputId, textId, checkId) {
+463:     var inp = $(inputId);
+464:     if (!inp) return;
+465:     inp.addEventListener("change", function () {
+466:       var f = inp.files && inp.files[0];
+467:       if (!f) return;
+468:       f.text().then(function (t) {
+469:         $(textId).value = t;
+470:         inp.value = "";
+471:         $(checkId).click();
+472:       });
+473:     });
+474:   }
+475:   reqFile("reqFile", "reqText", "reqCheck");
+476:   reqFile("mReqFile", "mReqText", "mReqCheck");
+477: 
+478:   function download(name, blob) {
+479:     var a = document.createElement("a");
+480:     a.href = URL.createObjectURL(blob);
+481:     a.download = name;
+482:     document.body.appendChild(a);
+483:     a.click();
+484:     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+485:   }
+486: 
+487:   // ------------------------------------------------------------------ 12.6: تعديل رخصة
+488:   S.amend = null;
+489:   var amendPanel = contentPanel($("aContent"), function () { $("aIssueOut").innerHTML = ""; });
+490:   function renderAmendList() {
+491:     var box = $("aList"), q = $("aFind").value.trim().toLowerCase();
+492:     box.innerHTML = "";
+493:     var list = S.ledger.licenses.filter(function (l) { return l.status === "active"; })
+494:       .filter(function (l) { return !q || (l.lid + " " + l.customer + " " + l.order + " " + l.phone).toLowerCase().indexOf(q) >= 0; });
+495:     if (!list.length) return msg(box, "info", S.ledger.licenses.length ? "لا رخصة فعّالة مطابقة." : "السجل فارغ.");
+496:     list.slice(-50).reverse().forEach(function (l) {
+497:       var b = el("button", "pick" + (S.amend === l.lid ? " on" : ""));
+498:       b.textContent = l.lid + " — " + (l.customer || "بلا اسم") + " — " + (l.ed || "") + (l.amendedAt ? " (معدّلة)" : "");
+499:       b.addEventListener("click", function () {
+500:         S.amend = l.lid;
+501:         $("aIssueOut").innerHTML = "";
+502:         $("aForm").classList.remove("off");
+503:         $("aUu").value = dateInput(l.uu);
+504:         $("aNote").value = "";
+505:         var info = $("aInfo");
+506:         info.innerHTML = "";
+507:         msg(info, "info", "الرخصة " + l.lid + " • العميل: " + (l.customer || "—") + " • منذ " + fmtDate(l.issuedAt) + " • الحالية: "
+508:           + VT.describe(withLimits({ ft: l.ft }, l.lim)).join(" • "));
+509:         amendPanel.set(templateOf(l), true);
+510:         renderAmendList();
+511:         updateAmend();
+512:       });
+513:       box.appendChild(b);
+514:     });
+515:   }
+516:   function updateAmend() { $("aIssue").disabled = !(S.signer && S.signer.kid && S.amend); }
+517:   $("aFind").addEventListener("input", renderAmendList);
+518:   document.querySelectorAll('[data-tab="amend"]').forEach(function (b) { b.addEventListener("click", function () { renderAmendList(); updateAmend(); }); });
+519:   $("aIssue").addEventListener("click", function () {
+520:     var box = $("aIssueOut"), l = VT.findLicense(S.ledger, S.amend);
+521:     box.innerHTML = "";
+522:     if (!l) return msg(box, "err", "اختر الرخصة أولًا.");
+523:     var f;
+524:     try {
+525:       f = VT.fieldsOf(amendPanel.get());
+526:     } catch (e) {
+527:       return msg(box, "err", e.message);
+528:     }
+529:     var uu = fromDateInput($("aUu").value);
+530:     VT.issueToken(S.signer, withLimits({ lid: l.lid, ed: f.ed, ft: f.ft, uu: uu, dk: l.dk, of: l.of || "" }, f)).then(function (token) {
+531:       var lic = VT.amend(S.ledger, l.lid, withLimits({ token: token, ft: f.ft, ed: f.ed, uu: uu, note: $("aNote").value.trim() }, f), Date.now());
+532:       saveLedger();
+533:       tokenBox(box, token, lic, true);
+534:       renderAmendList();
+535:     }).catch(function (e) { msg(box, "err", e.message); });
+536:   });
+537: 
+538:   function tokenBox(box, token, lic, amended) {
+539:     box.innerHTML = "";
+540:     msg(box, "ok", "صدر رمز الترخيص " + iso(lic.lid) + " وحُفظ في السجل.");
+541:     var t = el("textarea", "ltr token");
+542:     t.readOnly = true;
+543:     t.rows = 4;
+544:     t.value = token;
+545:     box.appendChild(t);
+546:     var text = "رمز ترخيص «المحاسب الذكي» (" + lic.lid + "):\n\n" + token + "\n\n" + (amended
+547:       ? "في التطبيق: المزيد ← الترخيص ← «تحديث الرخصة»: الصق الرمز ثم اضغط «تحديث الرخصة»."
+548:       : "في التطبيق: المزيد ← الترخيص ← الصق الرمز في «رمز الترخيص» ثم اضغط «تفعيل».") + "\nالتحديثات مشمولة حتى " + fmtUu(lic.uu) + "."
+549:       + "\nالبنود: " + VT.describe(withLimits({ ft: lic.ft }, lic.lim)).join("، ") + ".";
+550:     var row = el("div", "row");
+551:     var b1 = el("button", "btn", "نسخ الرمز");
+552:     b1.addEventListener("click", function () { copy(token, b1); });
+553:     var b2 = el("button", "btn sec", "نسخ رسالة للعميل");
+554:     b2.addEventListener("click", function () { copy(text, b2); });
+555:     var b3 = el("button", "btn sec", "نسخة احتياطية من السجل");
+556:     b3.addEventListener("click", backupLedger);
+557:     row.appendChild(b1);
+558:     row.appendChild(b2);
+559:     row.appendChild(b3);
+560:     box.appendChild(row);
+561:     // 11.5: ملف المفتاح (رسالة واحدة لا تنقسم) ورمز QR يمسحه العميل بكاميرا هاتفه فيفتح التطبيق ويفعّل
+562:     var row2 = el("div", "row");
+563:     var b4 = el("button", "btn", "تنزيل ملف المفتاح (.sakey)");
+564:     b4.addEventListener("click", function () {
+565:       download("مفتاح-" + lic.lid + ".sakey", new Blob(["SMARTACC-LICENSE\n" + token + "\n"], { type: "text/plain" }));
+566:     });
+567:     row2.appendChild(b4);
+568:     var link = "smartacc://activate?k=" + token, cv = null;
+569:     try {
+570:       cv = QR.toCanvas(QR.encode(link), 5);
+571:     } catch (e) {
+572:       cv = null;
+573:     }
+574:     if (cv) {
+575:       var b5 = el("button", "btn sec", "تنزيل صورة QR");
+576:       b5.addEventListener("click", function () {
+577:         cv.toBlob(function (bl) { download("QR-" + lic.lid + ".png", bl); });
+578:       });
+579:       row2.appendChild(b5);
+580:     }
+581:     box.appendChild(row2);
+582:     if (cv) {
+583:       cv.style.maxWidth = "260px";
+584:       cv.style.display = "block";
+585:       cv.style.margin = "10px auto";
+586:       box.appendChild(cv);
+587:       box.appendChild(el("p", "lead", "رمز QR: يمسحه العميل بكاميرا هاتفه (من شاشة أخرى) فيفتح التطبيق ويُفعّل مباشرة. ملف المفتاح: يرسله في واتساب كمرفق، ويفتحه العميل من «الترخيص ← التفعيل من ملف»."));
+588:     }
+589:   }
+590: 
+591:   $("issue").addEventListener("click", function () {
+592:     var box = $("issueOut"), rv = S.sale;
+593:     box.innerHTML = "";
+594:     var f;
+595:     try {
+596:       f = features();
+597:     } catch (e) {
+598:       return msg(box, "err", e.message);
+599:     }
+600:     var uu = fromDateInput($("sUu").value);
+601:     var lid = VT.nextLid(S.ledger, Date.now());
+602:     // 12.7: الرخصة لهوية مكتب الطلب، وبحد أجهزة المكتب
+603:     var seat = VT.seatCheck(S.ledger, rv.req.of, f.md);
+604:     if (!seat.ok) return msg(box, "err", seat.reason);
+605:     var fields = withLimits({ lid: lid, ed: f.ed, ft: f.ft, uu: uu, dk: rv.req.dk, of: rv.req.of || "" }, f);

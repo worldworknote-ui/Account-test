@@ -1,0 +1,147 @@
+462:             calc.run();
+463:         };
+464:         amt.addTextChangedListener(Ui.watcher(() -> {
+465:             // كتب المبلغ المباع بنفسه: يُحسب المشترى منه
+466:             if (!quiet[0]) {
+467:                 fromBuy[0] = false;
+468:                 manual[0] = false;
+469:             }
+470:             calc.run();
+471:         }));
+472:         rate.addTextChangedListener(Ui.watcher(() -> {
+473:             if (!quiet[0]) {
+474:                 manual[0] = false;
+475:                 // المحاسب كتب سعره: يبقى سعر البرنامج ظاهرًا للاستئناس فقط
+476:                 rateAuto[0] = rate.getText().toString().trim().isEmpty();
+477:                 useRef.setVisibility(rateAuto[0] || refLine.getText().length() == 0 ? android.view.View.GONE : android.view.View.VISIBLE);
+478:             }
+479:             calc.run();
+480:         }));
+481:         counter.addTextChangedListener(Ui.watcher(() -> {
+482:             if (quiet[0]) return;
+483:             // 10.13: كتب المبلغ المشترى: إن لم يكتب المباع بنفسه (أو كان محسوبًا) يُحسب المباع من السعر
+484:             if (fromBuy[0] || amt.getText().toString().trim().isEmpty()) {
+485:                 fromBuy[0] = true;
+486:                 calc.run();
+487:             } else update.run();
+488:         }));
+489:         counter.setOnFocusChangeListener((v, has) -> { if (has) manual[0] = true; });
+490:         swap.setOnClickListener(v -> {
+491:             fromBuy[0] = false;
+492:             FxDeal r = deal.get().reversed();
+493:             if (r.sell.isEmpty() || r.buy.isEmpty() || sell[0] == null || buy[0] == null) {
+494:                 a.toast("اختر العملتين أولًا");
+495:                 return;
+496:             }
+497:             quiet[0] = true;
+498:             sell[0].set(curs.indexOf(r.sell), false);
+499:             buy[0].set(curs.indexOf(r.buy), false);
+500:             amt.setText(r.sellAmount > 0 ? Model.plain(r.sellAmount, r.sellDec) : "");
+501:             dir.set(r.buyPerSell ? 0 : 1, false);
+502:             quiet[0] = false;
+503:             manual[0] = false;
+504:             labels.run();
+505:             reference.run();
+506:             calc.run();
+507:         });
+508:         save.setOnClickListener(v -> {
+509:             try {
+510:                 if (office[0] == null) throw new IllegalArgumentException("اختر المكتب");
+511:                 final Model.Office o = office[0];
+512:                 final FxDeal x = deal.get();
+513:                 if (x.sell.isEmpty() || x.buy.isEmpty()) throw new IllegalArgumentException("اختر العملة المباعة والعملة المشتراة");
+514:                 if (x.sell.equals(x.buy)) throw new IllegalArgumentException("اختر عملتين مختلفتين");
+515:                 final long ua = x.sellAmount, ta = Db.minor(counter.getText().toString(), x.buyDec);
+516:                 if (ua <= 0 || ta <= 0) throw new IllegalArgumentException("اكتب المبلغ والسعر (أو المبلغ المقابل)");
+517:                 final String r = FxDeal.effectiveRate(ua, x.sellDec, ta, x.buyDec);
+518:                 final String typed = desc.getText().toString().trim();
+519:                 final String d = typed.isEmpty() ? FxDeal.describe(x.sell, Model.fmt(ua, x.sellDec), x.buy, Model.fmt(ta, x.buyDec)) : typed;
+520:                 if (editing != null) {
+521:                     saveEdit(o, editing, x, ua, ta, r, d);
+522:                     return;
+523:                 }
+524:                 final long when = Clock.now();
+525:                 final List<Db.TxInput> legs = java.util.Arrays.asList(a.db.fxNetLegs(o.id, x.sell, ua, x.buy, ta, r, d, when));
+526:                 final String rateText = "1 " + x.sell + " = " + r + " " + x.buy + " (الفعلي بعد التقريب)";
+527:                 final String warn = FxDeal.overdraft(x.sell, a.db.balances(o.id).getOrDefault(x.sell, 0L), ua, x.sellDec);
+528:                 final Runnable confirm = () -> a.confirmTx("تأكيد قص العملات", warn == null ? "" : warn, () -> TxConfirm.build(a.db, legs, null, rateText), "تسجيل",
+529:                         () -> a.busy("جارٍ التسجيل…", p -> a.db.addFxNet(o.id, x.sell, ua, x.buy, ta, r, d, when), res -> {
+530:                             a.db.setSettingQuiet("last_office", "" + o.id);
+531:                             a.toast("✓ سُجّل قص العملات (مقاصة بين العملتين)");
+532:                             a.officeHub.showOffice(o);
+533:                         }));
+534:                 // 10.8: تجاوز الرصيد مسموح بعد تأكيد صريح (لا يُحفظ قبله)
+535:                 if (warn == null) confirm.run();
+536:                 else new AlertDialog.Builder(a).setTitle("المبلغ يتجاوز رصيد " + x.sell).setMessage(warn)
+537:                         .setPositiveButton("تأكيد المتابعة", (dd, w) -> confirm.run()).setNegativeButton("تعديل العملية", null).show();
+538:             } catch (Exception e) {
+539:                 a.error(e);
+540:             }
+541:         });
+542:         Model.Office start = office0;
+543:         if (start == null) {
+544:             Model.Office last = a.db.office(a.db.settingLong("last_office", -1));
+545:             if (last != null && last.active) start = last;
+546:         }
+547:         if (start != null) pick.cb.on(start);
+548:         else chips.run();
+549:         if (editing != null && sell[0] != null && buy[0] != null) {
+550:             // القيم كما سُجّلت: العملتان والمبلغان والسعر الفعلي المحفوظ؛ لا يُعاد حساب المقابل حتى يغيّر المحاسب شيئًا
+551:             quiet[0] = true;
+552:             sell[0].set(curs.indexOf(editing[0].currency), false);
+553:             buy[0].set(curs.indexOf(editing[1].currency), false);
+554:             dir.set(0, false);
+555:             amt.setText(Model.plain(editing[0].amount, a.db.decimals(editing[0].currency)));
+556:             counter.setText(Model.plain(editing[1].amount, a.db.decimals(editing[1].currency)));
+557:             rate.setText(Model.nz(editing[0].fxRate));
+558:             desc.setText(Model.nz(editing[0].description));
+559:             quiet[0] = false;
+560:             rateAuto[0] = false;
+561:             manual[0] = true;
+562:             fromBuy[0] = false;
+563:             labels.run();
+564:             reference.run();
+565:             calc.run();
+566:         }
+567:     }
+568: 
+569:     /** 10.18: تأكيد تعديل القص (ما كان وما يصير والأرصدة بعده) مع سبب مطلوب، ثم Db.editFxNet في معاملة واحدة. */
+570:     private void saveEdit(final Model.Office o, final Model.Tx[] old, final FxDeal x, final long ua, final long ta, final String r, final String d) {
+571:         java.util.Map<String, long[]> pv = a.db.fxEditPreview(old, x.sell, ua, x.buy, ta);
+572:         String warn = FxDeal.overdraft(x.sell, pv.get(x.sell)[0], ua, x.sellDec);
+573:         StringBuilder msg = new StringBuilder();
+574:         msg.append("كانت: نبيع ").append(Model.fmt(old[0].amount, a.db.decimals(old[0].currency))).append(" ").append(old[0].currency).append(" ونأخذ ")
+575:                 .append(Model.fmt(old[1].amount, a.db.decimals(old[1].currency))).append(" ").append(old[1].currency).append("\n");
+576:         msg.append("تصير: نبيع ").append(Model.fmt(ua, x.sellDec)).append(" ").append(x.sell).append(" ونأخذ ").append(Model.fmt(ta, x.buyDec)).append(" ").append(x.buy)
+577:                 .append("\nالسعر الفعلي: 1 ").append(x.sell).append(" = ").append(r).append(" ").append(x.buy).append("\n");
+578:         for (java.util.Map.Entry<String, long[]> e : pv.entrySet())
+579:             msg.append("رصيد ").append(e.getKey()).append(" بعد التعديل: ").append(Model.bal(e.getValue()[1], a.db.decimals(e.getKey()))).append("\n");
+580:         if (warn != null) msg.append("\n⚠ ").append(warn).append("\n");
+581:         final EditText why = new EditText(a);
+582:         why.setHint("سبب التعديل (مطلوب)");
+583:         LinearLayout l = new LinearLayout(a);
+584:         l.setOrientation(LinearLayout.VERTICAL);
+585:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+586:         l.addView(a.text(a.m(msg.toString()), 14, a.ink, false));
+587:         l.addView(why, new LinearLayout.LayoutParams(-1, -2));
+588:         final AlertDialog dlg = new AlertDialog.Builder(a).setTitle("تأكيد تعديل قص العملات").setView(l).setPositiveButton("حفظ التعديل", null).setNegativeButton("رجوع", null).create();
+589:         dlg.setOnShowListener(di -> dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+590:             final String reason = why.getText().toString().trim();
+591:             if (reason.isEmpty()) {
+592:                 why.setError("السبب مطلوب");
+593:                 return;
+594:             }
+595:             dlg.dismiss();
+596:             a.busy("جارٍ حفظ التعديل…", p -> a.db.editFxNet(old[0].id, x.sell, ua, x.buy, ta, r, d, old[0].createdAt, reason), res -> {
+597:                 a.toast("✓ عُدّل قص العملات (عُكست القديمة وسُجّلت المصحّحة)");
+598:                 a.officeHub.showOffice(o);
+599:             });
+600:         }));
+601:         dlg.show();
+602:     }
+603: 
+604:     /** حامل لمستمع اختيار المكتب (يُستدعى من داخله). */
+605:     private static final class OfficeCbHolder { MainActivity.OfficeCb cb; }
+606: 
+607:     // ===================================================================================
+608:     // 10.6: تسجيل حركة بين مكتبين

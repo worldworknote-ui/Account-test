@@ -1,0 +1,190 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.Context;
+4: import java.io.BufferedInputStream;
+5: import java.io.BufferedOutputStream;
+6: import java.io.ByteArrayOutputStream;
+7: import java.io.File;
+8: import java.io.FileInputStream;
+9: import java.io.FileOutputStream;
+10: import java.io.IOException;
+11: import java.io.InputStream;
+12: import java.io.OutputStream;
+13: import java.security.MessageDigest;
+14: import java.text.SimpleDateFormat;
+15: import java.util.ArrayList;
+16: import java.util.Arrays;
+17: import java.util.Comparator;
+18: import java.util.Date;
+19: import java.util.List;
+20: import java.util.Locale;
+21: import java.util.Map;
+22: import java.util.UUID;
+23: 
+24: /**
+25:  * إنشاء النسخ الاحتياطية واستعادتها — نسخة الماك من BackupManager (الصيغة والتحقق نفسهما؛ ملفات بدل Uri أندرويد).
+26:  * مولَّد من ملف الهاتف: أي تعديل منطقي يُجرى هناك أولًا.
+27:  *
+28:  * <p>طريقة العمل الجديدة (تحل مشكلة «تعذّر إنشاء النسخة»):
+29:  * <ol>
+30:  *   <li>تُنشأ النسخة أولًا داخل التطبيق (مجلد backups) ثم تُفك بالكامل للتحقق منها بنسخة مستقلة من كلمة المرور.</li>
+31:  *   <li>بعد نجاح التحقق فقط يختار المستخدم مكان الحفظ؛ يُنسخ الملف الجاهز إليه (لا حاجة لكلمة المرور في هذه المرحلة،
+32:  *       فلا تضيع العملية إذا أعاد النظام تشغيل التطبيق أثناء اختيار المكان).</li>
+33:  *   <li>يُعاد قراءة الملف من مكان الحفظ ومقارنة بصمته SHA-256 بالأصل؛ النجاح لا يُسجّل إلا بعد التطابق.</li>
+34:  * </ol>
+35:  */
+36: public final class BackupManager {
+37: 
+38:     private BackupManager() {}
+39: 
+40:     /** مراحل العملية، لتوضيح مكان الفشل للمستخدم دون كشف أي بيانات حساسة. */
+41:     public enum Stage {
+42:         PREPARE("تجهيز البيانات"),
+43:         ENCRYPT("التشفير والكتابة داخل التطبيق"),
+44:         VERIFY("التحقق من النسخة"),
+45:         WRITE("الكتابة في المكان المختار"),
+46:         REREAD("إعادة قراءة الملف من المكان المختار"),
+47:         READ("قراءة ملف النسخة"),
+48:         DECRYPT("فك التشفير"),
+49:         VALIDATE("فحص محتوى النسخة"),
+50:         SNAPSHOT("حفظ نسخة أمان من البيانات الحالية"),
+51:         IMPORT("استبدال البيانات");
+52: 
+53:         public final String label;
+54: 
+55:         Stage(String label) { this.label = label; }
+56:     }
+57: 
+58:     public static final class BackupException extends Exception {
+59:         public final Stage stage;
+60: 
+61:         public BackupException(Stage stage, String message, Throwable cause) {
+62:             super(message, cause);
+63:             this.stage = stage;
+64:         }
+65: 
+66:         public String userMessage() {
+67:             String m = getMessage();
+68:             return "المرحلة: " + stage.label + "\n\n" + (m == null ? "خطأ غير معروف" : m);
+69:         }
+70:     }
+71: 
+72:     public interface Progress {
+73:         void update(String message);
+74:     }
+75: 
+76:     static BackupException wrap(Stage stage, Throwable t) {
+77:         if (t instanceof BackupException) return (BackupException) t;
+78:         String m;
+79:         if (t instanceof SecureStreams.WrongPasswordException || t instanceof SecureStreams.CorruptBackupException) m = t.getMessage();
+80:         else if (t instanceof OutOfMemoryError) m = "الذاكرة لا تكفي. أغلق التطبيقات الأخرى ثم أعد المحاولة.";
+81:         else if (t instanceof IOException && t.getMessage() != null && t.getMessage().toLowerCase(Locale.US).contains("space")) m = "لا توجد مساحة كافية في التخزين.";
+82:         else if (t.getMessage() != null && !t.getMessage().trim().isEmpty()) m = t.getMessage();
+83:         else m = t.getClass().getSimpleName();
+84:         return new BackupException(stage, m, t);
+85:     }
+86: 
+87:     // ===================================================================================
+88:     // الإنشاء والتحقق داخل التطبيق
+89:     // ===================================================================================
+90: 
+91:     public static final class Created {
+92:         public File file;
+93:         public long size;
+94:         public String sha256;
+95:         public Map<String, Long> counts;
+96:         public BackupFormat.WriteResult result;
+97:     }
+98: 
+99:     public static File backupsDir(Context c) {
+100:         File d = new File(c.getFilesDir(), "backups");
+101:         if (!d.exists()) d.mkdirs();
+102:         return d;
+103:     }
+104: 
+105:     public static String newName() {
+106:         return "smart-accountant-" + Model.sdf(new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)).format(new Date()) + ".sba";
+107:     }
+108: 
+109:     /**
+110:      * ينشئ نسخة مشفّرة داخل التطبيق ويتحقق منها بالكامل. لا يعدّل مصفوفة كلمة المرور الممرّرة؛
+111:      * يعمل على نسخ مستقلة ويمسحها في النهاية. المستدعي مسؤول عن مسح مصفوفته.
+112:      */
+113:     public static Created createLocal(Context ctx, Db db, char[] password, String appVersion, Progress p) throws BackupException {
+114:         if (password == null || password.length < 8) throw new BackupException(Stage.PREPARE, "كلمة المرور يجب ألا تقل عن 8 محارف", null);
+115:         File dir = backupsDir(ctx);
+116:         long free = dir.getUsableSpace();
+117:         if (free > 0 && free < 5L * 1024 * 1024) throw new BackupException(Stage.PREPARE, "مساحة التخزين المتبقية في الهاتف قليلة جدًا. احذف بعض الملفات ثم أعد المحاولة.", null);
+118:         String name = newName();
+119:         File tmp = new File(dir, name + ".tmp");
+120:         File out = new File(dir, name);
+121:         char[] pwWrite = password.clone();
+122:         char[] pwVerify = password.clone();
+123:         Created c = new Created();
+124:         try {
+125:             p.update("جارٍ تجهيز البيانات…");
+126:             c.counts = db.counts();
+127:             BackupFormat.Source src = db.backupSource();
+128: 
+129:             p.update("جارٍ التشفير والكتابة…");
+130:             SecureStreams.EncryptingOutputStream enc = null;
+131:             try (FileOutputStream fos = new FileOutputStream(tmp)) {
+132:                 BufferedOutputStream bos = new BufferedOutputStream(fos, 65536);
+133:                 // 10.14: إن فُعّل «رمز استرداد النسخ» تُفتح النسخة بكلمة مرورها أو بالرمز
+134:                 enc = new SecureStreams.EncryptingOutputStream(bos, pwWrite, BackupRecovery.key(db));
+135:                 c.result = BackupFormat.write(src, enc, appVersion, Db.VER);
+136:                 enc.close();
+137:                 bos.flush();
+138:                 fos.getFD().sync();
+139:             } catch (Throwable t) {
+140:                 if (enc != null) enc.abort();
+141:                 tmp.delete();
+142:                 throw wrap(Stage.ENCRYPT, t);
+143:             }
+144: 
+145:             p.update("جارٍ التحقق من النسخة (فك كامل)…");
+146:             try {
+147:                 verifyFile(tmp, pwVerify, c.result);
+148:             } catch (Throwable t) {
+149:                 tmp.delete();
+150:                 throw wrap(Stage.VERIFY, t);
+151:             }
+152:             if (!tmp.renameTo(out)) {
+153:                 tmp.delete();
+154:                 throw new BackupException(Stage.ENCRYPT, "تعذر حفظ ملف النسخة داخل التطبيق", null);
+155:             }
+156:             c.file = out;
+157:             c.size = out.length();
+158:             try {
+159:                 c.sha256 = sha256(out);
+160:             } catch (Exception e) {
+161:                 throw wrap(Stage.VERIFY, e);
+162:             }
+163:             pruneLocal(ctx, 3);
+164:             return c;
+165:         } finally {
+166:             Arrays.fill(pwWrite, '\0');
+167:             Arrays.fill(pwVerify, '\0');
+168:         }
+169:     }
+170: 
+171:     /** يفك الملف بالكامل دون حفظ شيء، ويطابق الأعداد مع ما كُتب. */
+172:     static void verifyFile(File f, char[] password, BackupFormat.WriteResult expected) throws Exception {
+173:         final long[] bytes = {0};
+174:         BackupFormat.AttachmentStore counting = new BackupFormat.AttachmentStore() {
+175:             @Override public Object store(long id, InputStream data) throws IOException {
+176:                 byte[] b = new byte[16384];
+177:                 int n;
+178:                 while ((n = data.read(b)) > 0) bytes[0] += n;
+179:                 return id;
+180:             }
+181: 
+182:             @Override public void discard(Object handle) { /* لا شيء محفوظ */ }
+183:         };
+184:         File spill = new File(f.getParentFile(), ".verify-spill");
+185:         BackupFormat.Parsed parsed = null;
+186:         try (InputStream in = new BufferedInputStream(new FileInputStream(f), 65536)) {
+187:             SecureStreams.DecryptingInputStream dec = new SecureStreams.DecryptingInputStream(in, password);
+188:             parsed = BackupFormat.readV5(dec, counting, spill);
+189:             if (expected != null) {
+190:                 for (Map.Entry<String, Long> e : expected.rows.entrySet()) {

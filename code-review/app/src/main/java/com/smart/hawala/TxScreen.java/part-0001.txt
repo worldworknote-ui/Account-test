@@ -1,0 +1,193 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.app.DatePickerDialog;
+5: import android.content.ClipData;
+6: import android.text.InputType;
+7: import android.content.Context;
+8: import android.content.ClipboardManager;
+9: import android.content.Intent;
+10: import android.graphics.Bitmap;
+11: import android.graphics.Color;
+12: import android.graphics.Typeface;
+13: import android.net.Uri;
+14: import android.provider.MediaStore;
+15: import android.view.Gravity;
+16: import android.view.View;
+17: import android.view.ViewGroup;
+18: import android.widget.Button;
+19: import android.widget.EditText;
+20: import android.widget.FrameLayout;
+21: import android.widget.HorizontalScrollView;
+22: import android.widget.ImageView;
+23: import android.widget.LinearLayout;
+24: import android.widget.TextView;
+25: import java.io.File;
+26: import java.io.InputStream;
+27: import java.util.ArrayList;
+28: import java.util.Calendar;
+29: import java.util.HashSet;
+30: import java.util.List;
+31: import java.util.Map;
+32: import java.util.Set;
+33: import org.json.JSONObject;
+34: 
+35: /** شاشة تسجيل حركة وتعديلها: اختيارات بضغطة واحدة، والتفاصيل تظهر فقط عند الحاجة. */
+36: final class TxScreen {
+37:     private final MainActivity a;
+38:     private Form f;
+39:     private Model.Tx editing;
+40:     /** 10.2: تصحيح حركة معلّقة ثم اعتمادها (بدل رفضها). */
+41:     private boolean approving;
+42:     private Runnable afterEdit;
+43:     private final List<Long> existingAtt = new ArrayList<>();
+44:     private final Set<Long> removedAtt = new HashSet<>();
+45: 
+46:     TxScreen(MainActivity a) { this.a = a; }
+47: 
+48:     /** 12.4: أمانة أو مجمّد يُحوَّل إلى الحركة التي في النموذج (تُفكّ مربوطةً بها عند الحفظ). */
+49:     private String fromHold;
+50:     /** 12.4: النموذج لتحويل حركة خاصة إلى عادية. */
+51:     private boolean converting;
+52: 
+53:     private final class Form {
+54:         /** 12.4: الحركة الخاصة: مفعّلة، ونوعها، وهل تُحسب في الرصيد. */
+55:         boolean specialOn;
+56:         String specialType = "";
+57:         Ui.Seg specialBal;
+58:         LinearLayout specialBody;
+59:         android.widget.Switch specialSw;
+60:         Ui.Flow specialTypes;
+61:         /** 12.0: بطاقة الحركة (النوع والمبلغ والعملة) بلون نوعها، كبطاقتي قص العملات. */
+62:         LinearLayout txCard;
+63:         Model.Office office;
+64:         Button officeBtn;
+65:         TextView balance;
+66:         Ui.Seg type;
+67:         EditText amount;
+68:         LinearLayout curHolder;
+69:         /** 10.9: «تفاصيل إضافية» (ملاحظات، الخدمة، الوجهة، التاريخ، الصور) مطوية حتى تُطلب أو تُملأ. */
+70:         LinearLayout more;
+71:         TextView moreToggle;
+72:         Ui.Seg cur;
+73:         List<String> curs = new ArrayList<>();
+74:         EditText person, desc, notes, service, dest;
+75:         Button dateBtn;
+76:         long when; // 0 = الآن
+77:         Ui.Seg feeMode;
+78:         LinearLayout feeBox;
+79:         Ui.Seg feeSide;
+80:         EditText fee;
+81:         LinearLayout feeCurHolder;
+82:         Ui.Seg feeCur;
+83:         boolean feeCurTouched;
+84:         /** طريقة الأجرة: 0 مبلغ محدد، 1 نسبة من المبلغ الأصلي (بالمئة أو بالألف) تُحسب تلقائيًا. */
+85:         Ui.Seg feeKind;
+86:         LinearLayout rateBox;
+87:         Ui.Flow rateChips;
+88:         EditText rate;
+89:         Ui.Seg ratePer;
+90:         TextView rateResult, feeCurLabel;
+91:         /** 12.6: «المبلغ» أو «الوزن (غرام)» حسب العملة المختارة. */
+92:         TextView amountLabel;
+93:         /** مرسل رسالة واتساب ووقتها: للعرض فقط حتى يعرف المحاسب مصدر الحوالة. */
+94:         String waSender = "", waTime = "";
+95:         Ui.Seg imgMode;
+96:         LinearLayout imgBox;
+97:         LinearLayout thumbs;
+98:         /** بطاقة «راجع قبل التسجيل» داخل النموذج: سطر لكل معلومة، والناقص بالأحمر. */
+99:         LinearLayout summary;
+100:         /** سطر الملخص المختصر في الشريط الثابت أسفل الشاشة، وزر التسجيل. */
+101:         TextView footerLine;
+102:         Button saveBtn;
+103:         Map<String, String> names;
+104:         /** ميزة استخراج المعلومات من رسالة واتساب مفعّلة (الإعدادات ← wa_parse). */
+105:         boolean wa;
+106:         /** بطاقة المعلومات المستخرجة (أخضر = استُخرج، أحمر = لم يُستخرج) مع زر «إضافة المعلومات للحقول». */
+107:         LinearLayout parseBox;
+108:         MessageParser.Result parsed;
+109:         String parsedText = "";
+110:         /** ضغط المستخدم «إضافة المعلومات للحقول» لهذا النص. */
+111:         boolean filled;
+112:         /** مصدر النتيجة المعروضة: المحرك المدمج أو الذكاء الاصطناعي. */
+113:         boolean byAi;
+114:         /** نتيجة الذكاء الاصطناعي الخام (لكل العملات) ونصها، حتى لا تضيع عند تغيير المكتب. */
+115:         MessageParser.Result aiRaw;
+116:         String aiText = "", aiAsked = "";
+117:         /** لُصق نص كبير للتو (زر اللصق أو لوحة المفاتيح): للتشغيل التلقائي للذكاء الاصطناعي. */
+118:         boolean pasted;
+119:         /** نموذج فُتح من مشاركة واتساب: لا يقرأ المسودة ولا يكتبها ولا يحذفها. */
+120:         boolean external;
+121:         /** جزء من دفعة رسائل واتساب: بعد التسجيل تُفتح الرسالة التالية. */
+122:         boolean queued;
+123:         /** حركة سابقة نصها مطابق لهذا البيان (احتمال تسجيل الرسالة مرتين). */
+124:         Model.Tx duplicate;
+125:         final Runnable parseLater = () -> previewParse();
+126:     }
+127: 
+128:     void detach() { f = null; }
+129: 
+130:     // ===================================================================================
+131:     // الفتح
+132:     // ===================================================================================
+133: 
+134:     /**
+135:      * 12.7: مكتب اختاره المحاسب صراحة لهذا النموذج (دخل منه «حركة جديدة» أو اختاره بيده): لصق عدة رسائل يذهب إليه
+136:      * لا إلى آخر مكتب مثبّت لرسائل واتساب.
+137:      */
+138:     private Model.Office chosenOffice;
+139: 
+140:     /** المكتب الذي تُثبَّت له دفعة رسائل لُصقت في هذا النموذج. */
+141:     private Model.Office pasteOffice() {
+142:         return chosenOffice != null && f != null && f.office != null && f.office.id == chosenOffice.id ? f.office : null;
+143:     }
+144: 
+145:     void showNew() {
+146:         if (!a.require(Auth.Perm.TX_ADD)) return;
+147:         chosenOffice = null;
+148:         fromHold = null;
+149:         converting = false;
+150:         approving = false;
+151:         editing = null;
+152:         afterEdit = null;
+153:         existingAtt.clear();
+154:         removedAtt.clear();
+155:         a.pendingImages.clear();
+156:         build("تسجيل حركة");
+157:         // 10.7: نوع الحركة فوق المكتب (عادية، قص عملات، بين مكتبين)
+158:         a.recordKinds(RecordMenu.TX, () -> f == null ? null : f.office);
+159:         JSONObject d = null;
+160:         String draft = a.db.secretSetting("draft_tx");
+161:         long officeId = a.db.settingLong("last_office", -1);
+162:         if (!draft.isEmpty()) {
+163:             try {
+164:                 d = new JSONObject(draft);
+165:                 officeId = d.optLong("office", officeId);
+166:             } catch (Exception ignored) {
+167:                 d = null;
+168:             }
+169:         }
+170:         if (officeId > 0) {
+171:             Model.Office o = a.db.office(officeId);
+172:             if (o != null && o.active) selectOffice(o);
+173:         }
+174:         if (d != null) {
+175:             f.type.set(d.optInt("type", -1), false);
+176:             f.amount.setText(d.optString("amount"));
+177:             selectCur(f.cur, f.curs, d.optString("currency"));
+178:             if (f.feeCur != null && f.cur != null && !f.cur.none()) f.feeCur.set(f.cur.selected, false);
+179:             f.person.setText(d.optString("person"));
+180:             f.desc.setText(d.optString("desc"));
+181:             f.notes.setText(d.optString("notes"));
+182:             f.service.setText(d.optString("service"));
+183:             f.dest.setText(d.optString("dest"));
+184:             if (d.optInt("feeMode", 0) == 1) {
+185:                 // الطريقة أولًا (مسودات ما قبل 7.1.2 بلا طريقة = مبلغ محدد)، ثم القيم، حتى لا يمسح الحساب مبلغًا محفوظًا
+186:                 f.feeKind.set(d.has("feeKind") ? d.optInt("feeKind", 0) : 0, false);
+187:                 f.ratePer.set(d.optInt("ratePer", 0), false);
+188:                 f.rate.setText(d.optString("rate"));
+189:                 applyFeeKind();
+190:                 f.feeMode.set(1, true);
+191:                 f.feeSide.set(d.optInt("feeSide", 0), false);
+192:                 if (f.feeKind.selected == 0) f.fee.setText(d.optString("fee"));
+193:                 f.feeCurTouched = d.optBoolean("feeCurTouched", false);

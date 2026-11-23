@@ -1,0 +1,47 @@
+1: #!/usr/bin/env python3
+2: """يولّد com/smart/hawala/R.java للكمبيوتر من مجلد res في تطبيق الهاتف (المعرّفات نفسها بالأسماء)."""
+3: import os, re, sys, xml.etree.ElementTree as ET
+4: res, out = sys.argv[1], sys.argv[2]
+5: groups = {}
+6: def add(kind, name):
+7:     groups.setdefault(kind, [])
+8:     if name not in groups[kind]: groups[kind].append(name)
+9: for d in sorted(os.listdir(res)):
+10:     full = os.path.join(res, d)
+11:     if not os.path.isdir(full): continue
+12:     kind = d.split('-')[0]
+13:     if kind == 'values':
+14:         for f in sorted(os.listdir(full)):
+15:             t = ET.parse(os.path.join(full, f)).getroot()
+16:             for e in t:
+17:                 n = e.get('name')
+18:                 if not n: continue
+19:                 tag = e.tag
+20:                 if tag == 'item' and e.get('type'): add(e.get('type'), n)
+21:                 elif tag in ('string', 'color', 'style', 'dimen', 'bool', 'integer'): add(tag, n.replace('.', '_'))
+22:         continue
+23:     for f in sorted(os.listdir(full)):
+24:         add(kind, os.path.splitext(f)[0])
+25: # المعرّفات المطلوبة في الكود ولا ملف لها
+26: add('mipmap', 'ic_launcher')
+27: strings = {}
+28: sf = os.path.join(res, 'values', 'strings.xml')
+29: if os.path.exists(sf):
+30:     for e in ET.parse(sf).getroot():
+31:         if e.tag == 'string': strings[e.get('name')] = ''.join(e.itertext())
+32: base = {'drawable': 0x7f010000, 'font': 0x7f020000, 'id': 0x7f030000, 'style': 0x7f040000, 'string': 0x7f050000, 'mipmap': 0x7f060000,
+33:         'color': 0x7f070000, 'xml': 0x7f080000, 'layout': 0x7f090000, 'dimen': 0x7f0a0000, 'raw': 0x7f0b0000, 'bool': 0x7f0c0000, 'integer': 0x7f0d0000}
+34: L = ['package com.smart.hawala;', '', '/** مولَّد من res (desktop/gen-r.py) — لا يُعدَّل باليد. */', 'public final class R {']
+35: for kind in sorted(groups):
+36:     b = base.get(kind, 0x7f0f0000)
+37:     L.append('    public static final class %s {' % kind)
+38:     for i, n in enumerate(groups[kind]):
+39:         L.append('        public static final int %s = 0x%08x;' % (n, b + i))
+40:     L.append('    }')
+41: L.append('    public static final String[][] STRINGS = {')
+42: for k, v in strings.items():
+43:     L.append('        {"%s", "%s"},' % (k, v.replace('\\', '\\\\').replace('"', '\\"')))
+44: L.append('    };')
+45: L.append('}')
+46: os.makedirs(os.path.dirname(out), exist_ok=True)
+47: open(out, 'w', encoding='utf-8').write('\n'.join(L) + '\n')

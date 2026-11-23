@@ -1,0 +1,78 @@
+1: <?xml version="1.0" encoding="utf-8"?>
+2: <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+3: 
+4:     <!-- الإنترنت: لجلب أسعار الصرف، ولخدمة الذكاء الاصطناعي إن فعّلها المدير -->
+5:     <uses-permission android:name="android.permission.INTERNET"/>
+6:     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+7:     <!-- البصمة / قفل الهاتف -->
+8:     <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
+9:     <!-- النسخ الاحتياطي التلقائي وتذكيرات المكاتب: إعادة الجدولة بعد إعادة تشغيل الهاتف، والإشعارات -->
+10:     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+11:     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+12:     <!-- لا توجد صلاحية CAMERA عمدًا: التصوير يتم عبر تطبيق الكاميرا نفسه. -->
+13:     <uses-feature android:name="android.hardware.camera" android:required="false"/>
+14: 
+15:     <application
+16:         android:name="com.smart.hawala.SmartApp"
+17:         android:allowBackup="false"
+18:         android:dataExtractionRules="@xml/data_extraction_rules"
+19:         android:fullBackupContent="false"
+20:         android:icon="@mipmap/ic_launcher"
+21:         android:roundIcon="@mipmap/ic_launcher"
+22:         android:label="@string/app_name"
+23:         android:largeHeap="true"
+24:         android:supportsRtl="true"
+25:         android:theme="@style/AppTheme"
+26:         android:usesCleartextTraffic="false">
+27: 
+28:         <activity
+29:             android:name="com.smart.hawala.MainActivity"
+30:             android:exported="true"
+31:             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|uiMode|density|fontScale|layoutDirection|locale"
+32:             android:windowSoftInputMode="adjustResize">
+33:             <intent-filter>
+34:                 <action android:name="android.intent.action.MAIN"/>
+35:                 <category android:name="android.intent.category.LAUNCHER"/>
+36:             </intent-filter>
+37:             <!-- «مشاركة» رسالة أو عدة رسائل من واتساب إلى التطبيق: تُفتح في نموذج التسجيل ولا تُسجَّل إلا بتأكيد المحاسب -->
+38:             <intent-filter android:label="@string/share_label">
+39:                 <action android:name="android.intent.action.SEND"/>
+40:                 <action android:name="android.intent.action.SEND_MULTIPLE"/>
+41:                 <category android:name="android.intent.category.DEFAULT"/>
+42:                 <data android:mimeType="text/plain"/>
+43:             </intent-filter>
+44:             <!-- 11.5: رمز QR للترخيص من البائع: مسحه بالكاميرا يفتح التطبيق ويفعّل (لا يُفعَّل إلا بعد فتح القفل والدخول) -->
+45:             <intent-filter>
+46:                 <action android:name="android.intent.action.VIEW"/>
+47:                 <category android:name="android.intent.category.DEFAULT"/>
+48:                 <category android:name="android.intent.category.BROWSABLE"/>
+49:                 <data android:scheme="smartacc" android:host="activate"/>
+50:             </intent-filter>
+51:             <!-- اختصارات الضغطة المطولة على أيقونة التطبيق: حركة جديدة، لصق رسالة، المكاتب، البحث -->
+52:             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts"/>
+53:         </activity>
+54: 
+55:         <!-- اسم المزوّد مبني على رقم الحزمة حتى لا يتعارض مع النسخة القديمة المثبتة -->
+56:         <provider
+57:             android:name="com.smart.hawala.EvidenceProvider"
+58:             android:authorities="${applicationId}.files"
+59:             android:exported="false"
+60:             android:grantUriPermissions="true"/>
+61: 
+62:         <!-- النسخ الاحتياطي التلقائي المجدول -->
+63:         <service
+64:             android:name="com.smart.hawala.AutoBackupJob"
+65:             android:permission="android.permission.BIND_JOB_SERVICE"
+66:             android:exported="false"/>
+67: 
+68:         <!-- 9.0: تذكيرات المكاتب (مكتب بلا حركات منذ يوم، مطابقة لم تُرسل) -->
+69:         <service
+70:             android:name="com.smart.hawala.ReminderJob"
+71:             android:permission="android.permission.BIND_JOB_SERVICE"
+72:             android:exported="false"/>
+73:         <service
+74:             android:name="com.smart.hawala.SyncJob"
+75:             android:permission="android.permission.BIND_JOB_SERVICE"
+76:             android:exported="false"/>
+77:     </application>
+78: </manifest>

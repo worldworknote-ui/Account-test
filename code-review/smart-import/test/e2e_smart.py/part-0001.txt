@@ -1,0 +1,154 @@
+1: #!/usr/bin/env python3
+2: """«الاستيراد الذكي» في متصفح حقيقي (Chromium): اختيار الملفات، الفهم، التعديل، التحقق، إنشاء ملف ‎.sba وتقرير الأرصدة.
+3: الاستخدام: python3 e2e_smart.py <smart-import.html> <مجلد العينات من smart.test.js> <مجلد الإخراج>"""
+4: import os
+5: import sys
+6: from playwright.sync_api import sync_playwright
+7: 
+8: HTML, SAMPLES, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
+9: os.makedirs(OUT, exist_ok=True)
+10: fails = 0
+11: 
+12: 
+13: def check(name, ok, extra=None):
+14:     global fails
+15:     print(("  PASS " if ok else "  FAIL ") + name + ("" if ok or extra is None else " — " + str(extra)[:600]))
+16:     if not ok:
+17:         fails += 1
+18: 
+19: 
+20: def wait_ready(page):
+21:     page.wait_for_selector("#fileInfo .msg.ok", timeout=60000)
+22:     page.wait_for_function("!document.getElementById('busy')", timeout=60000)
+23:     page.wait_for_timeout(300)
+24: 
+25: 
+26: def recalc(page):
+27:     page.wait_for_timeout(350)
+28:     page.wait_for_function("!document.getElementById('busy')", timeout=60000)
+29:     page.wait_for_timeout(200)
+30: 
+31: 
+32: with sync_playwright() as p:
+33:     b = p.chromium.launch()
+34:     ctx = b.new_context(viewport={"width": 1100, "height": 900}, accept_downloads=True, locale="ar")
+35:     page = ctx.new_page()
+36:     errors = []
+37:     page.on("pageerror", lambda e: errors.append(str(e)))
+38:     page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+39: 
+40:     # ------------------------------------------------------------- S1: سجل حركات + نسخة مفلترة + معادلات
+41:     print("== S1 journal")
+42:     page.goto("file://" + HTML)
+43:     page.set_input_files("#file", os.path.join(SAMPLES, "S1-journal.xlsx"))
+44:     wait_ready(page)
+45:     und = page.inner_text("#understand")
+46:     check("journal and filtered copy understood", "سجل حركات" in und and "نسخة مفلترة" in und and "كشف النور" in und, und[:400])
+47:     check("names list shown", "قائمة أسماء الحسابات" in und and "5 اسمًا" in und, und)
+48:     att = page.inner_text("#attention")
+49:     check("attention lists missing direction / currency / account / future", all(x in att for x in ["بلا اتجاه", "بلا عملة", "بلا اسم حساب", "تاريخ في المستقبل"]), att[:500])
+50:     rv = page.inner_text("#review")
+51:     check("all accuracy checks pass", "✗" not in rv.split("مكتب\n")[0] and "طابقت كلها" in rv and "يطابق رصيده بعد النقل" in rv, rv[:800])
+52:     check("balance مكتب النور USD 1,850.50 shown", "1,850.50" in rv, rv[:1500])
+53:     page.screenshot(path=os.path.join(OUT, "S1-full.png"), full_page=True)
+54:     # البحث في الأرصدة
+55:     page.fill("#q", "النور")
+56:     page.wait_for_timeout(150)
+57:     check("search filters the balances table (7 rows incl. 2 listed offices at 0)", "2 من 7" in page.inner_text("#qn"), page.inner_text("#qn"))
+58:     page.fill("#q", "")
+59:     # إعادة تسمية توحّد مكتبين
+60:     page.click('details[data-k="names"] > summary')
+61:     inp = page.locator('input[data-rename="الامين"]')
+62:     inp.fill("الأمين")
+63:     inp.dispatch_event("change")
+64:     recalc(page)
+65:     rv2 = page.inner_text("#review")
+66:     check("renaming «الامين» to «الأمين» merges them (USD 100 + 200 = علينا 300.00)", "300.00" in rv2 and "4\nمكتب" in rv2, rv2[:900])
+67:     # الإنشاء
+68:     page.fill("#pw1", "smart-1234")
+69:     page.fill("#pw2", "smart-1234")
+70:     check("make disabled before confirmation", page.is_disabled("#make"))
+71:     page.check("#confirmed")
+72:     with page.expect_download(timeout=60000) as dl:
+73:         page.click("#make")
+74:     d = dl.value
+75:     d.save_as(os.path.join(OUT, "S1-ui.sba"))
+76:     check("download is .sba", d.suggested_filename.endswith(".sba") and "استيراد-ذكي" in d.suggested_filename, d.suggested_filename)
+77:     page.wait_for_selector("#makeMsg .msg.ok", timeout=60000)
+78:     with page.expect_download() as d2:
+79:         page.click("#csv")
+80:     d2.value.save_as(os.path.join(OUT, "S1-report.csv"))
+81:     csv = open(os.path.join(OUT, "S1-report.csv"), encoding="utf-8-sig").read()
+82:     check("report has balances and excluded rows", "مكتب النور" in csv and "بلا اتجاه" in csv and "بلا تاريخ صالح" in csv, csv[:300])
+83: 
+84:     # ------------------------------------------------------------- S2: ورقة لكل مكتب بعمود رصيد
+85:     print("== S2 ledgers")
+86:     page.goto("file://" + HTML)
+87:     page.set_input_files("#file", os.path.join(SAMPLES, "S2-ledgers.xlsx"))
+88:     wait_ready(page)
+89:     und = page.inner_text("#understand")
+90:     check("account from sheet name, Sheet3 needs an account", "مكتب النور" in und and "حركات بلا اسم حساب" in und, und[:600])
+91:     rv = page.inner_text("#review")
+92:     check("running balance verified row by row", "طابقت رصيدنا التراكمي سطرًا بسطر" in rv and "رصيد سابق مستنتج" in rv, rv[:900])
+93:     check("«in your file» column all matching", rv.count("مطابق") >= 2 and "غير مطابق" not in rv, rv[:1500])
+94:     page.select_option('select[data-accfrom="t2"]', "sheet")
+95:     recalc(page)
+96:     rv = page.inner_text("#review")
+97:     check("choosing «sheet name» imports Sheet3 (+100 −40 +15 = لنا 75.00)", "Sheet3" in rv and "75.00" in rv, rv[:1500])
+98:     page.screenshot(path=os.path.join(OUT, "S2-full.png"), full_page=True)
+99: 
+100:     # ------------------------------------------------------------- S3: إشارة المبلغ
+101:     print("== S3 signed")
+102:     page.goto("file://" + HTML)
+103:     page.set_input_files("#file", os.path.join(SAMPLES, "S3-signed.xlsx"))
+104:     wait_ready(page)
+105:     rv = page.inner_text("#review")
+106:     check("positive = لنا by default (الخال USD لنا 450.00)", "450.00" in rv)
+107:     page.click('input[name="pos|t0"][value="C"] >> xpath=..')
+108:     recalc(page)
+109:     row = page.locator("#balTable tr", has_text="الخال").filter(has_text="USD").inner_text()
+110:     check("switching the sign makes it علينا 450.00", "علينا" in row and "450.00" in row, row)
+111: 
+112:     # ------------------------------------------------------------- ملفان معًا: ملف لكل مكتب بعمود أجرة
+113:     print("== two files with fee column")
+114:     page.goto("file://" + HTML)
+115:     page.set_input_files("#file", [os.path.join(SAMPLES, "الربيع.xlsx"), os.path.join(SAMPLES, "السلام.xlsx")])
+116:     wait_ready(page)
+117:     vals = page.inner_text("#values")
+118:     check("fee direction learnt from the balance column", "عرفتُ اتجاهها من عمود الرصيد" in vals, vals[:600])
+119:     rv = page.inner_text("#review")
+120:     check("balances with fees (الربيع لنا 715.00, السلام علينا 197.00)", "715.00" in rv and "197.00" in rv, rv[:1200])
+121:     page.screenshot(path=os.path.join(OUT, "fees-full.png"), full_page=True)
+122: 
+123:     # ------------------------------------------------------------- ملخص بمعادلات
+124:     print("== S5 summary")
+125:     page.goto("file://" + HTML)
+126:     page.set_input_files("#file", os.path.join(SAMPLES, "S5-summary.xlsx"))
+127:     wait_ready(page)
+128:     und = page.inner_text("#understand")
+129:     check("summaries are for checking only", und.count("ملخص أرصدة محسوب") == 2, und[:800])
+130:     rv = page.inner_text("#review")
+131:     check("summary tables match the import", rv.count("تطابق أرصدة المكاتب بعد النقل") == 2, rv[:900])
+132: 
+133:     # ------------------------------------------------------------- CSV
+134:     print("== S6 csv")
+135:     page.goto("file://" + HTML)
+136:     page.set_input_files("#file", os.path.join(SAMPLES, "S6-journal.csv"))
+137:     wait_ready(page)
+138:     rv = page.inner_text("#review")
+139:     check("CSV balances (الشام لنا 955.50، حلب علينا 800.00)", "955.50" in rv and "800.00" in rv, rv[:900])
+140: 
+141:     # الهاتف بعرض صغير
+142:     page.set_viewport_size({"width": 400, "height": 860})
+143:     page.goto("file://" + HTML)
+144:     page.set_input_files("#file", os.path.join(SAMPLES, "S2-ledgers.xlsx"))
+145:     wait_ready(page)
+146:     sw = page.evaluate("document.documentElement.scrollWidth")
+147:     check("no horizontal page scroll at phone width", sw <= 400, sw)
+148:     page.screenshot(path=os.path.join(OUT, "mobile.png"), full_page=True)
+149: 
+150:     check("no page errors", not errors, errors)
+151:     b.close()
+152: 
+153: print("ALL SMART IMPORT E2E TESTS PASSED" if fails == 0 else str(fails) + " FAILED")
+154: sys.exit(0 if fails == 0 else 1)

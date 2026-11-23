@@ -1,0 +1,90 @@
+175:         p.topMargin = p.bottomMargin = px(24);
+176:         content.removeAllViews();
+177:         content.addView(panel, new FrameLayout.LayoutParams(-1, -2));
+178:         content.setLayoutParams(p);
+179:         content.setLayoutDirection(View.LAYOUT_DIRECTION_INHERIT);
+180:     }
+181: 
+182:     private static Drawable round(int r) { GradientDrawable g = new GradientDrawable(); g.setColor(0xFFFFFFFF); g.setCornerRadius(r); return g; }
+183: 
+184:     /** سطور القائمة (عادية، أو باختيار واحد، أو بعدة اختيارات). */
+185:     private final class ChoiceAdapter extends BaseAdapter {
+186:         final Context c; final List<CharSequence> l; final int fg, accent;
+187:         ChoiceAdapter(Context c, List<CharSequence> l, int fg, int accent) { this.c = c; this.l = l; this.fg = fg; this.accent = accent; }
+188:         @Override public int getCount() { return l.size(); }
+189:         @Override public Object getItem(int i) { return l.get(i); }
+190:         @Override public View getView(int pos, View convert, ViewGroup parent) {
+191:             if (choiceMode == 1 || choiceMode == 2) {
+192:                 CompoundButton cb = choiceMode == 1 ? new RadioButton(c) : new CheckBox(c);
+193:                 cb.setText(l.get(pos));
+194:                 cb.setTextSize(16);
+195:                 cb.setTextColor(fg);
+196:                 cb.setChecked(choiceMode == 1 ? pos == checked : multi[pos]);
+197:                 cb.setPadding(px(18), 0, px(20), 0);
+198:                 cb.setClickable(false);
+199:                 cb.setFocusable(false);
+200:                 cb.setDuplicateParentStateEnabled(true);
+201:                 LinearLayout row = new LinearLayout(c);
+202:                 row.addView(cb, new LinearLayout.LayoutParams(-1, px(48)));
+203:                 return row;
+204:             }
+205:             TextView t = new TextView(c);
+206:             t.setText(l.get(pos));
+207:             t.setTextSize(16);
+208:             t.setTextColor(fg);
+209:             t.setMinHeight(px(48));
+210:             t.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+211:             t.setPadding(px(24), px(6), px(24), px(6));
+212:             return t;
+213:         }
+214:     }
+215: 
+216:     public static class Builder {
+217:         private final Context ctx;
+218:         private final AlertDialog dlg;
+219:         private boolean cancelable = true;
+220:         private OnCancelListener cancel;
+221:         private OnDismissListener dismiss;
+222:         private OnKeyListener key;
+223:         public Builder(Context c) { this(c, 0); }
+224:         public Builder(Context c, int theme) { ctx = c; dlg = new AlertDialog(c, theme); }
+225:         public Context getContext() { return ctx; }
+226:         public Builder setTitle(CharSequence t) { dlg.title = t; return this; }
+227:         public Builder setTitle(int r) { dlg.title = ctx.getString(r); return this; }
+228:         public Builder setCustomTitle(View v) { dlg.customTitle = v; return this; }
+229:         public Builder setMessage(CharSequence m) { dlg.message = m; return this; }
+230:         public Builder setMessage(int r) { dlg.message = ctx.getString(r); return this; }
+231:         public Builder setIcon(int r) { dlg.setIcon(r); return this; }
+232:         public Builder setIcon(Drawable i) { dlg.icon = i; return this; }
+233:         public Builder setView(View v) { dlg.custom = v; return this; }
+234:         public Builder setView(int layout) { return this; }
+235:         public Builder setPositiveButton(CharSequence t, DialogInterface.OnClickListener l) { dlg.setButton(BUTTON_POSITIVE, t, l); return this; }
+236:         public Builder setPositiveButton(int r, DialogInterface.OnClickListener l) { return setPositiveButton(ctx.getString(r), l); }
+237:         public Builder setNegativeButton(CharSequence t, DialogInterface.OnClickListener l) { dlg.setButton(BUTTON_NEGATIVE, t, l); return this; }
+238:         public Builder setNegativeButton(int r, DialogInterface.OnClickListener l) { return setNegativeButton(ctx.getString(r), l); }
+239:         public Builder setNeutralButton(CharSequence t, DialogInterface.OnClickListener l) { dlg.setButton(BUTTON_NEUTRAL, t, l); return this; }
+240:         public Builder setNeutralButton(int r, DialogInterface.OnClickListener l) { return setNeutralButton(ctx.getString(r), l); }
+241:         public Builder setItems(CharSequence[] items, DialogInterface.OnClickListener l) { dlg.items = items; dlg.itemListener = l; dlg.choiceMode = 0; return this; }
+242:         public Builder setItems(int r, DialogInterface.OnClickListener l) { return this; }
+243:         public Builder setAdapter(ListAdapter a, DialogInterface.OnClickListener l) { dlg.adapter = a; dlg.itemListener = l; return this; }
+244:         public Builder setSingleChoiceItems(CharSequence[] items, int checked, DialogInterface.OnClickListener l) {
+245:             dlg.items = items; dlg.checked = checked; dlg.itemListener = l; dlg.choiceMode = 1; return this;
+246:         }
+247:         public Builder setSingleChoiceItems(ListAdapter a, int checked, DialogInterface.OnClickListener l) { dlg.adapter = a; dlg.checked = checked; dlg.itemListener = l; dlg.choiceMode = 1; return this; }
+248:         public Builder setMultiChoiceItems(CharSequence[] items, boolean[] checked, DialogInterface.OnMultiChoiceClickListener l) {
+249:             dlg.items = items; dlg.multi = checked == null ? new boolean[items.length] : checked; dlg.multiListener = l; dlg.choiceMode = 2; return this;
+250:         }
+251:         public Builder setCancelable(boolean c) { cancelable = c; return this; }
+252:         public Builder setOnCancelListener(OnCancelListener l) { cancel = l; return this; }
+253:         public Builder setOnDismissListener(OnDismissListener l) { dismiss = l; return this; }
+254:         public Builder setOnKeyListener(OnKeyListener l) { key = l; return this; }
+255:         public AlertDialog create() {
+256:             dlg.setCancelable(cancelable);
+257:             if (cancel != null) dlg.setOnCancelListener(cancel);
+258:             if (dismiss != null) dlg.setOnDismissListener(dismiss);
+259:             if (key != null) dlg.setOnKeyListener(key);
+260:             return dlg;
+261:         }
+262:         public AlertDialog show() { AlertDialog a = create(); a.show(); return a; }
+263:     }
+264: }

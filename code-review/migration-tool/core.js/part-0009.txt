@@ -1,0 +1,55 @@
+1318:   }
+1319: 
+1320:   async function makeBackup(T, cfg, password, subtle, rand, opts) {
+1321:     var zip = backupZip(T, cfg);
+1322:     return encrypt(zip, password, opts, subtle, rand);
+1323:   }
+1324: 
+1325:   // ===================================================================================
+1326:   // تقرير CSV (يفتح في Excel بالعربية)
+1327:   // ===================================================================================
+1328: 
+1329:   function csvCell(s) {
+1330:     s = String(s === null || s === undefined ? "" : s);
+1331:     return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+1332:   }
+1333: 
+1334:   function balWord(m, dec) {
+1335:     if (m === 0n) return "0";
+1336:     return (m > 0n ? "لنا " : "علينا ") + fmtMinor(m > 0n ? m : -m, dec);
+1337:   }
+1338: 
+1339:   function reportCsv(rep, model) {
+1340:     var lines = [];
+1341:     lines.push(["المكتب", "العملة", "الرصيد السابق", "حركات لنا (مدين)", "حركات علينا (دائن)", "الرصيد النهائي", "الرصيد في الملف", "المطابقة"].map(csvCell).join(","));
+1342:     rep.rows.forEach(function (r) {
+1343:       lines.push([r.office, r.code, balWord(r.opening, r.dec), fmtMinor(r.debit, r.dec), fmtMinor(r.credit, r.dec), balWord(r.balance, r.dec),
+1344:         r.expected === null ? "" : balWord(r.expected, r.dec), r.match === null ? "" : (r.match ? "مطابق" : "غير مطابق")].map(csvCell).join(","));
+1345:     });
+1346:     lines.push("");
+1347:     lines.push(["العملة", "مجموع ما لنا", "عدد المكاتب", "مجموع ما علينا", "عدد المكاتب", "الصافي"].map(csvCell).join(","));
+1348:     rep.totals.forEach(function (t) {
+1349:       lines.push([t.code, fmtMinor(t.receivable, t.dec), t.nr, fmtMinor(t.payable, t.dec), t.np, balWord(t.receivable - t.payable, t.dec)].map(csvCell).join(","));
+1350:     });
+1351:     if (model.errors.length || model.skipped.length) {
+1352:       lines.push("");
+1353:       lines.push(["الورقة", "الصف", "الحالة", "السبب"].map(csvCell).join(","));
+1354:       model.errors.forEach(function (e) { lines.push([e.sheet, e.row, "خطأ", e.msg].map(csvCell).join(",")); });
+1355:       model.skipped.forEach(function (e) { lines.push([e.sheet, e.row, "تخطٍّ", e.reason].map(csvCell).join(",")); });
+1356:     }
+1357:     return "﻿" + lines.join("\r\n");
+1358:   }
+1359: 
+1360:   return {
+1361:     normDigits: normDigits, clean: clean, officeKey: officeKey, looseKey: looseKey, headerKey: headerKey,
+1362:     parseAmount: parseAmount, toMinor: toMinor, fmtMinor: fmtMinor, balWord: balWord,
+1363:     parseDate: parseDate, guessDateOrder: guessDateOrder, epoch: epoch, fmtDate: fmtDate,
+1364:     sheetRows: sheetRows, text: text, isBlankRow: isBlankRow,
+1365:     guessHeaderRow: guessHeaderRow, guessColumns: guessColumns, guessCurrency: guessCurrency, guessDirection: guessDirection,
+1366:     KNOWN: KNOWN, DEFAULT_CODES: DEFAULT_CODES, OPENING_RE: OPENING_RE, TOTAL_RE: TOTAL_RE,
+1367:     build: build, tables: tables, stmtHeader: stmtHeader, splitAccount: splitAccount, parseStatements: parseStatements, isStatementFile: isStatementFile, checkStatement: checkStatement,
+1368:     buildStatements: buildStatements, PRE_RE: PRE_RE, FOOT_RE: FOOT_RE, keyOf: keyOf, displayName: displayName, balancesFromTables: balancesFromTables, checkBalanced: checkBalanced, report: report,
+1369:     crc32: crc32, zipStored: zipStored, backupZip: backupZip, encrypt: encrypt, makeBackup: makeBackup, reportCsv: reportCsv
+1370:   };
+1371: })();
+1372: if (typeof module !== "undefined") module.exports = Core;

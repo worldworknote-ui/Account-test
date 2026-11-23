@@ -1,0 +1,155 @@
+563:       return Number.isInteger(n) ? String(n) : String(+n.toFixed(10));
+564:     }
+565:     if (cell.date) {
+566:       var x = cell.date;
+567:       return x.y + "/" + (x.m < 10 ? "0" : "") + x.m + "/" + (x.d < 10 ? "0" : "") + x.d;
+568:     }
+569:     return "";
+570:   }
+571: 
+572:   function isBlankRow(row) { return !row || row.every(function (c) { return c === null || text(c) === ""; }); }
+573: 
+574:   // ===================================================================================
+575:   // التعرف على الأعمدة والعملات والاتجاه
+576:   // ===================================================================================
+577: 
+578:   var SYN = {
+579:     office: ["المكتب", "اسم المكتب", "مكتب", "الحساب", "اسم الحساب", "حساب", "العميل", "اسم العميل", "الوكيل", "الجهه", "الطرف", "account", "office", "agent", "customer", "client", "accountname", "officename"],
+580:     date: ["التاريخ", "تاريخ", "تاريخ الحركه", "تاريخ العمليه", "تاريخ السند", "date", "datetime", "transactiondate"],
+581:     amount: ["المبلغ", "مبلغ", "القيمه", "قيمه", "amount", "value", "sum"],
+582:     debit: ["مدين", "لنا", "عليه", "مدين لنا", "debit", "dr", "debitamount"],
+583:     credit: ["دائن", "علينا", "له", "دائن علينا", "credit", "cr", "creditamount"],
+584:     type: ["النوع", "نوع", "نوع الحركه", "نوع العمليه", "الاتجاه", "type", "direction", "drcr"],
+585:     currency: ["العمله", "عمله", "نوع العمله", "currency", "cur", "ccy", "curr"],
+586:     person: ["المستفيد", "المستلم", "اسم المستفيد", "اسم المستلم", "الشخص", "المرسل اليه", "beneficiary", "receiver", "recipient", "person", "payee"],
+587:     description: ["البيان", "بيان", "الشرح", "التفاصيل", "الوصف", "description", "details", "memo", "narration", "particulars"],
+588:     notes: ["ملاحظات", "ملاحظه", "notes", "note", "remarks", "comment"],
+589:     ref: ["المرجع", "مرجع", "رقم الحواله", "رقم السند", "رقم العمليه", "رقم القيد", "الرقم", "ref", "reference", "no", "number", "voucher"],
+590:     fee: ["الاجره", "اجره", "العموله", "عموله", "fee", "fees", "commission"],
+591:     balance: ["الرصيد", "رصيد", "balance", "runningbalance"],
+592:     phone: ["الهاتف", "هاتف", "الجوال", "جوال", "موبايل", "رقم الهاتف", "phone", "mobile", "tel"]
+593:   };
+594:   var SYN_KEYS = {};
+595:   Object.keys(SYN).forEach(function (k) { SYN_KEYS[k] = SYN[k].map(headerKey); });
+596: 
+597:   /** يقترح صف العناوين: أول صف (من أول 25) فيه أكثر الأسماء المعروفة. */
+598:   function guessHeaderRow(rows) {
+599:     var best = 0, bestScore = -1;
+600:     for (var r = 0; r < Math.min(rows.length, 25); r++) {
+601:       var row = rows[r] || [];
+602:       var score = 0, texts = 0;
+603:       row.forEach(function (c) {
+604:         var t = text(c);
+605:         if (!t || (c && c.n !== undefined)) return;
+606:         texts++;
+607:         var k = headerKey(t);
+608:         Object.keys(SYN_KEYS).forEach(function (f) { if (SYN_KEYS[f].indexOf(k) >= 0) score += 3; });
+609:       });
+610:       score += Math.min(texts, 6) * 0.2;
+611:       if (texts >= 2 && score > bestScore) { bestScore = score; best = r; }
+612:     }
+613:     return best;
+614:   }
+615: 
+616:   /** يقترح عمودًا لكل حقل من عناوين الأعمدة. */
+617:   function guessColumns(headers) {
+618:     var keys = headers.map(function (h) { return headerKey(text(h)); });
+619:     var used = {};
+620:     var res = {};
+621:     var order = ["debit", "credit", "date", "currency", "office", "amount", "type", "person", "description", "notes", "ref", "fee", "balance", "phone"];
+622:     order.forEach(function (f) {
+623:       var idx = -1;
+624:       for (var i = 0; i < keys.length && idx < 0; i++) if (!used[i] && keys[i] && SYN_KEYS[f].indexOf(keys[i]) >= 0) idx = i;
+625:       for (var j = 0; j < keys.length && idx < 0; j++) {
+626:         if (used[j] || !keys[j]) continue;
+627:         if (SYN_KEYS[f].some(function (s) { return s.length >= 3 && keys[j].indexOf(s) >= 0; })) idx = j;
+628:       }
+629:       if (idx >= 0) { res[f] = idx; used[idx] = true; }
+630:     });
+631:     return res;
+632:   }
+633: 
+634:   var KNOWN = {
+635:     USD: { name: "دولار أمريكي", dec: 2, words: ["usd", "$", "دولار", "دولار امريكي", "الدولار", "dollar", "us dollar", "usd$", "دولار أمريكي"] },
+636:     EUR: { name: "يورو", dec: 2, words: ["eur", "€", "يورو", "اليورو", "euro"] },
+637:     TRY: { name: "ليرة تركية", dec: 2, words: ["try", "tl", "₺", "ليره تركيه", "ليرة تركية", "تركي", "تركيه", "lira", "turkish lira"] },
+638:     SYP: { name: "ليرة سورية", dec: 0, words: ["syp", "ل.س", "ل س", "ليره سوريه", "ليرة سورية", "سوري", "سوريه", "ليره", "ليرة", "syrian pound"] },
+639:     USDT: { name: "تيثر (USDT)", dec: 2, words: ["usdt", "تيثر", "يوز", "tether"] },
+640:     SAR: { name: "ريال سعودي", dec: 2, words: ["sar", "ريال سعودي", "ريال", "سعودي", "riyal"] },
+641:     AED: { name: "درهم إماراتي", dec: 2, words: ["aed", "درهم", "درهم اماراتي", "اماراتي", "dirham"] },
+642:     GBP: { name: "جنيه إسترليني", dec: 2, words: ["gbp", "£", "استرليني", "جنيه استرليني", "pound"] },
+643:     EGP: { name: "جنيه مصري", dec: 2, words: ["egp", "جنيه مصري", "مصري", "جنيه"] },
+644:     IQD: { name: "دينار عراقي", dec: 0, words: ["iqd", "دينار عراقي", "عراقي"] },
+645:     JOD: { name: "دينار أردني", dec: 3, words: ["jod", "دينار اردني", "اردني"] },
+646:     KWD: { name: "دينار كويتي", dec: 3, words: ["kwd", "دينار كويتي", "كويتي"] },
+647:     LBP: { name: "ليرة لبنانية", dec: 0, words: ["lbp", "ليره لبنانيه", "لبناني", "لبنانيه"] },
+648:     QAR: { name: "ريال قطري", dec: 2, words: ["qar", "ريال قطري", "قطري"] },
+649:     RON: { name: "ليو روماني", dec: 2, words: ["ron", "ليو", "روماني", "lei", "leu"] },
+650:     CHF: { name: "فرنك سويسري", dec: 2, words: ["chf", "فرنك", "فرنك سويسري"] },
+651:     SEK: { name: "كرونة سويدية", dec: 2, words: ["sek", "كرون", "كرونه سويديه"] },
+652:     CAD: { name: "دولار كندي", dec: 2, words: ["cad", "دولار كندي", "كندي"] },
+653:     AUD: { name: "دولار أسترالي", dec: 2, words: ["aud", "دولار استرالي", "استرالي"] },
+654:     RUB: { name: "روبل روسي", dec: 2, words: ["rub", "روبل", "₽"] }
+655:   };
+656:   var DEFAULT_CODES = ["USD", "EUR", "TRY", "SYP"];
+657: 
+658:   function guessCurrency(t) {
+659:     var k = looseKey(normDigits(t)).replace(/\s/g, "");
+660:     if (!k) return null;
+661:     var up = clean(t).toUpperCase();
+662:     if (KNOWN[up]) return up;
+663:     var codes = Object.keys(KNOWN);
+664:     for (var i = 0; i < codes.length; i++) {
+665:       var ws = KNOWN[codes[i]].words;
+666:       for (var j = 0; j < ws.length; j++) if (looseKey(ws[j]).replace(/\s/g, "") === k) return codes[i];
+667:     }
+668:     return null;
+669:   }
+670: 
+671:   var DIR_D = ["لنا", "مدين", "عليه", "debit", "dr", "d", "+", "مدين لنا"].map(looseKey);
+672:   var DIR_C = ["علينا", "دائن", "له", "credit", "cr", "c", "-", "دائن علينا"].map(looseKey);
+673: 
+674:   function guessDirection(t) {
+675:     var k = looseKey(t);
+676:     if (!k) return null;
+677:     if (DIR_D.indexOf(k) >= 0) return "D";
+678:     if (DIR_C.indexOf(k) >= 0) return "C";
+679:     if (/(^|\s)مدين/.test(clean(t))) return "D";
+680:     if (/(^|\s)دائن/.test(clean(t))) return "C";
+681:     return null;
+682:   }
+683: 
+684:   var OPENING_RE = /^(رصيد\s*(سابق|افتتاحي|مدور|مرحل|اول\s*المده|أول\s*المدة|قبل)|الرصيد\s*(السابق|الافتتاحي|المدور|المرحل)|opening\s*balance|balance\s*(b\/?f|brought\s*forward)|b\/f)/i;
+685:   var TOTAL_RE = /^(المجموع|مجموع|الإجمالي|الاجمالي|إجمالي|اجمالي|المجاميع|total|totals|grand\s*total|sum)(?=$|[\s:：\-–—(])/i;
+686: 
+687:   function rowLabel(row) {
+688:     for (var i = 0; i < row.length; i++) {
+689:       var c = row[i];
+690:       if (c && c.s !== undefined && clean(c.s)) return clean(c.s);
+691:     }
+692:     return "";
+693:   }
+694: 
+695:   // ===================================================================================
+696:   // البناء: من الصفوف إلى مكاتب وأرصدة وحركات
+697:   // ===================================================================================
+698: 
+699:   function newModel() {
+700:     return { offices: [], officeIndex: {}, openings: [], txs: [], errors: [], warnings: [], skipped: [], checks: [], used: {}, rowsRead: 0, both: 0 };
+701:   }
+702: 
+703:   function displayName(cfg, name) {
+704:     var r = cfg.rename && cfg.rename[officeKey(name)];
+705:     return r && clean(r) ? clean(r) : clean(name);
+706:   }
+707: 
+708:   function keyOf(cfg, name) {
+709:     var n = displayName(cfg, name);
+710:     return cfg.mergeSimilar ? looseKey(n) : officeKey(n);
+711:   }
+712: 
+713:   function officeFor(model, name, phone, cfg) {
+714:     var orig = clean(name);
+715:     name = displayName(cfg, name);
+716:     var key = keyOf(cfg, orig);
+717:     var i = model.officeIndex[key];

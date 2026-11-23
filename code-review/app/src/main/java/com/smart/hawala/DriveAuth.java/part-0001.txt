@@ -1,0 +1,154 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.Activity;
+4: import android.app.PendingIntent;
+5: import android.content.Context;
+6: import android.content.Intent;
+7: import com.google.android.gms.auth.GoogleAuthUtil;
+8: import com.google.android.gms.auth.api.identity.AuthorizationRequest;
+9: import com.google.android.gms.auth.api.identity.AuthorizationResult;
+10: import com.google.android.gms.auth.api.identity.Identity;
+11: import com.google.android.gms.common.api.Scope;
+12: import com.google.android.gms.tasks.Tasks;
+13: import java.io.IOException;
+14: import java.util.Collections;
+15: import java.util.concurrent.TimeUnit;
+16: 
+17: /**
+18:  * 10.2: رمز الدخول إلى Google Drive على أندرويد (خدمات Google): صلاحية «مجلد التطبيق المخفي» فقط (drive.appdata)،
+19:  * فلا يرى التطبيق أي ملف آخر في Drive. أول مرة يظهر اختيار الحساب والموافقة؛ بعدها يعمل الرمز في الخلفية دون سؤال.
+20:  *
+21:  * <p>يتطلب مشروع Google Cloud فيه «Google Drive API» وعميل OAuth من نوع Android لاسم الحزمة وبصمة توقيع التطبيق
+22:  * (الخطوات في دليل الإصدار).
+23:  */
+24: final class DriveAuth implements DriveSyncFolder.Tokens {
+25:     static final int REQ = 71, REQ_PICK = 73;
+26:     private final Context ctx;
+27:     /** 10.14: حساب Google المحدد لهذا الجهاز (البريد)؛ فارغ = ما وافق عليه المستخدم سابقًا (سلوك 10.13 وما قبله). */
+28:     private final String account;
+29:     private String last;
+30: 
+31:     DriveAuth(Context ctx) { this(ctx, ""); }
+32: 
+33:     DriveAuth(Context ctx, String account) {
+34:         this.ctx = ctx.getApplicationContext();
+35:         this.account = account == null ? "" : account;
+36:     }
+37: 
+38:     static AuthorizationRequest request() { return request(""); }
+39: 
+40:     /** 10.14: الصلاحية لحساب محدد صراحة، فـ«تغيير الحساب» يغيّره فعلًا (بدونه يعيد Google الحساب السابق بصمت). */
+41:     static AuthorizationRequest request(String account) {
+42:         AuthorizationRequest.Builder b = AuthorizationRequest.builder().setRequestedScopes(Collections.singletonList(new Scope(DriveSyncFolder.SCOPE)));
+43:         if (account != null && !account.isEmpty()) b.setAccount(new android.accounts.Account(account, "com.google"));
+44:         return b.build();
+45:     }
+46: 
+47:     // 10.14: اختيار حساب Google من حسابات الهاتف
+48:     interface Picked {
+49:         void on(String email);
+50:     }
+51: 
+52:     private static Picked picking;
+53: 
+54:     static void pickAccount(Activity a, String current, Picked done) {
+55:         try {
+56:             android.accounts.Account cur = current == null || current.isEmpty() ? null : new android.accounts.Account(current, "com.google");
+57:             Intent i = android.accounts.AccountManager.newChooseAccountIntent(cur, null, new String[]{"com.google"}, null, null, null, null);
+58:             picking = done;
+59:             if (a instanceof Ui) ((Ui) a).markOwn();
+60:             a.startActivityForResult(i, REQ_PICK);
+61:         } catch (Exception e) {
+62:             picking = null;
+63:             if (a instanceof Ui) ((Ui) a).toast("تعذر فتح قائمة حسابات Google على هذا الهاتف: " + e.getMessage());
+64:         }
+65:     }
+66: 
+67:     static void onPicked(Activity a, int code, Intent data) {
+68:         Picked p = picking;
+69:         picking = null;
+70:         if (p == null || code != Activity.RESULT_OK || data == null) return;
+71:         String email = data.getStringExtra(android.accounts.AccountManager.KEY_ACCOUNT_NAME);
+72:         if (email != null && !email.isEmpty()) p.on(email);
+73:     }
+74: 
+75:     /** في الخلفية فقط (لا على الخيط الرئيسي). */
+76:     @Override public String token(boolean refresh) throws IOException {
+77:         try {
+78:             if (refresh && last != null) {
+79:                 try {
+80:                     GoogleAuthUtil.clearToken(ctx, last);
+81:                 } catch (Exception ignored) {
+82:                     // يُطلب رمز جديد على أي حال
+83:                 }
+84:             }
+85:             AuthorizationResult r = Tasks.await(Identity.getAuthorizationClient(ctx).authorize(request(account)), 45, TimeUnit.SECONDS);
+86:             if (r.hasResolution() || r.getAccessToken() == null) {
+87:                 throw new IOException("الدخول إلى Google مطلوب من جديد: افتح «المزامنة» واضغط «تسجيل الدخول بحساب Google».");
+88:             }
+89:             last = r.getAccessToken();
+90:             return last;
+91:         } catch (IOException e) {
+92:             throw e;
+93:         } catch (Exception e) {
+94:             Throwable c = e.getCause() != null ? e.getCause() : e;
+95:             throw new IOException("تعذر الدخول إلى Google: " + (c.getMessage() == null ? c.getClass().getSimpleName() : c.getMessage())
+96:                     + ". تأكد من خدمات Google والإنترنت.");
+97:         }
+98:     }
+99: 
+100:     interface Done {
+101:         void ok();
+102: 
+103:         void fail(Exception e);
+104:     }
+105: 
+106:     private static Done pending;
+107: 
+108:     /** تسجيل الدخول التفاعلي من الشاشة: يظهر اختيار الحساب والموافقة إن لزم. */
+109:     static void connect(final Activity a, final Done done) { connect(a, "", done); }
+110: 
+111:     /** 10.14: الدخول بحساب محدد. */
+112:     static void connect(final Activity a, String account, final Done done) {
+113:         Identity.getAuthorizationClient(a).authorize(request(account)).addOnSuccessListener(r -> {
+114:             if (r.hasResolution()) {
+115:                 PendingIntent pi = r.getPendingIntent();
+116:                 try {
+117:                     pending = done;
+118:                     if (a instanceof Ui) ((Ui) a).markOwn();
+119:                     a.startIntentSenderForResult(pi.getIntentSender(), REQ, null, 0, 0, 0);
+120:                 } catch (Exception e) {
+121:                     pending = null;
+122:                     done.fail(e);
+123:                 }
+124:             } else done.ok();
+125:         }).addOnFailureListener(e -> done.fail(new IOException(friendly(e))));
+126:     }
+127: 
+128:     static void onResult(Activity a, int code, Intent data) {
+129:         Done d = pending;
+130:         pending = null;
+131:         if (d == null) return;
+132:         if (code != Activity.RESULT_OK || data == null) {
+133:             d.fail(new IOException("لم يكتمل الدخول إلى Google"));
+134:             return;
+135:         }
+136:         try {
+137:             AuthorizationResult r = Identity.getAuthorizationClient(a).getAuthorizationResultFromIntent(data);
+138:             if (r.getAccessToken() == null) throw new IOException("لم تُمنح الصلاحية");
+139:             d.ok();
+140:         } catch (Exception e) {
+141:             d.fail(new IOException(friendly(e)));
+142:         }
+143:     }
+144: 
+145:     static String friendly(Exception e) {
+146:         String m = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+147:         String hint = "\n\nربط Google Drive المباشر يحتاج أن يُجهّز مطوّر التطبيق مشروع Google Cloud مرة واحدة (Google Drive API وعميل OAuth لأندرويد ببصمة التوقيع). "
+148:                 + "إن لم يُنجز بعد فاستعمل الآن «خادمك» أو «مجلد مشترك» وانتقل لاحقًا دون فقد شيء. التفاصيل في «شرح مفصّل».";
+149:         if (m.contains("10:") || m.contains("DEVELOPER_ERROR")) return "إعداد Google لهذا التطبيق غير مكتمل بعد." + hint + "\n(" + m + ")";
+150:         if (m.contains("12501") || m.contains("16:") || m.toLowerCase().contains("cancel")) return "أُلغي الدخول إلى Google.";
+151:         if (m.contains("7:") || m.toLowerCase().contains("network")) return "لا اتصال بالإنترنت. اتصل ثم أعد المحاولة.";
+152:         return "تعذر الدخول إلى Google: " + m + hint;
+153:     }
+154: }

@@ -1,0 +1,54 @@
+196:             Ui.info(this, "نسيت الرمز", msg + "\n\n! لم يُنشأ رمز استرداد لهذه البيانات. يستطيع مدير آخر (إن وُجد) تغيير رمزك.");
+197:             return;
+198:         }
+199:         if (Ui.choose(this, "نسيت الرمز", msg, new String[]{"عندي رمز الاسترداد", "إغلاق"}) != 0) return;
+200:         if (!canTry(db)) return;
+201:         String code = Ui.input(this, "رمز استرداد المدير", "اكتب رمز الاسترداد", "");
+202:         if (code == null) return;
+203:         if (remaining(db) > 0) {
+204:             canTry(db);
+205:             return;
+206:         }
+207:         if (!db.verifyRecoveryCode(code)) {
+208:             int f = recordFail(db, "استرداد المدير", 0);
+209:             long w = Pin.lockoutMillis(f);
+210:             Ui.message(this, "رمز غير صحيح", w > 0 ? "انتظر " + waitText(w) + "." : "رمز الاسترداد غير صحيح.", JOptionPane.WARNING_MESSAGE);
+211:             return;
+212:         }
+213:         resetFails(db);
+214:         db.audit("RECOVERY_USED", "user", 0, "mac");
+215:         List<Model.User> admins = new ArrayList<>();
+216:         for (Model.User u : db.users(true)) if (Auth.ADMIN.equals(u.role)) admins.add(u);
+217:         if (admins.isEmpty()) {
+218:             Ui.error(this, new IllegalStateException("لا يوجد مدير نشط."));
+219:             return;
+220:         }
+221:         Model.User admin = admins.get(0);
+222:         if (admins.size() > 1) {
+223:             String[] names = new String[admins.size()];
+224:             for (int i = 0; i < names.length; i++) names[i] = admins.get(i).name;
+225:             int k = Ui.choose(this, "أي مدير؟", "اختر حساب المدير", names);
+226:             if (k < 0) return;
+227:             admin = admins.get(k);
+228:         }
+229:         DeskBridge.recoveryGrant(true);
+230:         try {
+231:             String p1 = askPin(this, "رمز جديد للمدير: " + admin.name, "رمز المدير من 6 إلى 8 أرقام");
+232:             if (p1 == null) return;
+233:             String p2 = askPin(this, "تأكيد الرمز", "أعد كتابة الرمز");
+234:             if (p2 == null) return;
+235:             if (!Pin.validAdmin(p1)) throw new IllegalArgumentException("رمز المدير من 6 إلى 8 أرقام");
+236:             if (!p1.equals(p2)) throw new IllegalArgumentException("الرمزان غير متطابقين");
+237:             db.setPin(admin.id, p1);
+238:             String fresh = db.newRecoveryCode();
+239:             UsersView.showRecoveryCode(this, fresh, "استُخدم رمز الاسترداد القديم ولم يعد صالحًا. هذا رمز الاسترداد الجديد:");
+240:             Db.currentUserName = admin.name;
+241:             UsersView.reauthAt = Clock.now();
+242:             app.loggedIn(admin);
+243:         } catch (Exception e) {
+244:             Ui.error(this, e);
+245:         } finally {
+246:             DeskBridge.recoveryGrant(false);
+247:         }
+248:     }
+249: }

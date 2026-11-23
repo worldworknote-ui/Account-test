@@ -1,0 +1,143 @@
+1: package com.smart.hawala;
+2: 
+3: import java.io.ByteArrayOutputStream;
+4: import java.io.IOException;
+5: import java.io.InputStream;
+6: import java.io.OutputStream;
+7: import java.math.BigDecimal;
+8: import java.net.HttpURLConnection;
+9: import java.net.SocketTimeoutException;
+10: import java.net.URL;
+11: import java.net.UnknownHostException;
+12: import java.nio.charset.StandardCharsets;
+13: import java.util.HashSet;
+14: import java.util.List;
+15: import java.util.Locale;
+16: import java.util.Map;
+17: import java.util.Set;
+18: import org.json.JSONArray;
+19: import org.json.JSONException;
+20: import org.json.JSONObject;
+21: 
+22: /**
+23:  * فهم رسالة الحوالة بالذكاء الاصطناعي (اختياري ومطفأ افتراضيًا).
+24:  * يُرسل نص الرسالة فقط (مع رموز عملات المكتب) إلى الخدمة التي اختارها المستخدم وبمفتاحه هو؛ لا أرصدة ولا بيانات مكاتب.
+25:  * يدعم Claude (Anthropic) وأي خدمة متوافقة مع OpenAI. منطق بحت بلا أندرويد حتى يُختبر على الكمبيوتر.
+26:  */
+27: public final class AiExtract {
+28:     private AiExtract() {}
+29: 
+30:     public static final String CLAUDE = "claude", OPENAI = "openai", GEMINI = "gemini", CUSTOM = "custom";
+31:     public static final String CLAUDE_URL = "https://api.anthropic.com/v1/messages";
+32:     public static final String CLAUDE_MODEL = "claude-haiku-5-5";
+33:     public static final String OPENAI_URL = "https://api.openai.com/v1";
+34:     /** 12.7: Gemini بصيغة OpenAI نفسها. */
+35:     public static final String GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
+36: 
+37:     /** 12.7: الاسم كما يراه المستخدم (لا يخص خدمة بعينها). */
+38:     public static final String NAME = "القراءة الذكية السحابية المدفوعة الخاصة";
+39:     public static final String BUTTON = "☁️ قراءة ذكية سحابية مدفوعة خاصة";
+40:     public static final String EXPLAIN = "التطبيق يفهم معظم الرسائل وحده دون إنترنت؛ هذا الخيار يرسل نص الرسالة إلى خدمة ذكاء اصطناعي تختارها (عبر الإنترنت) لقراءة أدق.";
+41:     /** القوالب الجاهزة بترتيب العرض: الخدمة، اسمها، عنوانها الافتراضي. «مخصّص» = أي خدمة حالية أو مستقبلية بصيغة OpenAI. */
+42:     public static final String[] PROVIDERS = {CLAUDE, OPENAI, GEMINI, CUSTOM};
+43:     public static final String[] PROVIDER_NAMES = {"Claude (Anthropic)", "OpenAI", "Gemini (Google)", "مخصّص (أي خدمة متوافقة)"};
+44: 
+45:     public static int providerIndex(String p) {
+46:         for (int i = 0; i < PROVIDERS.length; i++) if (PROVIDERS[i].equals(p)) return i;
+47:         return 0;
+48:     }
+49: 
+50:     public static final class Config {
+51:         public String provider = CLAUDE;
+52:         public String key = "";
+53:         public String model = "";
+54:         /** عنوان الخدمة المتوافقة مع OpenAI (أو بديل لعنوان Claude عند الحاجة). */
+55:         public String baseUrl = "";
+56: 
+57:         public boolean claude() { return provider == null || provider.isEmpty() || CLAUDE.equals(provider); }
+58: 
+59:         public String model() {
+60:             String m = model == null ? "" : model.trim();
+61:             return m.isEmpty() && claude() ? CLAUDE_MODEL : m;
+62:         }
+63: 
+64:         public String endpoint() {
+65:             String b = baseUrl == null ? "" : baseUrl.trim();
+66:             if (claude()) return b.isEmpty() ? CLAUDE_URL : b;
+67:             if (b.isEmpty()) b = GEMINI.equals(provider) ? GEMINI_URL : CUSTOM.equals(provider) ? "" : OPENAI_URL;
+68:             if (b.isEmpty()) return "";
+69:             while (b.endsWith("/")) b = b.substring(0, b.length() - 1);
+70:             return b.endsWith("/chat/completions") ? b : b + "/chat/completions";
+71:         }
+72: 
+73:         public String problem() {
+74:             if (key == null || key.trim().isEmpty()) return "أضف مفتاح الخدمة من الإعدادات ← " + NAME + ".";
+75:             if (!claude() && model().isEmpty()) return "اكتب اسم النموذج كما في موقع الخدمة (الإعدادات ← " + NAME + ").";
+76:             String e = endpoint();
+77:             if (e.isEmpty()) return "اكتب عنوان الخدمة المخصّصة (مثل https://…/v1) في الإعدادات.";
+78:             // 10.11 (AUDIT-013): المفتاح يُرسل مع كل طلب، فلا http بلا تشفير إلا لخدمة على هذا الجهاز نفسه
+79:             if (!e.startsWith("https://") && !(e.startsWith("http://") && Model.localUrl(e))) return "عنوان الخدمة يجب أن يبدأ بـ https://";
+80:             return null;
+81:         }
+82:     }
+83: 
+84:     // ===================================================================================
+85:     // الطلب
+86:     // ===================================================================================
+87: 
+88:     static String systemPrompt(List<MessageParser.Cur> curs, Map<String, List<String>> aliases) {
+89:         StringBuilder c = new StringBuilder();
+90:         for (MessageParser.Cur x : curs) {
+91:             c.append("\n- ").append(x.code);
+92:             if (!x.name.isEmpty()) c.append(" = ").append(x.name);
+93:             List<String> w = aliases == null ? null : aliases.get(x.code);
+94:             if (w != null && !w.isEmpty()) c.append(" (also written: ").append(String.join(", ", w)).append(")");
+95:         }
+96:         return "You read money-transfer (hawala) instructions copied from WhatsApp for a remittance office's accountant. "
+97:                 + "The message may be in any language or a mix (Arabic incl. Levantine dialect, English, Turkish, Romanian, French, German, Spanish, "
+98:                 + "Russian, Persian, Kurdish, ...), with amounts in digits or written in words, and with lines in any order.\n"
+99:                 + "Extract only what the message states:\n"
+100:                 + "- person: the beneficiary who receives the money, full name exactly as written (keep its script); drop titles such as Mr, Bay, "
+101:                 + "Domnul, Herr, السيد. Empty if not stated.\n"
+102:                 + "- amount: the amount to deliver as a plain number: digits only, '.' for decimals, no thousands separators "
+103:                 + "(e.g. 'two thousand five hundred' -> 2500, '5 bin' -> 5000, 'خمسمية' -> 500, 'الفين ونص' -> 2500, '1.500' -> 1500). Never the fee.\n"
+104:                 + "- currency: the code of the transfer currency, chosen ONLY from the known currencies below. If the message names another "
+105:                 + "currency, leave currency empty and put that currency's usual code or word in currency_word.\n"
+106:                 + "- currency_word: the word or symbol the message uses for the currency.\n"
+107:                 + "- phone, city (delivery city or country), sender (who sends, if stated), fee (fee or commission as a plain number, if stated; in hawala slang 'راجع' is a fee the office pays us: "
+108:                 + "'راجع 1%' or 'راجع ١ بالمية' is 1 percent of the amount, so return fee = amount x 1 / 100; 'راجع 5 بالالف' is 5 per thousand), "
+109:                 + "net (true when the amount is net / صافي, with no fee deducted).\n"
+110:                 + "Never guess or invent: use an empty string when a value is not clearly in the message.\n"
+111:                 + "Known currencies:" + c;
+112:     }
+113: 
+114:     static final String[] FIELDS = {"person", "amount", "currency", "currency_word", "phone", "city", "sender", "fee"};
+115: 
+116:     static JSONObject schema() throws JSONException {
+117:         JSONObject props = new JSONObject();
+118:         for (String f : FIELDS) props.put(f, new JSONObject().put("type", "string"));
+119:         props.put("net", new JSONObject().put("type", "boolean"));
+120:         JSONArray req = new JSONArray();
+121:         for (String f : FIELDS) req.put(f);
+122:         req.put("net");
+123:         return new JSONObject().put("type", "object").put("properties", props).put("required", req).put("additionalProperties", false);
+124:     }
+125: 
+126:     static String userText(String message) { return "WhatsApp message:\n<<<\n" + message.trim() + "\n>>>"; }
+127: 
+128:     public static JSONObject claudeBody(Config c, String message, List<MessageParser.Cur> curs, Map<String, List<String>> aliases) throws JSONException {
+129:         JSONObject body = new JSONObject();
+130:         body.put("model", c.model());
+131:         // 10.11 (AUDIT-014): النماذج الحديثة تفكّر قبل الرد افتراضيًا ويُحتسب تفكيرها من max_tokens؛ 600 قد تنفد قبل نص الرد
+132:         body.put("max_tokens", 4096);
+133:         body.put("system", systemPrompt(curs, aliases));
+134:         body.put("messages", new JSONArray().put(new JSONObject().put("role", "user").put("content", userText(message))));
+135:         body.put("output_config", new JSONObject().put("format", new JSONObject().put("type", "json_schema").put("schema", schema())));
+136:         return body;
+137:     }
+138: 
+139:     public static JSONObject openAiBody(Config c, String message, List<MessageParser.Cur> curs, Map<String, List<String>> aliases) throws JSONException {
+140:         String sys = systemPrompt(curs, aliases) + "\nReply with one JSON object only, with exactly these keys: "
+141:                 + String.join(", ", FIELDS) + " (strings) and net (boolean).";
+142:         JSONObject body = new JSONObject();
+143:         body.put("model", c.model());

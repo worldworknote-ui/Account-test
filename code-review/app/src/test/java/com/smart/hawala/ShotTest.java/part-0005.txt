@@ -1,0 +1,135 @@
+784:         idle();
+785:         buttonText(a.body, "اختر المكتب المنفّذ").performClick();
+786:         idle();
+787:         android.widget.ListView lv = (android.widget.ListView) find(ShadowDialog.getLatestDialog().getWindow().getDecorView(), v -> v instanceof android.widget.ListView);
+788:         int at = -1;
+789:         for (int i = 0; i < lv.getAdapter().getCount(); i++) if (String.valueOf(lv.getAdapter().getItem(i)).contains("الأمل")) at = i;
+790:         lv.performItemClick(null, at, at);
+791:         idle();
+792:         byHint(a.body, "0").setText("1000");
+793:         idle();
+794:         shot(a, "62-transfer-filled");
+795:         buttonText(a.footerBox, "تسجيل الحركة").performClick();
+796:         confirmLatest();
+797:         if (db.recentTx(1000).size() != nBefore + 2) errors.add("xfer: لم تُسجَّل الساقان " + (db.recentTx(1000).size() - nBefore));
+798:         // 10.7: طالب الحركة «لنا» عليه (يزيد ما لنا) والمنفّذ «علينا» له
+799:         if (db.balances(balsam).getOrDefault("USD", 0L) != balsamUsd + 100000L || db.balances(amal).getOrDefault("USD", 0L) != amalUsd - 100000L)
+800:             errors.add("xfer: الاتجاه خاطئ " + db.balances(balsam) + " " + db.balances(amal));
+801:         // 10.8: قص العملات مقاصة: بيع أكثر من الرصيد يقلبه إلى «علينا» بعد تنبيه وتأكيد
+802:         long amalTry = db.balances(amal).getOrDefault("TRY", 0L), amalUsd2 = db.balances(amal).getOrDefault("USD", 0L);
+803:         a.fxScreen.show(db.office(amal));
+804:         idle();
+805:         buttonText(a.body, "TRY").performClick();
+806:         ((EditText) byDesc(a.body, "المبلغ المباع")).setText("30000");
+807:         ((EditText) byDesc(a.body, "السعر")).setText("0.03");
+808:         idle();
+809:         if (find(a.body, v -> v instanceof android.widget.TextView && ((android.widget.TextView) v).getText().toString().startsWith("⚠ تنبيه")) == null) errors.add("fx: لا تنبيه تجاوز الرصيد");
+810:         shot(a, "63-fx-overdraft");
+811:         buttonText(a.footerBox, "تسجيل القص").performClick();
+812:         idle();
+813:         ((android.app.AlertDialog) ShadowDialog.getLatestDialog()).getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
+814:         confirmLatest();
+815:         if (db.balances(amal).getOrDefault("TRY", 0L) != amalTry - 3000000L || db.balances(amal).getOrDefault("USD", 0L) != amalUsd2 + 90000L)
+816:             errors.add("fx مقاصة: " + db.balances(amal));
+817:         // 10.8: فرز المكاتب بين المحاسبين
+818:         a.teamScreen.show();
+819:         idle();
+820:         if (!"فرز المكاتب بين المحاسبين".equals(a.screenTitle.getText().toString())) errors.add("team: " + a.screenTitle.getText());
+821:         shot(a, "64-team");
+822:         // 10.9: الوضع الليلي العصري لأهم الشاشات
+823:         db.setSettingQuiet("theme_mode", "dark");
+824:         a.night = true;
+825:         a.appliedTheme = a.themeSig();
+826:         a.applyColors();
+827:         a.showHome();
+828:         shot(a, "70-dark-home");
+829:         a.txScreen.showNew();
+830:         shot(a, "71-dark-tx");
+831:         a.fxScreen.show(db.office(nour));
+832:         shot(a, "72-dark-fx");
+833:         a.officeHub.showList();
+834:         shot(a, "73-dark-offices");
+835:         db.setSettingQuiet("theme_mode", "light");
+836:         a.night = false;
+837:         a.appliedTheme = a.themeSig();
+838:         a.applyColors();
+839:         a.showHome();
+840:         shot(a, "74-light-home");
+841:         a.txScreen.showNew();
+842:         shot(a, "75-light-tx");
+843:         // 10.12: أكورديون الشريط العلوي، والاهتزاز في المظهر، و«عن البرنامج»، والتقارير الجديدة
+844:         db.setSettingQuiet("theme_mode", "light");
+845:         a.night = false;
+846:         a.appliedTheme = a.themeSig();
+847:         a.applyColors();
+848:         a.showHome();
+849:         idle();
+850:         View fold = byDesc(a.bar, "أدوات الشاشة");
+851:         if (fold == null) errors.add("header: لا أيقونة طي");
+852:         else {
+853:             shot(a, "76-header-closed");
+854:             fold.performClick();
+855:             idle();
+856:             shot(a, "77-header-open");
+857:         }
+858:         a.designScreen.show();
+859:         if (buttonText(a.body, "إيقاف") == null) errors.add("design: لا خيار للاهتزاز");
+860:         shot(a, "78-design-haptics");
+861:         About.appInfo(a, a::showHome);
+862:         shot(a, "79-appinfo");
+863:         a.reportsScreen.show();
+864:         shot(a, "80-reports");
+865:         a.reportsScreen.teamReport(0, 0);
+866:         idle();
+867:         if (!"التسجيل والتحقق بين المحاسبين".equals(a.screenTitle.getText().toString())) errors.add("team report: " + a.screenTitle.getText());
+868:         shot(a, "81-team-report");
+869:         // 10.13: «مكاتبي» بصفحاتها وحالاتها، والشريط «دائرة تتمدد»، وخيارات المظهر
+870:         a.mineScreen.show();
+871:         idle();
+872:         if (!"مكاتبي".equals(a.screenTitle.getText().toString())) errors.add("mine: " + a.screenTitle.getText());
+873:         shot(a, "84-mine");
+874:         if (!a.mineScreen.pages().isEmpty()) {
+875:             for (String[] pg : a.mineScreen.pages()) {
+876:                 db.setSettingQuiet("mine_page", pg[0]);
+877:                 a.mineScreen.show();
+878:                 idle();
+879:                 shot(a, "84-mine-" + pg[0]);
+880:             }
+881:         }
+882:         db.setSettingQuiet("tab_style", "bubble");
+883:         Ui.bubbleOpen = false;
+884:         a.showHome();
+885:         idle();
+886:         shot(a, "85-bubble-closed");
+887:         View bub = byDesc(a.tabs, "القائمة");
+888:         if (bub == null) errors.add("bubble: لا دائرة");
+889:         else {
+890:             bub.performClick();
+891:             idle();
+892:             shot(a, "86-bubble-open");
+893:         }
+894:         db.setSettingQuiet("tab_style", "island");
+895:         Ui.bubbleOpen = false;
+896:         db.setSettingQuiet("btn_frames", "off");
+897:         a.applyColors();
+898:         a.designScreen.show();
+899:         shot(a, "87-design-noframes");
+900:         db.setSettingQuiet("btn_frames", "on");
+901:         a.applyColors();
+902:         // 10.13: التابلت بالعرض — النصفان متقابلان
+903:         org.robolectric.RuntimeEnvironment.setQualifiers("+w1000dp-h640dp-land");
+904:         idle();
+905:         if (a.wide()) {
+906:             a.txScreen.showNew();
+907:             shot(a, "88-tablet-tx");
+908:             a.fxScreen.show(db.office(nour));
+909:             shot(a, "89-tablet-fx");
+910:             a.showHome();
+911:             shot(a, "90-tablet-home");
+912:         } else System.out.println("TABLET qualifiers not applied to activity: " + a.getResources().getConfiguration().screenWidthDp);
+913:         System.out.println("ERRORS " + errors);
+914:         if (!errors.isEmpty()) {
+915:             throw new AssertionError(errors.toString());
+916:         }
+917:     }
+918: }

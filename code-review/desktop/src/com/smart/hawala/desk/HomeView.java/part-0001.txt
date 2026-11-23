@@ -1,0 +1,187 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.util.*;
+6: import java.util.List;
+7: import javax.swing.*;
+8: import javax.swing.table.DefaultTableModel;
+9: 
+10: /** الرئيسية: الترحيب، التنبيهات (اعتماد، نسخ، فحص)، إجمالي ما لك وما عليك لكل عملة، حركات اليوم، آخر الحركات، المكاتب المثبتة. */
+11: final class HomeView extends View {
+12:     HomeView(App app) {
+13:         super(app, "الرئيسية");
+14:     }
+15: 
+16:     @Override void refresh() {
+17:         clear();
+18:         int w = textWidth();
+19:         String welcome = db.setting("welcome", "").trim();
+20:         String office = db.setting("office_name", "").trim();
+21:         titleLabel.setText(office.isEmpty() ? "أهلًا بك" : office);
+22:         subtitle.setText((welcome.isEmpty() ? "" : welcome + " — ") + "اليوم " + Model.day(Clock.now()));
+23:         if (can(Auth.Perm.TX_ADD)) action(Ui.primary("+ تسجيل حركة", e -> app.go("tx")));
+24:         action(Ui.ghost("كشف حساب", e -> app.go("statement")));
+25:         action(Ui.ghost("منشئ التقارير", e -> app.go("builder")));
+26:         action(Ui.ghost(app.hidden() ? "إظهار المبالغ" : "إخفاء المبالغ", e -> {
+27:             app.toggleHidden();
+28:             refresh();
+29:         }));
+30: 
+31:         notices(w);
+32:         action(Ui.ghost("تخصيص الرئيسية…", e -> customize()));
+33: 
+34:         // 10.16: أقسام الرئيسية كالهاتف، يختارها المستخدم ويرتبها («تخصيص الرئيسية»)
+35:         Map<String, Integer> dec = db.decimalsMap();
+36:         Set<String> hidden = new HashSet<>(Arrays.asList(db.setting("desk_home_hidden", DEFAULT_HIDDEN).split(",")));
+37:         for (String k : order()) {
+38:             if (hidden.contains(k)) continue;
+39:             try {
+40:                 switch (k) {
+41:                     case "totals": totals(dec); break;
+42:                     case "usd": usd(dec); break;
+43:                     case "today": today(dec); break;
+44:                     case "limits": limits(w); break;
+45:                     case "recon": reconPending(); break;
+46:                     case "offices": recentOffices(); break;
+47:                     case "shortcuts": shortcuts(); break;
+48:                     case "paste": paste(w); break;
+49:                     case "rates": rates(); break;
+50:                     case "recent": recentTx(dec); break;
+51:                     case "pinned": pinned(dec); break;
+52:                     default: break;
+53:                 }
+54:             } catch (Exception ex) {
+55:                 add(Ui.label("تعذر عرض قسم: " + ex.getMessage(), 13, Ui.red, false));
+56:             }
+57:         }
+58:         done();
+59:     }
+60: 
+61:     static final String[][] WIDGETS = {{"totals", "أرصدة كل المكاتب (لكل عملة)"}, {"usd", "التقويم التقريبي بالدولار"}, {"today", "حركات اليوم"},
+62:             {"limits", "تجاوز حدود المكاتب"}, {"recon", "المطابقات بانتظار التأكيد"}, {"offices", "آخر المكاتب"}, {"shortcuts", "اختصارات"},
+63:             {"paste", "اللصق من واتساب"}, {"rates", "أسعار الصرف مقابل الدولار"}, {"recent", "آخر الحركات"}, {"pinned", "المكاتب المثبتة"}};
+64:     static final String DEFAULT_HIDDEN = "rates";
+65: 
+66:     List<String> order() {
+67:         List<String> out = new ArrayList<>();
+68:         for (String k : db.setting("desk_home_order", "").split(",")) if (title(k) != null && !out.contains(k)) out.add(k);
+69:         for (String[] x : WIDGETS) if (!out.contains(x[0])) out.add(x[0]);
+70:         return out;
+71:     }
+72: 
+73:     static String title(String k) {
+74:         for (String[] x : WIDGETS) if (x[0].equals(k)) return x[1];
+75:         return null;
+76:     }
+77: 
+78:     /** اختيار الأقسام الظاهرة وترتيبها (إعداد هذا الجهاز). */
+79:     void customize() {
+80:         final List<String> ord = order();
+81:         final Set<String> hid = new HashSet<>(Arrays.asList(db.setting("desk_home_hidden", DEFAULT_HIDDEN).split(",")));
+82:         final DefaultListModel<String> m = new DefaultListModel<>();
+83:         final JList<String> list = new JList<>(m);
+84:         final Runnable fill = () -> {
+85:             int sel = list.getSelectedIndex();
+86:             m.clear();
+87:             for (String k : ord) m.addElement((hid.contains(k) ? "(مخفي) " : "") + title(k));
+88:             list.setSelectedIndex(Math.max(0, Math.min(sel, ord.size() - 1)));
+89:         };
+90:         fill.run();
+91:         list.setFont(Ui.font(14, false));
+92:         list.setFixedCellHeight(30);
+93:         list.applyComponentOrientation(Ui.RTL);
+94:         Runnable toggle = () -> {
+95:             int i = list.getSelectedIndex();
+96:             if (i < 0) return;
+97:             if (!hid.remove(ord.get(i))) hid.add(ord.get(i));
+98:             fill.run();
+99:         };
+100:         list.addMouseListener(new java.awt.event.MouseAdapter() {
+101:             @Override public void mouseClicked(java.awt.event.MouseEvent e) {
+102:                 if (e.getClickCount() == 2) toggle.run();
+103:             }
+104:         });
+105:         list.addKeyListener(new java.awt.event.KeyAdapter() {
+106:             @Override public void keyPressed(java.awt.event.KeyEvent e) {
+107:                 if (e.getKeyCode() == java.awt.event.KeyEvent.VK_SPACE) toggle.run();
+108:             }
+109:         });
+110:         JPanel c = Ui.column();
+111:         c.add(Ui.para("اختر ما يظهر في الصفحة الرئيسية ورتّبه. (مسافة أو نقرتان: إظهار/إخفاء)", 13.5f, Ui.muted, 420));
+112:         c.add(Ui.gap(6));
+113:         JScrollPane sp = new JScrollPane(list);
+114:         sp.setPreferredSize(new Dimension(420, 340));
+115:         c.add(sp);
+116:         c.add(Ui.gap(6));
+117:         c.add(Ui.flow(Ui.ghost("إظهار / إخفاء", e -> toggle.run()), Ui.ghost("↑ أعلى", e -> {
+118:             int i = list.getSelectedIndex();
+119:             if (i > 0) {
+120:                 Collections.swap(ord, i, i - 1);
+121:                 list.setSelectedIndex(i - 1);
+122:                 fill.run();
+123:             }
+124:         }), Ui.ghost("↓ أسفل", e -> {
+125:             int i = list.getSelectedIndex();
+126:             if (i >= 0 && i < ord.size() - 1) {
+127:                 Collections.swap(ord, i, i + 1);
+128:                 list.setSelectedIndex(i + 1);
+129:                 fill.run();
+130:             }
+131:         }), Ui.ghost("الافتراضي", e -> {
+132:             ord.clear();
+133:             for (String[] x : WIDGETS) ord.add(x[0]);
+134:             hid.clear();
+135:             hid.addAll(Arrays.asList(DEFAULT_HIDDEN.split(",")));
+136:             fill.run();
+137:         })));
+138:         if (!Ui.form(this, "تخصيص الصفحة الرئيسية", Ui.rtl(c), "حفظ")) return;
+139:         db.setSettingQuiet("desk_home_order", String.join(",", ord));
+140:         db.setSettingQuiet("desk_home_hidden", String.join(",", hid));
+141:         refresh();
+142:     }
+143: 
+144:     String mny(String s) { return app.hidden() ? "••••" : s; }
+145: 
+146:     void totals(Map<String, Integer> dec) {
+147:         // إجمالي ما لك وما عليك
+148:         Map<String, long[]> tot = new TreeMap<>();
+149:         for (Map<String, Long> m : db.officeBalances().values())
+150:             for (Map.Entry<String, Long> e : m.entrySet()) {
+151:                 long[] x = tot.computeIfAbsent(e.getKey(), k -> new long[2]);
+152:                 if (e.getValue() > 0) x[0] += e.getValue();
+153:                 else x[1] -= e.getValue();
+154:             }
+155:         JPanel cards = new JPanel(new GridLayout(0, 3, 12, 12));
+156:         cards.setOpaque(false);
+157:         cards.setAlignmentX(Component.RIGHT_ALIGNMENT);
+158:         for (Map.Entry<String, long[]> e : tot.entrySet()) {
+159:             if (e.getValue()[0] == 0 && e.getValue()[1] == 0) continue;
+160:             int d = dec.getOrDefault(e.getKey(), 2);
+161:             Ui.Card c = Ui.card();
+162:             c.add(Ui.label(e.getKey(), 15, Ui.goldInk, true));
+163:             c.add(Ui.gap(4));
+164:             c.add(Ui.label("لك: " + (app.hidden() ? "••••" : Model.fmt(e.getValue()[0], d)), 15, Ui.green, true));
+165:             c.add(Ui.label("عليك: " + (app.hidden() ? "••••" : Model.fmt(e.getValue()[1], d)), 15, Ui.red, true));
+166:             long net = e.getValue()[0] - e.getValue()[1];
+167:             c.add(Ui.label("الصافي: " + (app.hidden() ? "••••" : Model.bal(net, d)), 13, Ui.muted, false));
+168:             cards.add(c);
+169:         }
+170:         if (cards.getComponentCount() > 0) {
+171:             add(Ui.heading("أرصدة كل المكاتب"));
+172:             space(8);
+173:             add(cards);
+174:             space(16);
+175:         }
+176: 
+177:     }
+178: 
+179:     void usd(Map<String, Integer> dec) {
+180:         if (!can(Auth.Perm.VIEW)) return;
+181:         Ledger.Valuation v = Ledger.value(Ledger.totals(db.officeBalances()), db.usdRates(), dec);
+182:         if (v.receivableUsd.signum() == 0 && v.payableUsd.signum() == 0) return;
+183:         Ui.Card c = Ui.card();
+184:         c.add(Ui.row(Ui.heading("التقويم التقريبي بالدولار"), Box.createHorizontalGlue(), Ui.ghost("أسعار الصرف", e -> app.go("settings"))));
+185:         JPanel g = new JPanel(new GridLayout(1, 3, 12, 0));
+186:         g.setOpaque(false);
+187:         g.setAlignmentX(Component.RIGHT_ALIGNMENT);

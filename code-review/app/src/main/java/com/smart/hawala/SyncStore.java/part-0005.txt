@@ -1,0 +1,160 @@
+616:                     while (q.moveToNext()) cand.add(new Object[]{q.getLong(0), q.getString(1)});
+617:                 }
+618:                 cand.sort((x, y) -> {
+619:                     int k = ((String) x[1]).compareTo((String) y[1]);
+620:                     return k != 0 ? k : Long.compare((Long) x[0], (Long) y[0]);
+621:                 });
+622:                 for (int j = 1; j < cand.size(); j++) {
+623:                     long loser = (Long) cand.get(j)[0];
+624:                     conflict(d, "EDIT_TWICE", "tx", "" + loser, "عُدّلت الحركة " + g + " من جهازين؛ بقي التعديل الأسبق (" + cand.get(0)[0] + ") وأُلغي هذا", fromDev);
+625:                     res.conflicts++;
+626:                     if (myPrefix > 0 && (loser >> 32) == myPrefix) res.loseMine.add(loser);
+627:                 }
+628:             }
+629:         }
+630:         res.newTx.addAll(insertedTx);
+631:         // 10.2: حركة وصلت تشبه حركة سجّلها جهاز آخر (المكتب والمبلغ والعملة والاسم نفسها خلال يوم ونصف): تكرار محتمل للمراجعة
+632:         for (long id : insertedTx) {
+633:             Model.Tx t = Db.txOn(d, id);
+634:             if (t == null || !(t.isActive() || t.isPending())) continue;
+635:             for (Model.Tx o : db.similarTx(d, t, 36 * 3600000L)) {
+636:                 if ((o.id >> 32) == (id >> 32) && (id >> 32) != 0) continue;
+637:                 long x = Math.min(id, o.id), y = Math.max(id, o.id);
+638:                 if (dupOk(d, x, y)) continue;
+639:                 conflict(d, "DUPLICATE", "tx", x + "|" + y, "حركتان متشابهتان من جهازين: " + t.person + " — " + t.amount + " " + t.currency, fromDev);
+640:                 res.conflicts++;
+641:                 res.dupTx++;
+642:             }
+643:         }
+644:         // حركات وصلت بتاريخ داخل فترة مقفلة: تُقبل (وقعت فعلًا) وتُعلَّم للمراجعة
+645:         long lock = 0;
+646:         try (Cursor c = d.rawQuery("SELECT v FROM settings WHERE k='lock_before'", null)) {
+647:             if (c.moveToFirst() && c.getString(0) != null) lock = Long.parseLong(c.getString(0).trim());
+648:         } catch (Exception ignored) {
+649:             // بلا إقفال
+650:         }
+651:         if (lock > 0) for (long id : insertedTx) {
+652:             try (Cursor c = d.rawQuery("SELECT created_at FROM tx WHERE id=" + id, null)) {
+653:                 if (c.moveToFirst() && c.getLong(0) < lock) {
+654:                     conflict(d, "LATE", "tx", "" + id, "حركة بتاريخ داخل فترة مقفلة وصلت من جهاز آخر", fromDev);
+655:                     res.conflicts++;
+656:                 }
+657:             }
+658:         }
+659:         return res;
+660:     }
+661: 
+662:     /** 10.2: «ليستا مكررتين» قرار يُزامَن (إعداد) فلا يُسأل عنه على الأجهزة الأخرى. */
+663:     static boolean dupOk(SQLiteDatabase d, long x, long y) {
+664:         try (Cursor c = d.rawQuery("SELECT 1 FROM settings WHERE k=?", new String[]{"dupok_" + x + "_" + y})) {
+665:             return c.moveToFirst();
+666:         }
+667:     }
+668: 
+669:     static Set<String> fkViolations(SQLiteDatabase d) {
+670:         Set<String> s = new HashSet<>();
+671:         try (Cursor c = d.rawQuery("PRAGMA foreign_key_check", null)) {
+672:             while (c.moveToNext()) s.add(c.getString(0) + ":" + c.getLong(1));
+673:         }
+674:         return s;
+675:     }
+676: 
+677:     private static boolean skippedEntry(JSONArray ops, long entryId) {
+678:         // القيد العكسي المكرر يأتي في الحزمة نفسها قبل سطوره
+679:         for (int i = 0; i < ops.length(); i++) {
+680:             JSONObject o = ops.optJSONObject(i);
+681:             if (o != null && "journal_entries".equals(o.optString("t")) && ("" + entryId).equals(o.optString("k"))) return true;
+682:         }
+683:         return false;
+684:     }
+685: 
+686:     /** صورة الصف ← قيم محلية (تشفير الحقول الحساسة بمفتاح هذا الجهاز، وكتابة الصورة المرفقة في مجلده). */
+687:     static ContentValues values(Db db, SQLiteDatabase d, String table, JSONObject r, Map<String, Set<String>> cache) throws Exception {
+688:         Set<String> local = columns(d, table, cache);
+689:         List<String> sens = Db.SENSITIVE.get(table);
+690:         ContentValues v = new ContentValues();
+691:         java.util.Iterator<String> it = r.keys();
+692:         while (it.hasNext()) {
+693:             String col = it.next();
+694:             if (col.startsWith("_") || !local.contains(col.toLowerCase(Locale.US))) continue;
+695:             Object val = r.get(col);
+696:             if (val == JSONObject.NULL) v.putNull(col);
+697:             else if (val instanceof Number) {
+698:                 if (val instanceof Double || val instanceof Float || val instanceof java.math.BigDecimal) {
+699:                     double dv = ((Number) val).doubleValue();
+700:                     if (dv == Math.rint(dv) && Math.abs(dv) < 9.0E15) v.put(col, (long) dv);
+701:                     else v.put(col, dv);
+702:                 } else v.put(col, ((Number) val).longValue());
+703:             } else if (val instanceof Boolean) v.put(col, ((Boolean) val) ? 1L : 0L);
+704:             else {
+705:                 String sv = String.valueOf(val);
+706:                 if (sv.startsWith("b64:")) v.put(col, Base64.getDecoder().decode(sv.substring(4)));
+707:                 else if (table.equals("settings") && col.equals("v") && Db.ENCRYPTED_SETTINGS.contains(r.optString("k"))) v.put(col, Crypto.enc(sv));
+708:                 else v.put(col, sens != null && sens.contains(col) ? Crypto.enc(sv) : sv);
+709:             }
+710:         }
+711:         if (table.equals("attachments")) {
+712:             String path = null;
+713:             try (Cursor c = d.rawQuery("SELECT path FROM attachments WHERE id=?", new String[]{"" + r.getLong("id")})) {
+714:                 if (c.moveToFirst()) path = c.getString(0);
+715:             }
+716:             if (path != null && !new File(path).isFile() && db.attachmentFile(path).isFile()) path = db.attachmentFile(path).getAbsolutePath();
+717:             if (path == null || !new File(path).isFile()) {
+718:                 if (!r.has("_file")) return null;
+719:                 File dir = db.evidenceDir();
+720:                 if (!dir.exists() && !dir.mkdirs()) throw new IOException("تعذر إنشاء مجلد الصور");
+721:                 File f = new File(dir, UUID.randomUUID() + ".evd");
+722:                 try (FileOutputStream o = new FileOutputStream(f)) {
+723:                     o.write(Crypto.encBytes(Base64.getDecoder().decode(r.getString("_file"))));
+724:                     o.getFD().sync();
+725:                 }
+726:                 path = f.getAbsolutePath();
+727:             }
+728:             v.put("path", path);
+729:         }
+730:         return v;
+731:     }
+732: 
+733:     // ===================================================================================
+734:     // بصمة الدفتر: تتطابق على كل الأجهزة التي استلمت الحزم نفسها
+735:     // ===================================================================================
+736: 
+737:     static String digest(SQLiteDatabase d) {
+738:         StringBuilder b = new StringBuilder();
+739:         String[] qs = {
+740:                 "SELECT office_id,currency,SUM(debit_minor-credit_minor) FROM journal_lines WHERE account='OFFICE' GROUP BY office_id,currency ORDER BY office_id,currency",
+741:                 "SELECT box_id,currency,SUM(CASE WHEN status='ACTIVE' THEN dir*amount_minor ELSE 0 END),COUNT(*) FROM cash_moves GROUP BY box_id,currency ORDER BY box_id,currency",
+742:                 "SELECT client_id,currency,SUM(CASE WHEN status='ACTIVE' THEN dir*amount_minor ELSE 0 END),COUNT(*) FROM client_moves GROUP BY client_id,currency ORDER BY client_id,currency",
+743:                 "SELECT status,COUNT(*) FROM tx GROUP BY status ORDER BY status",
+744:                 "SELECT COUNT(*) FROM offices"};
+745:         for (String q : qs) {
+746:             try (Cursor c = d.rawQuery(q, null)) {
+747:                 while (c.moveToNext()) {
+748:                     for (int i = 0; i < c.getColumnCount(); i++) b.append(c.isNull(i) ? "" : c.getString(i)).append(',');
+749:                     b.append(';');
+750:                 }
+751:             }
+752:             b.append('|');
+753:         }
+754:         return SyncCrypto.hex(SyncCrypto.sha256(b.toString().getBytes(StandardCharsets.UTF_8))).substring(0, 32);
+755:     }
+756: 
+757:     static Map<String, Long> cursors(SQLiteDatabase d) {
+758:         Map<String, Long> m = new TreeMap<>();
+759:         try (Cursor c = d.rawQuery("SELECT dev,seq FROM sync_cursor", null)) {
+760:             while (c.moveToNext()) m.put(c.getString(0), c.getLong(1));
+761:         }
+762:         return m;
+763:     }
+764: 
+765:     static List<String[]> openConflicts(SQLiteDatabase d) {
+766:         List<String[]> out = new ArrayList<>();
+767:         try (Cursor c = d.rawQuery("SELECT id,created_at,kind,tbl,rid,detail,dev FROM sync_conflicts WHERE resolved=0 AND kind<>'DUPLICATE' ORDER BY created_at DESC LIMIT 200", null)) {
+768:             while (c.moveToNext()) out.add(new String[]{c.getString(0), c.getString(1), c.getString(2), c.getString(3), c.getString(4), c.getString(5), c.getString(6)});
+769:         }
+770:         return out;
+771:     }
+772: 
+773:     /** 10.18: كل التنبيهات بتاريخها (المفتوح وما عُلّم «تمت») لسجل الإشعارات؛ العمود الأخير resolved. */
+774:     static List<String[]> allConflicts(SQLiteDatabase d, int limit) {
+775:         List<String[]> out = new ArrayList<>();

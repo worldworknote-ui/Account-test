@@ -1,0 +1,50 @@
+1: package android.view;
+2: 
+3: import java.util.concurrent.CopyOnWriteArrayList;
+4: 
+5: public final class ViewTreeObserver {
+6:     public interface OnGlobalLayoutListener { void onGlobalLayout(); }
+7:     public interface OnPreDrawListener { boolean onPreDraw(); }
+8:     public interface OnScrollChangedListener { void onScrollChanged(); }
+9:     public interface OnGlobalFocusChangeListener { void onGlobalFocusChanged(View o, View n); }
+10:     public interface OnWindowFocusChangeListener { void onWindowFocusChanged(boolean has); }
+11:     public interface OnDrawListener { void onDraw(); }
+12:     public interface OnTouchModeChangeListener { void onTouchModeChanged(boolean t); }
+13:     public interface OnWindowAttachListener { void onWindowAttached(); void onWindowDetached(); }
+14: 
+15:     final CopyOnWriteArrayList<OnGlobalLayoutListener> layout = new CopyOnWriteArrayList<>();
+16:     final CopyOnWriteArrayList<OnPreDrawListener> preDraw = new CopyOnWriteArrayList<>();
+17:     final CopyOnWriteArrayList<OnScrollChangedListener> scroll = new CopyOnWriteArrayList<>();
+18:     final CopyOnWriteArrayList<OnGlobalFocusChangeListener> focus = new CopyOnWriteArrayList<>();
+19:     final CopyOnWriteArrayList<OnDrawListener> draw = new CopyOnWriteArrayList<>();
+20: 
+21:     void merge(ViewTreeObserver o) {
+22:         layout.addAll(o.layout); preDraw.addAll(o.preDraw); scroll.addAll(o.scroll); focus.addAll(o.focus); draw.addAll(o.draw);
+23:     }
+24:     public boolean isAlive() { return true; }
+25:     public void addOnGlobalLayoutListener(OnGlobalLayoutListener l) { layout.add(l); }
+26:     public void removeOnGlobalLayoutListener(OnGlobalLayoutListener l) { layout.remove(l); }
+27:     @Deprecated public void removeGlobalOnLayoutListener(OnGlobalLayoutListener l) { layout.remove(l); }
+28:     public void addOnPreDrawListener(OnPreDrawListener l) { preDraw.add(l); }
+29:     public void removeOnPreDrawListener(OnPreDrawListener l) { preDraw.remove(l); }
+30:     public void addOnScrollChangedListener(OnScrollChangedListener l) { scroll.add(l); }
+31:     public void removeOnScrollChangedListener(OnScrollChangedListener l) { scroll.remove(l); }
+32:     public void addOnGlobalFocusChangeListener(OnGlobalFocusChangeListener l) { focus.add(l); }
+33:     public void removeOnGlobalFocusChangeListener(OnGlobalFocusChangeListener l) { focus.remove(l); }
+34:     public void addOnDrawListener(OnDrawListener l) { draw.add(l); }
+35:     public void removeOnDrawListener(OnDrawListener l) { draw.remove(l); }
+36:     public void addOnWindowFocusChangeListener(OnWindowFocusChangeListener l) {}
+37:     public void removeOnWindowFocusChangeListener(OnWindowFocusChangeListener l) {}
+38:     public void addOnTouchModeChangeListener(OnTouchModeChangeListener l) {}
+39:     public void addOnWindowAttachListener(OnWindowAttachListener l) {}
+40: 
+41:     public void dispatchOnGlobalLayout() { for (OnGlobalLayoutListener l : layout) l.onGlobalLayout(); }
+42:     public boolean dispatchOnPreDraw() {
+43:         boolean cancel = false;
+44:         for (OnPreDrawListener l : preDraw) cancel |= !l.onPreDraw();
+45:         return cancel;
+46:     }
+47:     void dispatchScrollChanged() { for (OnScrollChangedListener l : scroll) l.onScrollChanged(); }
+48:     void dispatchFocus(View o, View n) { for (OnGlobalFocusChangeListener l : focus) l.onGlobalFocusChanged(o, n); }
+49:     void dispatchDraw() { for (OnDrawListener l : draw) l.onDraw(); }
+50: }

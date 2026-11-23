@@ -1,0 +1,130 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.SystemTray;
+5: import java.awt.TrayIcon;
+6: import java.util.Map;
+7: 
+8: /** 10.2: إشعار نظام (ويندوز/ماك) عند وصول حركات تحتاج إجراء من الأجهزة الأخرى، مع رسالة داخل البرنامج. */
+9: final class DeskNotify {
+10:     private DeskNotify() {}
+11: 
+12:     private static TrayIcon tray;
+13: 
+14:     /** 10.16: المفتاح العام للإشعارات على هذا الجهاز (كالهاتف). */
+15:     static boolean on(Db db) { return !"0".equals(db.setting("notif_on", "1")); }
+16: 
+17:     static boolean workingHour(Db db) {
+18:         int h = Model.cal().get(java.util.Calendar.HOUR_OF_DAY);
+19:         int from = (int) Math.max(0, Math.min(23, db.settingLong("notif_hour_from", 9))), to = (int) Math.max(1, Math.min(24, db.settingLong("notif_hour_to", 21)));
+20:         return from < to ? h >= from && h < to : h >= from || h < to;
+21:     }
+22: 
+23:     private static String names(java.util.List<Model.Office> l, int max) {
+24:         java.util.List<String> n = new java.util.ArrayList<>();
+25:         for (int i = 0; i < l.size() && i < max; i++) n.add(l.get(i).name);
+26:         return String.join("، ", n) + (l.size() > max ? " و" + (l.size() - max) + " غيرها" : "");
+27:     }
+28: 
+29:     /**
+30:      * 10.16: تذكيرات الهاتف نفسها على الكمبيوتر (مرة في اليوم لكل نوع، داخل ساعات الإشعار): مكاتب بلا حركات منذ يوم،
+31:      * مكاتب لم تُرسل لها مطابقة منذ المدة المحددة، ونسخة احتياطية تأخرت.
+32:      */
+33:     static void check(App app) {
+34:         Db db = app.db;
+35:         if (app.locked || !on(db) || !workingHour(db)) return;
+36:         try {
+37:             long now = Clock.now();
+38:             String today = Model.sdf(new java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US)).format(new java.util.Date(now));
+39:             if (app.can(Auth.Perm.VIEW) && !"0".equals(db.setting("notif_idle", "1")) && !today.equals(db.setting("notif_last_idle", ""))) {
+40:                 java.util.List<Model.Office> idle = db.idleOffices(now);
+41:                 if (!idle.isEmpty()) {
+42:                     show(idle.size() == 1 ? "لم تُسجَّل حركات لمكتب " + idle.get(0).name + " منذ يوم كامل" : "لم تُسجَّل حركات لـ " + idle.size() + " مكاتب منذ يوم كامل", names(idle, 6));
+43:                     db.setSettingQuiet("notif_last_idle", today);
+44:                 }
+45:             }
+46:             if (app.can(Auth.Perm.VIEW) && !"0".equals(db.setting("notif_recon", "1")) && !today.equals(db.setting("notif_last_recon", ""))) {
+47:                 int days = (int) Math.max(1, Math.min(60, db.settingLong("notif_recon_days", 7)));
+48:                 java.util.List<Model.Office> due = db.reconDue(now, days);
+49:                 if (!due.isEmpty()) {
+50:                     show(due.size() == 1 ? "لم تُرسل مطابقة رصيد لمكتب " + due.get(0).name + " منذ " + days + " أيام" : due.size() + " مكاتب لم تُرسل لها مطابقة رصيد منذ " + days + " أيام",
+51:                             names(due, 6));
+52:                     db.setSettingQuiet("notif_last_recon", today);
+53:                 }
+54:             }
+55:             long remind = db.settingLong("desk_backup_remind_days", 3);
+56:             if (remind > 0 && app.can(Auth.Perm.BACKUP) && !today.equals(db.setting("notif_last_backup_remind", ""))) {
+57:                 long last = db.settingLong("last_backup", 0);
+58:                 long days = last == 0 ? Long.MAX_VALUE : (now - last) / 86_400_000L;
+59:                 // وبعد عدد حركات جديدة منذ آخر نسخة (إن حُدّد)
+60:                 long everyTx = db.settingLong("desk_backup_remind_tx", 0), txNow = db.counts().get("tx") == null ? 0 : db.counts().get("tx");
+61:                 long since = Math.max(0, txNow - db.settingLong("last_backup_tx", 0));
+62:                 if (everyTx > 0 && last > 0 && since >= everyTx && days < remind) {
+63:                     show("حان وقت النسخة الاحتياطية", since + " حركة جديدة منذ آخر نسخة احتياطية. (Ctrl+B)");
+64:                     db.setSettingQuiet("notif_last_backup_remind", today);
+65:                 } else if (days >= remind && txNow > 0) {
+66:                     show("حان وقت النسخة الاحتياطية", last == 0 ? "لم تُنشأ نسخة احتياطية على هذا الجهاز بعد. (Ctrl+B)" : "آخر نسخة احتياطية قبل " + days + " يوم. (Ctrl+B)");
+67:                     db.setSettingQuiet("notif_last_backup_remind", today);
+68:                 }
+69:             }
+70:         } catch (Throwable ignored) {
+71:             // التذكير للتنبيه فقط
+72:         }
+73:     }
+74: 
+75:     /** 10.17: إشعار برسائل المدير الجديدة للمستخدم الحالي (مرة لكل رسالة)، وتحديث الرئيسية لتظهر فيها. */
+76:     static void adminMsgs(App app) {
+77:         try {
+78:             if (app.locked) return;
+79:             java.util.List<Db.AdminMsg> l = app.db.adminMsgsToNotify();
+80:             for (Db.AdminMsg m : l) show("رسالة من المدير", m.body);
+81:             if (!l.isEmpty() && "home".equals(app.current)) app.views.get("home").refresh();
+82:         } catch (Throwable ignored) {
+83:             // الإشعار للتنبيه فقط
+84:         }
+85:     }
+86: 
+87:     static void show(String title, String text) {
+88:         Ui.toast(title + " — " + text.replace('\n', ' '));
+89:         if (App.instance != null) App.instance.db.logNotif(title, text);   // 10.18: يبقى في سجل الإشعارات
+90:         if (App.instance != null && !on(App.instance.db)) return;
+91:         try {
+92:             if (!SystemTray.isSupported()) return;
+93:             if (tray == null) {
+94:                 tray = new TrayIcon(Main.appIcon(64), "المحاسب الذكي");
+95:                 tray.setImageAutoSize(true);
+96:                 SystemTray.getSystemTray().add(tray);
+97:             }
+98:             tray.displayMessage(title, text, TrayIcon.MessageType.INFO);
+99:         } catch (Throwable ignored) {
+100:             // الرسالة داخل البرنامج تكفي
+101:         }
+102:     }
+103: 
+104:     /** بعد مزامنة: حركات بانتظار الاعتماد (لمن يعتمد)، وتكرار محتمل. */
+105:     static void afterSync(App app, SyncEngine.Result r) {
+106:         adminMsgs(app);
+107:         if (r == null || r.newTx.isEmpty() && r.dupTx == 0 && r.review() == 0 && r.news.isEmpty()) return;
+108:         Db db = app.db;
+109:         boolean approver = !db.usersEnabled() || app.can(Auth.Perm.APPROVE);
+110:         int pend = 0;
+111:         String first = "";
+112:         Map<Long, String> names = db.officeNames();
+113:         for (long id : r.newTx) {
+114:             Model.Tx t = db.tx(id);
+115:             if (t == null || !t.isPending()) continue;
+116:             if (pend++ == 0) first = (t.userName.isEmpty() ? "" : t.userName + ": ") + Model.fmt(t.amount, db.decimals(t.currency)) + " " + t.currency + " — " + Model.nz(names.get(t.officeId));
+117:         }
+118:         if (approver && pend > 0 && !"0".equals(db.setting("notif_sync_pending", "1"))) show(pend == 1 ? "حركة بانتظار اعتمادك" : pend + " حركات بانتظار اعتمادك", first);
+119:         if (r.dupTx > 0 && approver) show("حركات قد تكون مكررة", r.dupTx + " زوج حركات متشابهة من جهازين — راجعها من «المزامنة».");
+120:         // 10.16: تعارضات المزامنة وتنبيهاتها، ودخول جهاز أو خروجه
+121:         boolean watcher = approver || Auth.isAdmin(SmartApp.currentUser);
+122:         if (r.review() > 0 && watcher && !"0".equals(db.setting("notif_sync_review", "1"))) {
+123:             java.util.List<String[]> cs = SyncEngine.conflicts(db);
+124:             show(r.review() == 1 ? "تنبيه من المزامنة بحاجة لمراجعتك" : r.review() + " تنبيهات من المزامنة بحاجة لمراجعتك",
+125:                     cs.isEmpty() ? "راجعها من «المزامنة»." : SyncStore.kindName(cs.get(0)[2]) + ": " + cs.get(0)[5]);
+126:         }
+127:         boolean admin = !db.usersEnabled() || Auth.isAdmin(SmartApp.currentUser);
+128:         if (!r.news.isEmpty() && admin && !"0".equals(db.setting("notif_sync_devices", "1"))) show("أجهزة المزامنة", String.join("\n", r.news));
+129:     }
+130: }

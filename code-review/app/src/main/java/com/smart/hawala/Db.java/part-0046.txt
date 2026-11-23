@@ -1,0 +1,125 @@
+6924:         out.add(sqlCheck(d, "عملات الحركات معرّفة",
+6925:                 "SELECT DISTINCT l.currency FROM journal_lines l LEFT JOIN currencies c ON c.code=l.currency WHERE c.code IS NULL", "عملات غير معرّفة"));
+6926:         // 9.0: صندوق المكتب
+6927:         out.add(sqlCheck(d, "حركات الصندوق صالحة (مبالغ موجبة واتجاه صحيح)",
+6928:                 "SELECT id FROM cash_moves WHERE amount_minor<=0 OR dir NOT IN (1,-1) OR fee_minor<0", "حركات غير صالحة"));
+6929:         out.add(sqlCheck(d, "حركات الصندوق المرتبطة تطابق حركات مكاتبها (المكتب والمبلغ والعملة والاتجاه)",
+6930:                 "SELECT m.id FROM cash_moves m LEFT JOIN tx t ON t.id=m.tx_id WHERE m.tx_id IS NOT NULL AND m.status='ACTIVE' AND (t.id IS NULL OR t.office_id<>m.office_id"
+6931:                         + " OR t.amount_minor<>m.amount_minor OR t.currency<>m.currency OR (m.dir=1 AND t.type<>?) OR (m.dir=-1 AND t.type<>?) OR t.status='CANCELLED')",
+6932:                 "حركات صندوق لا تطابق حركة مكتبها", new String[]{TYPE_CREDIT, TYPE_DEBIT}));
+6933:         out.add(sqlCheck(d, "ساقا كل صرف عملة في الصندوق موجودتان وبالحالة نفسها",
+6934:                 "SELECT pair_uuid FROM cash_moves WHERE pair_uuid IS NOT NULL AND pair_uuid<>'' GROUP BY pair_uuid HAVING COUNT(*)<>2 OR COUNT(DISTINCT status)<>1",
+6935:                 "صرف غير مكتمل"));
+6936:         // 10.5: العملية المترابطة مع المكاتب (تبديل عملة أو تحويل بين مكتبين) لا تبقى ساقًا بلا أخرى
+6937:         out.add(sqlCheck(d, "ساقا كل تبديل عملة وكل تحويل بين مكتبين موجودتان وبالحالة نفسها",
+6938:                 "SELECT pair_uuid FROM tx WHERE pair_uuid IS NOT NULL AND pair_uuid<>'' GROUP BY pair_uuid HAVING COUNT(*)<>2 OR COUNT(DISTINCT status)<>1",
+6939:                 "عملية مترابطة غير مكتملة"));
+6940:         // 10.7: حركات بين مكتبين سُجّلت في 10.5–10.6 بالاتجاه المعكوس (طالب الحركة «علينا»): الساق الأولى (طالب الحركة) دائنة
+6941:         out.add(sqlCheck(d, "الحركات بين مكتبين باتجاهها الصحيح (طالب الحركة «لنا» والمنفّذ «علينا»)",
+6942:                 "SELECT t.id FROM tx t WHERE t.fx_rate=? AND t.status IN ('ACTIVE','PENDING') AND t.type=? AND t.id=(SELECT MIN(x.id) FROM tx x WHERE x.pair_uuid=t.pair_uuid)",
+6943:                 "سُجّلت بالاتجاه القديم المعكوس؛ ألغِ كلًّا منها وسجّلها من جديد", new String[]{Model.TRANSFER_MARK, TYPE_CREDIT}));
+6944:         // 10.5 (§7): التحقق على حركات موجودة، ومكاتب المحاسبين موجودة
+6945:         out.add(sqlCheck(d, "كل تحقق «تم التحقق» على حركة موجودة",
+6946:                 "SELECT k.uuid FROM tx_checks k LEFT JOIN tx t ON t.id=k.tx_id WHERE t.id IS NULL", "تحقق بلا حركة"));
+6947:         out.add(sqlCheck(d, "مكاتب المحاسبين موجودة",
+6948:                 "SELECT u.office_id FROM user_offices u LEFT JOIN offices o ON o.id=u.office_id WHERE o.id IS NULL", "مكاتب محذوفة ما زالت مخصصة"));
+6949:         // 10.0: كل حركة صندوق في صندوق موجود
+6950:         out.add(sqlCheck(d, "حركات الصندوق في صناديق موجودة",
+6951:                 "SELECT m.id FROM cash_moves m LEFT JOIN cash_boxes b ON b.id=m.box_id WHERE b.id IS NULL", "حركات بلا صندوق"));
+6952:         // 9.0.1: حسابات العملاء
+6953:         out.add(sqlCheck(d, "حركات حسابات العملاء صالحة ومرتبطة بعملاء موجودين",
+6954:                 "SELECT m.id FROM client_moves m LEFT JOIN cash_clients c ON c.id=m.client_id WHERE c.id IS NULL OR m.amount_minor<=0 OR m.dir NOT IN (1,-1)", "حركات عملاء غير صالحة"));
+6955:         out.add(sqlCheck(d, "كل حركة نقدية لعميل تطابق حركة صندوقها (الحالة والاتجاه)",
+6956:                 "SELECT m.id FROM client_moves m LEFT JOIN cash_moves x ON x.uuid=m.cash_uuid WHERE m.kind='CASH' AND (x.id IS NULL OR x.status<>m.status OR x.dir=m.dir OR x.client_id IS NULL OR x.client_id<>m.client_id)",
+6957:                 "حركات عملاء لا تطابق الصندوق"));
+6958:         out.add(sqlCheck(d, "ساقا كل تبديل في حسابات العملاء موجودتان وبالحالة نفسها",
+6959:                 "SELECT pair_uuid FROM client_moves WHERE pair_uuid IS NOT NULL AND pair_uuid<>'' GROUP BY pair_uuid HAVING COUNT(*)<>2 OR COUNT(DISTINCT status)<>1",
+6960:                 "تبديل غير مكتمل"));
+6961:         int missing = 0, broken = 0, total = 0;
+6962:         List<String> samples = new ArrayList<>();
+6963:         try (Cursor c = d.rawQuery("SELECT id,path FROM attachments ORDER BY id DESC", null)) {
+6964:             while (c.moveToNext()) {
+6965:                 total++;
+6966:                 File f = attachmentFile(c.getString(1));
+6967:                 if (!f.exists()) {
+6968:                     missing++;
+6969:                     if (samples.size() < 5) samples.add("" + c.getLong(0));
+6970:                     continue;
+6971:                 }
+6972:                 if (!full && total > 10) continue;
+6973:                 try {
+6974:                     Crypto.decBytes(readAll(f));
+6975:                 } catch (Throwable t) {
+6976:                     broken++;
+6977:                     if (samples.size() < 5) samples.add("" + c.getLong(0));
+6978:                 }
+6979:             }
+6980:         }
+6981:         out.add(new Check(missing + broken == 0, "الصور موجودة وقابلة للفتح (" + total + ")",
+6982:                 missing + broken == 0 ? "" : ("مفقودة: " + missing + "، تالفة: " + broken + " — أمثلة: " + samples)));
+6983:         int bad = 0;
+6984:         try (Cursor c = d.rawQuery("SELECT name FROM offices UNION ALL SELECT person FROM tx UNION ALL SELECT description FROM tx", null)) {
+6985:             while (c.moveToNext()) {
+6986:                 try {
+6987:                     Crypto.decStrict(c.getString(0));
+6988:                 } catch (Exception e) {
+6989:                     bad++;
+6990:                 }
+6991:             }
+6992:         }
+6993:         out.add(new Check(bad == 0, "النصوص المشفّرة قابلة للقراءة", bad == 0 ? "" : (bad + " حقل لا يمكن فكه على هذا الهاتف")));
+6994:         try {
+6995:             AuditChain.Result ar = full ? verifyAudit() : verifyAuditSince();
+6996:             out.add(new Check(ar.intact(), "سجل العمليات متسلسل لم يُعدَّل (" + ar.ok + " سطر" + (ar.legacy > 0 ? "، و" + ar.legacy + " قبل 8.0" : "") + ")",
+6997:                     ar.intact() ? "" : ar.problem + (ar.brokenAt > 0 ? " — عند السطر " + ar.brokenAt : "")));
+6998:         } catch (Exception e) {
+6999:             out.add(new Check(false, "سجل العمليات متسلسل", "تعذر الفحص: " + e.getMessage()));
+7000:         }
+7001:         return out;
+7002:     }
+7003: 
+7004:     /**
+7005:      * 8.0 (ت1): فحص تلقائي في الخلفية (بعد كل نسخة، وبعد الاستعادة، وأول فتح في اليوم). النتيجة لشارة الرئيسية
+7006:      * ولوحة الاعتمادية: health_status = «ok» أو عدد الملاحظات وعناوينها.
+7007:      */
+7008:     /** 12.7: فحص واحد في وقت واحد (كان «synchronized» على القاعدة كلها فيحجز decimals() عن الشاشة طوال الفحص). */
+7009:     private static final java.util.concurrent.atomic.AtomicBoolean HEALTH_RUNNING = new java.util.concurrent.atomic.AtomicBoolean();
+7010: 
+7011:     public String runHealthAuto() {
+7012:         if (!HEALTH_RUNNING.compareAndSet(false, true)) return setting("health_status", "");
+7013:         List<Check> cs;
+7014:         DbCipher.preferReader(true);
+7015:         try {
+7016:             cs = healthCheck(false);
+7017:         } finally {
+7018:             DbCipher.preferReader(false);
+7019:             HEALTH_RUNNING.set(false);
+7020:         }
+7021:         StringBuilder bad = new StringBuilder();
+7022:         int n = 0;
+7023:         for (Check c : cs) {
+7024:             if (c.ok) continue;
+7025:             n++;
+7026:             if (bad.length() > 0) bad.append("؛ ");
+7027:             bad.append(c.title);
+7028:         }
+7029:         String st = n == 0 ? "ok" : n + "|" + bad;
+7030:         setSettingQuiet("health_status", st);
+7031:         setSettingQuiet("health_last", "" + Clock.now());
+7032:         if (n > 0) audit("HEALTH_PROBLEM", "health", n, bad.toString());
+7033:         return st;
+7034:     }
+7035: 
+7036:     private static Check sqlCheck(SQLiteDatabase d, String title, String sql, String label) { return sqlCheck(d, title, sql, label, null); }
+7037: 
+7038:     private static Check sqlCheck(SQLiteDatabase d, String title, String sql, String label, String[] args) {
+7039:         List<String> bad = new ArrayList<>();
+7040:         int n = 0;
+7041:         try (Cursor c = d.rawQuery(sql, args)) {
+7042:             while (c.moveToNext()) {
+7043:                 n++;
+7044:                 if (bad.size() < 5) bad.add(c.getString(0));
+7045:             }
+7046:         } catch (Exception e) {
+7047:             return new Check(false, title, "تعذر الفحص: " + e.getMessage());
+7048:         }

@@ -1,0 +1,179 @@
+196:                     if (parsed.table(e.getKey()).size() != e.getValue()) {
+197:                         throw new SecureStreams.CorruptBackupException("عدد صفوف " + e.getKey() + " بعد الفك لا يطابق الأصل");
+198:                     }
+199:                 }
+200:                 if (parsed.attachments.size() != expected.attachments) {
+201:                     throw new SecureStreams.CorruptBackupException("عدد الصور بعد الفك لا يطابق الأصل");
+202:                 }
+203:             }
+204:             BackupFormat.Report r = BackupFormat.validate(parsed);
+205:             if (!r.ok()) throw new SecureStreams.CorruptBackupException("فشل فحص محتوى النسخة: " + r.errors.get(0));
+206:         } finally {
+207:             if (parsed != null) BackupFormat.discardSpill(parsed);
+208:             Snapshot.deleteTree(spill);
+209:         }
+210:     }
+211: 
+212:     /** نتيجة تمرين الاستعادة (ت6). */
+213:     public static final class DrillResult {
+214:         public boolean ok, wrongPassword;
+215:         public String message = "";
+216:         public long offices, tx, attachments, newerTx;
+217:     }
+218: 
+219:     /**
+220:      * 8.0 (ت6): يفك النسخة كاملة (الصور تُفك وتُعد دون حفظ، والجداول الكبيرة في ملف مؤقت مشفّر) ويشغّل فحص الاستعادة
+221:      * نفسه، دون أي تغيير في البيانات. «النسخة التي لم تُجرَّب استعادتها لا تُعدّ نسخة».
+222:      */
+223:     public static DrillResult drill(Context ctx, File f, char[] password, Progress p) {
+224:         DrillResult r = new DrillResult();
+225:         File spill = new File(ctx.getCacheDir(), "drill-spill");
+226:         BackupFormat.Parsed parsed = null;
+227:         final long[] att = {0};
+228:         BackupFormat.AttachmentStore counting = new BackupFormat.AttachmentStore() {
+229:             @Override public Object store(long id, InputStream data) throws IOException {
+230:                 byte[] b = new byte[16384];
+231:                 while (data.read(b) > 0) { /* الصورة تُقرأ كاملة ويُتحقق من بصمتها */ }
+232:                 att[0]++;
+233:                 return id;
+234:             }
+235: 
+236:             @Override public void discard(Object handle) { /* لا شيء محفوظ */ }
+237:         };
+238:         try (InputStream in = new BufferedInputStream(new FileInputStream(f), 65536)) {
+239:             p.update("جارٍ فك التشفير وقراءة كل الجداول والصور…");
+240:             parsed = BackupFormat.readV5(new SecureStreams.DecryptingInputStream(in, password), counting, spill);
+241:             p.update("جارٍ فحص القيود والعلاقات…");
+242:             BackupFormat.Report rep = BackupFormat.validate(parsed);
+243:             if (!rep.ok()) {
+244:                 r.message = "النسخة تُفك لكنها لا تجتاز الفحص: " + rep.errors.get(0);
+245:                 return r;
+246:             }
+247:             r.offices = rep.offices;
+248:             r.tx = rep.txActive + rep.txCancelled;
+249:             r.attachments = att[0];
+250:             Db db = SmartApp.db;
+251:             if (db != null) r.newerTx = Math.max(0, db.txCount() - r.tx);
+252:             r.ok = true;
+253:         } catch (SecureStreams.WrongPasswordException e) {
+254:             r.wrongPassword = true;
+255:             r.message = "كلمة المرور لا تفتح هذه النسخة. إن نسيتها فلن تستطيع استعادتها: أنشئ نسخة جديدة بكلمة مرور تحفظها.";
+256:         } catch (Throwable t) {
+257:             r.message = "تعذر فك النسخة: " + Ui.friendly(t);
+258:         } finally {
+259:             if (parsed != null) BackupFormat.discardSpill(parsed);
+260:             Snapshot.deleteTree(spill);
+261:         }
+262:         return r;
+263:     }
+264: 
+265:     public static List<File> localBackups(Context c) {
+266:         File[] fs = backupsDir(c).listFiles();
+267:         List<File> l = new ArrayList<>();
+268:         if (fs != null) for (File f : fs) if (f.isFile() && f.getName().endsWith(".sba")) l.add(f);
+269:         java.util.Collections.sort(l, new Comparator<File>() {
+270:             @Override public int compare(File a, File b) { return Long.compare(b.lastModified(), a.lastModified()); }
+271:         });
+272:         return l;
+273:     }
+274: 
+275:     static void pruneLocal(Context c, int keep) {
+276:         List<File> l = localBackups(c);
+277:         for (int i = keep; i < l.size(); i++) l.get(i).delete();
+278:         File[] fs = backupsDir(c).listFiles();
+279:         if (fs != null) for (File f : fs) if (f.getName().endsWith(".tmp")) f.delete();
+280:     }
+281: 
+282:     // ===================================================================================
+283:     // النسخ إلى المكان الذي يختاره المستخدم، مع إعادة القراءة والمطابقة
+284:     // ===================================================================================
+285: 
+286:     public static final class Delivery {
+287:         public boolean verified;
+288:         public String note = "";
+289:         public long size;
+290:     }
+291: 
+292:     public static Delivery copyToUri(Context ctx, File src, Uri target) throws BackupException {
+293:         return copyToUri(ctx, src, target, true);
+294:     }
+295: 
+296:     /**
+297:      * @param deleteBad يحذف الملف الواصل إن لم يطابق الأصل. لا نحذف ملف Google Drive الدائم (يُستبدل كل مرة)،
+298:      *                  لأن حذفه يُبطل الصلاحية الممنوحة عليه ويوقف كل النسخ التالية.
+299:      */
+300:     public static Delivery copyToUri(Context ctx, File src, Uri target, boolean deleteBad) throws BackupException {
+301:         ContentResolver cr = ctx.getContentResolver();
+302:         Delivery d = new Delivery();
+303:         d.size = src.length();
+304:         String srcSha;
+305:         try {
+306:             srcSha = sha256(src);
+307:         } catch (Exception e) {
+308:             throw wrap(Stage.READ, e);
+309:         }
+310:         try {
+311:             OutputStream os = openOut(cr, target);
+312:             try (InputStream in = new FileInputStream(src); OutputStream o = os) {
+313:                 byte[] b = new byte[65536];
+314:                 int n;
+315:                 while ((n = in.read(b)) > 0) o.write(b, 0, n);
+316:                 o.flush();
+317:             }
+318:         } catch (Throwable t) {
+319:             throw wrap(Stage.WRITE, t);
+320:         }
+321:         // إعادة القراءة من المكان المختار: هي الدليل الوحيد على أن الملف وصل كاملًا.
+322:         String gotSha;
+323:         long gotSize;
+324:         try (InputStream in = cr.openInputStream(target)) {
+325:             if (in == null) throw new IOException("null stream");
+326:             MessageDigest md = MessageDigest.getInstance("SHA-256");
+327:             byte[] b = new byte[65536];
+328:             int n;
+329:             long total = 0;
+330:             while ((n = in.read(b)) > 0) {
+331:                 md.update(b, 0, n);
+332:                 total += n;
+333:             }
+334:             gotSha = BackupFormat.hex(md.digest());
+335:             gotSize = total;
+336:         } catch (Throwable t) {
+337:             d.verified = false;
+338:             d.note = "تم إرسال الملف إلى المكان المختار، لكن تعذّرت إعادة قراءته للتحقق (بعض خدمات السحابة ترفع الملف لاحقًا). "
+339:                     + "النسخة محفوظة أيضًا داخل التطبيق ويمكن حفظها مرة أخرى.";
+340:             return d;
+341:         }
+342:         if (gotSize == d.size && srcSha.equalsIgnoreCase(gotSha)) {
+343:             d.verified = true;
+344:             return d;
+345:         }
+346:         if (deleteBad) {
+347:             try {
+348:                 android.provider.DocumentsContract.deleteDocument(cr, target);
+349:             } catch (Throwable ignored) {
+350:                 // قد لا يدعم المزوّد الحذف
+351:             }
+352:         }
+353:         throw new BackupException(Stage.REREAD, "الملف الذي وصل إلى المكان المختار غير مطابق للأصل (الحجم "
+354:                 + gotSize + " بدل " + d.size + "). ربما امتلأت المساحة أو انقطع النقل. لم يُعتمد هذا الملف؛ جرّب مكانًا آخر.", null);
+355:     }
+356: 
+357:     /** بعض مزوّدات الملفات لا تدعم الوضع "wt"؛ نجرب الأوضاع المعروفة بالترتيب. */
+358:     private static OutputStream openOut(ContentResolver cr, Uri u) throws IOException {
+359:         String[] modes = {"wt", "w", "rwt"};
+360:         IOException last = null;
+361:         for (String m : modes) {
+362:             try {
+363:                 ParcelFileDescriptor pfd = cr.openFileDescriptor(u, m);
+364:                 if (pfd != null) return new ParcelFileDescriptor.AutoCloseOutputStream(pfd) {
+365:                     @Override public void close() throws IOException {
+366:                         try {
+367:                             flush();
+368:                             getFD().sync();
+369:                         } catch (Exception ignored) {
+370:                             // بعض المزوّدات (أنابيب) لا تدعم المزامنة
+371:                         }
+372:                         super.close();
+373:                     }
+374:                 };

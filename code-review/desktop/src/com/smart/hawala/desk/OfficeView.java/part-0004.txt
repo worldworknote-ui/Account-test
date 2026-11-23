@@ -1,0 +1,150 @@
+481:                 Set<String> only = new LinkedHashSet<>();
+482:                 for (Map.Entry<String, JCheckBox> e : checks.entrySet()) if (e.getValue().isSelected()) only.add(e.getKey());
+483:                 java.awt.image.BufferedImage im = ReconImage.render(t, o.name, db.setting("office_name", ""), Clock.now(),
+484:                         Reconcile.rows(bal, names, db.decimalsMap(), only, true), Ui.primary);
+485:                 if ("نسخ الصورة".equals(v)) {
+486:                     ReconImage.copy(im);
+487:                     Ui.toast("نُسخت صورة المطابقة؛ الصقها في واتساب (Ctrl+V).");
+488:                 } else {
+489:                     java.io.File f = Export.save(this, db, "مطابقة " + o.name, ".png");
+490:                     if (f != null) {
+491:                         javax.imageio.ImageIO.write(im, "png", f);
+492:                         Ui.toast("حُفظت الصورة: " + f.getName());
+493:                     }
+494:                 }
+495:             } catch (Exception e) {
+496:                 Ui.error(this, e);
+497:             }
+498:             refresh();
+499:             return;
+500:         }
+501:         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(txt), null);
+502:         if ("فتح واتساب".equals(v)) openWhatsApp(this, db, o.phone, txt);
+503:         else Ui.toast("نُسخ النص؛ الصقه في واتساب.");
+504:         refresh();
+505:     }
+506: 
+507:     /** 10.18: أمانات المكتب والمبالغ المجمّدة: المفتوح منها، وزر الإضافة والفك والسجل. */
+508:     void holdsCard(Model.Office o, int w) {
+509:         List<Db.Hold> open = db.holds(o.id, true);
+510:         Ui.Card c = Ui.card();
+511:         List<Component> hb = new ArrayList<>();
+512:         hb.add(Ui.label("أمانات ومبالغ مجمّدة" + (open.isEmpty() ? "" : " (" + open.size() + ")"), 14, Ui.primaryInk, true));
+513:         hb.add(Box.createHorizontalGlue());
+514:         if (can(Auth.Perm.TX_ADD) && o.active) hb.add(Ui.ghost("+ أمانة / تجميد…", e -> addHold(o)));
+515:         hb.add(Ui.ghost("السجل", e -> holdHistory(o)));
+516:         c.add(Ui.row(hb.toArray(new Component[0])));
+517:         if (open.isEmpty()) c.add(Ui.label("لا أمانات ولا مبالغ مجمّدة لهذا المكتب.", 13, Ui.muted, false));
+518:         for (String ln : db.holdLines(o.id)) c.add(Ui.label("• " + (app.hidden() ? ln.replaceAll("[0-9][0-9,.]*", "••••") : ln), 13.5f, Ui.goldInk, true));
+519:         for (final Db.Hold h : open) {
+520:             String t = h.label() + " — " + (app.hidden() ? "••••" : Model.fmt(h.amount, db.decimals(h.currency))) + " " + h.currency + " — " + Model.day(h.at)
+521:                     + (h.by.isEmpty() ? "" : " — " + h.by) + (h.note.isEmpty() ? "" : " — " + h.note);
+522:             JPanel r = Ui.row(Ui.label(Ui.cut(t, 130), 13, Ui.ink, false), Box.createHorizontalGlue());
+523:             if (can(Auth.Perm.TX_ADD)) r.add(Ui.ghost("فكّ", e -> {
+524:                 if (!Ui.confirm(this, "فكّ " + h.label(), "يُعلَّم «" + h.label() + " " + Model.fmt(h.amount, db.decimals(h.currency)) + " " + h.currency
+525:                         + "» كمفكوك ويبقى في السجل. لا يُنشئ أي قيد: إن سُلّم المبلغ فسجّل حركته بنفسك.", "فكّ")) return;
+526:                 try {
+527:                     db.releaseHold(h.uuid);
+528:                     Ui.toast("فُكّ ✓");
+529:                     refresh();
+530:                 } catch (Exception ex) {
+531:                     Ui.error(this, ex);
+532:                 }
+533:             }));
+534:             c.add(r);
+535:         }
+536:         add(c);
+537:         space(10);
+538:     }
+539: 
+540:     void addHold(Model.Office o) {
+541:         List<String> curs = new ArrayList<>(db.officeCurrencies(o.id));
+542:         if (curs.isEmpty()) {
+543:             Ui.toast("أضف عملة للمكتب أولًا");
+544:             return;
+545:         }
+546:         JComboBox<String> cur = Ui.combo(curs.toArray(new String[0]));
+547:         Ui.Seg kind = new Ui.Seg(new String[]{"أمانة منفصلة عن الرصيد", "تجميد جزء من الرصيد"}, null, 0);
+548:         Ui.Seg side = new Ui.Seg(new String[]{"للمكتب عندنا / من «علينا»", "لنا عند المكتب / من «لنا»"}, null, 0);
+549:         Ui.Field amount = Ui.numeric("المبلغ"), note = Ui.field("ملاحظة (اختياري): لمن، ولماذا، حتى متى…");
+550:         JPanel c = Ui.column();
+551:         c.add(Ui.para("الأمانة المنفصلة مبلغ محفوظ لا يدخل في رصيد المكتب ولا في القيود. التجميد يُبقي الرصيد كما هو ويعلّم جزءًا منه «مجمّدًا» فيظهر المتاح. "
+552:                 + "كلاهما يظهر في صفحة المكتب ويمكن إضافته لرسالة المطابقة، ويُفك بضغطة.", 13.5f, Ui.muted, 460));
+553:         c.add(Ui.gap(8));
+554:         c.add(Ui.labeled("النوع", kind));
+555:         c.add(Ui.gap(6));
+556:         c.add(Ui.labeled("الاتجاه", side));
+557:         c.add(Ui.gap(6));
+558:         JPanel g = new JPanel(new GridLayout(1, 2, 12, 0));
+559:         g.setOpaque(false);
+560:         g.setAlignmentX(Component.RIGHT_ALIGNMENT);
+561:         g.add(Ui.labeled("العملة", cur));
+562:         g.add(Ui.labeled("المبلغ", amount));
+563:         c.add(g);
+564:         c.add(Ui.gap(6));
+565:         c.add(Ui.labeled("ملاحظة", note));
+566:         while (Ui.form(this, "أمانة أو تجميد — " + o.name, Ui.rtl(c), "حفظ")) {
+567:             try {
+568:                 String code = (String) cur.getSelectedItem();
+569:                 db.addHold(o.id, code, kind.selected == 0 ? Db.HOLD_TRUST : Db.HOLD_FREEZE, side.selected == 0 ? Db.SIDE_THEIRS : Db.SIDE_OURS,
+570:                         Db.minor(amount.val(), db.decimals(code)), note.val());
+571:                 Ui.toast("حُفظ ✓");
+572:                 refresh();
+573:                 return;
+574:             } catch (Exception ex) {
+575:                 Ui.error(this, ex);
+576:             }
+577:         }
+578:     }
+579: 
+580:     void holdHistory(Model.Office o) {
+581:         List<Db.Hold> all = db.holds(o.id, false);
+582:         DefaultTableModel m = new DefaultTableModel(new Object[]{"التاريخ", "النوع", "المبلغ", "العملة", "أضافه", "الحالة", "ملاحظة"}, 0) {
+583:             @Override public boolean isCellEditable(int r, int cc) { return false; }
+584:         };
+585:         for (Db.Hold h : all) m.addRow(new Object[]{Model.date(h.at), h.label(), Model.fmt(h.amount, db.decimals(h.currency)), h.currency, h.by,
+586:                 h.open() ? "قائم" : "فُكّ " + Model.day(h.releasedAt) + (h.releasedBy.isEmpty() ? "" : " — " + h.releasedBy), h.note});
+587:         JTable t = Ui.table(m);
+588:         Ui.widths(t, 130, 170, 100, 60, 110, 190, 260);
+589:         JScrollPane sp = Ui.tableBox(t);
+590:         sp.setPreferredSize(new Dimension(1000, 420));
+591:         JOptionPane.showMessageDialog(Ui.win(this), sp, "سجل الأمانات والمبالغ المجمّدة — " + o.name, JOptionPane.PLAIN_MESSAGE);
+592:     }
+593: 
+594:     static void openWhatsApp(Component parent, Db db, String phone, String text) {
+595:         try {
+596:             String n = Model.whatsappNumber(phone, db.setting("wa_country", "963"));
+597:             String url = "https://wa.me/" + (n == null ? "" : n) + "?text=" + URLEncoder.encode(text, "UTF-8").replace("+", "%20");
+598:             Desktop.getDesktop().browse(new URI(url));
+599:             Ui.toast("نُسخ النص أيضًا؛ إن لم يظهر في واتساب الصقه.");
+600:         } catch (Exception e) {
+601:             Ui.error(parent, e);
+602:         }
+603:     }
+604: 
+605:     // 10.6: «قص عملات» و«حركة بين مكتبين» صارتا شاشتين كاملتين (FxView وTransferView) بأسلوب «تسجيل حركة».
+606: 
+607:     // ===================================================================================
+608:     // الدمج والحذف
+609:     // ===================================================================================
+610: 
+611:     void merge(Model.Office from) {
+612:         if (!require(Auth.Perm.DELETE)) return;
+613:         List<Model.Office> others = new ArrayList<>();
+614:         for (Model.Office x : db.offices()) if (x.id != from.id) others.add(x);
+615:         if (others.isEmpty()) {
+616:             Ui.toast("لا يوجد مكتب آخر");
+617:             return;
+618:         }
+619:         String[] names = new String[others.size()];
+620:         for (int i = 0; i < names.length; i++) names[i] = others.get(i).name;
+621:         JPanel c = Ui.column();
+622:         JComboBox<String> into = Ui.combo(names);
+623:         c.add(Ui.labeled("ادمج «" + from.name + "» في:", into));
+624:         c.add(Ui.gap(8));
+625:         c.add(Ui.para("تنتقل كل حركات «" + from.name + "» وأرصدته السابقة إلى المكتب المختار كما هي، ويُحذف «" + from.name + "» بعدها فارغًا. "
+626:                 + "الرصيد يصير مجموع الرصيدين، ويُتحقق من ذلك لكل عملة قبل الحفظ. تُحفظ نسخة أمان قبل الدمج للتراجع.", 13, Ui.ink, 420));
+627:         c.add(Ui.gap(8));
+628:         Ui.Field confirm = Ui.field("اكتب اسم «" + from.name + "» للتأكيد");
+629:         c.add(confirm);
+630:         c.setPreferredSize(new Dimension(460, c.getPreferredSize().height));

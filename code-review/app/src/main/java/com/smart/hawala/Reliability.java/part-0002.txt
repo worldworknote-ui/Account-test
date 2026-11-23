@@ -1,0 +1,110 @@
+177:     /** هل تظهر تنبيهات الاعتمادية في الصفحة الرئيسية؟ (الافتراضي نعم) */
+178:     static boolean homeAlerts(Db db) { return !"0".equals(db.setting("rel_home", "1")); }
+179: 
+180:     static void screen(final MainActivity a) {
+181:         a.here(() -> screen(a));
+182:         a.tabbedScreen("اعتمادية التطبيق", a.moreScreen::show, "more");
+183:         List<Item> items = items(a);
+184:         int o = overall(items);
+185:         LinearLayout head = a.card();
+186:         head.addView(a.text("● الاعتمادية: " + word(o), 18, color(a, o), true));
+187:         head.addView(a.text("أخضر = لا شيء مطلوب. أصفر = يُنصح بإجراء. أحمر = افعل الآن قبل أن تحتاج بياناتك.", 13, a.muted, false));
+188:         // 9.0: إظهار تنبيه الاعتمادية في الصفحة الرئيسية أو إخفاؤه (اللوحة هنا تبقى كما هي)
+189:         LinearLayout tr = a.row();
+190:         tr.addView(a.text("إظهار تنبيهات الاعتمادية في الصفحة الرئيسية", 14, a.ink, true), new LinearLayout.LayoutParams(0, -2, 1));
+191:         final android.widget.Switch sw = new android.widget.Switch(a);
+192:         sw.setChecked(homeAlerts(a.db));
+193:         sw.setOnCheckedChangeListener((b, c) -> {
+194:             a.db.setSettingQuiet("rel_home", c ? "1" : "0");
+195:             a.toast(c ? "تظهر تنبيهات الاعتمادية في الرئيسية عند الحاجة" : "أُخفيت تنبيهات الاعتمادية من الرئيسية؛ تجدها هنا دائمًا");
+196:         });
+197:         tr.addView(sw, new LinearLayout.LayoutParams(-2, -2));
+198:         tr.setOnClickListener(v -> sw.toggle());
+199:         head.addView(tr, a.lp(-1, -2, 4));
+200:         for (final Item i : items) {
+201:             LinearLayout c = a.card();
+202:             LinearLayout r = a.row();
+203:             r.addView(a.icon(i.icon, color(a, i.level), 22), new LinearLayout.LayoutParams(a.dp(22), a.dp(22)));
+204:             r.addView(a.text("  " + i.title, 15, a.ink, true), new LinearLayout.LayoutParams(0, -2, 1));
+205:             r.addView(a.text("●", 18, color(a, i.level), true));
+206:             c.addView(r);
+207:             c.addView(a.text(i.detail, 13, a.muted, false));
+208:             if (i.run != null) c.addView(a.smallButton(i.action, i.level == RED ? a.red : a.primary, v -> i.run.run()), a.lp(-2, 40, 4));
+209:         }
+210:     }
+211: 
+212:     static void runHealthNow(final MainActivity a) {
+213:         a.busy("جارٍ فحص البيانات…", p -> a.db.runHealthAuto(), res -> {
+214:             a.toast("ok".equals(res) ? "البيانات سليمة ✓" : "وُجدت ملاحظات: افتح «فحص صحة البيانات».");
+215:             screen(a);
+216:         });
+217:     }
+218: 
+219:     // ===================================================================================
+220:     // تمرين الاستعادة (ت6)
+221:     // ===================================================================================
+222: 
+223:     /** يفك أحدث نسخة محلية كاملة ويفحصها دون أن يلمس البيانات. يجرّب كلمة مرور النسخ التلقائي أولًا. */
+224:     static void drill(final MainActivity a) {
+225:         if (!a.require(Auth.Perm.BACKUP)) return;
+226:         List<File> files = BackupManager.localBackups(a);
+227:         if (files.isEmpty()) {
+228:             new AlertDialog.Builder(a).setTitle("تمرين الاستعادة").setMessage("لا توجد نسخة على هذا الهاتف بعد. أنشئ نسخة أولًا ثم جرّب استعادتها.")
+229:                     .setPositiveButton("نسخة الآن", (d, w) -> a.backupScreen.backupDialog()).setNegativeButton("إغلاق", null).show();
+230:             return;
+231:         }
+232:         final File f = files.get(0);
+233:         String enc = a.db.setting("auto_backup_pw", "");
+234:         char[] auto = null;
+235:         if (!enc.isEmpty()) {
+236:             try {
+237:                 auto = Crypto.decStrict(enc).toCharArray();
+238:             } catch (Exception ignored) {
+239:                 // نطلبها من المستخدم
+240:             }
+241:         }
+242:         if (auto != null) {
+243:             final char[] pw = auto;
+244:             runDrill(a, f, pw, true);
+245:         } else askAndDrill(a, f);
+246:     }
+247: 
+248:     private static void askAndDrill(final MainActivity a, final File f) {
+249:         final EditText p = new EditText(a);
+250:         Ui.secret(p, false);
+251:         p.setHint("كلمة مرور هذه النسخة");
+252:         LinearLayout l = new LinearLayout(a);
+253:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+254:         l.addView(p, new LinearLayout.LayoutParams(-1, -2));
+255:         new AlertDialog.Builder(a).setTitle("تمرين الاستعادة")
+256:                 .setMessage("أحدث نسخة: " + f.getName() + " (" + Model.date(f.lastModified()) + "). اكتب كلمة مرورها: يُفك الملف كاملًا ويُفحص دون تغيير بياناتك.")
+257:                 .setView(l).setPositiveButton("ابدأ", (d, w) -> runDrill(a, f, p.getText().toString().toCharArray(), false))
+258:                 .setNegativeButton("إلغاء", null).show();
+259:     }
+260: 
+261:     private static void runDrill(final MainActivity a, final File f, final char[] pw, final boolean triedAuto) {
+262:         a.busy("جارٍ فك النسخة وفحصها (تمرين، لا يتغير شيء)…", p -> {
+263:             try {
+264:                 return BackupManager.drill(a, f, pw, p);
+265:             } finally {
+266:                 Arrays.fill(pw, '\0');
+267:             }
+268:         }, res -> {
+269:             BackupManager.DrillResult r = (BackupManager.DrillResult) res;
+270:             if (r.wrongPassword && triedAuto) {
+271:                 askAndDrill(a, f);
+272:                 return;
+273:             }
+274:             String status = r.ok ? "ok|نسخة " + Model.date(f.lastModified()) + " تُفتح وتجتاز الفحص: " + r.offices + " مكتب، " + r.tx + " حركة، " + r.attachments + " صورة"
+275:                     : "fail|" + r.message;
+276:             a.db.setSettingQuiet("restore_drill_status", status);
+277:             a.db.setSettingQuiet("restore_drill_at", "" + Clock.now());
+278:             a.db.audit("RESTORE_DRILL", "backup", 0, r.ok ? "ok" : r.message);
+279:             new AlertDialog.Builder(a).setTitle(r.ok ? "التمرين نجح ✓" : "التمرين فشل")
+280:                     .setMessage(r.ok ? "النسخة " + f.getName() + " فُكّت كاملة واجتازت الفحص: " + r.offices + " مكتب، " + r.tx + " حركة، القيود متوازنة، و"
+281:                             + r.attachments + " صورة سليمة. بياناتك لم تتغير." + (r.newerTx > 0 ? "\n\nسُجّلت بعدها " + r.newerTx + " حركة: أنشئ نسخة جديدة." : "")
+282:                             : r.message)
+283:                     .setPositiveButton("حسنًا", (d, w) -> screen(a)).show();
+284:         });
+285:     }
+286: }

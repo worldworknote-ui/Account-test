@@ -1,0 +1,61 @@
+165:         String csv = ReportBuilder.csv(full);
+166:         check(csv.startsWith("﻿") && csv.contains("الخلاصة"), "CSV بترميز يفهمه Excel");
+167:         check(ReportBuilder.csv(single("=HYPERLINK(1)")).contains("\"'=HYPERLINK(1)\""), "CSV لا ينفّذ معادلات من البيانات");
+168:         if (a.length > 0) Files.write(Paths.get(a[0], "custom-report.xlsx"), bo.toByteArray());
+169: 
+170:         if (a.length > 1 && Files.exists(Paths.get(a[1]))) real(Paths.get(a[1]));
+171:         System.out.println(fails == 0 ? "ALL " + passes + " PASSED" : fails + " FAILED of " + (passes + fails));
+172:         if (fails > 0) System.exit(1);
+173:     }
+174: 
+175:     static Report single(String text) {
+176:         Report r = new Report();
+177:         Report.Section s = r.section("x", "x");
+178:         s.col("a", 1, Report.TEXT);
+179:         s.row(Report.NORMAL, text);
+180:         return r;
+181:     }
+182: 
+183:     /** ملف حقيقي: الأثر على الرصيد لكل مكتب = دفتر القيود − الأرصدة السابقة. */
+184:     static void real(Path p) throws Exception {
+185:         System.out.println("== بيانات حقيقية: " + p.getFileName());
+186:         TimeZone.setDefault(TimeZone.getTimeZone("Asia/Damascus"));
+187:         OwnerReports.Input in = OwnerReportsTest.load(p);
+188:         JSONObject j = OwnerReportsTest.lastFile;
+189:         ReportBuilder.Data d = new ReportBuilder.Data();
+190:         d.txs.addAll(in.txs);
+191:         d.openings.addAll(in.openings);
+192:         d.names.putAll(in.names);
+193:         d.decimals.putAll(in.decimals);
+194:         d.now = in.now;
+195:         ReportBuilder.Spec s = new ReportBuilder.Spec();
+196:         s.group = ReportBuilder.G_OFFICE;
+197:         long t0 = System.currentTimeMillis();
+198:         ReportBuilder.Result r = ReportBuilder.compute(s, d);
+199:         Report rep = ReportBuilder.build(s, d, "");
+200:         long ms = System.currentTimeMillis() - t0;
+201:         check(ms < 5000, "تقرير بالمكتب على " + d.txs.size() + " حركة في " + ms + " ms (" + rep.dataRows() + " سطرًا)");
+202:         Map<String, Long> ledger = new HashMap<>();
+203:         JSONArray jl = j.getJSONArray("journal_lines");
+204:         for (int i = 0; i < jl.length(); i++) {
+205:             JSONObject l = jl.getJSONObject(i);
+206:             if (!"OFFICE".equals(l.optString("account"))) continue;
+207:             ledger.merge(l.getLong("office_id") + "|" + l.getString("currency"), l.optLong("debit_minor") - l.optLong("credit_minor"), Long::sum);
+208:         }
+209:         for (OwnerReports.Opening o : d.openings) ledger.merge(o.office + "|" + o.currency, -o.signed, Long::sum);
+210:         ledger.values().removeIf(v -> v == 0);
+211:         Map<String, Long> impact = new HashMap<>();
+212:         for (Map.Entry<String, Map<String, ReportBuilder.Agg>> e : r.groups.entrySet())
+213:             for (Map.Entry<String, ReportBuilder.Agg> c : e.getValue().entrySet()) if (c.getValue().impact() != 0) impact.put(e.getKey() + "|" + c.getKey(), c.getValue().impact());
+214:         check(impact.equals(ledger), "الأثر على الرصيد لكل مكتب وعملة = دفتر القيود (" + ledger.size() + " رصيدًا)");
+215:         ReportBuilder.Spec m = new ReportBuilder.Spec();
+216:         m.group = ReportBuilder.G_MONTH;
+217:         m.group2 = ReportBuilder.G_CURRENCY;
+218:         m.measure = ReportBuilder.M_COUNT;
+219:         m.from = in.now - 365 * DAY;
+220:         ReportBuilder.Result rm = ReportBuilder.compute(m, d);
+221:         long n = 0;
+222:         for (Map<String, ReportBuilder.Agg> c : rm.groups.values()) for (ReportBuilder.Agg x : c.values()) n += x.count;
+223:         check(n == rm.rows.size(), "بالشهر × العملة لآخر 12 شهرًا: " + rm.groups.size() + " شهرًا، " + n + " عملية");
+224:     }
+225: }

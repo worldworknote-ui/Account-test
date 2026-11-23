@@ -1,0 +1,101 @@
+147:             check(res.bubbles.get(2).text.equals("ابو عمر 10250.\nاستلمت") && res.bubbles.get(2).time.equals("22:16"), "الثالثة: سطران عربيان ووقتها");
+148:             check(res.bubbles.get(0).number == 1 && res.bubbles.get(2).number == 3, "الترقيم من الأعلى للأسفل");
+149:         }
+150: 
+151:         System.out.println("== بلا أشكال: أسطر على ارتفاع واحد تبقى رسالة واحدة");
+152:         String noShape = "L\t30\t40\t200\t18\t" + b64("حوالة 500 دولار") + "\n" + "L\t380\t41\t50\t16\t" + b64("12:07") + "\n";
+153:         Bubbles.Result ns = Bubbles.build(Bubbles.parse(noShape), new int[]{0, 0, 600, 400});
+154:         check(ns.bubbles.size() == 1 && ns.bubbles.get(0).time.equals("12:07"), "النص والوقت جنبه رسالة واحدة (" + ns.bubbles.size() + ")");
+155: 
+156:         System.out.println("== بصمة القراءة التلقائية");
+157:         Rectangle in = new Rectangle(0, 0, 500, 420);
+158:         int[] s1 = DeskCapture.signature(im, in, new ArrayList<>());
+159:         int[] s2 = DeskCapture.signature(im, in, new ArrayList<>());
+160:         check(!DeskCapture.changed(s1, s2), "الصورة نفسها: لا تغيير");
+161:         BufferedImage caret = new BufferedImage(im.getWidth(), im.getHeight(), BufferedImage.TYPE_INT_RGB);
+162:         caret.getGraphics().drawImage(im, 0, 0, null);
+163:         caret.getGraphics().fillRect(300, 380, 2, 14);
+164:         check(!DeskCapture.changed(s1, DeskCapture.signature(caret, in, new ArrayList<>())), "وميض مؤشر الكتابة لا يُعدّ تغييرًا");
+165:         BufferedImage scrolled = new BufferedImage(im.getWidth(), im.getHeight(), BufferedImage.TYPE_INT_RGB);
+166:         scrolled.getGraphics().drawImage(im, 0, -60, null);
+167:         check(DeskCapture.changed(s1, DeskCapture.signature(scrolled, in, new ArrayList<>())), "التمرير تغيير حقيقي");
+168:         BufferedImage badge = new BufferedImage(im.getWidth(), im.getHeight(), BufferedImage.TYPE_INT_RGB);
+169:         badge.getGraphics().drawImage(im, 0, 0, null);
+170:         Graphics bg = badge.getGraphics();
+171:         bg.setColor(new Color(0x1F, 0x8A, 0x70));
+172:         for (int i = 0; i < 6; i++) bg.fillRect(20 + i * 70, 40, 28, 28);
+173:         List<Rectangle> mask = new ArrayList<>();
+174:         for (int i = 0; i < 6; i++) mask.add(new Rectangle(20 + i * 70, 40, 28, 28));
+175:         check(!DeskCapture.changed(DeskCapture.signature(im, in, mask), DeskCapture.signature(badge, in, mask)), "أرقامنا فوق الفقاعات لا تُعدّ تغييرًا");
+176: 
+177:         System.out.println("== 12.3: واتساب ماك فاتح: فقاعات لونها قريب جدًا من الخلفية، وفواصل «Fri 6 Nov» و«33 unread messages»");
+178:         Color w3 = new Color(0xF4, 0xF1, 0xEC), d3 = new Color(0xE6, 0xE2, 0xDB), b3 = new Color(0xE9, 0xE5, 0xDE);
+179:         BufferedImage mac = chat(520, 520, w3, d3, false, 2);
+180:         bubble(mac, 2, 190, 10, 120, 24, Color.WHITE, Color.WHITE, 0);
+181:         bubble(mac, 2, 20, 50, 330, 120, b3, new Color(0x11, 0x1B, 0x21), 5);
+182:         bubble(mac, 2, 170, 190, 180, 24, Color.WHITE, Color.WHITE, 0);
+183:         bubble(mac, 2, 20, 230, 300, 66, b3, new Color(0x11, 0x1B, 0x21), 2);
+184:         bubble(mac, 2, 20, 320, 300, 44, b3, new Color(0x11, 0x1B, 0x21), 1);
+185:         List<BubbleShapes.Box> l5 = BubbleShapes.find(px(mac), mac.getWidth(), mac.getHeight(), 2);
+186:         System.out.println("    " + l5);
+187:         check(l5.size() == 5, "الفقاعات الثلاث بلونها القريب من الخلفية والفاصلان كلها أشكال (" + l5.size() + ")");
+188:         StringBuilder m3 = new StringBuilder();
+189:         m3.append("B\t190\t10\t120\t24\t\n").append("L\t205\t14\t90\t16\t").append(b64("Fri 6 Nov")).append('\n');
+190:         m3.append("B\t20\t50\t330\t120\t\n");
+191:         m3.append("L\t40\t56\t260\t16\t").append(b64("~Abo Nour   +40 765 450 476")).append('\n');
+192:         m3.append("L\t60\t78\t270\t18\t").append(b64("مطابقة رصيد")).append('\n');
+193:         m3.append("L\t60\t100\t270\t18\t").append(b64("السلام عليكم ورحمة الله وبركاته")).append('\n');
+194:         m3.append("L\t60\t122\t270\t18\t").append(b64("الرصيد 5000 دولار لكم")).append('\n');
+195:         m3.append("L\t300\t150\t40\t14\t").append(b64("23:30")).append('\n');
+196:         m3.append("B\t170\t190\t180\t24\t\n").append("L\t180\t194\t160\t16\t").append(b64("33 unread messages")).append('\n');
+197:         m3.append("B\t20\t230\t300\t66\t\n").append("L\t30\t236\t260\t16\t").append(b64("~Abo Nour +40 765 450 476")).append('\n');
+198:         m3.append("L\t30\t258\t200\t16\t").append(b64("This message was deleted")).append('\n').append("L\t270\t276\t40\t14\t").append(b64("23:30")).append('\n');
+199:         // سطر عربي خارج كل الأشكال (فقاعة لم يُعرف شكلها): يبقى رسالة ولا يضيع
+200:         m3.append("L\t380\t400\t120\t18\t").append(b64("استلمت 300 يورو")).append('\n').append("L\t460\t420\t40\t14\t").append(b64("23:41")).append('\n');
+201:         m3.append("L\t30\t480\t400\t16\t").append(b64("Message history sent by a group member. Learn more")).append('\n');
+202:         Bubbles.Result r3 = Bubbles.build(Bubbles.parse(m3.toString()), new int[]{0, 0, 520, 520});
+203:         for (Bubbles.Bubble x : r3.bubbles) System.out.println("    " + x.number + ": [" + x.sender + "] " + x.text.replace('\n', '|') + " [" + x.time + "]");
+204:         check(r3.bubbles.size() == 2, "رسالتان فقط: لا رقم لفاصل اليوم ولا «unread» ولا «deleted» ولا «Learn more» (" + r3.bubbles.size() + ")");
+205:         if (r3.bubbles.size() == 2) {
+206:             check(r3.bubbles.get(0).sender.equals("Abo Nour") && r3.bubbles.get(0).text.startsWith("مطابقة رصيد") && r3.bubbles.get(0).time.equals("23:30"),
+207:                     "سطر «~Abo Nour +40…» صار المرسل، والنص العربي كامل ووقته");
+208:             check(r3.bubbles.get(1).text.equals("استلمت 300 يورو") && r3.bubbles.get(1).time.equals("23:41"), "الرسالة العربية خارج الأشكال لم تضع");
+209:         }
+210: 
+211:         System.out.println("== 12.5: إطار ضيق: الفقاعة تملأ عرضه (تلمس اليمين واليسار)، وفقاعة صورة");
+212:         BufferedImage nar = chat(320, 420, w3, d3, false, 2);
+213:         bubble(nar, 2, 0, 20, 320, 150, b3, new Color(0x11, 0x1B, 0x21), 7);
+214:         Graphics2D gm = nar.createGraphics();
+215:         gm.scale(2, 2);
+216:         gm.setColor(b3);
+217:         gm.fillRoundRect(20, 200, 240, 190, 14, 14);
+218:         java.util.Random rr = new java.util.Random(3);
+219:         for (int yy = 205; yy < 383; yy += 3) for (int xx = 25; xx < 253; xx += 3) {
+220:             gm.setColor(new Color(rr.nextInt(256), rr.nextInt(256), rr.nextInt(256)));
+221:             gm.fillRect(xx, yy, 3, 3);
+222:         }
+223:         gm.dispose();
+224:         List<BubbleShapes.Box> l6 = BubbleShapes.find(px(nar), nar.getWidth(), nar.getHeight(), 2);
+225:         System.out.println("    " + l6 + " media=" + (l6.size() > 1 ? l6.get(1).media : "?"));
+226:         boolean wide = false, med = false;
+227:         for (BubbleShapes.Box x : l6) {
+228:             if (!x.media && x.w >= 600 && x.h >= 280) wide = true;
+229:             if (x.media && x.h >= 360) med = true;
+230:         }
+231:         check(wide, "الفقاعة العريضة في الإطار الضيق تُعرف");
+232:         check(med, "فقاعة الصورة تُعرف «صورة»");
+233:         String m6 = "B\t0\t20\t320\t150\t\nL\t20\t30\t280\t16\t" + b64("السلام عليكم") + "\nL\t20\t60\t280\t16\t" + b64("دولار 7,868 دائن علينا")
+234:                 + "\nM\t20\t200\t240\t190\t\nL\t40\t360\t150\t16\t" + b64("تعليق على الصورة") + "\n";
+235:         Bubbles.Result r6 = Bubbles.build(Bubbles.parse(m6), new int[]{0, 0, 320, 420});
+236:         check(r6.bubbles.size() == 1 && r6.bubbles.get(0).text.contains("7,868"), "رسالة واحدة كاملة، ورسالة الصورة لا تُرقَّم (" + r6.bubbles.size() + ")");
+237: 
+238:         System.out.println("== 12.3: قاموس تنبيهات البرنامج");
+239:         String[][] sysYes = {{"Fri 6 Nov"}, {"6 Nov 2026"}, {"Nov 6, 2026"}, {"الجمعة 6 نوفمبر"}, {"Today"}, {"أمس"}, {"33 unread messages"}, {"12 رسالة غير مقروءة"},
+240:                 {"This message was deleted"}, {"تم حذف هذه الرسالة"}, {"Message history sent by a group member. Learn more"},
+241:                 {"Missed voice call"}, {"مكالمة صوتية فائتة"}, {"Ahmad joined using this group's invite link"}, {"Omar added Khaled"}, {"أحمد غادر"},
+242:                 {"+40 765 450 476 joined"}, {"Photo"}, {"صورة"}};
+243:         for (String[] t : sysYes) check(WaWords.systemText(t[0]), "تنبيه: «" + t[0] + "»");
+244:         String[] sysNo = {"added 500 dollar to Ahmad", "حوالة 300 دولار لأحمد", "Omar added 500", "استلمت", "نوفمبر 300 دولار لأبو علي", "left 200 euro with Sami"};
+245:         for (String t : sysNo) check(!WaWords.systemText(t), "رسالة لا تنبيه: «" + t + "»");
+246:         String[] sp = WaWords.split("+90 545 965 72 40 ~ زهرة حلب\nForwarded\nابو عمر 10250.\nاستلمت\n29.1 MB - Show in Finder");
+247:         check(sp[0].equals("زهرة حلب") && sp[1].equals("ابو عمر 10250.\nاستلمت"), "المرسل من «الرقم ~ الاسم»، وحُذف Forwarded وحجم الملف: [" + sp[0] + "] " + sp[1].replace('\n', '|'));

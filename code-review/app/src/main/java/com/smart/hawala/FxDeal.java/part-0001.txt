@@ -1,0 +1,145 @@
+1: package com.smart.hawala;
+2: 
+3: import java.math.BigDecimal;
+4: import java.math.RoundingMode;
+5: 
+6: /**
+7:  * 10.5 (§8): حساب تبديل العملة مع المكتب — منطق بحت مشترك بين الهاتف والكمبيوتر.
+8:  * 10.8: «قص العملات» مقاصة أرصدة لا بيع نقدي: العملة المباعة تُخصم من رصيدنا لدى المكتب، والمشتراة تُضاف إليه؛ يُسمح بعبور الصفر
+9:  * (فينقلب «لنا» إلى «علينا») مع تنبيه غير مانع، ولا حركة صندوق ولا بنك.
+10:  * <ul>
+11:  *   <li>«نبيع» عملة للمكتب (تصير «لنا» عليه) و«نشتري» منه أخرى (تصير «علينا» له).</li>
+12:  *   <li>السعر يُكتب بأي اتجاه: «1 بيع = ؟ شراء» أو «1 شراء = ؟ بيع». الرقم المكتوب يُحفظ كما هو؛ عكسه يُعرض للشرح فقط
+13:  *       (1 ÷ 1.12 = 0.892857…، وكتابة 0.9 سعر جديد مختلف وليس تقريبًا له).</li>
+14:  *   <li>قراءة السعر بـ {@link CashBox#rateDecimal}: النقطة عشرية دائمًا ولا تُعامل فاصل آلاف.</li>
+15:  * </ul>
+16:  */
+17: public final class FxDeal {
+18:     /** عملة البيع («لنا») وعملة الشراء («علينا»). */
+19:     public String sell = "", buy = "";
+20:     public int sellDec = 2, buyDec = 2;
+21:     /** مبلغ البيع بالوحدة الصغرى. */
+22:     public long sellAmount;
+23:     /** السعر كما كتبه المستخدم. */
+24:     public BigDecimal rate;
+25:     /** true: «1 بيع = rate شراء»؛ false: «1 شراء = rate بيع». */
+26:     public boolean buyPerSell = true;
+27: 
+28:     /** يقرأ السعر (null إن لم يكن رقمًا موجبًا). */
+29:     public static BigDecimal parseRate(String text) {
+30:         try {
+31:             BigDecimal r = CashBox.rateDecimal(text);
+32:             return r != null && r.signum() > 0 ? r : null;
+33:         } catch (Exception e) {
+34:             return null;
+35:         }
+36:     }
+37: 
+38:     /** كم من عملة الشراء لكل 1 من عملة البيع (بدقة كافية للحساب). */
+39:     public BigDecimal buyPerSellRate() {
+40:         if (rate == null || rate.signum() <= 0) return null;
+41:         return buyPerSell ? rate : BigDecimal.ONE.divide(rate, 12, RoundingMode.HALF_UP);
+42:     }
+43: 
+44:     /** مبلغ الشراء المقابل بالوحدة الصغرى (تقريب نصف للأعلى إلى منازل عملة الشراء)، أو null. */
+45:     public Long buyAmount() {
+46:         if (rate == null || rate.signum() <= 0 || sellAmount <= 0) return null;
+47:         BigDecimal s = BigDecimal.valueOf(sellAmount, sellDec);
+48:         BigDecimal b = buyPerSell ? s.multiply(rate) : s.divide(rate, buyDec + 8, RoundingMode.HALF_UP);
+49:         return b.setScale(buyDec, RoundingMode.HALF_UP).movePointRight(buyDec).longValueExact();
+50:     }
+51: 
+52:     /**
+53:      * 10.13: الحساب من الطرف الآخر: المبلغ المباع من المبلغ المشترى والسعر (تقريب نصف للأعلى إلى منازل عملة البيع)، أو null.
+54:      * المحاسب يكتب ما سيأخذه والسعر، فيُحسب ما يبيعه.
+55:      */
+56:     public Long sellAmountFor(long buyMinor) {
+57:         if (rate == null || rate.signum() <= 0 || buyMinor <= 0) return null;
+58:         BigDecimal b = BigDecimal.valueOf(buyMinor, buyDec);
+59:         BigDecimal s = buyPerSell ? b.divide(rate, sellDec + 8, RoundingMode.HALF_UP) : b.multiply(rate);
+60:         long v = s.setScale(sellDec, RoundingMode.HALF_UP).movePointRight(sellDec).longValueExact();
+61:         return v > 0 ? v : null;
+62:     }
+63: 
+64:     /** عكس السعر للعرض: 1 ÷ r بست منازل (1.12 ← 0.892857). */
+65:     public static String invert(BigDecimal r) {
+66:         if (r == null || r.signum() <= 0) return "";
+67:         return BigDecimal.ONE.divide(r, 6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
+68:     }
+69: 
+70:     /** معنى السعر بالكلمات، باتجاهيه. */
+71:     public String meaning() {
+72:         if (rate == null || rate.signum() <= 0 || sell.isEmpty() || buy.isEmpty()) return "";
+73:         String r = rate.stripTrailingZeros().toPlainString();
+74:         if (buyPerSell) return "1 " + sell + " = " + r + " " + buy + "   (أي 1 " + buy + " ≈ " + invert(rate) + " " + sell + ")";
+75:         return "1 " + buy + " = " + r + " " + sell + "   (أي 1 " + sell + " ≈ " + invert(rate) + " " + buy + ")";
+76:     }
+77: 
+78:     /** يقلب العملية: ما كان شراءً يصير بيعًا. المبلغ الجديد = مبلغ الشراء الحالي، والسعر المكتوب نفسه بمعناه نفسه. */
+79:     public FxDeal reversed() {
+80:         FxDeal x = new FxDeal();
+81:         x.sell = buy;
+82:         x.buy = sell;
+83:         x.sellDec = buyDec;
+84:         x.buyDec = sellDec;
+85:         Long b = buyAmount();
+86:         x.sellAmount = b == null ? 0 : b;
+87:         x.rate = rate;
+88:         // «1 USD = 0.92 EUR» يبقى صحيحًا بعد القلب، لكن اتجاهه بالنسبة للبيع والشراء ينعكس
+89:         x.buyPerSell = !buyPerSell;
+90:         return x;
+91:     }
+92: 
+93:     /** السعر الفعلي من المبلغين بعد التقريب (يُحفظ مع العملية: كم من عملة «علينا» لكل 1 من عملة «لنا»). */
+94:     public static String effectiveRate(long sellMinor, int sellDec, long buyMinor, int buyDec) {
+95:         return BigDecimal.valueOf(buyMinor, buyDec).divide(BigDecimal.valueOf(sellMinor, sellDec), 8, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
+96:     }
+97: 
+98:     // ===================================================================================
+99:     // 10.8: المقاصة — الرصيد بعد العملية، وتنبيه تجاوز الرصيد، وسعر البرنامج للاستئناس
+100:     // ===================================================================================
+101: 
+102:     /** الرصيد الموقّع بالكلمات: موجب «لنا»، سالب «علينا»، صفر «متوازن». */
+103:     public static String side(long v, int dec) {
+104:         if (v > 0) return "لنا " + Model.fmt(v, dec);
+105:         if (v < 0) return "علينا " + Model.fmt(-v, dec);
+106:         return "متوازن";
+107:     }
+108: 
+109:     /** سطر جدول المعاينة: العملة | الرصيد قبل | أثر العملية (خصم/إضافة) | الرصيد بعد. */
+110:     public static String[] row(String cur, long before, long delta, int dec) {
+111:         return new String[]{cur, side(before, dec), (delta < 0 ? "خصم " : "إضافة ") + Model.fmt(Math.abs(delta), dec), side(before + delta, dec)};
+112:     }
+113: 
+114:     /**
+115:      * تنبيه غير مانع حين يتجاوز المبلغ المباع الرصيد المتاح «لنا» في العملة المباعة (أو كان الرصيد صفرًا أو «علينا» أصلًا).
+116:      * null = لا تجاوز.
+117:      */
+118:     public static String overdraft(String cur, long balance, long sold, int dec) {
+119:         if (sold <= 0 || sold <= balance) return null;
+120:         long after = balance - sold;
+121:         String a = Model.fmt(sold, dec) + " " + cur;
+122:         if (balance > 0)
+123:             return "تنبيه: المبلغ المراد بيعه " + a + " يتجاوز رصيدك المتاح البالغ " + Model.fmt(balance, dec) + " " + cur + " بمقدار " + Model.fmt(sold - balance, dec) + " " + cur
+124:                     + ". إذا أكملت العملية، سيتحول رصيد " + cur + " من «لنا " + Model.fmt(balance, dec) + " " + cur + "» إلى «علينا " + Model.fmt(-after, dec) + " " + cur + "».";
+125:         if (balance == 0)
+126:             return "تنبيه: لا رصيد لنا في " + cur + " لدى هذا المكتب (متوازن). بيع " + a + " يجعل الرصيد «علينا " + Model.fmt(-after, dec) + " " + cur + "».";
+127:         return "تنبيه: رصيد " + cur + " أصلًا «علينا " + Model.fmt(-balance, dec) + " " + cur + "». بيع " + a + " يزيد ما علينا بمقدار " + a
+128:                 + " فيصير «علينا " + Model.fmt(-after, dec) + " " + cur + "».";
+129:     }
+130: 
+131:     /** توضيح ثابت يظهر في الشاشة والتأكيد. */
+132:     public static final String NETTING_NOTE = "هذه العملية تحوّل الأرصدة بين العملات في حساب المكتب، ولا تسجل حركة نقدية في الصندوق أو البنك.";
+133: 
+134:     /** وصف افتراضي للساقين إن لم يُكتب بيان. */
+135:     public static String describe(String sell, String sellText, String buy, String buyText) {
+136:         return "قص عملات: بيع " + sellText + " " + sell + " مقابل " + buyText + " " + buy;
+137:     }
+138: 
+139:     /**
+140:      * سعر البرنامج (أسعار الصرف المحفوظة: يدوي أو أونلاين) بين عملتين: كم من عملة الشراء لكل 1 من عملة البيع، أو null إن نقص سعر.
+141:      * usd: قيمة 1 من كل عملة بالدولار.
+142:      */
+143:     public static BigDecimal reference(java.util.Map<String, BigDecimal> usd, String sell, String buy) {
+144:         if (usd == null || sell == null || buy == null || sell.isEmpty() || buy.isEmpty() || sell.equals(buy)) return null;
+145:         BigDecimal s = usd.get(sell), b = usd.get(buy);

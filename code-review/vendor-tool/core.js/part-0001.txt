@@ -1,0 +1,192 @@
+1: /*
+2:  * أداة البائع لـ«المحاسب الذكي» 8 — المنطق (بلا واجهة). يعمل في المتصفح بلا إنترنت، وفي Node 18+ للاختبار.
+3:  *
+4:  * ما تفعله:
+5:  *  1. تقرأ «طلب التفعيل» الذي ينشئه التطبيق (SA8-REQ:…) وتفحص سلسلة تصديق مفتاح الهاتف:
+6:  *     توقيعات السلسلة حتى جذر Google، ومطابقة المفتاح، والتحدي = رقم الطلب، ومستوى الأمان (TEE/StrongBox)،
+7:  *     واسم الحزمة وبصمة شهادة توقيعها (نسخة معدّلة تُكشف)، وحالة محمّل الإقلاع.
+8:  *  2. تُصدر «رمز الترخيص»: حقول مفتاح=قيمة موقّعة ECDSA P-256 (DER) بمفتاح البائع الخاص — نفس ما يتحقق منه التطبيق.
+9:  *  3. تتحقق من «إيصال التحرير» (SA8-REL:…) الموقّع بمفتاح الهاتف القديم عند نقل الرخصة.
+10:  *  4. سجل المبيعات وقواعد النقل (مرتان في السنة، و7 أيام انتظار إن فُقد الهاتف) وقائمة الإلغاء للخادم.
+11:  * المفتاح الخاص لا يغادر هذا الجهاز: يُحمَّل من ملفه، أو يُحفظ في المتصفح مشفّرًا بعبارة مرور.
+12:  */
+13: (function (root) {
+14:   "use strict";
+15: 
+16:   var nodeCrypto = null;
+17:   if (typeof module === "object" && module.exports && typeof require === "function") nodeCrypto = require("crypto");
+18:   var subtle = (root.crypto && root.crypto.subtle) || (nodeCrypto && nodeCrypto.webcrypto.subtle);
+19:   var getRandom = function (n) {
+20:     var a = new Uint8Array(n);
+21:     (root.crypto || nodeCrypto.webcrypto).getRandomValues(a);
+22:     return a;
+23:   };
+24: 
+25:   var PKG = "com.smart.hawala.v8";
+26:   var MAC_PKG = "com.smart.hawala.mac";
+27:   /** بصمة SHA-256 لشهادة توقيع التطبيق 8 (BuildInfo.SIGNING_CERT_SHA256). */
+28:   var APP_CERT_SHA256 = "FD24C2675B88217BECFD42828C39A27CF892393A1770494D969EEE6225BC8686";
+29:   /** المفاتيح العامة المضمّنة في التطبيق (LicenseToken.TRUSTED). */
+30:   var TRUSTED = {
+31:     k1: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE8zlFFLS9w6SXiVoxS62RhtEy2q32XDWj96nAFfvRleporJR5ugSQC4a1tjHVNTt7mFDSOPUcYLb+jYS6AR10hg==",
+32:     k2: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEj9ACjhyMfDIK0u2pkPs517eT7AyTC+5TswYFs2mECyytnLgkRQV6TzTEs9Zy3icPNhKqCjjLZj9Ga9xAjghi6Q=="
+33:   };
+34:   /**
+35:    * جذور تصديق المفاتيح من Google (المفتاح العام SubjectPublicKeyInfo). المصدر: https://android.googleapis.com/attestation/root
+36:    * (نسخة منه في github.com/android/keyattestation/roots.json). المطابقة بالمفتاح لا بالشهادة، فالشهادة القديمة (2016)
+37:    * والمجددة (2022) لجذر RSA نفسه تُقبلان معًا.
+38:    */
+39:   var GOOGLE_ROOTS = [
+40:     { name: "Google Hardware Attestation Root (RSA)", spki: "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAr7bHgiuxpwHsK7Qui8xUFmOr75gvMsd/dTEDDJdSSxtf6An7xyqpRR90PL2abxM1dEqlXnf2tqw1Ne4Xwl5jlRfdnJLmN0pTy/4lj4/7tv0Sk3iiKkypnEUtR6WfMgH0QZfKHM1+di+y9TFRtv6y//0rb+T+W8a9nsNL/ggjnar86461qO0rOs2cXjp3kOG1FEJ5MVmFmBGtnrKpa73XpXyTqRxB/M0n1n/W9nGqC4FSYa04T6N5RIZGBN2z2MT5IKGbFlbC8UrW0DxW7AYImQQcHtGl/m00QLVWutHQoVJYnFPlXTcHYvASLu+RhhsbDmxMgJJ0mcDpvsC4PjvB+TxywElgS70vE0XmLD+OJtvsBslHZvPBKCOdT0MS+tgSOIfga+z1Z1g7+DVagf7quvmag8jfPioyKvxnK/EgsTUVi2ghzq8wm27ud/mIM7AY2qEORR8Go3TVB4HzWQgpZrt3i5MIlCaY504LzSRiigHCzAPlHws+W0rB5N+er5/2pJKnfBSDiCiFAVtCLOZ7gLiMm0jhO2B6tUXHI/+MRPjy02i59lINMRRev56GKtcd9qO/0kUJWdZTdA2XoS82ixPvZtXQpUpuL12ab+9EaDK8Z4RHJYYfCT3Q5vNAXaiWQ+8PTWm2QgBR/bkwSWc+NpUFgNPN9PvQi8WEg5UmAGMCAwEAAQ==" },
+41:     { name: "Google Key Attestation CA1 (EC P-384, 2025)", spki: "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEI9ojcU7fPlsFCjxy6IRqzgeOoK0b+YsV9FPQywiyw8EQRTkJ9u3qwfnI4DGoSLlBqClTXJfgfCcZvs60FikNMHnu4fkRzObfgDkU2KNXezT9/RQ+XvNslxPHrHCowhGr" }
+42:   ];
+43:   var KD_OID = "1.3.6.1.4.1.11129.2.1.17";
+44: 
+45:   // =================================================================================== بايتات ونصوص
+46: 
+47:   function utf8(s) { return new TextEncoder().encode(s); }
+48:   function fromUtf8(b) { return new TextDecoder("utf-8", { fatal: false }).decode(b); }
+49: 
+50:   function b64ToBytes(s) {
+51:     s = String(s || "").replace(/\s+/g, "").replace(/-/g, "+").replace(/_/g, "/");
+52:     while (s.length % 4) s += "=";
+53:     var bin = atob(s), out = new Uint8Array(bin.length);
+54:     for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+55:     return out;
+56:   }
+57: 
+58:   function bytesToB64(b) {
+59:     var s = "";
+60:     for (var i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+61:     return btoa(s);
+62:   }
+63: 
+64:   function b64url(b) { return bytesToB64(b).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+65: 
+66:   function hex(b) {
+67:     var s = "";
+68:     for (var i = 0; i < b.length; i++) s += (b[i] < 16 ? "0" : "") + b[i].toString(16);
+69:     return s;
+70:   }
+71: 
+72:   function eq(a, b) {
+73:     if (a.length !== b.length) return false;
+74:     for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+75:     return true;
+76:   }
+77: 
+78:   async function sha256(b) { return new Uint8Array(await subtle.digest("SHA-256", b)); }
+79: 
+80:   /** بصمة مفتاح الهاتف كما يكتبها التطبيق: Base64url(SHA-256(X.509)) بلا حشو. */
+81:   async function deviceFingerprint(spki) { return b64url(await sha256(spki)); }
+82: 
+83:   function pemBlocks(text, label) {
+84:     var re = new RegExp("-----BEGIN " + label + "-----([\\s\\S]*?)-----END " + label + "-----", "g"), out = [], m;
+85:     while ((m = re.exec(text))) out.push(b64ToBytes(m[1]));
+86:     return out;
+87:   }
+88: 
+89:   // =================================================================================== DER
+90: 
+91:   function der(b, pos) {
+92:     var start = pos;
+93:     if (pos >= b.length) throw new Error("DER: نهاية غير متوقعة");
+94:     var t = b[pos++];
+95:     var cls = t >> 6, cons = (t & 0x20) !== 0, tag = t & 0x1f;
+96:     if (tag === 0x1f) {
+97:       tag = 0;
+98:       var c, guard = 0;
+99:       do {
+100:         c = b[pos++];
+101:         tag = tag * 128 + (c & 0x7f);
+102:         if (++guard > 4) throw new Error("DER: رقم وسم طويل جدًا");
+103:       } while (c & 0x80);
+104:     }
+105:     var len = b[pos++];
+106:     if (len & 0x80) {
+107:       var n = len & 0x7f;
+108:       if (n === 0 || n > 4) throw new Error("DER: طول غير مدعوم");
+109:       len = 0;
+110:       for (var i = 0; i < n; i++) len = len * 256 + b[pos++];
+111:     }
+112:     if (pos + len > b.length) throw new Error("DER: بيانات مبتورة");
+113:     return { cls: cls, cons: cons, tag: tag, start: start, hs: pos, end: pos + len, b: b };
+114:   }
+115: 
+116:   function kids(n) {
+117:     var out = [], p = n.hs;
+118:     while (p < n.end) {
+119:       var c = der(n.b, p);
+120:       out.push(c);
+121:       p = c.end;
+122:     }
+123:     return out;
+124:   }
+125: 
+126:   function body(n) { return n.b.subarray(n.hs, n.end); }
+127:   function whole(n) { return n.b.subarray(n.start, n.end); }
+128: 
+129:   function oid(n) {
+130:     var b = body(n), parts = [], v = 0;
+131:     for (var i = 0; i < b.length; i++) {
+132:       v = v * 128 + (b[i] & 0x7f);
+133:       if (!(b[i] & 0x80)) {
+134:         if (!parts.length) {
+135:           var a = v < 80 ? Math.floor(v / 40) : 2;
+136:           parts.push(a, v - a * 40);
+137:         } else parts.push(v);
+138:         v = 0;
+139:       }
+140:     }
+141:     return parts.join(".");
+142:   }
+143: 
+144:   function int(n) {
+145:     var b = body(n), v = 0;
+146:     if (b.length > 6) throw new Error("DER: عدد كبير");
+147:     for (var i = 0; i < b.length; i++) v = v * 256 + b[i];
+148:     if (b.length && b[0] & 0x80) v -= Math.pow(2, 8 * b.length);
+149:     return v;
+150:   }
+151: 
+152:   // =================================================================================== X.509
+153: 
+154:   function parseCert(bytes) {
+155:     var c = der(bytes, 0);
+156:     if (c.end !== bytes.length) throw new Error("شهادة فيها بيانات زائدة");
+157:     var k = kids(c);
+158:     var tbs = k[0], tk = kids(tbs), i = 0;
+159:     if (tk[0].cls === 2 && tk[0].tag === 0) i = 1;
+160:     var serial = body(tk[i]);
+161:     var spki = tk[i + 5];
+162:     var exts = {}, extCount = {};
+163:     for (var j = i + 6; j < tk.length; j++) {
+164:       if (tk[j].cls !== 2 || tk[j].tag !== 3) continue;
+165:       kids(kids(tk[j])[0]).forEach(function (e) {
+166:         var ek = kids(e), id = oid(ek[0]);
+167:         exts[id] = body(ek[ek.length - 1]);
+168:         extCount[id] = (extCount[id] || 0) + 1;
+169:       });
+170:     }
+171:     var alg = kids(kids(spki)[0]);
+172:     var sigBits = body(k[2]);
+173:     return {
+174:       der: bytes,
+175:       tbs: whole(tbs),
+176:       sigAlg: oid(kids(k[1])[0]),
+177:       sig: sigBits.subarray(1),
+178:       spki: whole(spki),
+179:       keyAlg: oid(alg[0]),
+180:       curve: alg[1] && alg[1].tag === 6 ? oid(alg[1]) : null,
+181:       exts: exts,
+182:       extCount: extCount,
+183:       serial: hex(serial).replace(/^0+(?=.)/, ""),
+184:       subject: whole(tk[i + 4]),
+185:       issuer: whole(tk[i + 2])
+186:     };
+187:   }
+188: 
+189:   var SIG = {
+190:     "1.2.840.113549.1.1.11": ["RSA", "SHA-256"], "1.2.840.113549.1.1.12": ["RSA", "SHA-384"], "1.2.840.113549.1.1.13": ["RSA", "SHA-512"],
+191:     "1.2.840.10045.4.3.2": ["EC", "SHA-256"], "1.2.840.10045.4.3.3": ["EC", "SHA-384"], "1.2.840.10045.4.3.4": ["EC", "SHA-512"]
+192:   };

@@ -1,0 +1,133 @@
+179:     /** يرسم شكلًا بالفرشاة (تعبئة/خط، تدرج، ضبابية، ظل). */
+180:     public void shape(Shape s, Paint p) {
+181:         if (p.xfermode instanceof PorterDuffXfermode && ((PorterDuffXfermode) p.xfermode).mode == PorterDuff.Mode.CLEAR) {
+182:             Composite o = g.getComposite();
+183:             g.setComposite(AlphaComposite.Clear);
+184:             g.fill(s);
+185:             g.setComposite(o);
+186:             return;
+187:         }
+188:         Shape fillShape = null, strokeShape = null;
+189:         if (p.style == Paint.Style.FILL || p.style == Paint.Style.FILL_AND_STROKE) fillShape = s;
+190:         if (p.style == Paint.Style.STROKE || p.style == Paint.Style.FILL_AND_STROKE) strokeShape = p.awtStroke().createStrokedShape(s);
+191:         if (p.shadowR > 0 && Color.alpha(p.shadowColor) > 0) {
+192:             Area a = new Area();
+193:             if (fillShape != null) a.add(new Area(fillShape));
+194:             if (strokeShape != null) a.add(new Area(strokeShape));
+195:             Shape sh = AffineTransform.getTranslateInstance(p.shadowDx, p.shadowDy).createTransformedShape(a);
+196:             int sc = p.shadowColor;
+197:             blurred(sh, new java.awt.Color(Color.red(sc), Color.green(sc), Color.blue(sc), Math.round(Color.alpha(sc) * alpha)), p.shadowR);
+198:         }
+199:         java.awt.Paint paint = p.awtPaint(alpha);
+200:         float blur = p.maskFilter instanceof BlurMaskFilter ? ((BlurMaskFilter) p.maskFilter).radius : 0;
+201:         for (Shape x : new Shape[]{fillShape, strokeShape}) {
+202:             if (x == null) continue;
+203:             if (blur > 0.5f) blurred(x, paint, blur);
+204:             else {
+205:                 g.setPaint(paint);
+206:                 g.fill(x);
+207:             }
+208:         }
+209:     }
+210: 
+211:     /** ضبابية حقيقية: يُرسم الشكل في صورة صغيرة ثم تُطمس وتُلصق. */
+212:     public void blurred(Shape s, java.awt.Paint paint, float radius) {
+213:         AffineTransform t = g.getTransform();
+214:         Shape dev = t.createTransformedShape(s);
+215:         double sc = Math.sqrt(Math.abs(t.getDeterminant()));
+216:         int r = (int) Math.ceil(radius * sc);
+217:         Rectangle b = dev.getBounds();
+218:         Rectangle clip = g.getClip() == null ? null : t.createTransformedShape(g.getClip()).getBounds();
+219:         Rectangle area = new Rectangle(b.x - 2 * r, b.y - 2 * r, b.width + 4 * r, b.height + 4 * r);
+220:         if (clip != null) area = area.intersection(new Rectangle(clip.x - 2 * r, clip.y - 2 * r, clip.width + 4 * r, clip.height + 4 * r));
+221:         if (area.width <= 0 || area.height <= 0 || (long) area.width * area.height > 6_000_000L) return;
+222:         // نرسم بدقة أقل للضبابية الكبيرة (أسرع، والنتيجة ناعمة أصلًا)
+223:         int down = r > 12 ? 2 : 1;
+224:         int w = Math.max(1, area.width / down), h = Math.max(1, area.height / down);
+225:         BufferedImage im = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+226:         Graphics2D ig = im.createGraphics();
+227:         ig.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+228:         ig.scale(1.0 / down, 1.0 / down);
+229:         ig.translate(-area.x, -area.y);
+230:         ig.transform(t);
+231:         ig.setPaint(paint);
+232:         ig.fill(s);
+233:         ig.dispose();
+234:         Blur.box(im, Math.max(1, (int) Math.round(radius * sc / down / 1.6)));
+235:         AffineTransform old = g.getTransform();
+236:         g.setTransform(new AffineTransform());
+237:         // الإبقاء على المقياس الأصلي للجهاز (الشاشات عالية الدقة)
+238:         AffineTransform dt = deviceBase();
+239:         g.setTransform(dt);
+240:         g.drawImage(im, area.x, area.y, area.width, area.height, null);
+241:         g.setTransform(old);
+242:     }
+243: 
+244:     /** التحويل الأساسي للجهاز (مقياس شاشة Retina) دون تحويلات الرسم. */
+245:     private AffineTransform deviceBase() { return new AffineTransform(); }
+246: 
+247:     // ------------------------------------------------------------------ النص
+248:     public void drawText(String s, float x, float y, Paint p) {
+249:         if (s == null || s.isEmpty()) return;
+250:         TextLayout l = p.layout(s);
+251:         if (l == null) return;
+252:         float adv = l.getAdvance();
+253:         if (p.align == Paint.Align.CENTER) x -= adv / 2f;
+254:         else if (p.align == Paint.Align.RIGHT) x -= adv;
+255:         Shape outline = null;
+256:         if (p.style != Paint.Style.FILL || p.maskFilter != null || p.shadowR > 0) {
+257:             outline = l.getOutline(AffineTransform.getTranslateInstance(x, y));
+258:             shape(outline, p);
+259:             return;
+260:         }
+261:         g.setPaint(p.awtPaint(alpha));
+262:         l.draw(g, x, y);
+263:     }
+264:     public void drawText(CharSequence s, int a, int b, float x, float y, Paint p) { drawText(s.toString().substring(a, b), x, y, p); }
+265:     public void drawText(String s, int a, int b, float x, float y, Paint p) { drawText(s.substring(a, b), x, y, p); }
+266:     public void drawText(char[] c, int i, int n, float x, float y, Paint p) { drawText(new String(c, i, n), x, y, p); }
+267:     public void drawTextOnPath(String s, Path path, float h, float v, Paint p) {}
+268: 
+269:     // ------------------------------------------------------------------ الصور
+270:     public void drawBitmap(Bitmap b, float x, float y, Paint p) {
+271:         if (b == null) return;
+272:         Composite o = withAlpha(p);
+273:         g.drawImage(b.img, Math.round(x), Math.round(y), null);
+274:         g.setComposite(o);
+275:     }
+276:     public void drawBitmap(Bitmap b, Rect src, RectF dst, Paint p) {
+277:         if (b == null) return;
+278:         Rect s = src == null ? new Rect(0, 0, b.getWidth(), b.getHeight()) : src;
+279:         Composite o = withAlpha(p);
+280:         AffineTransform old = g.getTransform();
+281:         g.translate(dst.left, dst.top);
+282:         g.scale(dst.width() / Math.max(1, s.width()), dst.height() / Math.max(1, s.height()));
+283:         g.drawImage(b.img, 0, 0, s.width(), s.height(), s.left, s.top, s.right, s.bottom, null);
+284:         g.setTransform(old);
+285:         g.setComposite(o);
+286:     }
+287:     public void drawBitmap(Bitmap b, Rect src, Rect dst, Paint p) { drawBitmap(b, src, new RectF(dst), p); }
+288:     public void drawBitmap(Bitmap b, Matrix m, Paint p) {
+289:         if (b == null) return;
+290:         Composite o = withAlpha(p);
+291:         g.drawImage(b.img, m == null ? new AffineTransform() : m.t, null);
+292:         g.setComposite(o);
+293:     }
+294: 
+295:     private Composite withAlpha(Paint p) {
+296:         Composite o = g.getComposite();
+297:         float a = alpha * (p == null ? 1f : p.getAlpha() / 255f);
+298:         if (a < 0.999f) g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, Math.max(0, Math.min(1, a))));
+299:         return o;
+300:     }
+301: 
+302:     /** رسم صورة Java2D مباشرة (للعناصر الداخلية). */
+303:     public void drawImage(java.awt.Image im, int x, int y, int w, int h) {
+304:         Composite o = g.getComposite();
+305:         if (alpha < 0.999f) g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, Math.max(0, alpha)));
+306:         g.drawImage(im, x, y, w, h, null);
+307:         g.setComposite(o);
+308:     }
+309: 
+310:     public void release() { if (bitmap != null && g != null) g.dispose(); }
+311: }

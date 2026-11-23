@@ -1,0 +1,178 @@
+471:     // الأرقام والهاتف
+472:     // ===================================================================================
+473: 
+474:     private static final Pattern NUM = Pattern.compile("\\+?\\d[\\d.,]*");
+475:     /** رقم هاتف: مجموعات أرقام بينها مسافة واحدة أو شرطة واحدة (لا « - » التي تفصل بين رقمين مختلفين). */
+476:     private static final Pattern PHONE = Pattern.compile("(?:\\+|00)?\\d+(?:[ \\-]\\d+)+|\\+?\\d{7,}");
+477: 
+478:     /** يقرأ رقمًا كما يُكتب في الرسائل: 1,500 / 1.500 / 1,250.50 / 1.250,50 / 2.5 */
+479:     /** للاختبار: قراءة الرقم كما في الرسائل. */
+480:     public static BigDecimal numberForTest(String tok) { return number(tok); }
+481: 
+482:     static BigDecimal number(String tok) {
+483:         String s = tok.replaceAll("[.,]+$", "");
+484:         if (s.startsWith("+") || s.isEmpty()) return null;
+485:         try {
+486:             // القراءة نفسها التي يستعملها نموذج الإدخال (Amounts)، فلا يخرج النص الواحد بقيمتين
+487:             String n = Amounts.normalize(s, 2);
+488:             return n.isEmpty() ? null : new BigDecimal(n);
+489:         } catch (NumberFormatException e) {
+490:             return null;
+491:         }
+492:     }
+493: 
+494:     private static String plain(BigDecimal v) {
+495:         return new java.text.DecimalFormat("#,##0.##########", java.text.DecimalFormatSymbols.getInstance(Locale.US)).format(v);
+496:     }
+497: 
+498:     private static int digitCount(String s) {
+499:         int n = 0;
+500:         for (char ch : s.toCharArray()) if (ch >= '0' && ch <= '9') n++;
+501:         return n;
+502:     }
+503: 
+504:     /** يبدو رقم هاتف: يبدأ بـ + أو 00 أو 0، أو طويل جدًا ليكون مبلغًا. */
+505:     static boolean looksPhone(String raw, boolean labeled, boolean lineHasCurrency) {
+506:         String t = raw.trim();
+507:         int d = digitCount(t);
+508:         if (d < 7) return false;
+509:         if (labeled) return true;
+510:         if (t.startsWith("+") || t.startsWith("00")) return true;
+511:         if (t.startsWith("0") && d >= 8) return true;
+512:         if (t.matches(".*\\d[ \\-]\\d.*") && !lineHasCurrency) return true;  // أرقام مجمّعة بمسافات
+513:         return d >= 10 && !lineHasCurrency;
+514:     }
+515: 
+516:     private static final Map<String, BigDecimal> DIGIT_MULT = new LinkedHashMap<>();
+517: 
+518:     static {
+519:         for (String w : new String[]{"الف", "الاف", "ألف", "آلاف", "الفا", "k", "thousand", "thousands", "grand", "bin", "mie", "mii", "mille", "tausend",
+520:                 "тыс", "тысяч", "тысячи", "тысяча"}) DIGIT_MULT.put(norm(w), new BigDecimal(1000));
+521:         for (String w : new String[]{"مليون", "ملايين", "مليونا", "m", "mn", "million", "millions", "milyon", "milion", "milioane", "millón", "millones",
+522:                 "millionen", "млн", "миллион", "миллиона", "миллионов"}) DIGIT_MULT.put(norm(w), new BigDecimal(1000000));
+523:         for (String w : new String[]{"مليار", "billion", "milyar", "miliard", "miliarde", "milliard", "milliarde", "млрд", "миллиард"})
+524:             DIGIT_MULT.put(norm(w), new BigDecimal(1000000000));
+525:     }
+526: 
+527:     /** «5 الف»، «5 bin»، «2 mii»، «3 тысячи»، «1.5 million»: الكلمة بعد الرقم تضربه. */
+528:     private static BigDecimal multiplier(List<String> after) {
+529:         if (after.isEmpty()) return BigDecimal.ONE;
+530:         BigDecimal m = DIGIT_MULT.get(after.get(0));
+531:         return m == null ? BigDecimal.ONE : m;
+532:     }
+533: 
+534:     // ===================================================================================
+535:     // التحليل
+536:     // ===================================================================================
+537: 
+538:     private static final class Line {
+539:         final String orig, norm;
+540:         final List<String> ow, nw;
+541:         /** brk[i]: بعد الكلمة i فاصلة أو نقطة ونحوها، فالاسم لا يمتد بعدها («to Yusuf, he will come»). */
+542:         final boolean[] brk;
+543:         boolean used;
+544: 
+545:         Line(String raw) {
+546:             orig = clean(raw);
+547:             norm = norm(raw);
+548:             ow = words(orig);
+549:             nw = words(norm);
+550:             brk = new boolean[ow.size()];
+551:             Matcher m = TOKEN.matcher(orig);
+552:             int i = 0, lastEnd = -1;
+553:             while (m.find() && i < brk.length) {
+554:                 if (i > 0 && BREAK.matcher(orig.substring(lastEnd, m.start())).find()) brk[i - 1] = true;
+555:                 lastEnd = m.end();
+556:                 i++;
+557:             }
+558:         }
+559:     }
+560: 
+561:     private static final Pattern BREAK = Pattern.compile("[,،.;؛!?؟:()]");
+562: 
+563:     /** يعيد ما بعد التسمية (مثل «الاسم:») بالكلمات الأصلية، أو null إن لم يبدأ السطر بها. */
+564:     private static String afterLabel(Line l, List<String> labels) {
+565:         int n = labelLen(l, labels);
+566:         return n == 0 ? null : String.join(" ", l.ow.subList(n, l.ow.size()));
+567:     }
+568: 
+569:     /** طول أطول تسمية يبدأ بها السطر (بالكلمات)، أو 0. */
+570:     private static int labelLen(Line l, List<String> labels) {
+571:         int bestLen = 0;
+572:         for (String lab : labels) {
+573:             List<String> lw = words(lab);
+574:             if (lw.size() > bestLen && startsWithPhrase(l.nw, lw) && l.ow.size() >= lw.size()) bestLen = lw.size();
+575:         }
+576:         return bestLen;
+577:     }
+578: 
+579:     private static boolean containsAny(String normLine, List<String> phrases) {
+580:         for (String p : phrases) if (hasPhrase(normLine, p)) return true;
+581:         return false;
+582:     }
+583: 
+584:     private static boolean isCity(String normText) {
+585:         String t = String.join(" ", words(normText));
+586:         if (CITIES.contains(t)) return true;
+587:         List<String> w = words(t);
+588:         if (w.size() <= 4 && !w.isEmpty()) {
+589:             if (CITIES.contains(w.get(0))) return true;
+590:             if (w.size() >= 2 && CITIES.contains(w.get(0) + " " + w.get(1))) return true;
+591:         }
+592:         return false;
+593:     }
+594: 
+595:     /** هل يصلح النص اسمًا لشخص؟ (كلمتان إلى ست، حروف فقط، بلا كلمات وظيفية) */
+596:     private static boolean nameLike(List<String> nw) {
+597:         if (nw.size() < 2 || nw.size() > 6) return false;
+598:         for (String w : nw) {
+599:             if (hasDigit(w)) return false;
+600:             if (!isLetters(w)) return false;
+601:             if (NOT_NAME.contains(w)) return false;
+602:             if (NumberWords.isStrong(w)) return false;
+603:         }
+604:         return true;
+605:     }
+606: 
+607:     /** \u062D\u0631\u0648\u0641 \u0641\u0642\u0637 \u0628\u0623\u064A \u0644\u063A\u0629 (\u0639\u0631\u0628\u064A\u0629\u060C \u0644\u0627\u062A\u064A\u0646\u064A\u0629 \u0628\u0639\u0644\u0627\u0645\u0627\u062A\u0647\u0627\u060C \u0633\u064A\u0631\u064A\u0644\u064A\u0629\u2026)\u060C \u0628\u0644\u0627 \u0623\u0631\u0642\u0627\u0645 \u0648\u0644\u0627 \u0631\u0645\u0648\u0632. */
+608:     static boolean isLetters(String w) {
+609:         if (w.isEmpty()) return false;
+610:         for (char ch : w.toCharArray()) if (!Character.isLetter(ch)) return false;
+611:         return true;
+612:     }
+613: 
+614:     private static String cleanName(String s) {
+615:         String t = s.replaceAll("^[\\s:،,\\-–—]+|[\\s:،,.\\-–—]+$", "").trim();
+616:         t = t.replaceAll("^(ل|الى|إلى|إلي|الي)\\s+", "").trim();   // «لـ أحمد» ← «أحمد»
+617:         return t.replaceAll(" {2,}", " ");
+618:     }
+619: 
+620:     // ===================================================================================
+621:     // «راجع»: أجرة يدفعها المكتب لنا
+622:     // ===================================================================================
+623: 
+624:     /** بعد «راجع»: الرقم (أو نص/ربع) ثم بالمئة أو بالألف أو عملة. يعمل على النص بعد التنظيف (أرقام 0-9). */
+625:     static final Pattern RAJE = Pattern.compile("(?:^|[^\\p{L}])(?:ال)?راجع(?:ه|ة|نا|لنا)?(?![\\p{L}])\\s*[:=]?\\s*"
+626:             + "(\\d+(?:[.,]\\d+)?|نصف|نص|ربع)?\\s*"
+627:             + "(%|٪|‰|(?:ب|في\\s*)ال?(?:مي[هةت]|مئ[هةت]|مائ[هةت]|ميئ[هة])|(?:ب|في\\s*)ال?[اأ]?(?:لف|لاف))?(?![\\p{L}])");
+628:     static final Pattern PER_MILLE_W = Pattern.compile("‰|لف$|لاف$");
+629: 
+630:     /**
+631:      * يقرأ «راجع» من سطر واحد. يرجع [النسبة، 100|1000] أو [المبلغ، 0] أو null. يعرّف المطابقة في rajeSpan
+632:      * لتُستبعد أرقامها من المبلغ الرئيسي.
+633:      */
+634:     static String blanks(int n) {
+635:         StringBuilder b = new StringBuilder(n);
+636:         for (int i = 0; i < n; i++) b.append(' ');
+637:         return b.toString();
+638:     }
+639: 
+640:     static Object[] raje(String line, int[] span, Map<String, List<Kw>> kws, Map<String, List<String>> al) {
+641:         Matcher m = RAJE.matcher(line);
+642:         if (!m.find()) return null;
+643:         span[0] = m.start();
+644:         span[1] = m.end();
+645:         String num = m.group(1), unit = m.group(2);
+646:         if (num == null) return new Object[]{null, -1};
+647:         BigDecimal v;
+648:         switch (num) {

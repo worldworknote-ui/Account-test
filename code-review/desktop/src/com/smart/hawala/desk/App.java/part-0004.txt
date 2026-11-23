@@ -1,0 +1,170 @@
+536:         String[] fn = new String[fonts.size()];
+537:         int fsel = 0;
+538:         for (int i = 0; i < fn.length; i++) {
+539:             fn[i] = fonts.get(i)[1];
+540:             if (fonts.get(i)[0].equals(db.setting("desk_font", "plex"))) fsel = i;
+541:         }
+542:         JComboBox<String> font = Ui.combo(fn);
+543:         font.setSelectedIndex(fsel);
+544:         font.addActionListener(e -> {
+545:             db.setSettingQuiet("desk_font", fonts.get(font.getSelectedIndex())[0]);
+546:             if (dlg[0] != null) dlg[0].dispose();
+547:             // الخط يدخل في كل عناصر الواجهة: تُبنى النافذة من جديد
+548:             Main.restart(this, db, "تغيّر الخط");
+549:         });
+550:         c.add(Ui.labeled("الخط", font));
+551:         c.add(Ui.gap(6));
+552:         c.add(Ui.flow(Ui.button("لون الشريط الجانبي", Ui.sidebar, e -> {
+553:             Color picked = JColorChooser.showDialog(frame, "لون الشريط الجانبي", Ui.sidebar);
+554:             if (picked == null) return;
+555:             db.setSettingQuiet("desk_side_color", Ui.hex(picked));
+556:             if (dlg[0] != null) dlg[0].dispose();
+557:             reloadAll();
+558:         }), Ui.ghost("لون الشريط الافتراضي", e -> {
+559:             db.deleteSetting("desk_side_color");
+560:             if (dlg[0] != null) dlg[0].dispose();
+561:             reloadAll();
+562:         })));
+563:         c.add(Ui.gap(6));
+564:         Ui.Seg bs = new Ui.Seg(new String[]{"أزرار عادية", "أزرار كبيرة"}, null, "big".equals(db.setting("desk_btn_size", "normal")) ? 1 : 0);
+565:         bs.listener = i -> db.setSettingQuiet("desk_btn_size", i == 1 ? "big" : "normal");
+566:         c.add(Ui.labeled("حجم الأزرار", bs));
+567:         c.add(Ui.gap(6));
+568:         Ui.Seg bo = new Ui.Seg(new String[]{"بإطارات", "بلا إطارات"}, null, "off".equals(db.setting("desk_borders", "on")) ? 1 : 0);
+569:         bo.listener = i -> db.setSettingQuiet("desk_borders", i == 1 ? "off" : "on");
+570:         c.add(Ui.labeled("إطارات البطاقات", bo));
+571:         // 10.13: زر التسجيل وحركة الصفحات (لك وحدك، كالهاتف)
+572:         c.add(Ui.gap(10));
+573:         Ui.Seg hold = new Ui.Seg(new String[]{"ضغطة عادية", "ضغط مطوّل"}, null, "on".equals(db.setting("hold_confirm", "off")) ? 1 : 0);
+574:         hold.listener = i -> db.setSettingQuiet("hold_confirm", i == 1 ? "on" : "off");
+575:         c.add(Ui.labeled("زر التسجيل (التأكيد يظهر في الحالتين)", hold));
+576:         c.add(Ui.gap(6));
+577:         Ui.Seg mo = new Ui.Seg(new String[]{"بحركة", "بلا حركة"}, null, "none".equals(db.setting("page_motion", "stagger")) ? 1 : 0);
+578:         mo.listener = i -> db.setSettingQuiet("page_motion", i == 1 ? "none" : "stagger");
+579:         c.add(Ui.labeled("حركة الصفحات", mo));
+580:         JOptionPane pane = new JOptionPane(c, JOptionPane.PLAIN_MESSAGE, JOptionPane.DEFAULT_OPTION, null, new Object[]{"إغلاق"});
+581:         pane.setComponentOrientation(Ui.RTL);
+582:         dlg[0] = pane.createDialog(frame, "مظهري");
+583:         dlg[0].setVisible(true);
+584:         // الإعدادات تُطبَّق على الصفحات بإعادة بنائها
+585:         if (!Ui.lookSig(db).equals(Ui.appliedSig)) reloadAll();
+586:     }
+587: 
+588:     Ui.Btn sideButton(String text, String icon, java.awt.event.ActionListener a) {
+589:         Ui.Btn b = Ui.button(text, new Color(255, 255, 255, 26), a);
+590:         b.colors(new Color(255, 255, 255, 26), Color.WHITE);
+591:         b.setIcon(new Icons(icon, 16, Color.WHITE));
+592:         b.setIconTextGap(6);
+593:         b.setFont(Ui.font(12.5f, true));
+594:         b.setBorder(new EmptyBorder(7, 10, 7, 10));
+595:         return b;
+596:     }
+597: 
+598:     static JComponent avatar(String letter) {
+599:         JComponent c = new JComponent() {
+600:             @Override protected void paintComponent(Graphics g) {
+601:                 Graphics2D g2 = (Graphics2D) g.create();
+602:                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+603:                 g2.setColor(Ui.accent);
+604:                 g2.fillOval(0, 0, 34, 34);
+605:                 g2.setColor(Color.WHITE);
+606:                 g2.setFont(Ui.font(15, true));
+607:                 FontMetrics fm = g2.getFontMetrics();
+608:                 g2.drawString(letter, (34 - fm.stringWidth(letter)) / 2, (34 + fm.getAscent() - fm.getDescent()) / 2);
+609:                 g2.dispose();
+610:             }
+611:         };
+612:         c.setPreferredSize(new Dimension(34, 34));
+613:         return c;
+614:     }
+615: 
+616:     String shortTitle() {
+617:         String t = db.setting("app_title", "").trim();
+618:         return t.isEmpty() ? "المحاسب الذكي" : t;
+619:     }
+620: 
+621:     void updateFoot() {
+622:         try {
+623:             pendingCached = can(Auth.Perm.APPROVE) ? db.pendingCount() : 0;
+624:         } catch (Throwable ignored) {
+625:             // يبقى آخر عدد
+626:         }
+627:         Entitlements e = License.current;
+628:         badge.setText(e.pro ? "✓ نسخة كاملة" + (e.lid == null || e.lid.isEmpty() ? "" : " — " + e.lid) : "النسخة المجانية");
+629:         Model.User u = SmartApp.currentUser;
+630:         who.setText(u == null ? (db.usersEnabled() ? "غير مسجّل" : "المدير") : u.name + " · " + Auth.shortLabel(u.role));
+631:         if (u == null && !db.usersEnabled()) badge.setText(badge.getText() + " · " + BuildInfo.VERSION + " " + Ui.forOs());
+632:         for (NavItem n : nav.values()) n.repaint();
+633:     }
+634: 
+635:     // ===================================================================================
+636:     // التنقل
+637:     // ===================================================================================
+638: 
+639:     /** 10.5 (§12): يحفظ مكان النافذة وحجمها (إعداد خاص بهذا الجهاز، لا يُزامن). */
+640:     Timer saveBounds;
+641: 
+642:     void persistBounds() {
+643:         try {
+644:             boolean max = (frame.getExtendedState() & Frame.MAXIMIZED_BOTH) == Frame.MAXIMIZED_BOTH;
+645:             Rectangle r = frame.getBounds();
+646:             String v = max ? (db.setting("desk_bounds", "").replaceFirst(",max$", "") + ",max") : r.x + "," + r.y + "," + r.width + "," + r.height;
+647:             if (!v.startsWith(",")) db.setSettingQuiet("desk_bounds", v);
+648:         } catch (Exception ignored) {
+649:             // ليست حرجة
+650:         }
+651:     }
+652: 
+653:     void restoreBounds() {
+654:         saveBounds = new Timer(800, e -> persistBounds());
+655:         saveBounds.setRepeats(false);
+656:         timers.add(saveBounds);
+657:         try {
+658:             String[] p = db.setting("desk_bounds", "").split(",");
+659:             if (p.length < 4) return;
+660:             Rectangle r = new Rectangle(Integer.parseInt(p[0]), Integer.parseInt(p[1]), Integer.parseInt(p[2]), Integer.parseInt(p[3]));
+661:             Dimension min = frame.getMinimumSize();
+662:             r.width = Math.max(r.width, min.width);
+663:             r.height = Math.max(r.height, min.height);
+664:             boolean visible = false;
+665:             for (GraphicsDevice g : GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices()) {
+666:                 Rectangle sb = g.getDefaultConfiguration().getBounds();
+667:                 Rectangle in = sb.intersection(r);
+668:                 if (!in.isEmpty() && in.width >= 200 && in.height >= 120) visible = true;
+669:             }
+670:             if (!visible) return;   // الشاشة التي كانت عليها لم تعد موجودة: تبقى في الوسط
+671:             frame.setBounds(r);
+672:             if (p.length > 4 && "max".equals(p[4])) frame.setExtendedState(Frame.MAXIMIZED_BOTH);
+673:         } catch (Exception ignored) {
+674:             // قيمة تالفة: الحجم الافتراضي
+675:         }
+676:     }
+677: 
+678:     void go(String key) { go(key, null); }
+679: 
+680:     void go(String key, Object arg) {
+681:         if (locked && !"login".equals(key)) return;
+682:         if (!"cash".equals(key)) CashView.openUntil = 0;   // 10.16: مغادرة الصندوق تقفله (إن كان له قفل)
+683:         if (!allowed(key)) {
+684:             Ui.toast("ليست لديك صلاحية لهذا القسم.");
+685:             return;
+686:         }
+687:         View v = views.get(key);
+688:         if (v == null) {
+689:             Function<App, View> f = factories.get(key);
+690:             if (f == null) return;
+691:             v = f.apply(this);
+692:             v.build();
+693:             views.put(key, v);
+694:             content.add(v, key);
+695:         }
+696:         boolean changed = !key.equals(current);
+697:         // 10.16: سجل تنقل للرجوع بلوحة المفاتيح (Alt+←)
+698:         if ((changed || arg != null && !arg.equals(currentArg)) && current != null && !goingBack && !"login".equals(current)) {
+699:             // 10.18: الرجوع كالهاتف: الذهاب إلى شاشة موجودة في السجل يعيد السجل إلى ما قبلها (فلا يدور الرجوع بين شاشتين،
+700:             // وبعد حفظ حركة والعودة إلى المكتب يرجع «رجوع» إلى ما كان قبل المكتب لا إلى نموذج التسجيل الفارغ)
+701:             Object[] hit = null;
+702:             for (Object[] h : history) if (h[0].equals(key) && java.util.Objects.equals(h[1], arg)) hit = h;
+703:             if (hit != null) {
+704:                 while (!history.isEmpty() && history.peek() != hit) history.pop();
+705:                 history.pop();

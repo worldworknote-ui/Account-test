@@ -1,0 +1,195 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.awt.event.KeyEvent;
+6: import java.util.ArrayList;
+7: import java.util.List;
+8: import javax.swing.*;
+9: 
+10: /**
+11:  * 10.6: «تسجيل حركة قص عملات» بأسلوب «تسجيل حركة»: نبيع للمكتب عملة («لنا» عليه) ونشتري منه أخرى («علينا» له).
+12:  * العملتان بأزرار، والمبلغ المقابل محسوب من السعر (ويمكن تعديله فيُحفظ السعر الفعلي)، وزر قلب العملية، والملخص الحي مع أثرها
+13:  * على الرصيدين قبل الحفظ، ثم نافذة التأكيد بالأرصدة. الساقان مرتبطتان في Db.addFx: تُعتمدان وتُلغيان معًا.
+14:  */
+15: final class FxView extends RecordView {
+16:     OfficeBox office;
+17:     final JPanel sellHolder = holder(), buyHolder = holder();
+18:     Ui.Seg sell, buy, dir;
+19:     final Ui.Field amount = Ui.numeric("0"), counter = Ui.numeric("0"), rate = Ui.numeric("مثال: 0.92 أو 35.4"), desc = Ui.field("البيان (اختياري)");
+20:     final JLabel meaning = Ui.label(" ", 13, Ui.primaryInk, true);
+21:     final List<String> curs = new ArrayList<>();
+22:     boolean manual, quiet;
+23:     /** 10.13: آخر ما كتبه المحاسب المبلغ المشترى، فيُحسب المباع من السعر (الحساب من الطرفين). */
+24:     boolean fromBuy;
+25:     /** 10.8: الخانة فيها سعر البرنامج المقترح (لم يكتب المحاسب سعره). */
+26:     boolean rateAuto = true;
+27:     final JLabel refLine = Ui.label(" ", 12.5f, Ui.goldInk, false);
+28:     Ui.Btn useRef;
+29: 
+30:     /** 10.18: فتح عملية قص مسجّلة للتعديل (من تفاصيل الحركة). */
+31:     static final class Edit {
+32:         final long tx;
+33: 
+34:         Edit(long tx) { this.tx = tx; }
+35:     }
+36: 
+37:     /** ساقا العملية التي تُعدَّل {المباعة، المشتراة}، أو null عند تسجيل جديد. */
+38:     Model.Tx[] editing;
+39:     final JLabel editNote = Ui.label(" ", 13, Ui.warnInk, true);
+40: 
+41:     FxView(App app) { super(app, "تسجيل حركة"); }
+42: 
+43:     @Override void build() {
+44:         office = new OfficeBox("اختر المكتب");
+45:         dir = new Ui.Seg(new String[]{"1 المباعة = ؟ المشتراة", "1 المشتراة = ؟ المباعة"}, null, 0);
+46:         big(amount);
+47:         big(counter);
+48:         big(rate);
+49:         amount.getAccessibleContext().setAccessibleName("المبلغ المباع");
+50:         counter.getAccessibleContext().setAccessibleName("المبلغ المقابل");
+51:         rate.getAccessibleContext().setAccessibleName("السعر");
+52:         JPanel form = Ui.column();
+53:         form.add(kinds(app, RecordMenu.FX, () -> office.get()));
+54:         form.add(Ui.gap(12));
+55:         form.add(Ui.para("قص عملات مع مكتب: نبيع من رصيدنا لديه عملة (تُخصم من رصيدنا) ونأخذ مقابلها عملة أخرى (تُضاف إلى رصيدنا). " + FxDeal.NETTING_NOTE
+56:                 + " تُسجَّل الساقان معًا وتُعتمدان وتُلغيان معًا.", 12.5f, Ui.muted, 460));
+57:         form.add(Ui.gap(10));
+58:         editNote.setVisible(false);
+59:         form.add(editNote);
+60:         form.add(Ui.labeled("المكتب", office));
+61:         form.add(Ui.gap(12));
+62:         Ui.Card sc = side("العملة المباعة من رصيدنا", "تُخصم من رصيدنا لدى المكتب (يجوز أن تتجاوزه)", Ui.red, Ui.debitBg);
+63:         sc.add(sellHolder);
+64:         sc.add(Ui.gap(8));
+65:         sc.add(Ui.labeled("المبلغ المباع", amount));
+66:         form.add(sc);
+67:         form.add(Ui.gap(6));
+68:         form.add(centered(swapButton("قلب العملية", e -> swap())));
+69:         form.add(Ui.gap(6));
+70:         Ui.Card bc = side("العملة المشتراة مقابلها", "تُضاف إلى رصيدنا لدى المكتب", Ui.green, Ui.creditBg);
+71:         bc.add(buyHolder);
+72:         bc.add(Ui.gap(8));
+73:         bc.add(Ui.labeled("المبلغ المقابل (اكتب أحد المبلغين والسعر فيُحسب الآخر)", counter));
+74:         form.add(bc);
+75:         form.add(Ui.gap(14));
+76:         form.add(Ui.labeled("سعر الصرف", dir));
+77:         form.add(Ui.gap(6));
+78:         form.add(rate);
+79:         form.add(Ui.gap(4));
+80:         form.add(meaning);
+81:         // 10.8: سعر البرنامج يُقترح، ويبقى ظاهرًا للاستئناس وإن كتب المحاسب سعره
+82:         form.add(refLine);
+83:         useRef = Ui.ghost("استعمل سعر البرنامج", e -> {
+84:             rateAuto = true;
+85:             manual = false;
+86:             reference();
+87:             calc();
+88:         });
+89:         useRef.setVisible(false);
+90:         form.add(Ui.flow(useRef));
+91:         form.add(Ui.gap(12));
+92:         form.add(Ui.labeled("البيان", desc));
+93:         columns(form, summaryColumn("تسجيل القص", this::save));
+94: 
+95:         office.onChange = () -> {
+96:             if (!building) officeChanged();
+97:         };
+98:         dir.listener = i -> {
+99:             manual = false;
+100:             // السعر المكتوب يُقلب مع الاتجاه حتى لا يتغير معناه
+101:             java.math.BigDecimal r = FxDeal.parseRate(rate.getText());
+102:             if (r != null && !rateAuto) {
+103:                 quiet = true;
+104:                 rate.setText(FxDeal.referenceIn(r, false).toPlainString());
+105:                 quiet = false;
+106:             }
+107:             reference();
+108:             calc();
+109:         };
+110:         amount.getDocument().addDocumentListener(now(() -> {
+111:             if (!quiet) {
+112:                 fromBuy = false;
+113:                 manual = false;
+114:             }
+115:             calc();
+116:         }));
+117:         rate.getDocument().addDocumentListener(now(() -> {
+118:             if (!quiet) {
+119:                 manual = false;
+120:                 rateAuto = rate.getText().trim().isEmpty();
+121:                 useRef.setVisible(!rateAuto && refLine.getText().trim().length() > 0 && !refLine.getText().startsWith("لا يوجد"));
+122:             }
+123:             calc();
+124:         }));
+125:         counter.getDocument().addDocumentListener(now(() -> {
+126:             if (quiet) return;
+127:             if (fromBuy || amount.getText().trim().isEmpty()) {
+128:                 fromBuy = true;
+129:                 calc();
+130:             } else update();
+131:         }));
+132:         counter.addKeyListener(new java.awt.event.KeyAdapter() {
+133:             @Override public void keyTyped(java.awt.event.KeyEvent e) { manual = true; }
+134:         });
+135:         InputMap im = getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
+136:         im.put(Ui.key(KeyEvent.VK_S), "save-fx");
+137:         getActionMap().put("save-fx", new AbstractAction() {
+138:             @Override public void actionPerformed(java.awt.event.ActionEvent e) {
+139:                 if (isShowing()) save();
+140:             }
+141:         });
+142:     }
+143: 
+144:     @Override void refresh() {
+145:         // يحافظ على ما كُتب: يعيد قراءة المكاتب والأرصدة فقط
+146:         building = true;
+147:         Model.Office cur = office.get();
+148:         office.load(cur != null ? cur.id : db.settingLong("last_office", -1), false);
+149:         building = false;
+150:         officeChanged();
+151:         done();
+152:     }
+153: 
+154:     @Override void open(Object arg) {
+155:         if (arg instanceof Edit) {
+156:             loadEdit(((Edit) arg).tx);
+157:             done();
+158:         } else if (arg instanceof Open) {
+159:             setEditing(null);
+160:             clearInputs();
+161:             building = true;
+162:             office.search.setText("");
+163:             office.load(((Open) arg).office, false);
+164:             building = false;
+165:             officeChanged();
+166:             done();
+167:         } else refresh();
+168:     }
+169: 
+170:     void setEditing(Model.Tx[] legs) {
+171:         editing = legs;
+172:         office.combo.setEnabled(legs == null);
+173:         office.search.setEnabled(legs == null);
+174:         editNote.setVisible(legs != null);
+175:         if (save != null) save.setText(legs == null ? "تسجيل القص" : "حفظ التعديل");
+176:         subtitle.setText(legs == null ? "" : "تعديل قص عملات مسجّل");
+177:     }
+178: 
+179:     /** يملأ الشاشة بعملية قص مسجّلة: العملتان والمبلغان كما هما، والسعر الفعلي المحفوظ. */
+180:     void loadEdit(long txId) {
+181:         Model.Tx[] legs = db.fxLegsOf(txId);
+182:         if (legs == null || !legs[0].isActive() || !legs[1].isActive()) {
+183:             Ui.toast("هذه العملية ليست قص عملات نشطًا يمكن تعديله");
+184:             setEditing(null);
+185:             refresh();
+186:             return;
+187:         }
+188:         clearInputs();
+189:         building = true;
+190:         office.search.setText("");
+191:         office.load(legs[0].officeId, false);
+192:         building = false;
+193:         setEditing(legs);
+194:         editNote.setText("تعديل عملية " + Model.shortRef(legs[0].uuid) + " بتاريخ " + Model.date(legs[0].createdAt) + " — تُعكس القديمة وتُسجَّل المصحّحة مكانها بالتاريخ نفسه.");
+195:         officeChanged();

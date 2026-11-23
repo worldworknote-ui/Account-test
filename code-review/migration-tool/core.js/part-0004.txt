@@ -1,0 +1,168 @@
+532:         if (!officeName && sec.fillOffice && prevOffice) officeName = prevOffice;
+533:         // المبالغ
+534:         var parts = [];
+535:         var bad = false;
+536:         var code = null;
+537:         var needCur = function () {
+538:           if (code !== null) return code;
+539:           code = rowCurrency(cfg, sec, row, model, src);
+540:           return code;
+541:         };
+542:         if (sec.layout === "split") {
+543:           [["D", sec.cols.debit], ["C", sec.cols.credit]].forEach(function (x) {
+544:             if (x[1] === undefined) return;
+545:             var p = parseAmount(row[x[1]]);
+546:             if (p.empty || (p.ok && p.zero)) return;
+547:             if (!p.ok) { err(model, src, "مبلغ غير مفهوم: «" + text(row[x[1]]) + "» — " + p.reason); bad = true; return; }
+548:             if (p.neg) { err(model, src, "قيمة سالبة في عمود " + (x[0] === "D" ? "لنا/مدين" : "علينا/دائن") + ": «" + text(row[x[1]]) + "»"); bad = true; return; }
+549:             parts.push({ dir: x[0], p: p });
+550:           });
+551:         } else {
+552:           var pa = parseAmount(row[sec.cols.amount]);
+553:           if (!pa.empty && !(pa.ok && pa.zero)) {
+554:             if (!pa.ok) { err(model, src, "مبلغ غير مفهوم: «" + text(row[sec.cols.amount]) + "» — " + pa.reason); bad = true; }
+555:             else if (sec.layout === "typed") {
+556:               var tv = text(row[sec.cols.type]);
+557:               var dm = cfg.typeMap[officeKey(tv)];
+558:               if (dm === "X") { skip(model, src, "نوع مستبعد: " + tv); continue; }
+559:               if (dm !== "D" && dm !== "C") { err(model, src, tv ? "نوع الحركة «" + tv + "» غير مطابَق (لنا أو علينا)" : "خانة نوع الحركة فارغة"); bad = true; }
+560:               else if (pa.neg) { err(model, src, "مبلغ سالب مع عمود نوع: «" + text(row[sec.cols.amount]) + "»"); bad = true; }
+561:               else parts.push({ dir: dm, p: pa });
+562:             } else {
+563:               var pos = sec.positiveIs || "D";
+564:               parts.push({ dir: pa.neg ? (pos === "D" ? "C" : "D") : pos, p: pa });
+565:             }
+566:           }
+567:         }
+568:         // عمود الرصيد (للتحقق فقط)
+569:         var balCell = sec.cols.balance !== undefined ? row[sec.cols.balance] : null;
+570:         if (bad) continue;
+571:         if (parts.length === 0) {
+572:           if (isOpening && balCell) {
+573:             // «رصيد سابق» مكتوب في عمود الرصيد فقط
+574:             var pb = parseAmount(balCell);
+575:             if (pb.ok && !pb.zero) parts.push({ dir: pb.neg ? (sec.balancePositiveIs === "D" ? "C" : "D") : (sec.balancePositiveIs || "D"), p: pb, fromBalance: true });
+576:           }
+577:           if (parts.length === 0) {
+578:             if (balCell && officeName) recordBalance(model, cfg, sec, officeName, row, balCell, src, needCur);
+579:             skip(model, src, isOpening ? "رصيد سابق صفر" : "صف بلا مبلغ");
+580:             continue;
+581:           }
+582:         }
+583:         if (!officeName) { err(model, src, "يوجد مبلغ بلا اسم مكتب"); continue; }
+584:         prevOffice = officeName;
+585:         var cur = needCur();
+586:         if (cur === null) continue;
+587:         if (cur === "__skip") { skip(model, src, "عملة مستبعدة"); continue; }
+588:         // التاريخ
+589:         var dt = parseDate(row[sec.cols.date], sec.dateOrder, serialToDate);
+590:         if (!dt) {
+591:           var raw = dateRaw;
+592:           var hasInfo = (sec.cols.person !== undefined && text(row[sec.cols.person])) || (sec.descCols || []).some(function (c) { return text(row[c]); });
+593:           if (!raw && sec.fillDate && prevDate && hasInfo) dt = prevDate;
+594:           else if (!raw && isOpening) dt = null;
+595:           else { err(model, src, raw ? "تاريخ غير مفهوم: «" + raw + "»" : "خانة التاريخ فارغة"); continue; }
+596:         }
+597:         if (dt) {
+598:           prevDate = dt;
+599:           if (!firstDate) firstDate = dt;
+600:         }
+601:         var when = dt ? epoch(dt, 12) : null;
+602:         if (when !== null && when > cfg.now + 10 * 60000) { err(model, src, "تاريخ في المستقبل: " + fmtDate(when)); continue; }
+603:         var oi = officeFor(model, officeName, sec.cols.phone !== undefined ? text(row[sec.cols.phone]) : "", cfg);
+604:         // الأجرة
+605:         var feeMinor = 0n;
+606:         if (sec.cols.fee !== undefined && !isOpening) {
+607:           var pf = parseAmount(row[sec.cols.fee]);
+608:           if (!pf.empty && !(pf.ok && pf.zero)) {
+609:             if (!pf.ok || pf.neg) { err(model, src, "أجرة غير مفهومة: «" + text(row[sec.cols.fee]) + "»"); continue; }
+610:             feeMinor = amountMinor(cfg, model, src, pf, cur, "مبلغ الأجرة");
+611:             if (feeMinor === null) continue;
+612:           }
+613:         }
+614:         var person = sec.cols.person !== undefined ? text(row[sec.cols.person]) : "";
+615:         var desc = (sec.descCols || []).map(function (c) { return text(row[c]); }).filter(Boolean).join(" — ");
+616:         var notes = [];
+617:         if (sec.cols.notes !== undefined && text(row[sec.cols.notes])) notes.push(text(row[sec.cols.notes]));
+618:         if (sec.cols.ref !== undefined && text(row[sec.cols.ref])) notes.push("مرجع: " + text(row[sec.cols.ref]));
+619:         notes.push("منقولة من: " + sh.name + " — صف " + (r + 1));
+620:         if (parts.length === 2) model.both++;
+621:         var ok = true;
+622:         var made = [];
+623:         parts.forEach(function (x, k) {
+624:           var m = amountMinor(cfg, model, src, x.p, cur, "المبلغ");
+625:           if (m === null) { ok = false; return; }
+626:           made.push({ dir: flip(x.dir, cfg), minor: m });
+627:         });
+628:         if (!ok) continue;
+629:         if (isOpening) {
+630:           made.forEach(function (x) {
+631:             pendingOpen.push({ office: oi, code: cur, minor: x.dir === "D" ? x.minor : -x.minor, when: when, src: src });
+632:           });
+633:         } else {
+634:           made.forEach(function (x, k) {
+635:             model.txs.push({
+636:               office: oi, when: when, dir: x.dir, minor: x.minor, code: cur, person: person, desc: desc,
+637:               notes: notes.join(" • "), fee: k === 0 ? feeMinor : 0n, feeDir: flip(sec.feeDir || "D", cfg), src: src, seq: model.txs.length
+638:             });
+639:             model.offices[oi].tx++;
+640:           });
+641:         }
+642:         model.used[cur] = true;
+643:         if (balCell) recordBalance(model, cfg, sec, officeName, row, balCell, src, function () { return cur; });
+644:       }
+645:       // أرصدة «سابق» داخل الورقة: تاريخها تاريخ صفها، أو قبل أول حركة في الورقة بدقيقة
+646:       pendingOpen.forEach(function (o) {
+647:         var when = o.when !== null ? o.when : (firstDate ? epoch(firstDate, 12) - 60000 : cfg.openingDate);
+648:         model.openings.push({ office: o.office, code: o.code, minor: o.minor, when: when, src: o.src, inline: true });
+649:         model.offices[o.office].openings++;
+650:       });
+651:     });
+652:   }
+653: 
+654:   function recordBalance(model, cfg, sec, officeName, row, balCell, src, curFn) {
+655:     var p = parseAmount(balCell);
+656:     if (!p.ok || p.empty) return;
+657:     var cur = curFn();
+658:     if (!cur || cur === "__skip") return;
+659:     var def = curDef(cfg, cur);
+660:     if (!def) return;
+661:     var m = toMinor(p, def.dec);
+662:     if (m === null) {
+663:       var f = p.frac.slice(0, def.dec);
+664:       m = toMinor({ int: p.int, frac: f }, def.dec);
+665:     }
+666:     var pos = sec.balancePositiveIs || "D";
+667:     var signed = (p.neg ? (pos === "D" ? -m : m) : (pos === "D" ? m : -m));
+668:     if (cfg.reverse) signed = -signed;
+669:     var key = keyOf(cfg, officeName) + "|" + cur;
+670:     model.lastBalance = model.lastBalance || {};
+671:     model.lastBalance[key] = { minor: signed, src: src };
+672:   }
+673: 
+674:   /** يجمع كل الأقسام ثم يدقق: مكاتب متشابهة، أرصدة متوقعة، أعداد. */
+675:   function build(cfg, input, serialToDate) {
+676:     var model = newModel();
+677:     if (cfg.openings && cfg.openings.enabled) buildOpenings(model, cfg, cfg.openings, input.openingSheets || []);
+678:     if (cfg.txs && cfg.txs.enabled) buildTxs(model, cfg, cfg.txs, input.txSheets || [], serialToDate);
+679:     // تاريخ الأرصدة الافتتاحية: التاريخ المختار، وإلا قبل أول حركة بيوم
+680:     var minTx = null;
+681:     model.txs.forEach(function (t) { if (minTx === null || t.when < minTx) minTx = t.when; });
+682:     model.openings.forEach(function (o) {
+683:       if (o.when === undefined || o.when === null) {
+684:         o.when = cfg.openingDate ? cfg.openingDate : (minTx !== null ? minTx - 86400000 : cfg.now);
+685:       }
+686:     });
+687:     // أسماء متشابهة لم تُدمج
+688:     if (!cfg.mergeSimilar) {
+689:       var groups = {};
+690:       model.offices.forEach(function (o) {
+691:         var k = looseKey(o.name);
+692:         (groups[k] = groups[k] || []).push(o.name);
+693:       });
+694:       Object.keys(groups).forEach(function (k) {
+695:         if (groups[k].length > 1) model.warnings.push("أسماء مكاتب متشابهة قد تكون المكتب نفسه: " + groups[k].join(" / ") + " — فعّل «دمج الأسماء المتشابهة» إن كانت مكتبًا واحدًا.");
+696:       });
+697:     }
+698:     model.offices.forEach(function (o) {
+699:       var v = Object.keys(o.variants);

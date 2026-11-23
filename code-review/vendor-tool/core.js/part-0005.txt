@@ -1,0 +1,177 @@
+703:       if (deviceSpki && f.dk !== (await deviceFingerprint(deviceSpki))) return null;
+704:       return f;
+705:     } catch (e) {
+706:       return null;
+707:     }
+708:   }
+709: 
+710:   // =================================================================================== إيصال التحرير
+711: 
+712:   /** يتحقق من «SA8-REL:» بمفتاح الهاتف القديم المحفوظ في السجل. */
+713:   async function verifyRelease(text, pubB64) {
+714:     if (String(text || "").indexOf("SA8-REL:") < 0) return { ok: false, error: "هذا ليس إيصال تحرير (يبدأ بـ SA8-REL:)" };
+715:     var t = extract(text, "SA8-REL:", "A-Za-z0-9_\\-.", function (c) {
+716:       var d = c.indexOf(".");
+717:       if (d < 1 || d !== c.lastIndexOf(".") || d === c.length - 1) return null;
+718:       parseFields(fromUtf8(b64ToBytes(c.substring(0, d))));
+719:       der(b64ToBytes(c.substring(d + 1)), 0);
+720:       return c;
+721:     });
+722:     if (!t) return { ok: false, error: "الإيصال مبتور أو غير مقروء" };
+723:     var dot = t.indexOf(".");
+724:     try {
+725:       var bodyB = b64ToBytes(t.substring(0, dot)), sig = b64ToBytes(t.substring(dot + 1));
+726:       var f = parseFields(fromUtf8(bodyB));
+727:       var pub = b64ToBytes(pubB64);
+728:       var pk = await subtle.importKey("spki", pub, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+729:       var good = await subtle.verify({ name: "ECDSA", hash: "SHA-256" }, pk, derToRaw(sig, 32), bodyB);
+730:       if (!good) return { ok: false, error: "توقيع الإيصال لا يطابق مفتاح الهاتف المسجّل لهذه الرخصة" };
+731:       if (f.v !== "1" || f.t !== "release") return { ok: false, error: "صيغة الإيصال غير معروفة" };
+732:       if (f.dk !== (await deviceFingerprint(pub))) return { ok: false, error: "الإيصال من هاتف آخر" };
+733:       return { ok: true, lid: f.lid, dk: f.dk, at: Number(f.at), nonce: f.n };
+734:     } catch (e) {
+735:       return { ok: false, error: "الإيصال غير مقروء" };
+736:     }
+737:   }
+738: 
+739:   // =================================================================================== حفظ المفتاح مشفّرًا
+740: 
+741:   async function passKey(pass, salt) {
+742:     var base = await subtle.importKey("raw", utf8(pass), "PBKDF2", false, ["deriveKey"]);
+743:     return subtle.deriveKey({ name: "PBKDF2", salt: salt, iterations: 310000, hash: "SHA-256" }, base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+744:   }
+745: 
+746:   async function sealKey(pkcs8, pass) {
+747:     if (!pass || pass.length < 10) throw new Error("عبارة المرور 10 أحرف على الأقل");
+748:     var salt = getRandom(16), iv = getRandom(12);
+749:     var ct = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv: iv }, await passKey(pass, salt), pkcs8));
+750:     return JSON.stringify({ v: 1, salt: bytesToB64(salt), iv: bytesToB64(iv), ct: bytesToB64(ct) });
+751:   }
+752: 
+753:   async function openKey(sealed, pass) {
+754:     var j = JSON.parse(sealed);
+755:     try {
+756:       var pt = await subtle.decrypt({ name: "AES-GCM", iv: b64ToBytes(j.iv) }, await passKey(pass, b64ToBytes(j.salt)), b64ToBytes(j.ct));
+757:       return importPkcs8(new Uint8Array(pt));
+758:     } catch (e) {
+759:       throw new Error("عبارة المرور غير صحيحة");
+760:     }
+761:   }
+762: 
+763:   // =================================================================================== سجل المبيعات وقواعد النقل
+764: 
+765:   var DAY = 86400000;
+766: 
+767:   /** 12.7: نص ختم سجل المحاولات كما يكتبه التطبيق (LicenseGuard.misuseBody). */
+768:   function misuseBody(log) {
+769:     var b = "SA-MISUSE-1";
+770:     (log || []).forEach(function (x) { if (x) b += "|" + Number(x.at || 0) + "," + (x.lid || "") + "," + (x.of || "") + "," + (x.saw || ""); });
+771:     return b;
+772:   }
+773: 
+774:   /** 12.7: عدد الرخص الفعّالة لهوية مكتب واحدة (أجهزة المكتب). */
+775:   function officeSeats(L, of) {
+776:     return L.licenses.filter(function (l) { return l.of === of && l.status === "active"; }).length;
+777:   }
+778: 
+779:   /** 12.7: هل يُسمح بجهاز آخر لهذا المكتب؟ md = عدد الأجهزة المسموح (فارغ = بلا حد). */
+780:   function seatCheck(L, of, md) {
+781:     if (!of || !md) return { ok: true };
+782:     var n = officeSeats(L, of);
+783:     if (n >= md) return { ok: false, reason: "لهذا المكتب " + n + " أجهزة مرخّصة من " + md + ". زد «عدد أجهزة المكتب» أو انقل رخصة جهاز قديم." };
+784:     return { ok: true, n: n + 1 };
+785:   }
+786: 
+787:   function newLedger() { return { v: 1, next: 1, licenses: [], revoked: [] }; }
+788: 
+789:   function pad(n, w) { n = String(n); while (n.length < w) n = "0" + n; return n; }
+790: 
+791:   function nextLid(L, now) { return "SA-" + new Date(now).getFullYear() + "-" + pad(L.next, 4); }
+792: 
+793:   function ymd(d) { return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate(); }
+794: 
+795:   /** التحديثات: سنة من اليوم افتراضيًا. */
+796:   function defaultUu(now, months) {
+797:     var d = new Date(now);
+798:     d.setMonth(d.getMonth() + (months || 12));
+799:     return ymd(d);
+800:   }
+801: 
+802:   function findLicense(L, lid) {
+803:     for (var i = 0; i < L.licenses.length; i++) if (L.licenses[i].lid === lid) return L.licenses[i];
+804:     return null;
+805:   }
+806: 
+807:   /** الرخصة الأصلية لرقم منقول (SA-2026-0007-T2 ← SA-2026-0007). */
+808:   function baseLid(lid) { return String(lid).replace(/-T\d+$/, ""); }
+809: 
+810:   /** يسجّل بيعًا أو نقلًا بعد الإصدار. */
+811:   function record(L, e, now) {
+812:     var lic = {
+813:       lid: e.lid, base: baseLid(e.lid), order: e.order || "", customer: e.customer || "", phone: e.phone || "", price: e.price || "", note: e.note || "",
+814:       issuedAt: now, uu: e.uu, ft: e.ft || "all", ed: e.ed || "pro", dk: e.dk, pub: e.pub, model: e.model || "", attest: e.attest || "",
+815:       token: e.token, status: "active", lostAt: 0, lim: limitsOf(e), tpl: e.tpl || null, history: [], of: e.of || ""
+816:     };
+817:     if (lic.lid === lic.base) L.next++;
+818:     L.licenses.push(lic);
+819:     return lic;
+820:   }
+821: 
+822:   /** 12.6: الحدود الرقمية وتاريخ الانتهاء من حقول (لتُحفظ في السجل وتنتقل مع الرخصة عند النقل والتعديل). */
+823:   function limitsOf(e) {
+824:     var o = {};
+825:     NUM_KEYS.forEach(function (k) { if (e[k]) o[k] = parseInt(e[k], 10); });
+826:     if (e.ex) o.ex = String(e.ex);
+827:     return o;
+828:   }
+829: 
+830:   /**
+831:    * 12.6: تعديل رخصة قائمة (مستخدم إضافي، مكاتب أكثر، تجديد…): رمز جديد لنفس الهاتف ونفس رقم الرخصة يحل محل القديم في التطبيق.
+832:    * القديم يبقى في سجل الرخصة (history).
+833:    */
+834:   function amend(L, lid, e, now) {
+835:     var lic = findLicense(L, lid);
+836:     if (!lic) throw new Error("الرخصة غير موجودة في السجل");
+837:     if (lic.status !== "active") throw new Error("الرخصة ليست فعّالة (" + lic.status + ")");
+838:     lic.history = lic.history || [];
+839:     lic.history.push({ at: now, token: lic.token, ft: lic.ft, ed: lic.ed, uu: lic.uu, lim: lic.lim || {}, note: e.note || "" });
+840:     lic.token = e.token;
+841:     lic.ft = e.ft;
+842:     lic.ed = e.ed;
+843:     lic.uu = e.uu;
+844:     lic.lim = limitsOf(e);
+845:     lic.tpl = e.tpl || lic.tpl || null;
+846:     lic.amendedAt = now;
+847:     return lic;
+848:   }
+849: 
+850:   /** النقلات خلال 365 يومًا للرخصة الأصلية. */
+851:   function transfersInYear(L, base, now) {
+852:     return L.licenses.filter(function (l) { return l.base === base && l.lid !== base && now - l.issuedAt < 365 * DAY; }).length;
+853:   }
+854: 
+855:   /**
+856:    * هل يجوز النقل الآن؟ بإيصال تحرير صحيح: فورًا. بلا إيصال (هاتف مفقود): بعد 7 أيام من تسجيل الفقد.
+857:    * والحد مرتان في السنة في الحالتين.
+858:    */
+859:   function canTransfer(L, lid, now, withReceipt) {
+860:     var lic = findLicense(L, lid);
+861:     if (!lic) return { ok: false, reason: "الرخصة غير موجودة في السجل" };
+862:     if (lic.status !== "active" && lic.status !== "released") return { ok: false, reason: "الرخصة " + lid + " حالتها: " + lic.status };
+863:     var n = transfersInYear(L, lic.base, now);
+864:     if (n >= 2) return { ok: false, reason: "نُقلت هذه الرخصة مرتين خلال السنة الأخيرة (الحد مرتان)." };
+865:     if (!withReceipt && lic.status !== "released") {
+866:       if (!lic.lostAt) return { ok: false, reason: "سجّل «الهاتف مفقود» أولًا؛ النقل بعد 7 أيام." };
+867:       var left = 7 * DAY - (now - lic.lostAt);
+868:       if (left > 0) return { ok: false, reason: "النقل بلا إيصال متاح بعد " + Math.ceil(left / DAY) + " يوم." };
+869:     }
+870:     return { ok: true, nextLid: lic.base + "-T" + (L.licenses.filter(function (l) { return l.base === lic.base && l.lid !== lic.base; }).length + 1) };
+871:   }
+872: 
+873:   /** بعد إصدار الرخصة المنقولة: القديمة «منقولة» وتُضاف إلى قائمة الإلغاء (للخادم إن وُجد). */
+874:   function markMoved(L, oldLid, newLid) {
+875:     var lic = findLicense(L, oldLid);
+876:     if (lic) {
+877:       lic.status = "moved";
+878:       lic.movedTo = newLid;
+879:     }

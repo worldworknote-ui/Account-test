@@ -1,0 +1,134 @@
+166:     public void setMaxWidth(int w) { maxWidth = w; requestLayout(); }
+167:     public int getMaxWidth() { return maxWidth; }
+168:     public void setMinWidth(int w) { minWidthPx = w; requestLayout(); }
+169:     public int getMinWidth() { return minWidthPx; }
+170:     public void setMaxHeight(int h) { maxHeight = h; requestLayout(); }
+171:     public void setMinHeight(int h) { minHeightPx = h; requestLayout(); }
+172:     public int getMinHeight() { return minHeightPx; }
+173:     public void setWidth(int w) { minWidthPx = w; maxWidth = w; requestLayout(); }
+174:     public void setHeight(int h) { minHeightPx = h; maxHeight = h; requestLayout(); }
+175:     public void setEms(int e) { ems = e; requestLayout(); }
+176:     public void setMinEms(int e) {}
+177:     public void setMaxEms(int e) {}
+178:     public void setHorizontallyScrolling(boolean h) { horizScroll = h; requestLayout(); }
+179:     public void setBreakStrategy(int s) {}
+180:     public void setHyphenationFrequency(int f) {}
+181:     public void setJustificationMode(int m) {}
+182:     public void setAutoSizeTextTypeUniformWithConfiguration(int min, int max, int step, int unit) {
+183:         float d = getResources().getDisplayMetrics().scaledDensity;
+184:         autoMin = Math.round(unit == android.util.TypedValue.COMPLEX_UNIT_SP ? min * d : min);
+185:         autoMax = Math.round(unit == android.util.TypedValue.COMPLEX_UNIT_SP ? max * d : max);
+186:         requestLayout();
+187:     }
+188:     public void setAutoSizeTextTypeWithDefaults(int t) { if (t == AUTO_SIZE_TEXT_TYPE_NONE) autoMin = autoMax = -1; }
+189: 
+190:     // ------------------------------------------------------------------ الصور الجانبية
+191:     public void setCompoundDrawables(Drawable l, Drawable t, Drawable r, Drawable b) { compound[0] = l; compound[1] = t; compound[2] = r; compound[3] = b; compoundRelative = false; requestLayout(); invalidate(); }
+192:     public void setCompoundDrawablesRelative(Drawable s, Drawable t, Drawable e, Drawable b) { compound[0] = s; compound[1] = t; compound[2] = e; compound[3] = b; compoundRelative = true; requestLayout(); invalidate(); }
+193:     public void setCompoundDrawablesWithIntrinsicBounds(Drawable l, Drawable t, Drawable r, Drawable b) {
+194:         for (Drawable d : new Drawable[]{l, t, r, b}) if (d != null) d.setBounds(0, 0, d.getIntrinsicWidth(), d.getIntrinsicHeight());
+195:         setCompoundDrawables(l, t, r, b);
+196:     }
+197:     public void setCompoundDrawablesWithIntrinsicBounds(int l, int t, int r, int b) {
+198:         Context c = getContext();
+199:         setCompoundDrawablesWithIntrinsicBounds(l == 0 ? null : c.getDrawable(l), t == 0 ? null : c.getDrawable(t), r == 0 ? null : c.getDrawable(r), b == 0 ? null : c.getDrawable(b));
+200:     }
+201:     public void setCompoundDrawablesRelativeWithIntrinsicBounds(Drawable s, Drawable t, Drawable e, Drawable b) {
+202:         for (Drawable d : new Drawable[]{s, t, e, b}) if (d != null) d.setBounds(0, 0, d.getIntrinsicWidth(), d.getIntrinsicHeight());
+203:         setCompoundDrawablesRelative(s, t, e, b);
+204:     }
+205:     public void setCompoundDrawablesRelativeWithIntrinsicBounds(int s, int t, int e, int b) {
+206:         Context c = getContext();
+207:         setCompoundDrawablesRelativeWithIntrinsicBounds(s == 0 ? null : c.getDrawable(s), t == 0 ? null : c.getDrawable(t), e == 0 ? null : c.getDrawable(e), b == 0 ? null : c.getDrawable(b));
+208:     }
+209:     public Drawable[] getCompoundDrawables() { return absCompound(); }
+210:     public Drawable[] getCompoundDrawablesRelative() { return compound.clone(); }
+211:     public void setCompoundDrawablePadding(int p) { compoundPad = p; requestLayout(); invalidate(); }
+212:     public int getCompoundDrawablePadding() { return compoundPad; }
+213:     public void setCompoundDrawableTintList(ColorStateList t) { compoundTint = t; for (Drawable d : compound) if (d != null) d.setTintList(t); invalidate(); }
+214:     private Drawable[] absCompound() {
+215:         if (!compoundRelative || !isRtl()) return compound.clone();
+216:         return new Drawable[]{compound[2], compound[1], compound[0], compound[3]};
+217:     }
+218:     private int cw(Drawable d) { return d == null ? 0 : d.getBounds().width() + compoundPad; }
+219:     private int ch(Drawable d) { return d == null ? 0 : d.getBounds().height() + compoundPad; }
+220:     public int getCompoundPaddingLeft() { return getPaddingLeft() + cw(absCompound()[0]); }
+221:     public int getCompoundPaddingRight() { return getPaddingRight() + cw(absCompound()[2]); }
+222:     public int getCompoundPaddingTop() { return getPaddingTop() + ch(compound[1]); }
+223:     public int getCompoundPaddingBottom() { return getPaddingBottom() + ch(compound[3]); }
+224:     public int getTotalPaddingLeft() { return getCompoundPaddingLeft(); }
+225:     public int getTotalPaddingRight() { return getCompoundPaddingRight(); }
+226:     public int getTotalPaddingTop() { return getCompoundPaddingTop(); }
+227: 
+228:     // ------------------------------------------------------------------ الإدخال (للخانات)
+229:     public void setInputType(int t) {
+230:         inputType = t;
+231:         int v = t & InputType.TYPE_MASK_VARIATION;
+232:         boolean pwd = ((t & InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT && (v == InputType.TYPE_TEXT_VARIATION_PASSWORD || v == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD))
+233:                 || ((t & InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_NUMBER && v == InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+234:         if (pwd) transform = PasswordTransformationMethod.getInstance();
+235:         else if (transform instanceof PasswordTransformationMethod) transform = null;
+236:         boolean multi = (t & InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0 && (t & InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT;
+237:         if (this instanceof EditText) setSingleLine(!multi);
+238:         textVersion++;
+239:         invalidate();
+240:     }
+241:     public int getInputType() { return inputType; }
+242:     public void setRawInputType(int t) { inputType = t; }
+243:     public void setImeOptions(int o) { imeOptions = o; }
+244:     public int getImeOptions() { return imeOptions; }
+245:     public void setImeActionLabel(CharSequence l, int id) {}
+246:     public void setOnEditorActionListener(OnEditorActionListener l) { editorListener = l; }
+247:     public void onEditorAction(int code) { if (editorListener != null) editorListener.onEditorAction(this, code, null); }
+248:     protected boolean fireEditorAction() {
+249:         int act = imeOptions & android.view.inputmethod.EditorInfo.IME_MASK_ACTION;
+250:         if (act == 0) act = singleLine ? android.view.inputmethod.EditorInfo.IME_ACTION_DONE : android.view.inputmethod.EditorInfo.IME_ACTION_UNSPECIFIED;
+251:         if (editorListener != null && editorListener.onEditorAction(this, act, new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))) return true;
+252:         if (dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))) return true;
+253:         return false;
+254:     }
+255:     public void setTransformationMethod(TransformationMethod m) { transform = m; textVersion++; requestLayout(); invalidate(); android.view.TextOverlay.textChanged(this); }
+256:     public final TransformationMethod getTransformationMethod() { return transform; }
+257:     public void setKeyListener(KeyListener k) { if (k != null) inputType = k.getInputType(); }
+258:     public KeyListener getKeyListener() { return null; }
+259:     public void setFilters(InputFilter[] f) { filters = f == null ? new InputFilter[0] : f; }
+260:     public InputFilter[] getFilters() { return filters; }
+261:     public void addTextChangedListener(TextWatcher w) { if (w != null && !watchers.contains(w)) watchers.add(w); }
+262:     public void removeTextChangedListener(TextWatcher w) { watchers.remove(w); }
+263:     public void setMovementMethod(MovementMethod m) {}
+264:     public void setLinksClickable(boolean c) {}
+265:     public void setAutoLinkMask(int m) {}
+266:     public void setTextIsSelectable(boolean s) { selectable = s; }
+267:     public boolean isTextSelectable() { return selectable; }
+268:     public void setCursorVisible(boolean v) { cursorVisible = v; }
+269:     public void setSelectAllOnFocus(boolean s) {}
+270:     public void setFreezesText(boolean f) {}
+271:     public void setShowSoftInputOnFocus(boolean s) {}
+272:     public void setHorizontalFadingEdgeEnabled(boolean e) {}
+273:     public void setMarqueeRepeatLimit(int l) {}
+274:     public void setPrivateImeOptions(String o) {}
+275:     public int getSelectionStart() { return -1; }
+276:     public int getSelectionEnd() { return -1; }
+277:     public boolean hasSelection() { return false; }
+278:     public boolean didTouchFocusSelect() { return false; }
+279:     public void setCustomSelectionActionModeCallback(Object c) {}
+280:     public void setCustomInsertionActionModeCallback(Object c) {}
+281: 
+282:     // ------------------------------------------------------------------ التخطيط
+283:     /** النص المعروض بعد التحويل (كلمة السر نقاط). */
+284:     protected CharSequence shown() {
+285:         CharSequence t = text;
+286:         if (transform != null) t = transform.getTransformation(t, this);
+287:         return t;
+288:     }
+289:     private int dirMode() {
+290:         int d = getTextDirection();
+291:         switch (d) {
+292:             case TEXT_DIRECTION_ANY_RTL: return TextLines.DIR_ANY_RTL;
+293:             case TEXT_DIRECTION_LTR: return TextLines.DIR_LTR;
+294:             case TEXT_DIRECTION_RTL: return TextLines.DIR_RTL;
+295:             case TEXT_DIRECTION_LOCALE: return TextLines.DIR_RTL;
+296:             case TEXT_DIRECTION_FIRST_STRONG_LTR: return TextLines.DIR_FIRST;
+297:             default: return TextLines.DIR_FIRST;
+298:         }
+299:     }

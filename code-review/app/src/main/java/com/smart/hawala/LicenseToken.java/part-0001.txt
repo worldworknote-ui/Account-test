@@ -1,0 +1,158 @@
+1: package com.smart.hawala;
+2: 
+3: import java.nio.charset.StandardCharsets;
+4: import java.security.KeyFactory;
+5: import java.security.MessageDigest;
+6: import java.security.Signature;
+7: import java.security.spec.X509EncodedKeySpec;
+8: import java.util.Base64;
+9: import java.util.HashMap;
+10: import java.util.Map;
+11: 
+12: /**
+13:  * التحقق من رمز الترخيص: منطق بحت بلا Android حتى يُختبر على الكمبيوتر.
+14:  *
+15:  * الرمز = Base64url(payload) + "." + Base64url(توقيع ECDSA P-256 بترميز DER).
+16:  * payload = حقول مفتاح=قيمة بينها «;»: v=1، lid رقم الرخصة، ed الإصدار التجاري، ft الميزات، uu آخر تاريخ بناء
+17:  * مشمول بالتحديثات (yyyymmdd)، dk بصمة SHA-256 لمفتاح الهاتف العام (Base64url)، kid معرّف مفتاح التوقيع.
+18:  * المفتاح الخاص عند البائع وحده (أداة الإصدار على جهاز غير متصل)، والتطبيق يحمل المفتاحين العامين فقط:
+19:  * يستطيع التأكد أن الرمز صادر من البائع ولا يستطيع أحد إصدار رمز جديد دونه ولو قرأ الشيفرة كلها.
+20:  */
+21: public final class LicenseToken {
+22:     private LicenseToken() {}
+23: 
+24:     /** المفاتيح العامة المضمّنة: kid ← X.509 بترميز Base64. k2 احتياطي إن تسرّب k1 (تُعاد الرخص بتوقيعه ثم يُسحب k1). */
+25:     public static final Map<String, String> TRUSTED;
+26:     static {
+27:         Map<String, String> m = new HashMap<>();
+28:         m.put("k1", "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE8zlFFLS9w6SXiVoxS62RhtEy2q32XDWj96nAFfvRleporJR5ugSQC4a1tjHVNTt7mFDSOPUcYLb+jYS6AR10hg==");
+29:         m.put("k2", "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEj9ACjhyMfDIK0u2pkPs517eT7AyTC+5TswYFs2mECyytnLgkRQV6TzTEs9Zy3icPNhKqCjjLZj9Ga9xAjghi6Q==");
+30:         TRUSTED = java.util.Collections.unmodifiableMap(m);
+31:     }
+32: 
+33:     public static final class Grant {
+34:         private final Map<String, String> f;
+35: 
+36:         Grant(Map<String, String> f) { this.f = f; }
+37: 
+38:         public String lid() { return f.getOrDefault("lid", ""); }
+39: 
+40:         public String get(String key) { return f.getOrDefault(key, ""); }
+41: 
+42:         /** «all» = كل الميزات المدفوعة. */
+43:         public boolean has(String feature) {
+44:             String ft = "," + f.getOrDefault("ft", "") + ",";
+45:             return ft.contains(",all,") || ft.contains("," + feature + ",");
+46:         }
+47: 
+48:         public long num(String key) {
+49:             try {
+50:                 return Long.parseLong(f.getOrDefault(key, "0"));
+51:             } catch (NumberFormatException e) {
+52:                 return 0;
+53:             }
+54:         }
+55: 
+56:         /** هل هذا البناء ضمن فترة التحديثات؟ buildDate مثل 20261014 يُضمَّن وقت البناء، لا من ساعة الهاتف. */
+57:         public boolean coversBuild(int buildDate) { return num("uu") >= buildDate; }
+58:     }
+59: 
+60:     /** بصمة مفتاح الهاتف كما تُكتب في الرمز (dk). */
+61:     public static String deviceFingerprint(byte[] deviceKeyX509) throws Exception {
+62:         return new String(Base64.getUrlEncoder().withoutPadding().encode(MessageDigest.getInstance("SHA-256").digest(deviceKeyX509)), StandardCharsets.US_ASCII);
+63:     }
+64: 
+65:     /** يرجع null إن لم يصحّ الرمز لهذا الهاتف (توقيع، مفتاح موقّع مجهول، هاتف آخر، رمز مبتور أو فاسد). */
+66:     public static Grant verify(String token, byte[] deviceKeyX509) {
+67:         return verify(token, deviceKeyX509, TRUSTED);
+68:     }
+69: 
+70:     /** بمفاتيح موثوقة محددة (الاختبارات تمرّر مفتاحًا مؤقتًا؛ التطبيق يستعمل المضمّنة فقط). */
+71:     public static Grant verify(String token, byte[] deviceKeyX509, Map<String, String> trusted) {
+72:         try {
+73:             if (token == null || deviceKeyX509 == null) return null;
+74:             token = token.replaceAll("\\s+", "");
+75:             int dot = token.indexOf('.');
+76:             if (dot < 1 || dot != token.lastIndexOf('.') || dot == token.length() - 1) return null;
+77:             Base64.Decoder u = Base64.getUrlDecoder();
+78:             byte[] payload = u.decode(token.substring(0, dot));
+79:             byte[] sig = u.decode(token.substring(dot + 1));
+80:             Map<String, String> f = parse(new String(payload, StandardCharsets.UTF_8));
+81:             if (f == null) return null;
+82:             String pub = f.containsKey("kid") ? trusted.get(f.get("kid")) : null;
+83:             if (pub == null || !"1".equals(f.get("v"))) return null;
+84:             Signature s = Signature.getInstance("SHA256withECDSA");
+85:             s.initVerify(KeyFactory.getInstance("EC").generatePublic(new X509EncodedKeySpec(Base64.getDecoder().decode(pub))));
+86:             s.update(payload);
+87:             if (!s.verify(sig)) return null;
+88:             byte[] want = deviceFingerprint(deviceKeyX509).getBytes(StandardCharsets.US_ASCII);
+89:             if (!MessageDigest.isEqual(want, f.getOrDefault("dk", "").getBytes(StandardCharsets.US_ASCII))) return null;
+90:             if (f.getOrDefault("lid", "").isEmpty()) return null;
+91:             return new Grant(f);
+92:         } catch (Exception e) {
+93:             return null;
+94:         }
+95:     }
+96: 
+97:     /** قراءة الحقول دون تحقق (للعرض في رسالة خطأ فقط، لا للتفعيل). */
+98:     public static Map<String, String> peek(String token) {
+99:         try {
+100:             String t = token.replaceAll("\\s+", "");
+101:             int dot = t.indexOf('.');
+102:             Map<String, String> m = parse(new String(Base64.getUrlDecoder().decode(dot > 0 ? t.substring(0, dot) : t), StandardCharsets.UTF_8));
+103:             return m == null ? new HashMap<>() : m;
+104:         } catch (Exception e) {
+105:             return new HashMap<>();
+106:         }
+107:     }
+108: 
+109:     /**
+110:      * 11.5: طلب التفعيل مضغوطًا (SA8-REQZ:): JSON مضغوط deflate ثم Base64url — أقصر بنحو الثلث من SA8-REQ: فلا ينقسم بسهولة.
+111:      * أداة البائع تقرأ الصيغتين.
+112:      */
+113:     public static String packRequest(String json) {
+114:         java.util.zip.Deflater d = new java.util.zip.Deflater(java.util.zip.Deflater.BEST_COMPRESSION, true);
+115:         d.setInput(json.getBytes(StandardCharsets.UTF_8));
+116:         d.finish();
+117:         java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+118:         byte[] buf = new byte[4096];
+119:         while (!d.finished()) out.write(buf, 0, d.deflate(buf));
+120:         d.end();
+121:         return "SA8-REQZ:" + Base64.getUrlEncoder().withoutPadding().encodeToString(out.toByteArray());
+122:     }
+123: 
+124:     /**
+125:      * 11.5: يستخرج رمز الترخيص من أي نص: ملف المفتاح (.sakey)، رابط smartacc://activate?k=…، رسالة البائع كاملة،
+126:      * أو أجزاء منسوخة من عدة رسائل واتساب (تُحذف بادئات «[التاريخ، الوقت] الاسم:» وتُجمع الأجزاء).
+127:      */
+128:     public static String extract(String raw) {
+129:         if (raw == null) return "";
+130:         String s = raw.replace("SMARTACC-LICENSE", " ");
+131:         int k = s.indexOf("activate?k=");
+132:         if (k >= 0) {
+133:             s = s.substring(k + 11);
+134:             try {
+135:                 s = java.net.URLDecoder.decode(s, "UTF-8");
+136:             } catch (Exception ignored) {
+137:                 // كما هو
+138:             }
+139:         }
+140:         // بادئات واتساب في أول كل سطر
+141:         s = s.replaceAll("(?m)^\\s*\\[?\\d{1,4}[/.\\-]\\d{1,2}(?:[/.\\-]\\d{1,4})?,?\\s+\\d{1,2}:\\d{2}(?::\\d{2})?(?:\\s?[APap]\\.?[Mm]\\.?)?\\]?\\s*(?:-\\s*)?[^:\\n]{1,40}:\\s", "");
+142:         String joined = s.replaceAll("\\s+", "");
+143:         java.util.regex.Matcher m = java.util.regex.Pattern.compile("[A-Za-z0-9_\\-]{20,}\\.[A-Za-z0-9_\\-]{20,}").matcher(joined);
+144:         String best = null;
+145:         while (m.find()) if (best == null || m.group().length() > best.length()) best = m.group();
+146:         return best != null ? best : raw.replaceAll("\\s+", "");
+147:     }
+148: 
+149:     /** null إن تكرر حقل (لا لبس بين ما تعرضه أداة البائع وما يقرؤه التطبيق). */
+150:     static Map<String, String> parse(String s) {
+151:         Map<String, String> m = new HashMap<>();
+152:         for (String kv : s.split(";")) {
+153:             int i = kv.indexOf('=');
+154:             if (i > 0 && m.put(kv.substring(0, i), kv.substring(i + 1)) != null) return null;
+155:         }
+156:         return m;
+157:     }
+158: }

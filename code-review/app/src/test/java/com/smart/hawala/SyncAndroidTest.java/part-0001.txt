@@ -1,0 +1,116 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.Context;
+4: import android.content.ContextWrapper;
+5: import java.io.File;
+6: import java.util.ArrayList;
+7: import java.util.Arrays;
+8: import java.util.HashMap;
+9: import java.util.List;
+10: import java.util.Map;
+11: import java.util.TreeMap;
+12: import org.junit.Assert;
+13: import org.junit.Test;
+14: import org.junit.runner.RunWith;
+15: import org.robolectric.RobolectricTestRunner;
+16: import org.robolectric.RuntimeEnvironment;
+17: import org.robolectric.annotation.Config;
+18: 
+19: @RunWith(RobolectricTestRunner.class)
+20: @Config(sdk = {34}, application = TestApp.class)
+21: public class SyncAndroidTest {
+22: 
+23:     /* JADX INFO: loaded from: SyncAndroidTest$Dev.class */
+24:     static final class Dev extends ContextWrapper {
+25:         final File dir;
+26: 
+27:         Dev(Context base, File dir) {
+28:             super(base);
+29:             this.dir = dir;
+30:             dir.mkdirs();
+31:         }
+32: 
+33:         @Override // android.content.ContextWrapper, android.content.Context
+34:         public File getDatabasePath(String name) {
+35:             return new File(this.dir, name);
+36:         }
+37:     }
+38: 
+39:     static Map<String, String> book(Db db) {
+40:         Map<String, String> m = new TreeMap<>();
+41:         for (Model.Office o : db.offices()) {
+42:             m.put(o.name, db.balances(o.id).toString());
+43:         }
+44:         return m;
+45:     }
+46: 
+47:     static long office(Db db, String name) {
+48:         for (Model.Office o : db.offices()) {
+49:             if (o.name.equals(name)) {
+50:                 return o.id;
+51:             }
+52:         }
+53:         return -1L;
+54:     }
+55: 
+56:     @Test
+57:     public void twoPhones() throws Exception {
+58:         Map<String, String> gf = new HashMap<>();
+59:         gf.put("ft", "all");
+60:         gf.put("lid", "TEST");
+61:         gf.put("uu", "29991231");
+62:         License.current = Entitlements.of(new LicenseToken.Grant(gf), 20261021);
+63:         Context app = RuntimeEnvironment.getApplication();
+64:         File root = new File(System.getProperty("java.io.tmpdir"), "sa-sync-android-" + System.nanoTime());
+65:         FileSyncFolder folder = new FileSyncFolder(new File(root, "shared"));
+66:         new File(root, "shared").mkdirs();
+67:         Db a = new Db(new Dev(app, new File(root, "A")));
+68:         a.getWritableDatabase();
+69:         long nour = a.addOffice("النور", "", "", "", "", "", (Long) null, (Long) null, Arrays.asList("USD", "EUR"), new HashMap(), new ArrayList());
+70:         a.addTx(ShotTest.tx(nour, true, 150000L, "USD", "محمد", "", System.currentTimeMillis()), (List) null);
+71:         SyncEngine ea = new SyncEngine(a, folder);
+72:         ea.create("Sync-Pass-2026".toCharArray(), "A");
+73:         Db b = new Db(new Dev(app, new File(root, "B")));
+74:         b.getWritableDatabase();
+75:         SyncEngine eb = new SyncEngine(b, folder);
+76:         eb.join("Sync-Pass-2026".toCharArray(), false, "B");
+77:         Assert.assertEquals(book(a), book(b));
+78:         long amal = a.addOffice("الأمل", "", "", "", "", "", (Long) null, (Long) null, Arrays.asList("USD"), new HashMap(), new ArrayList());
+79:         a.addTx(ShotTest.tx(amal, false, 70000L, "USD", "سامر", "", System.currentTimeMillis()), (List) null);
+80:         a.addTx(ShotTest.tx(nour, false, 20000L, "USD", "رنا", "", System.currentTimeMillis()), (List) null);
+81:         SyncEngine.Result ra = ea.sync();
+82:         SyncEngine.Result rb = eb.sync();
+83:         System.out.println("A: " + ra.summary() + " | B: " + rb.summary() + " errors=" + rb.errors);
+84:         Assert.assertTrue("B received", rb.received > 0);
+85:         Assert.assertTrue("B has new office", office(b, "الأمل") > 0);
+86:         Assert.assertEquals(book(a), book(b));
+87:         b.addTx(ShotTest.tx(office(b, "الأمل"), true, 5000L, "USD", "خالد", "", System.currentTimeMillis()), (List) null);
+88:         eb.sync();
+89:         SyncEngine.Result ra2 = ea.sync();
+90:         System.out.println("A2: " + ra2.summary() + " errors=" + ra2.errors);
+91:         Assert.assertEquals(book(a), book(b));
+92:         System.out.println("BOOK " + book(a));
+93:         // 10.4: صورة الحركة تصل ملفًا مستقلًا بالبايتات نفسها
+94:         byte[] img = new byte[120000];
+95:         new java.util.Random(3).nextBytes(img);
+96:         long ti = a.addTx(ShotTest.tx(nour, true, 3000L, "USD", "مع صورة", "", System.currentTimeMillis()), Arrays.asList(img));
+97:         ea.sync();
+98:         eb.sync();
+99:         Assert.assertArrayEquals(img, b.attachment(b.attachmentIds(ti).get(0)));
+100:         Assert.assertEquals(1, eb.usage().images);
+101:         long admin = a.addUser("المدير", "ADMIN", (String) null, "123456");
+102:         SmartApp.currentUser = a.user(admin);
+103:         long samer = a.addUser("سامر", "CUSTOM", "VIEW,TX_ADD", "1234");
+104:         SmartApp.currentUser = null;
+105:         ea.sync();
+106:         eb.sync();
+107:         Assert.assertTrue("users on B", b.usersEnabled() && b.users(true).size() == 2);
+108:         Assert.assertTrue("pin works on B", b.verifyPin(samer, "1234"));
+109:         SmartApp.currentUser = b.user(samer);
+110:         Assert.assertTrue(b.allowed(Auth.Perm.TX_ADD) && !b.allowed(Auth.Perm.DELETE));
+111:         SmartApp.currentUser = null;
+112:         System.out.println("PEERS " + SyncEngine.status(b).peers + " LOG " + SyncEngine.history(b).size());
+113:         Assert.assertEquals("", SyncEngine.status(a).lastError);
+114:         Assert.assertEquals("", SyncEngine.status(b).lastError);
+115:     }
+116: }

@@ -1,0 +1,155 @@
+700:       if (v.length > 1) model.warnings.push("دُمجت كتابات مختلفة لاسم المكتب «" + o.name + "»: " + v.join(" / "));
+701:     });
+702:     if (model.both > 0) model.warnings.push(model.both + " صف فيه مبلغ «لنا» ومبلغ «علينا» معًا: سُجّل كل منها حركة مستقلة.");
+703:     return model;
+704:   }
+705: 
+706:   // ===================================================================================
+707:   // كشوفات الحساب: ملف (أو أكثر) لكل مكتب وعملة، كما تصدّرها برامج الحوالات
+708:   // «اسم الحساب» و«العملة» أعلى الكشف، ثم «Pre Balance» وصفوف الحركات بعمود رصيد، ثم «اجمالي الرصيد».
+709:   // الدقة: كل صف يُتحقق منه بعمود الرصيد، والنهاية بسطر الإجمالي؛ الكشف الذي لا يطابق يُرفض كاملًا.
+710:   // ===================================================================================
+711: 
+712:   var PRE_RE = /^(pre\s*-?\s*balance|previous\s*balance|opening\s*balance|b\/f|c\/f|(carried|brought)\s*forward|رصيد\s*منقول|الرصيد\s*المنقول|منقول|رصيد\s*سابق|الرصيد\s*السابق|رصيد\s*ما\s*قبل(\s*الفتر[هة])?|رصيد\s*(اول|أول)\s*المد[هة]|رصيد\s*مدور|الرصيد\s*المدور|رصيد\s*مرحل|الرصيد\s*المرحل)$/i;
+713:   var FOOT_RE = /^((ا|إ)جمالي\s*الرصيد|الرصيد\s*(النهائي|الختامي|الحالي)|رصيد\s*نهاي[هة]\s*الفتر[هة]|closing\s*balance|total\s*balance|balance\s*c\/?f)$/i;
+714:   var META_SKIP_RE = /^(تاريخ\s*(البدايه|البداية|النهايه|النهاية)|من\s*تاريخ|(الى|إلى)\s*تاريخ|من|(الى|إلى)|الفتر[هة]|كشف\s*حساب.*|page\s*\d+.*|صفح[هة]\s*\d+.*|:)$/i;
+715: 
+716:   /** أعمدة صف عناوين الكشف: التاريخ ومدين ودائن والرصيد إلزامية، والبيان اختياري. */
+717:   function stmtHeader(row) {
+718:     if (!row) return null;
+719:     var texts = 0;
+720:     row.forEach(function (c) { if (c && c.s !== undefined) texts++; });
+721:     if (texts < 4) return null;
+722:     var g = guessColumns(row);
+723:     if (g.date === undefined || g.debit === undefined || g.credit === undefined || g.balance === undefined) return null;
+724:     // جدول عام (فيه عمود مكتب أو عملة) ليس كشف حساب واحد
+725:     if (g.office !== undefined || g.currency !== undefined) return null;
+726:     // كل الخلايا المعروفة عناوين نصية لا أرقام
+727:     var ok = [g.date, g.debit, g.credit, g.balance].every(function (i) { return row[i] && row[i].s !== undefined; });
+728:     return ok ? { date: g.date, debit: g.debit, credit: g.credit, balance: g.balance, description: g.description } : null;
+729:   }
+730: 
+731:   /** «1410100092 الخال» أو «الخال 1410100092» أو «الخال - 1410100092». */
+732:   function splitAccount(t) {
+733:     var s = clean(normDigits(t));
+734:     var m = s.match(/^(\d{3,})\s*[-–:]?\s*(\S.*)$/);
+735:     if (m) return { code: m[1], name: clean(m[2]) };
+736:     m = s.match(/^(.*\S)\s*[-–:]?\s*(\d{3,})$/);
+737:     if (m && /[^\d\s]/.test(m[1])) return { code: m[2], name: clean(m[1]) };
+738:     return { code: "", name: s };
+739:   }
+740: 
+741:   /** معلومات الحساب والعملة والفترة من الأسطر التي فوق صف العناوين. */
+742:   function stmtMeta(lines) {
+743:     var meta = { account: null, curText: "", from: null, to: null, title: [] };
+744:     var texts = [];
+745:     lines.forEach(function (row) {
+746:       var cells = row.filter(function (c) { return c && text(c); });
+747:       var label = cells.map(text).join(" ");
+748:       var isFrom = /تاريخ\s*(البدايه|البداية)|من\s*تاريخ|^من\b/.test(label), isTo = /تاريخ\s*(النهايه|النهاية)|(الى|إلى)\s*تاريخ/.test(label);
+749:       cells.forEach(function (c) {
+750:         var t = text(c);
+751:         var dt = parseDate(c, "ymd", null);
+752:         if (dt && /\d{1,4}\s*[\/\-.]\s*\d{1,2}\s*[\/\-.]\s*\d{1,4}/.test(normDigits(t))) {
+753:           if (isFrom && !meta.from) meta.from = dt;
+754:           else if (isTo && !meta.to) meta.to = dt;
+755:           return;
+756:         }
+757:         if (META_SKIP_RE.test(clean(t))) return;
+758:         texts.push(t);
+759:       });
+760:     });
+761:     // العملة: نص يُعرف كعملة؛ الحساب: نص فيه رمز رقمي واسم، وإلا أول نص ليس عملة
+762:     var curIdx = -1;
+763:     for (var i = 0; i < texts.length; i++) if (guessCurrency(texts[i])) { curIdx = i; break; }
+764:     var accIdx = -1;
+765:     for (var j = 0; j < texts.length; j++) {
+766:       if (j === curIdx) continue;
+767:       var a = splitAccount(texts[j]);
+768:       if (a.code && a.name) { accIdx = j; break; }
+769:     }
+770:     if (accIdx < 0) for (var k = 0; k < texts.length; k++) if (k !== curIdx) { accIdx = k; break; }
+771:     if (accIdx >= 0) meta.account = splitAccount(texts[accIdx]);
+772:     if (curIdx >= 0) meta.curText = clean(texts[curIdx]);
+773:     else {
+774:       // عملة غير معروفة (ذهب، عملة محلية…): أول نص بعد الحساب يُعرض للمطابقة
+775:       for (var n = accIdx + 1; n < texts.length; n++) if (n !== accIdx) { meta.curText = clean(texts[n]); break; }
+776:     }
+777:     meta.title = texts.filter(function (x, idx) { return idx !== accIdx && idx !== curIdx; });
+778:     return meta;
+779:   }
+780: 
+781:   function footerOf(row) {
+782:     var cells = row.filter(function (c) { return c && text(c); });
+783:     if (!cells.some(function (c) { return FOOT_RE.test(clean(text(c)).replace(/\s*:\s*$/, "")); })) return null;
+784:     var amount = null, side = null;
+785:     cells.forEach(function (c) {
+786:       var t = clean(text(c));
+787:       if (FOOT_RE.test(t) || t === ":" || /نوع\s*الرصيد/.test(t)) return;
+788:       var p = parseAmount(c);
+789:       if (p.ok && !p.hadText && amount === null) { amount = p; return; }
+790:       var k = looseKey(t);
+791:       if (/دائن|علينا|credit|\bcr\b/i.test(t) || k === looseKey("له")) side = side || "C";
+792:       else if (/مدين|لنا|debit|\bdr\b/i.test(t) || k === looseKey("عليه")) side = side || "D";
+793:       else if (/متوازن|متعادل|صفر|balanced/i.test(t)) side = side || "0";
+794:     });
+795:     return amount ? { p: amount, side: side } : null;
+796:   }
+797: 
+798:   /**
+799:    * يقرأ ملفًا (كل أوراقه بالترتيب) ويعيد الكشوفات التي فيه. صفحات التقرير التي تكرر صف العناوين تُدمج،
+800:    * ويبدأ كشف جديد بعد سطر الإجمالي أو عند ظهور حساب آخر قبل صف عناوين.
+801:    */
+802:   /** هل في الملف كشوفات حساب (صف عناوين كشف وفوقه اسم حساب)؟ */
+803:   function isStatementFile(blocks) {
+804:     return blocks.some(function (b) { return b.account && b.account.name; });
+805:   }
+806: 
+807:   function parseStatements(fileName, sheets) {
+808:     var blocks = [];
+809:     var cur = null, pending = [], since = [];
+810:     function close() { cur = null; pending = []; since = []; }
+811:     sheets.forEach(function (sh) {
+812:       (sh.rows || []).forEach(function (row, r) {
+813:         if (isBlankRow(row)) return;
+814:         var src = { sheet: fileName + (sheets.length > 1 ? " / " + sh.name : ""), row: r + 1 };
+815:         var hc = stmtHeader(row);
+816:         if (hc) {
+817:           var fresh = !cur || cur.footer;
+818:           if (!fresh && since.length) {
+819:             // أسطر نصية بين آخر حركة وهذا العنوان: إن كان فيها حساب آخر فهو كشف جديد
+820:             var m0 = stmtMeta(since);
+821:             if (m0.account && m0.account.name && (m0.account.code ? m0.account.code !== cur.account.code : m0.account.name !== cur.account.name)) {
+822:               pending = since;
+823:               fresh = true;
+824:             }
+825:           }
+826:           if (fresh) {
+827:             var meta = stmtMeta(pending);
+828:             cur = { file: fileName, src: src, cols: hc, account: meta.account || { code: "", name: "" }, curText: meta.curText, from: meta.from, to: meta.to,
+829:               pre: null, rows: [], footer: null, skipped: [], headerRow: src.row };
+830:             blocks.push(cur);
+831:           } else cur.cols = hc;
+832:           pending = [];
+833:           since = [];
+834:           return;
+835:         }
+836:         if (!cur || cur.footer) { pending.push(row); return; }
+837:         var f = footerOf(row);
+838:         if (f) { cur.footer = { p: f.p, side: f.side, src: src }; return; }
+839:         var c = cur.cols;
+840:         var desc = c.description !== undefined ? text(row[c.description]) : "";
+841:         var item = { src: src, desc: desc, date: row[c.date], d: parseAmount(row[c.debit]), c: parseAmount(row[c.credit]), b: parseAmount(row[c.balance]) };
+842:         if (PRE_RE.test(desc) || (!desc && OPENING_RE.test(rowLabel(row)))) {
+843:           if (cur.pre || cur.rows.length) {
+844:             // «رصيد منقول/مرحل» في رأس صفحة تالية: للتحقق من الرصيد فقط، ومجاميعه ليست حركات
+845:             item.d = { empty: true };
+846:             item.c = { empty: true };
+847:             item.carry = true;
+848:             cur.rows.push(item);
+849:             return;
+850:           }
+851:           cur.pre = item;
+852:           return;
+853:         }
+854:         if (item.d.empty && item.c.empty && item.b.empty) {

@@ -1,0 +1,33 @@
+195:         } catch (org.json.JSONException e) {
+196:             throw new IOException("رد غير مفهوم من خادم المزامنة");
+197:         } finally {
+198:             c.disconnect();
+199:         }
+200:     }
+201: 
+202:     /** فحص الخادم قبل الإعداد: يعمل؟ ويقبل رمز الخادم؟ يرجع وصفًا أو يرمي. */
+203:     public String ping() throws IOException {
+204:         HttpURLConnection c = open(base + "/v1/health", "GET", false);
+205:         try {
+206:             int code = c.getResponseCode();
+207:             if (code != 200) throw fail(c, code);
+208:             JSONObject j = new JSONObject(new String(readAll(c.getInputStream()), StandardCharsets.UTF_8));
+209:             if (!"smart-accountant-sync".equals(j.optString("service"))) throw new IOException("العنوان لا يخص خادم مزامنة «المحاسب الذكي»");
+210:             if (j.optBoolean("keyRequired") && serverKey.isEmpty()) throw new IOException("هذا الخادم يطلب «رمز الخادم»");
+211:             if (j.optBoolean("keyRequired") && !j.optBoolean("keyOk")) throw new IOException("«رمز الخادم» غير صحيح");
+212:             return "الخادم يعمل (" + j.optString("version") + ")";
+213:         } catch (org.json.JSONException e) {
+214:             throw new IOException("العنوان لا يخص خادم مزامنة «المحاسب الذكي»");
+215:         } finally {
+216:             c.disconnect();
+217:         }
+218:     }
+219: 
+220:     @Override public String describe() {
+221:         try {
+222:             return "خادمك: " + new URL(base).getHost();
+223:         } catch (Exception e) {
+224:             return "خادمك: " + base;
+225:         }
+226:     }
+227: }

@@ -1,0 +1,170 @@
+619:             a.add(a.text("pinned".equals(mode) ? "لا توجد مكاتب مثبّتة. ثبّت مكتبًا من صفحته (أيقونة الدبوس)." : "لا توجد أرصدة.", 13, a.muted, false));
+620:             return;
+621:         }
+622:         int k = 0;
+623:         for (Model.Office o : list) {
+624:             if (++k > n) break;
+625:             Map<String, Long> b = bal.get(o.id);
+626:             a.body.addView(a.officeHub.officeCard(o, b == null ? new HashMap<String, Long>() : b, dec, a::showHome), a.lp(-1, -2, 4));
+627:         }
+628:     }
+629: 
+630:     private static BigDecimal worth(Map<String, Long> b, Map<String, BigDecimal> usd, Map<String, Integer> dec, boolean us) {
+631:         BigDecimal sum = BigDecimal.ZERO;
+632:         if (b == null) return sum;
+633:         for (Map.Entry<String, Long> e : b.entrySet()) {
+634:             long v = e.getValue();
+635:             if (us ? v <= 0 : v >= 0) continue;
+636:             BigDecimal r = usd.get(e.getKey());
+637:             Integer d = dec.get(e.getKey());
+638:             if (r == null) continue;
+639:             sum = sum.add(Ledger.toUsd(Math.abs(v), d == null ? 2 : d, r));
+640:         }
+641:         return sum;
+642:     }
+643: 
+644:     private void recentTx() {
+645:         if (!a.can(Auth.Perm.VIEW)) return;
+646:         int n = (int) a.db.settingLong("hw_tx_n", 5);
+647:         List<Model.Tx> txs = a.db.recentTx(n);
+648:         a.section("آخر الحركات", "السجل", v -> a.logScreen.show(false));
+649:         if (txs.isEmpty()) {
+650:             a.add(a.text("لا توجد حركات بعد.", 13, a.muted, false));
+651:             return;
+652:         }
+653:         Map<Long, String> names = a.db.officeNames();
+654:         for (final Model.Tx t : txs) {
+655:             LinearLayout c = new LinearLayout(a);
+656:             c.setOrientation(LinearLayout.VERTICAL);
+657:             c.setPadding(a.dp(14), a.dp(10), a.dp(14), a.dp(10));
+658:             c.setBackground(a.ripple(a.round(a.surface, a.line, 16), 16));
+659:             c.addView(a.logScreen.txRow(t, names.get(t.officeId), null));
+660:             c.setOnClickListener(v -> a.logScreen.details(t, a::showHome));
+661:             a.body.addView(c, a.lp(-1, -2, 4));
+662:         }
+663:     }
+664: 
+665:     private void pendingRecons() {
+666:         if (!a.can(Auth.Perm.VIEW)) return;
+667:         List<Model.Office> pending = pendingOffices();
+668:         a.section("المطابقات بانتظار التأكيد", null, null);
+669:         LinearLayout g = a.group();
+670:         Map<Long, Model.Recon> last = a.db.lastReconsByOffice();
+671:         for (final Model.Office o : pending) {
+672:             Model.Recon r = last.get(o.id);
+673:             a.groupRow(g, R.drawable.ic_check2, a.warnInk, o.name, r == null ? null : "أُرسلت " + Model.date(r.createdAt), null, v -> a.officeHub.showOffice(o));
+674:         }
+675:         if (pending.isEmpty()) a.groupRow(g, R.drawable.ic_check, a.green, "لا توجد مطابقات منتظرة", null, null, null);
+676:     }
+677: 
+678:     private void limits() {
+679:         if (!a.can(Auth.Perm.VIEW)) return;
+680:         List<String> all = new ArrayList<>();
+681:         for (Model.Office o : a.db.offices()) all.addAll(a.officesScreen.limitAlerts(o));
+682:         a.section("تجاوز حدود المكاتب", null, null);
+683:         if (all.isEmpty()) {
+684:             a.add(a.text("لا يوجد مكتب تجاوز حده.", 13, a.muted, false));
+685:             return;
+686:         }
+687:         a.notice(R.drawable.ic_warn, Model.join(all, "\n"), true, null, v -> a.balancesScreen.show());
+688:     }
+689: 
+690:     // ===================================================================================
+691:     // آخر المكاتب
+692:     // ===================================================================================
+693: 
+694:     private void recentOffices() {
+695:         if (!a.can(Auth.Perm.VIEW)) return;
+696:         List<Model.Office> list = a.officeHub.recentOffices(6);
+697:         if (list.size() < 6) {
+698:             for (Model.Office o : a.db.offices()) {
+699:                 if (list.size() >= 6) break;
+700:                 boolean has = false;
+701:                 for (Model.Office x : list) if (x.id == o.id) has = true;
+702:                 if (!has && o.pinned) list.add(o);
+703:             }
+704:         }
+705:         if (list.isEmpty() && !a.can(Auth.Perm.OFFICES)) return;
+706:         a.section(list.isEmpty() ? "المكاتب" : "آخر المكاتب", list.isEmpty() ? null : "كل المكاتب", v -> a.officeHub.showList());
+707:         Ui.Flow f = a.flow();
+708:         for (final Model.Office o : list) f.addView(a.pill(o.name, false, v -> a.officeHub.showOffice(o)));
+709:         if (a.can(Auth.Perm.OFFICES)) {
+710:             TextView add = a.pill("+ مكتب جديد", false, v -> a.officesScreen.form(null));
+711:             android.graphics.drawable.GradientDrawable dg = new android.graphics.drawable.GradientDrawable();
+712:             dg.setCornerRadius(a.dp(50));
+713:             dg.setStroke(a.dp(1), Ui.mix(a.muted, a.surface, 0.3f), a.dp(5), a.dp(4));
+714:             add.setBackground(a.ripple(dg, 50));
+715:             add.setTextColor(a.muted);
+716:             f.addView(add);
+717:         }
+718:         a.body.addView(f, a.lp(-1, -2, 4));
+719:     }
+720: 
+721:     // ===================================================================================
+722:     // لصق رسائل واتساب
+723:     // ===================================================================================
+724: 
+725:     private void pasteCard() {
+726:         if (!a.can(Auth.Perm.TX_ADD)) return;
+727:         LinearLayout c = a.row();
+728:         c.setPadding(a.dp(14), a.dp(14), a.dp(14), a.dp(14));
+729:         android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable(
+730:                 android.graphics.drawable.GradientDrawable.Orientation.TL_BR, new int[]{a.primary, Ui.darker(a.primary, 0.8f)});
+731:         g.setCornerRadius(a.dp(18));
+732:         c.setBackground(a.ripple(g, 18));
+733:         FrameLayout ib = new FrameLayout(a);
+734:         android.graphics.drawable.GradientDrawable ig = new android.graphics.drawable.GradientDrawable();
+735:         ig.setColor(Color.argb(36, 255, 255, 255));
+736:         ig.setCornerRadius(a.dp(14));
+737:         ib.setBackground(ig);
+738:         ib.addView(a.icon(R.drawable.ic_paste, Color.WHITE, 24), new FrameLayout.LayoutParams(a.dp(24), a.dp(24), Gravity.CENTER));
+739:         c.addView(ib, new LinearLayout.LayoutParams(a.dp(46), a.dp(46)));
+740:         LinearLayout col = new LinearLayout(a);
+741:         col.setOrientation(LinearLayout.VERTICAL);
+742:         col.setPaddingRelative(a.dp(12), 0, 0, 0);
+743:         TextView t1 = new TextView(a);
+744:         t1.setText("لصق رسائل واتساب");
+745:         t1.setTextSize(16);
+746:         t1.setTextColor(Color.WHITE);
+747:         Ui.bold(t1);
+748:         TextView t2 = new TextView(a);
+749:         t2.setText("في واتساب: حدّد رسالة أو عدة رسائل ← نسخ ← ثم اضغط هنا");
+750:         t2.setTextSize(12);
+751:         t2.setTextColor(Ui.mix(Color.WHITE, a.primary, 0.18f));
+752:         col.addView(t1);
+753:         col.addView(t2);
+754:         c.addView(col, new LinearLayout.LayoutParams(0, -2, 1));
+755:         c.setOnClickListener(v -> pasteFromClipboard());
+756:         a.body.addView(c, a.lp(-1, -2, 10));
+757:         // 12.1: طرق أخرى للنقل: التقاط من الشاشة (ويندوز وماك)، وضع التجميع، القص اليدوي
+758:         // 12.3: أزرار بأيقونات، وحُذف «نافذة واتساب» (الالتقاط فيه «حدد النافذة»)، وأُضيف «قص الرسائل» ظاهرًا
+759:         if (a.can(Auth.Perm.TX_WA)) {
+760:             LinearLayout more = a.row();
+761:             more.setGravity(Gravity.CENTER);
+762:             if (a.waMove.canCapture())
+763:                 more.addView(a.toolChip(R.drawable.ic_capture, "التقاط من الشاشة", 1, v -> a.waMove.openCapture(false)), moreLp(more));
+764:             if (a.waMove.showCollect() || a.waMove.collecting)
+765:                 more.addView(a.toolChip(R.drawable.ic_collect, a.waMove.collecting ? "إيقاف التجميع" : "وضع التجميع", 1,
+766:                         v -> { if (a.waMove.collecting) a.waMove.stopCollect(); else a.waMove.startCollect(); }), moreLp(more));
+767:             if (a.waMove.showCut()) more.addView(a.toolChip(R.drawable.ic_cut, "قص الرسائل", 1, v -> cutFromClipboard()), moreLp(more));
+768:             if (more.getChildCount() > 0) a.body.addView(more, a.lp(-1, -2, 2));
+769:         }
+770:         TextView how = a.text("كيف أنسخ عدة رسائل من واتساب؟", 13, a.primaryInk, true);
+771:         how.setGravity(Gravity.CENTER);
+772:         how.setBackground(a.ripple(null, 10));
+773:         how.setOnClickListener(v -> waHelp());
+774:         a.body.addView(how, new LinearLayout.LayoutParams(-1, -2));
+775:     }
+776: 
+777:     private LinearLayout.LayoutParams moreLp(LinearLayout row) {
+778:         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, a.dp(40), 1);
+779:         if (row.getChildCount() > 0) p.setMarginStart(a.dp(6));
+780:         return p;
+781:     }
+782: 
+783:     /** 12.3: «قص الرسائل» من الرئيسية: النص المنسوخ فيه عدة رسائل ملزوقة يُقطع يدويًا. */
+784:     void cutFromClipboard() {
+785:         WaClip.Read clip = WaClip.read(a);
+786:         String text = clip.text == null ? "" : clip.text.trim();
+787:         if (WaCuts.lines(text).size() < 2) {
+788:             new android.app.AlertDialog.Builder(a).setTitle("قص الرسائل")

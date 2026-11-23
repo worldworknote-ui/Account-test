@@ -1,0 +1,28 @@
+766:   $("lRevoked").addEventListener("click", function () { download("revoked.json", VT.revocationJson(S.ledger)); });
+767:   $("lImport").addEventListener("change", function (ev) {
+768:     var f = ev.target.files[0];
+769:     ev.target.value = "";
+770:     if (!f) return;
+771:     f.text().then(function (t) {
+772:       var j = JSON.parse(t);
+773:       if (!j || j.v !== 1 || !Array.isArray(j.licenses)) throw new Error("ليس ملف سجل من هذه الأداة");
+774:       var have = {};
+775:       S.ledger.licenses.forEach(function (l) { have[l.lid] = 1; });
+776:       var added = 0;
+777:       j.licenses.forEach(function (l) {
+778:         if (!have[l.lid]) {
+779:           S.ledger.licenses.push(l);
+780:           added++;
+781:         }
+782:       });
+783:       (j.revoked || []).forEach(function (r) { if (S.ledger.revoked.indexOf(r) < 0) S.ledger.revoked.push(r); });
+784:       S.ledger.next = Math.max(S.ledger.next, j.next || 1);
+785:       saveLedger();
+786:       renderLedger();
+787:       alert("أُضيفت " + added + " رخصة من النسخة (الموجودة لم تتغير).");
+788:     }).catch(function (e) { alert("تعذر الاستيراد: " + e.message); });
+789:   });
+790: 
+791:   keyState();
+792:   statusState();
+793: })();

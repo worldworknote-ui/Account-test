@@ -1,0 +1,128 @@
+1: // اختبار منطق أداة النقل على بيانات نموذجية بقيم متوقعة محسوبة يدويًا.
+2: // يكتب ملفات .sba وملف توقعات JSON يتحقق منها اختبار Java (MigrationTest) واختبار SQLite.
+3: "use strict";
+4: const fs = require("fs");
+5: const path = require("path");
+6: const XLSX = require("../vendor/xlsx.full.min.js");
+7: const Core = require("../core.js");
+8: const { webcrypto } = require("crypto");
+9: 
+10: const OUT = process.argv[2] || path.join(__dirname, "out");
+11: fs.mkdirSync(OUT, { recursive: true });
+12: let fails = 0;
+13: function check(name, cond, extra) {
+14:   if (cond) console.log("  PASS " + name);
+15:   else { fails++; console.log("  FAIL " + name + (extra !== undefined ? " — " + JSON.stringify(extra, (k, v) => typeof v === "bigint" ? v.toString() : v) : "")); }
+16: }
+17: const rand = (n) => webcrypto.getRandomValues(new Uint8Array(n));
+18: const serial = (v) => { const p = XLSX.SSF.parse_date_code(v); return p ? { y: p.y, m: p.m, d: p.d, H: p.H, M: p.M, S: p.S } : null; };
+19: 
+20: function readBook(wb) {
+21:   const out = {};
+22:   wb.SheetNames.forEach((n) => { out[n] = Core.sheetRows(wb.Sheets[n], XLSX); });
+23:   return out;
+24: }
+25: function roundTrip(wb) {
+26:   // نكتب الملف كـ xlsx ثم نقرؤه كما تفعل الأداة في المتصفح
+27:   const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+28:   return XLSX.read(new Uint8Array(buf), { type: "array", cellNF: true, cellDates: false });
+29: }
+30: 
+31: // ---------------------------------------------------------------------------------- وحدات
+32: console.log("== helpers");
+33: check("amount 1,250.50", JSON.stringify(Core.parseAmount("1,250.50")).includes('"int":"1250","frac":"5"'));
+34: check("amount (300) negative", Core.parseAmount("(300)").neg === true);
+35: check("amount arabic digits ١٬٢٥٠٫٧٥", Core.toMinor(Core.parseAmount("١٬٢٥٠٫٧٥"), 2) === 125075n);
+36: check("amount trailing minus 500-", Core.parseAmount("500-").neg === true);
+37: check("amount float noise", Core.toMinor(Core.parseAmount(0.1 + 0.2), 2) === 30n);
+38: check("amount too many decimals rejected for SYP", Core.toMinor(Core.parseAmount("10.5"), 0) === null);
+39: check("amount 1,000,000", Core.toMinor(Core.parseAmount("1,000,000"), 0) === 1000000n);
+40: check("amount two numbers rejected", Core.parseAmount("100 200").ok === false);
+41: check("date dmy", JSON.stringify(Core.parseDate("03/05/2024", "dmy")).includes('"y":2024,"m":5,"d":3'));
+42: check("date mdy", JSON.stringify(Core.parseDate("05/03/2024", "mdy")).includes('"y":2024,"m":5,"d":3'));
+43: check("date iso with time", Core.parseDate("2024-05-03 10:15", "dmy").H === 10);
+44: check("date invalid 31/02", Core.parseDate("31/02/2024", "dmy") === null);
+45: check("date pm arabic", Core.parseDate("2024/05/03 02:30 م", "dmy").H === 14);
+46: check("fmtMinor", Core.fmtMinor(125075n, 2) === "1,250.75" && Core.fmtMinor(-5n, 2) === "-0.05" && Core.fmtMinor(1250000n, 0) === "1,250,000");
+47: check("total row regex", Core.TOTAL_RE.test("المجموع") && Core.TOTAL_RE.test("الإجمالي:") && !Core.TOTAL_RE.test("مجموعة"));
+48: check("opening regex", Core.OPENING_RE.test("رصيد سابق") && Core.OPENING_RE.test("الرصيد المدور"));
+49: check("currency guesses", Core.guessCurrency("دولار") === "USD" && Core.guessCurrency("ل.س") === "SYP" && Core.guessCurrency("يوز") === "USDT" && Core.guessCurrency("xyz") === null);
+50: check("direction له/عليه", Core.guessDirection("له") === "C" && Core.guessDirection("عليه") === "D" && Core.guessDirection("مدين") === "D");
+51: 
+52: // ---------------------------------------------------------------------------------- السيناريو أ
+53: console.log("== scenario A: balances sheet (wide) + transactions export");
+54: const wbA = XLSX.utils.book_new();
+55: const balAoa = [
+56:   ["كشف أرصدة المكاتب"],
+57:   [],
+58:   ["المكتب", "الهاتف", "USD", "SYP", "EUR"],
+59:   ["كاش شام", "0933123456", 1000.5, -250000, null],
+60:   ["الأمين للصرافة", null, -300, null, 50],
+61:   ["الامين للصرافه", null, 10, null, null],
+62:   ["المجموع", null, 710.5, -250000, 50]
+63: ];
+64: XLSX.utils.book_append_sheet(wbA, XLSX.utils.aoa_to_sheet(balAoa), "الأرصدة");
+65: const txAoa = [
+66:   ["التاريخ", "الحساب", "البيان", "مدين", "دائن", "العملة", "الأجرة", "الرصيد"],
+67:   ["2024/05/01", "كاش شام", "حوالة لأحمد", 500, null, "دولار", 5, null],
+68:   ["02/05/2024", "كاشْ  شام", "تسليم", null, "200.25", "USD", null, null],
+69:   ["2024-05-03 10:15", "الأمين للصرافة", "قبض", "100", null, "$", null, null],
+70:   ["03/05/2024", "كاش شام", "ليرات", null, "1,000,000", "ل.س", null, null],
+71:   [null, null, null, null, null, null, null, null],
+72:   [null, "المجموع", null, 600, "1,000,200.25", null, null, null]
+73: ];
+74: XLSX.utils.book_append_sheet(wbA, XLSX.utils.aoa_to_sheet(txAoa), "الحركات");
+75: const bookA = readBook(roundTrip(wbA));
+76: const hdrBal = Core.guessHeaderRow(bookA["الأرصدة"]);
+77: check("header row guessed for balances", hdrBal === 2, hdrBal);
+78: const hdrTx = Core.guessHeaderRow(bookA["الحركات"]);
+79: check("header row guessed for tx", hdrTx === 0, hdrTx);
+80: const colsTx = Core.guessColumns(bookA["الحركات"][0]);
+81: check("columns guessed", colsTx.date === 0 && colsTx.office === 1 && colsTx.description === 2 && colsTx.debit === 3 && colsTx.credit === 4 && colsTx.currency === 5 && colsTx.fee === 6 && colsTx.balance === 7, colsTx);
+82: 
+83: const now = new Date(2024, 9, 1, 9, 0, 0).getTime();
+84: const currencyMap = {};
+85: ["دولار", "USD", "$", "ل.س"].forEach((t) => { currencyMap[Core.officeKey(t)] = Core.guessCurrency(t); });
+86: const cfgA = {
+87:   now, reverse: false, mergeSimilar: false, currencyMap, typeMap: {}, currencies: {}, sourceName: "test-A.xlsx",
+88:   openings: { enabled: true, headerRow: hdrBal, layout: "wide", positiveIs: "D", cols: { office: 0, phone: 1 },
+89:     wide: [{ col: 2, code: "USD" }, { col: 3, code: "SYP" }, { col: 4, code: "EUR" }], date: new Date(2024, 3, 30, 12).getTime() },
+90:   txs: { enabled: true, headerRow: hdrTx, officeFrom: "column", layout: "split", currencyFrom: "column", dateOrder: "dmy", feeDir: "D",
+91:     cols: colsTx, descCols: [colsTx.description], fillDate: false, balancePositiveIs: "D" }
+92: };
+93: const inputA = { openingSheets: [{ name: "الأرصدة", rows: bookA["الأرصدة"] }], txSheets: [{ name: "الحركات", rows: bookA["الحركات"] }] };
+94: const mA = Core.build(cfgA, inputA, serial);
+95: check("A no errors", mA.errors.length === 0, mA.errors);
+96: check("A offices = 3 (no merge)", mA.offices.length === 3, mA.offices.map((o) => o.name));
+97: check("A similar-name warning", mA.warnings.some((w) => w.includes("متشابهة")));
+98: check("A whitespace variant merged", mA.warnings.some((w) => w.includes("دُمجت")));
+99: check("A openings = 5", mA.openings.length === 5, mA.openings.length);
+100: check("A tx = 4", mA.txs.length === 4, mA.txs.length);
+101: check("A total rows skipped", mA.skipped.filter((x) => x.reason === "صف مجموع").length === 2, mA.skipped);
+102: const TA = Core.tables(mA, cfgA, rand);
+103: check("A all entries balanced", Core.checkBalanced(TA).length === 0);
+104: const repA = Core.report(mA, TA, cfgA);
+105: const byA = {};
+106: repA.rows.forEach((r) => { byA[r.office + "|" + r.code] = r.balance; });
+107: check("A كاش شام USD = +1305.25", byA["كاش شام|USD"] === 130525n, byA);
+108: check("A كاش شام SYP = -1,250,000", byA["كاش شام|SYP"] === -1250000n);
+109: check("A الأمين USD = -200", byA["الأمين للصرافة|USD"] === -20000n);
+110: check("A الأمين EUR = +50", byA["الأمين للصرافة|EUR"] === 5000n);
+111: check("A الامين للصرافه USD = +10 (separate office)", byA["الامين للصرافه|USD"] === 1000n, Object.keys(byA));
+112: const usdA = repA.totals.find((t) => t.code === "USD");
+113: check("A USD totals receivable 1315.25 / payable 200", usdA.receivable === 131525n && usdA.payable === 20000n && usdA.nr === 2 && usdA.np === 1, usdA);
+114: check("A fee entry FEE_REVENUE", TA.journal_lines.some((l) => l.account === "FEE_REVENUE" && l.debit_minor === 0 && l.credit_minor === 500));
+115: check("A tx type text", TA.tx[0].type === "مدين / لنا" && TA.tx[0].fee_type === "الأجرة لنا" && TA.tx[0].fee_minor === 500);
+116: check("A tx sorted by date", TA.tx.every((t, i) => i === 0 || TA.tx[i - 1].created_at <= t.created_at));
+117: check("A opening rows typed", TA.opening_balances.every((o) => o.type === "لنا" || o.type === "علينا") && TA.opening_balances.every((o) => o.amount_minor > 0));
+118: check("A office phone kept", TA.offices[0].phone === "0933123456");
+119: check("A currencies include defaults", ["USD", "EUR", "TRY", "SYP"].every((c) => TA.currencies.some((x) => x.code === c)));
+120: 
+121: // صف بمبلغ غير مفهوم يجب أن يمنع البناء
+122: const txBad = txAoa.slice(0, 5).concat([["2024/05/04", "كاش شام", "خطأ", "abc", null, "USD", null, null]]);
+123: const wbBad = XLSX.utils.book_new();
+124: XLSX.utils.book_append_sheet(wbBad, XLSX.utils.aoa_to_sheet(txBad), "الحركات");
+125: const bookBad = readBook(roundTrip(wbBad));
+126: const mBad = Core.build(Object.assign({}, cfgA, { openings: { enabled: false } }), { txSheets: [{ name: "الحركات", rows: bookBad["الحركات"] }] }, serial);
+127: check("bad amount is a blocking error", mBad.errors.length === 1 && mBad.errors[0].row === 6, mBad.errors);
+128: // عملة غير مطابقة

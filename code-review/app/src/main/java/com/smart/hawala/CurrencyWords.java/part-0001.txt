@@ -1,0 +1,135 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.graphics.Color;
+5: import android.widget.Button;
+6: import android.widget.EditText;
+7: import android.widget.LinearLayout;
+8: import android.widget.TextView;
+9: import java.util.ArrayList;
+10: import java.util.List;
+11: import java.util.Map;
+12: 
+13: /**
+14:  * كلمات العملات التي يضيفها المستخدم (مثل «يوز» = USDT) ليفهمها استخراج المعلومات من رسائل واتساب.
+15:  * تُحفظ في الإعدادات (cur_aliases) فتنتقل مع النسخة الاحتياطية.
+16:  */
+17: final class CurrencyWords {
+18:     private CurrencyWords() {}
+19: 
+20:     static final String KEY = "cur_aliases";
+21: 
+22:     static Map<String, List<String>> load(Db db) { return MessageParser.aliasesFrom(db.setting(KEY, "")); }
+23: 
+24:     private static List<MessageParser.Cur> allCurrencies(Db db) {
+25:         List<MessageParser.Cur> out = new ArrayList<>();
+26:         for (Model.Currency c : db.currencies(true)) out.add(new MessageParser.Cur(c.code, c.name, c.decimals));
+27:         return out;
+28:     }
+29: 
+30:     /** يضيف الكلمة للعملة، أو يعيد سبب الرفض. */
+31:     static String add(Db db, String code, String word) {
+32:         Map<String, List<String>> m = load(db);
+33:         String problem = MessageParser.aliasProblem(word, code, m, allCurrencies(db));
+34:         if (problem != null) return problem;
+35:         List<String> l = m.get(code);
+36:         if (l == null) {
+37:             l = new ArrayList<>();
+38:             m.put(code, l);
+39:         }
+40:         l.add(word.trim());
+41:         db.setSetting(KEY, MessageParser.aliasesTo(m));
+42:         return null;
+43:     }
+44: 
+45:     static void remove(Db db, String code, String word) {
+46:         Map<String, List<String>> m = load(db);
+47:         List<String> l = m.get(code);
+48:         if (l == null) return;
+49:         l.remove(word);
+50:         if (l.isEmpty()) m.remove(code);
+51:         db.setSetting(KEY, MessageParser.aliasesTo(m));
+52:     }
+53: 
+54:     /** من بطاقة المعلومات المستخرجة: الكلمة معروفة، والمستخدم يختار عملتها. */
+55:     static void linkDialog(final MainActivity a, final String word, final List<String> codes, final Runnable after) {
+56:         if (codes.isEmpty()) {
+57:             a.toast("لا توجد عملات. أضف العملة أولًا من شاشة العملات.");
+58:             return;
+59:         }
+60:         Map<String, String> names = a.db.currencyNames();
+61:         String[] items = new String[codes.size()];
+62:         for (int i = 0; i < codes.size(); i++) {
+63:             String n = names.get(codes.get(i));
+64:             items[i] = codes.get(i) + (n == null || n.isEmpty() ? "" : " — " + n);
+65:         }
+66:         new AlertDialog.Builder(a).setTitle("«" + word + "» تعني أي عملة؟")
+67:                 .setItems(items, (d, i) -> {
+68:                     String err = add(a.db, codes.get(i), word);
+69:                     if (err != null) {
+70:                         new AlertDialog.Builder(a).setTitle("لم تُضف الكلمة").setMessage(err).setPositiveButton("حسنًا", null).show();
+71:                         return;
+72:                     }
+73:                     a.toast("من الآن تُفهم «" + word + "» على أنها " + codes.get(i) + ". يمكنك تعديل الكلمات من الإعدادات ← كلمات العملات.");
+74:                     if (after != null) after.run();
+75:                 })
+76:                 .setNegativeButton("إلغاء", null).show();
+77:     }
+78: 
+79:     /** إضافة كلمة لعملة معروفة: النافذة تبقى مفتوحة إن رُفضت الكلمة حتى يصححها المستخدم. */
+80:     static void wordDialog(final MainActivity a, final String code, final Runnable after) {
+81:         final EditText e = a.field("مثال: يوز");
+82:         final AlertDialog dlg = new AlertDialog.Builder(a).setTitle("كلمة جديدة لعملة " + code)
+83:                 .setMessage("اكتب الكلمة كما تأتي في رسائل المكاتب.")
+84:                 .setView(e).setPositiveButton("إضافة", null).setNegativeButton("إلغاء", null).create();
+85:         dlg.setOnShowListener(x -> dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+86:             String err = add(a.db, code, e.getText().toString());
+87:             if (err != null) {
+88:                 e.setError(err);
+89:                 return;
+90:             }
+91:             dlg.dismiss();
+92:             if (after != null) after.run();
+93:         }));
+94:         dlg.show();
+95:     }
+96: 
+97:     /** شاشة الإعدادات: لكل عملة كلماتها المعروفة مسبقًا وكلمات المستخدم مع حذف وإضافة. */
+98:     static void screen(final MainActivity a, final Runnable back) {
+99:         a.here(() -> screen(a, back));
+100:         a.tabbedScreen("كلمات العملات", back, "more");
+101:         a.hint("أضف الكلمات التي تكتبها المكاتب للعملة في رسائل واتساب، مثل «يوز» لعملة USDT. "
+102:                 + "عند لصق الرسالة في البيان تُفهم الكلمة وتُختار عملتها. الكلمات تُحفظ مع النسخة الاحتياطية.");
+103:         if (!"1".equals(a.db.setting("wa_parse", "1"))) a.hint("تنبيه: ميزة استخراج المعلومات من رسائل واتساب متوقفة حاليًا من الإعدادات.");
+104:         final Runnable again = () -> screen(a, back);
+105:         Map<String, List<String>> mine = load(a.db);
+106:         List<Model.Currency> curs = a.db.currencies(false);
+107:         if (curs.isEmpty()) a.hint("لا توجد عملات مفعّلة.");
+108:         for (final Model.Currency c : curs) {
+109:             LinearLayout card = a.card();
+110:             card.addView(a.text(c.code + (c.name == null || c.name.isEmpty() ? "" : " — " + c.name), 16, a.dark, true));
+111:             List<String> known = MessageParser.builtinWords(c.code);
+112:             if (!known.isEmpty()) card.addView(a.text("يعرفها البرنامج: " + Model.join(known, "، "), 12, a.muted, false));
+113:             List<String> l = mine.get(c.code);
+114:             if (l == null || l.isEmpty()) {
+115:                 card.addView(a.text("لا توجد كلمات مضافة.", 13, a.muted, false));
+116:             } else {
+117:                 for (final String w : l) {
+118:                     LinearLayout r = a.row();
+119:                     TextView t = a.text("«" + w + "»", 16, a.green, true);
+120:                     r.addView(t, a.weight(-2, 1, 2));
+121:                     Button del = a.smallButton("حذف", a.red, v -> new AlertDialog.Builder(a).setTitle("حذف الكلمة")
+122:                             .setMessage("لن تُفهم «" + w + "» على أنها " + c.code + " بعد الآن.")
+123:                             .setPositiveButton("حذف", (d, i) -> {
+124:                                 remove(a.db, c.code, w);
+125:                                 again.run();
+126:                             }).setNegativeButton("إلغاء", null).show());
+127:                     r.addView(del, a.weight(40, 0.45f, 2));
+128:                     card.addView(r);
+129:                 }
+130:             }
+131:             card.addView(a.makeButton("+ إضافة كلمة لـ " + c.code, a.accent, v -> wordDialog(a, c.code, again)), a.lp(-1, 44, 3));
+132:         }
+133:         a.hint("العملة غير موجودة في القائمة؟ أضفها أو فعّلها أولًا من شاشة العملات (مثل USDT).");
+134:     }
+135: }

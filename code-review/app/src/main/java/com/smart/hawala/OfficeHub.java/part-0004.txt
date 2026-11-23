@@ -1,0 +1,132 @@
+508:         if (txCurOffice != o.id) {
+509:             txCur = null;
+510:             txCurOffice = o.id;
+511:         }
+512:         final List<String> curs = new ArrayList<>(a.db.officeCurrencies(o.id));
+513:         for (String k : a.db.balances(o.id).keySet()) if (!curs.contains(k)) curs.add(k);
+514:         if (curs.size() > 0) {
+515:             // 12.5: صفّ يلتف إلى سطر ثانٍ بدل التمرير الأفقي، فلا تُقصّ أزرار العملات على الأطراف (أندرويد والكمبيوتر)
+516:             Ui.Flow chips = a.flow();
+517:             List<String> opts = new ArrayList<>();
+518:             opts.add(null);
+519:             opts.addAll(curs);
+520:             for (final String code : opts) {
+521:                 boolean on = code == null ? txCur == null : code.equals(txCur);
+522:                 TextView ch = a.chip(code == null ? "كل العملات" : code, on ? Color.WHITE : a.primaryInk, on ? a.primary : a.surface);
+523:                 ch.setTextSize(13);
+524:                 ch.setPadding(a.dp(14), a.dp(6), a.dp(14), a.dp(7));
+525:                 ch.setOnClickListener(v -> {
+526:                     txCur = code;
+527:                     refresh.run();
+528:                 });
+529:                 chips.addView(ch);
+530:             }
+531:             content.addView(chips, a.lp(-1, -2, 2));
+532:         }
+533:         // أحدث الحركات فقط من قاعدة البيانات (لا تُقرأ كل حركات المكتب)؛ مع عملة محددة: 200 ومعها الرصيد بعد كل حركة
+534:         Db.TxFilter tf = new Db.TxFilter();
+535:         tf.office = o.id;
+536:         tf.currency = txCur;
+537:         tf.limit = txCur == null ? 30 : 200;
+538:         List<Model.Tx> txs = a.db.txLog(tf);
+539:         long total = txs.size() < tf.limit ? txs.size() : a.db.txCount(tf);
+540:         Map<Long, Integer> att = a.db.attachmentCounts(o.id);
+541:         // 10.18: «الرصيد بعدها» تحت كل حركة دائمًا، بعملة الحركة نفسها (ومع عملة مختارة: رصيدها وحدها)
+542:         final Map<Long, Long> after = new java.util.HashMap<>();
+543:         if (txCur != null) after.putAll(a.db.balancesAfter(o.id, txCur));
+544:         else for (String c : curs) after.putAll(a.db.balancesAfter(o.id, c));
+545:         content.addView(a.text("تحت كل حركة: رصيد المكتب بعملتها بعد تسجيلها (للمتابعة والتدقيق).", 12, a.muted, false));
+546:         for (final Model.Tx t : txs) {
+547:             LinearLayout c = new LinearLayout(a);
+548:             c.setOrientation(LinearLayout.VERTICAL);
+549:             c.setPadding(a.dp(14), a.dp(10), a.dp(14), a.dp(10));
+550:             c.setBackground(a.ripple(a.round(a.surface, a.line, 16), 16));
+551:             c.addView(a.logScreen.txRow(t, null, att.get(t.id)));
+552:             if (after.get(t.id) != null) {
+553:                 long b = after.get(t.id);
+554:                 TextView bt = a.text("الرصيد بعدها: " + (b > 0 ? "لنا " : b < 0 ? "علينا " : "") + "\u202A" + a.m(Model.fmt(Math.abs(b), a.db.decimals(t.currency))) + " " + t.currency + "\u202C", 13, b > 0 ? a.green : b < 0 ? a.red : a.muted, true);
+555:                 bt.setPadding(0, a.dp(4), 0, 0);
+556:                 c.addView(bt);
+557:             }
+558:             c.setOnClickListener(v -> a.logScreen.details(t, refresh));
+559:             content.addView(c, a.lp(-1, -2, 4));
+560:         }
+561:         if (txs.isEmpty()) content.addView(a.text("لا توجد حركات على هذا المكتب بعد.", 14, a.muted, false));
+562:         TextView all = a.text(total > 30 ? "كل حركات المكتب (" + total + ") في الكشف" : "الكشف الكامل والتصدير", 14, a.primaryInk, true);
+563:         all.setGravity(Gravity.CENTER);
+564:         all.setPadding(a.dp(8), a.dp(12), a.dp(8), a.dp(12));
+565:         all.setBackground(a.ripple(null, 12));
+566:         all.setOnClickListener(v -> a.statementScreen.show(o));
+567:         content.addView(all, new LinearLayout.LayoutParams(-1, -2));
+568:     }
+569: 
+570:     private void reconTab(final Model.Office o, LinearLayout content, final Runnable refresh) {
+571:         List<Model.Recon> list = a.db.recons(o.id, 20);
+572:         if (list.isEmpty()) content.addView(a.text("لم تُرسل مطابقة رصيد لهذا المكتب بعد. المطابقة ترسل للمكتب رصيده الحالي ليؤكده.", 14, a.muted, false));
+573:         Map<String, String> names = a.db.currencyNames();
+574:         Map<String, Integer> dec = a.db.decimalsMap();
+575:         Reconcile.Template t = a.reconScreen.template();
+576:         for (final Model.Recon r : list) {
+577:             LinearLayout c = new LinearLayout(a);
+578:             c.setOrientation(LinearLayout.VERTICAL);
+579:             c.setPadding(a.dp(14), a.dp(10), a.dp(14), a.dp(10));
+580:             c.setBackground(a.ripple(a.round(a.surface, a.line, 16), 16));
+581:             LinearLayout h = a.row();
+582:             h.addView(a.text(Model.date(r.createdAt), 14, a.ink, true), new LinearLayout.LayoutParams(0, -2, 1));
+583:             boolean ok = Model.RECON_CONFIRMED.equals(r.status), bad = Model.RECON_DISPUTED.equals(r.status);
+584:             h.addView(a.chip(r.statusLabel(), ok ? a.green : bad ? a.red : a.warnInk, ok ? a.creditBg : bad ? a.debitBg : a.warnBg));
+585:             c.addView(h);
+586:             StringBuilder sb = new StringBuilder();
+587:             for (Reconcile.Row x : Reconcile.rows(r.balances, names, dec, null, false)) {
+588:                 if (sb.length() > 0) sb.append("  •  ");
+589:                 sb.append(x.label(false)).append(": ").append(x.amount()).append(" ").append(Reconcile.word(t, x));
+590:             }
+591:             c.addView(a.text(sb.length() == 0 ? "كل الأرصدة صفر" : sb.toString(), 13, a.muted, false));
+592:             if (!r.note.isEmpty()) c.addView(a.text("ملاحظة: " + r.note, 12, a.muted, false));
+593:             c.setOnClickListener(v -> {
+594:                 if (Model.RECON_SENT.equals(r.status) && a.can(Auth.Perm.TX_ADD)) {
+595:                     new AlertDialog.Builder(a).setTitle("مطابقة " + Model.date(r.createdAt))
+596:                             .setItems(new String[]{"✓ أكّد المكتب أن الرصيد مطابق", "✗ الرصيد غير مطابق عند المكتب", "سجل المطابقات الكامل"}, (d, w) -> {
+597:                                 if (w == 0) a.reconScreen.statusDialog(r, Model.RECON_CONFIRMED, refresh);
+598:                                 else if (w == 1) a.reconScreen.statusDialog(r, Model.RECON_DISPUTED, refresh);
+599:                                 else a.reconScreen.showOffice(o);
+600:                             }).show();
+601:                 } else a.reconScreen.showOffice(o);
+602:             });
+603:             content.addView(c, a.lp(-1, -2, 4));
+604:         }
+605:         LinearLayout r = a.row();
+606:         if (a.can(Auth.Perm.EXPORT)) r.addView(a.smallButton("مطابقة جديدة", a.primary, v -> a.reconScreen.sendDialog(o, refresh)), a.weight(44, 1, 2));
+607:         r.addView(a.smallButton("السجل الكامل", Color.rgb(120, 120, 120), v -> a.reconScreen.showOffice(o)), a.weight(44, 1, 2));
+608:         content.addView(r);
+609:     }
+610: 
+611:     private void notifRow(LinearLayout g, final Model.Office o, final String key, String title) {
+612:         LinearLayout r = a.groupRow(g, R.drawable.ic_bell, a.primaryInk, title, Notifier.on(a.db) ? "لهذا المكتب" : "الإشعارات متوقفة من «المزيد ← الإشعارات»", null, null);
+613:         final android.widget.Switch sw = new android.widget.Switch(a);
+614:         sw.setChecked(a.db.officeNotif(key, o.id));
+615:         sw.setOnCheckedChangeListener((b, c) -> {
+616:             a.db.setOfficeNotif(key, o.id, c);
+617:             a.toast(c ? "مفعّل لهذا المكتب" : "متوقف لهذا المكتب");
+618:         });
+619:         r.addView(sw, new LinearLayout.LayoutParams(-2, -2));
+620:         r.setOnClickListener(v -> sw.toggle());
+621:     }
+622: 
+623:     /**
+624:      * 10.18: أمانات المكتب والمبالغ المجمّدة: المفتوح، الإضافة، الفك، والسجل.
+625:      * 12.4: ومعها «الحركات الخاصة» (ناقصة أجور، تحتاج مراجعة، بانتظار التنفيذ…)، وتحويل الخاصة والأمانة والمجمّد لحركات عادية.
+626:      */
+627:     private void holdsTab(final Model.Office o, LinearLayout content, final Runnable refresh) {
+628:         // ---------------- الحركات الخاصة
+629:         final boolean sp = a.can(Auth.Perm.SPECIAL);
+630:         List<Model.Tx> specials = a.db.specials(o.id);
+631:         content.addView(a.text("الحركات الخاصة", 16, a.ink, true), a.lp(-1, -2, 2));
+632:         content.addView(a.text("حركات ناقصة أجور، أو تحتاج مراجعة، أو بانتظار التنفيذ… المحسوبة في الرصيد تظهر في الكشف «معلّقة». "
+633:                 + "حوّلها لحركة عادية حين تكتمل.", 12, a.muted, false));
+634:         if (o.active && sp && a.can(Auth.Perm.TX_ADD)) content.addView(a.smallButton("+ حركة خاصة", a.accent, v -> a.txScreen.showNewSpecial(o)), a.lp(-1, 44, 6));
+635:         if (specials.isEmpty()) content.addView(a.text("لا حركات خاصة قائمة لهذا المكتب.", 14, a.muted, false), a.lp(-1, -2, 4));
+636:         for (final Model.Tx t : specials) {
+637:             LinearLayout c = card();
+638:             LinearLayout hd = a.row();
+639:             hd.setGravity(Gravity.CENTER_VERTICAL);

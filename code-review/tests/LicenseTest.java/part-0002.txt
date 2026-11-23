@@ -1,0 +1,95 @@
+139:         check(free.autoBackupMinHours() == 24 && free.autoBackupEveryTx() == 0, "المجانية: نسخ تلقائي يومي على الأكثر");
+140:         Entitlements pro = Entitlements.of(g, 20261014);
+141:         check(pro.pro && pro.maxOffices() == Entitlements.UNLIMITED && pro.maxTxPerOffice() == Entitlements.UNLIMITED, "الكاملة: بلا حدود");
+142:         check(pro.maxUsers() == Entitlements.UNLIMITED && pro.ai() && !pro.watermark(), "الكاملة: مستخدمون، ذكاء اصطناعي، بلا علامة");
+143:         check(pro.autoBackupMinHours() == 6 && pro.autoBackupEveryTx() == 25, "الكاملة: كل 6 ساعات أو 25 حركة");
+144:         check("2027/12/31".equals(pro.updatesUntil()) && "SA-2026-0001".equals(pro.lid), "تاريخ التحديثات ورقم الرخصة للعرض");
+145:         Entitlements late = Entitlements.of(g, 20280115);
+146:         check(!late.pro && late.maxOffices() == 15 && late.note.contains("2027/12/31"), "بناء بعد فترة التحديثات: مجانية مع سبب واضح");
+147:         LicenseToken.Grant part = verify(token(base(device).replace("ft=all", "ft=offices,export").replace("ed=pro", "ed=مكتب صغير") + ";mo=20", vendor), device);
+148:         Entitlements pe = Entitlements.of(part, 20261014);
+149:         check(pe.pro && pe.maxOffices() == 20 && pe.maxTxPerOffice() == 1500, "ميزات جزئية: mo=20 مكتبًا والحركات بحد المجاني");
+150:         check(pe.maxCashBoxes() == Entitlements.UNLIMITED && pe.maxClients() == Entitlements.UNLIMITED && pe.waPerDay() == Entitlements.UNLIMITED,
+151:                 "رخصة قديمة بلا حدود الصناديق والعملاء: مفتوحة كما كانت (لا ينقص على أحد)");
+152:         check(!pe.ai() && !pe.watermark() && pe.maxUsers() == 1 && "مكتب صغير".equals(pe.edition()), "ميزات جزئية: export بلا علامة، ولا ai ولا users");
+153:         check(Entitlements.of(null, 20261014).maxOffices() == 15, "بلا رمز = مجانية");
+154:         // 12.6: رخصة مخصصة لكل زبون بالأرقام، واشتراك بتاريخ انتهاء
+155:         LicenseToken.Grant cu = verify(token(base(device).replace("ft=all", "ft=offices,tx,users,boxes,clients,export,backup").replace("ed=pro", "ed=أساسية")
+156:                 + ";mo=30;mu=3;mb=2;mc=100;mw=50;bh=3;bn=10;ex=20271231", vendor), device);
+157:         Entitlements ce = Entitlements.of(cu, 20261014, 20270601);
+158:         check(ce.pro && ce.maxOffices() == 30 && ce.maxTxPerOffice() == Entitlements.UNLIMITED && ce.maxUsers() == 3, "مخصصة: 30 مكتبًا، حركات بلا حد، 3 مستخدمين");
+159:         check(ce.maxCashBoxes() == 2 && ce.maxClients() == 100 && ce.waPerDay() == 50, "مخصصة: صندوقان و100 عميل و50 رسالة يوميًا");
+160:         check(ce.autoBackupMinHours() == 3 && ce.autoBackupEveryTx() == 10 && !ce.ai() && "2027/12/31".equals(ce.expires()), "مخصصة: نسخ كل 3 ساعات أو 10 حركات، والاشتراك حتى 2027/12/31");
+161:         Entitlements expired = Entitlements.of(cu, 20261014, 20280101);
+162:         check(!expired.pro && expired.maxOffices() == 15 && expired.note.contains("انتهى"), "بعد انتهاء الاشتراك: المجانية مع سبب واضح");
+163:         check(Entitlements.of(cu, 20261014, 20271231).pro, "يوم الانتهاء نفسه ما زال ساريًا");
+164:         check(Entitlements.userLimitMessage(3).contains("3") && Entitlements.boxLimitMessage(1).contains("صندوق واحد"), "رسائل الحدود تذكر الرقم");
+165: 
+166:         System.out.println("== عدّادات المجاني");
+167:         QuotaState q = QuotaState.parse("o=3;t5=12;t9=499");
+168:         check(q.offices == 3 && q.txOf(5) == 12 && q.txOf(9) == 499 && q.txOf(1) == 0, "قراءة العدّادات");
+169:         check(QuotaState.parse(q.serialize()).serialize().equals(q.serialize()) && q.serialize().equals("o=3;t5=12;t9=499"), "الكتابة ثابتة الترتيب");
+170:         check(QuotaState.parse("o=x;t5=-4;tq=3;;=;t7=2").serialize().equals("o=0;t7=2"), "أجزاء فاسدة أو سالبة تُتجاهل");
+171:         check(QuotaState.parse(null).offices == 0 && QuotaState.parse("").tx.isEmpty(), "فارغ = صفر");
+172:         Map<Long, Long> live = new HashMap<>();
+173:         live.put(5L, 10L);
+174:         live.put(7L, 40L);
+175:         q.raiseTo(2, live);
+176:         check(q.offices == 3 && q.txOf(5) == 12 && q.txOf(7) == 40, "الأرضية ترفع ولا تُنقص");
+177:         q.raiseTo(6, new HashMap<>());
+178:         check(q.offices == 6, "أرضية أكبر ترفع عدد المكاتب");
+179:         q.officeDeleted(7);
+180:         check(q.offices == 5 && q.txOf(7) == 0, "9.0: حذف مكتب له حركات يعيد مكانه فارغًا (ويُحذف عدّاد حركاته)");
+181:         q.officeDeleted(11);
+182:         check(q.offices == 4, "حذف مكتب بلا حركات يعيد مكانه");
+183:         q.officesMerged(5, 9);
+184:         check(q.txOf(9) == 511 && q.txOf(5) == 0, "الدمج يجمع حركات المكتبين في الهدف");
+185:         QuotaState b = new QuotaState();
+186:         b.offices = 14;
+187:         check(b.officeRefusal(free) == null, "المكتب الخامس عشر مسموح");
+188:         b.offices = 15;
+189:         String no = b.officeRefusal(free);
+190:         check(no != null && no.contains("15") && no.contains("الكشوف"), "المكتب السادس عشر مرفوض برسالة تذكر ما يبقى متاحًا");
+191:         check(b.officeRefusal(pro) == null, "الكاملة: لا رفض");
+192:         b.tx.put(4L, 1499L);
+193:         check(b.txRefusal(free, 4, "الأمل") == null, "الحركة 1500 مسموحة");
+194:         b.tx.put(4L, 1500L);
+195:         String nt = b.txRefusal(free, 4, "الأمل");
+196:         check(nt != null && nt.contains("الأمل") && nt.contains("1500") && nt.contains("تصحيح"), "الحركة 1501 مرفوضة باسم المكتب");
+197:         check(b.txRefusal(free, 3, "آخر") == null, "مكتب آخر تحت السقف يبقى يعمل");
+198:         check(b.txRefusal(pro, 4, "الأمل") == null, "الكاملة: لا رفض");
+199:         check(QuotaState.remaining(480, 500) == 20 && QuotaState.remaining(700, 500) == 0 && QuotaState.remaining(5, Entitlements.UNLIMITED) == -1, "المتبقي للعرض");
+200:         // محاكاة: تسجيل 500 حركة ثم الإلغاء لا يعيد شيئًا (العدّاد لا ينقص) والتصحيح لا يُحتسب
+201:         QuotaState sim = new QuotaState();
+202:         for (int i = 0; i < 1500; i++) {
+203:             check1(sim.txRefusal(free, 1, "س") == null);
+204:             sim.tx.put(1L, sim.txOf(1) + 1);
+205:         }
+206:         Map<Long, Long> afterCancel = new HashMap<>();
+207:         afterCancel.put(1L, 1500L);   // الأرضية تحتسب الملغاة
+208:         sim.raiseTo(1, afterCancel);
+209:         check(okAll && sim.txRefusal(free, 1, "س") != null, "1500 حركة تُسجَّل ثم تتوقف الإضافة على المكتب");
+210: 
+211:         System.out.println("== توقيت النسخ التلقائي");
+212:         check(BackupPolicy.intervalHours(6, 1, 24) == 24, "المجانية: إعداد 6 ساعات يُرفع إلى 24");
+213:         check(BackupPolicy.intervalHours(6, 1, 6) == 6, "الكاملة: 6 ساعات");
+214:         check(BackupPolicy.intervalHours(0, 3, 24) == 72 && BackupPolicy.intervalHours(0, 0, 24) == 24, "الإعداد القديم بالأيام");
+215:         check(BackupPolicy.everyTx(-1, 0) == 0 && BackupPolicy.everyTx(25, 0) == 0, "المجانية: لا نسخ بعدد الحركات");
+216:         check(BackupPolicy.everyTx(-1, 25) == 25 && BackupPolicy.everyTx(0, 25) == 0 && BackupPolicy.everyTx(10, 25) == 25 && BackupPolicy.everyTx(50, 25) == 50,
+217:                 "الكاملة: الافتراضي 25، و0 يوقفه، وما دون 25 يُرفع");
+218:         long h = 3600000L, now = 1_800_000_000_000L;
+219:         check(BackupPolicy.due(now, 0, 24, 0, 0), "لا نسخة سابقة: يحين");
+220:         check(!BackupPolicy.due(now, now - 20 * h, 24, 0, 0) && BackupPolicy.due(now, now - 23 * h - 40 * 60000L, 24, 0, 0), "يوميًا مع هامش نصف ساعة");
+221:         check(!BackupPolicy.due(now, now - 2 * h, 24, 24, 25) && BackupPolicy.due(now, now - 2 * h, 24, 25, 25), "بعد 25 حركة يحين قبل الموعد");
+222:         check(!BackupPolicy.due(now, now - 5 * 60000L, 24, 100, 25), "لا نسختان خلال 10 دقائق");
+223:         check(BackupPolicy.due(now, now + 5 * h, 24, 0, 0), "ساعة رجعت إلى الوراء: يُنسخ");
+224: 
+225:         System.out.println("== علامة النسخة المجانية في الملفات");
+226:         Report r = new Report();
+227:         r.title = "كشف تجريبي";
+228:         r.section("USD", "USD").col("التاريخ", 1, Report.TEXT).col("المبلغ", 1, Report.MONEY).row(Report.NORMAL, "2026/10/14", new Report.Money(150000, 2));
+229:         r.stamp(true, "SA-2026-0001");
+230:         check(Report.FREE_MARK.equals(r.watermark) && r.licenseId.isEmpty(), "المجانية: علامة بلا رقم رخصة");
+231:         Map<String, String> xf = xlsx(r);
+232:         check(xf.get("xl/worksheets/sheet1.xml").contains(Report.FREE_MARK), "سطر «نسخة مجانية» ظاهر في الورقة");
+233:         check(xf.get("xl/worksheets/sheet1.xml").contains("<oddFooter>"), "وفي تذييل الطباعة");

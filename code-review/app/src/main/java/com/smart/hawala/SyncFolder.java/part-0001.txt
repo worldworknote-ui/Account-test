@@ -1,0 +1,43 @@
+1: package com.smart.hawala;
+2: 
+3: import java.io.IOException;
+4: import java.util.List;
+5: import java.util.Map;
+6: 
+7: /**
+8:  * 10.0: ناقل المزامنة: مجلد مشترك (Google Drive أو OneDrive أو Dropbox على الماك والويندوز، ومجلد تزامنه أداة مثل Syncthing
+9:  * على الهاتف). السحابة لا ترى إلا ملفات مشفّرة بأسماء معتمة. كل جهاز يكتب ملفاته فقط ولا يعدّل ملف غيره أبدًا.
+10:  */
+11: public interface SyncFolder {
+12:     /** أسماء الملفات التي تبدأ بالبادئة. */
+13:     List<String> list(String prefix) throws IOException;
+14: 
+15:     boolean exists(String name) throws IOException;
+16: 
+17:     /** null إن لم يوجد. */
+18:     byte[] read(String name) throws IOException;
+19: 
+20:     /** كتابة ذرية: ملف مؤقت ثم إعادة تسمية، فلا يرى جهاز آخر ملفًا نصف مكتوب. */
+21:     void write(String name, byte[] data) throws IOException;
+22: 
+23:     /** وصف للمستخدم (المسار أو اسم المجلد). */
+24:     String describe();
+25: 
+26:     /** ملاحظة تشخيصية عن الجولة الأخيرة (مثل: المزوّد ما زال يحدّث القائمة)، أو فارغ. */
+27:     default String note() { return ""; }
+28: 
+29:     /** 10.2: بعد فك مفتاح الخزنة (للنواقل التي تحتاج رمزًا مشتقًا منه، مثل خادم المزامنة). */
+30:     default void unlock(SyncCrypto.Keys keys) {}
+31: 
+32:     /** 10.2: نوع الناقل للعرض: مجلد مشترك، Google Drive، خادم. */
+33:     default String kind() { return "folder"; }
+34: 
+35:     /** 10.4: هل يدعم الناقل حذف الملفات (للتنظيف التلقائي)؟ */
+36:     default boolean canDelete() { return false; }
+37: 
+38:     /** 10.4: يحذف ملفًا (لا خطأ إن لم يوجد). */
+39:     default void delete(String name) throws IOException { throw new IOException("هذه الطريقة لا تدعم حذف الملفات"); }
+40: 
+41:     /** 10.4: حجم كل ملف ووقت تعديله [البايتات، ميلي ثانية]، أو null إن لم يدعمه الناقل. */
+42:     default Map<String, long[]> stat(String prefix) throws IOException { return null; }
+43: }

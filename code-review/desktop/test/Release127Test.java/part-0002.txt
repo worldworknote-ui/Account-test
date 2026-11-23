@@ -1,0 +1,121 @@
+151:             for (Map.Entry<String, long[]> e : ot.perCurrency.entrySet()) {
+152:                 long[] o = old.get(ot.officeId + "/" + e.getKey());
+153:                 long[] n = e.getValue();
+154:                 if (o == null) {
+155:                     if (n[0] != 0 || n[1] != 0) same = false;
+156:                 } else {
+157:                     compared++;
+158:                     if (o[0] != n[0] || o[1] != n[1] || n[2] != o[0] - o[1]) same = false;
+159:                 }
+160:             }
+161:         }
+162:         check(same && compared >= 30, "كل مكتب وعملة: لنا وعلينا والرصيد كما كانت (" + compared + " خانة، مع 300 حركة ملغاة)");
+163:         Model.OfficeTotals one = db.officeTotals(offs.get(3)).get(0);
+164:         boolean sameOne = true;
+165:         for (Map.Entry<String, long[]> e : one.perCurrency.entrySet()) {
+166:             long[] o = old.get(offs.get(3) + "/" + e.getKey());
+167:             if (o != null && (o[0] != e.getValue()[0] || o[1] != e.getValue()[1])) sameOne = false;
+168:         }
+169:         check(sameOne, "ملخص مكتب واحد يطابق أيضًا");
+170:         boolean idx = false;
+171:         try (Cursor c = db.getReadableDatabase().rawQuery("SELECT name FROM sqlite_master WHERE type='index' AND name IN ('idx_lines_bal','idx_tx_status','idx_audit_action')", null)) {
+172:             int n = 0;
+173:             while (c.moveToNext()) n++;
+174:             idx = n == 3;
+175:         }
+176:         check(idx, "الفهارس الجديدة موجودة (بالترحيل نفسه، بلا تغيير في البيانات)");
+177: 
+178:         System.out.println("== 4) البحث بالنص المحلي يطابق البحث القديم");
+179:         String[] terms = {"خالد", "sami", "حوالة رقم 123", "حلب", "1,2", "eur", "مكتب 7", "غير موجود أبدًا"};
+180:         Map<Long, String> on = db.officeNames();
+181:         boolean allSame = true;
+182:         for (String term : terms) {
+183:             String t = term.toLowerCase(Locale.ROOT);
+184:             Db.TxFilter f = new Db.TxFilter();
+185:             f.includeCancelled = true;
+186:             Set<Long> want = new TreeSet<>(), got = new TreeSet<>();
+187:             for (Model.Tx x : db.txLog(f)) {
+188:                 int d = db.decimals(x.currency);
+189:                 String hay = (Model.nz(on.get(x.officeId)) + " " + x.person + " " + x.description + " " + x.notes + " " + x.uuid + " " + Model.nz(x.userName) + " " + Model.nz(x.dest) + " " + x.currency
+190:                         + " " + Model.plain(x.amount, d) + " " + Model.fmt(x.amount, d)).toLowerCase(Locale.ROOT);
+191:                 if (hay.contains(t)) want.add(x.id);
+192:             }
+193:             for (Model.Tx x : db.txSearch(f, t)) got.add(x.id);
+194:             if (!got.containsAll(want)) {
+195:                 allSame = false;
+196:                 System.out.println("      ناقص لـ «" + term + "»: " + want.size() + " مقابل " + got.size());
+197:             }
+198:         }
+199:         check(allSame, "لكل كلمة (اسم، بيان، مبلغ، عملة، اسم مكتب): كل ما كان يجده البحث القديم موجود في المرشّحين");
+200:         long sid = ids.get(5000);
+201:         db.getWritableDatabase().execSQL("UPDATE tx SET person=? WHERE id=?", new Object[]{Crypto.enc("اسم-جديد-تمامًا"), sid});
+202:         Db.TxFilter fa = new Db.TxFilter();
+203:         fa.includeCancelled = true;
+204:         boolean found = false;
+205:         for (Model.Tx x : db.txSearch(fa, "اسم-جديد-تمامًا")) if (x.id == sid) found = true;
+206:         check(found, "تعديل اسم المستفيد (ولو من المزامنة) يحدّث نص البحث تلقائيًا");
+207:         boolean inBackup = false;
+208:         for (String tn : BackupFormat.TABLES) if (tn.equals("tx_search")) inBackup = true;
+209:         check(!inBackup, "نص البحث محلي: لا يدخل النسخة الاحتياطية ولا المزامنة");
+210:         long t0 = System.currentTimeMillis();
+211:         db.txSearch(fa, "محمد");
+212:         long ms = System.currentTimeMillis() - t0;
+213:         check(ms < 1500, "البحث بعد اكتمال النص المحلي: " + ms + " ms");
+214: 
+215:         System.out.println("== 5) فحص سجل العمليات اليومي من آخر نقطة سليمة");
+216:         AuditChain.Result full1 = db.verifyAudit();
+217:         AuditChain.Result inc1 = db.verifyAuditSince();
+218:         check(full1.intact() && inc1.intact(), "الفحص الكامل والمتتابع سليمان");
+219:         db.audit("TEST_AFTER", "test", 1, "سطر بعد النقطة");
+220:         AuditChain.Result inc2 = db.verifyAuditSince();
+221:         check(inc2.intact() && inc2.ok >= 1 && inc2.ok < 50, "الفحص المتتابع قرأ الأسطر الجديدة فقط (" + inc2.ok + ")");
+222:         long midId;
+223:         try (Cursor c = db.getReadableDatabase().rawQuery("SELECT id FROM audit_logs WHERE row_hash IS NOT NULL ORDER BY id LIMIT 1 OFFSET 20", null)) {
+224:             c.moveToFirst();
+225:             midId = c.getLong(0);
+226:         }
+227:         db.getWritableDatabase().execSQL("UPDATE audit_logs SET reason=? WHERE id=?", new Object[]{Crypto.enc("عُدّل"), midId});
+228:         check(!db.verifyAudit().intact(), "تعديل سطر قديم: يكشفه الفحص الكامل (من «الفحص»)");
+229:         db.getWritableDatabase().execSQL("DELETE FROM settings WHERE k='sync_audit_ok'");
+230:         check(!db.verifyAuditSince().intact(), "وبلا نقطة سابقة يفحص المتتابع السجل كله فيكشفه أيضًا");
+231: 
+232:         System.out.println("== 6) ربط الرخصة بالمكتب، وسجل المحاولات المختوم");
+233:         License.requestText(ctx, db, "ORDER-127-FIRST");   // مفتاح الجهاز يُنشأ مع أول طلب (كما في الواقع: لا رمز بلا طلب)
+234:         String mine = LicenseGuard.officeUid(db);
+235:         check(mine.matches("OF-[0-9A-F]{18}") && mine.equals(LicenseGuard.officeUid(db)), "هوية المكتب تُنشأ مرة واحدة وتبقى");
+236:         check(mine.equals(B.setting("office_uid", "")), "الهوية تصل للجهاز المنضم (من اللقطة)");
+237:         Map<String, String> gf = new HashMap<>();
+238:         gf.put("ft", "all");
+239:         gf.put("lid", "SA-TEST-127");
+240:         gf.put("uu", "29991231");
+241:         gf.put("of", mine);
+242:         Entitlements e1 = LicenseGuard.decide(ctx, db, grant(gf));
+243:         check(e1.pro, "رخصة لهذا المكتب: تعمل");
+244:         gf.put("of", "OF-AAAAAAAAAAAAAAAAAA");
+245:         Entitlements e2 = LicenseGuard.decide(ctx, db, grant(gf));
+246:         check(!e2.pro && e2.note.contains("مكتب آخر"), "رخصة مكتب آخر على هذه البيانات: حدود المجاني فورًا، برسالة واضحة");
+247:         File mf = new File(ctx.getFilesDir(), "license-misuse.json");
+248:         JSONObject mis = new JSONObject(new String(Files.readAllBytes(mf.toPath()), StandardCharsets.UTF_8));
+249:         check(mis.getJSONArray("log").length() == 1 && !mis.optString("sig").isEmpty(), "المحاولة سُجّلت مختومة بمفتاح الجهاز");
+250:         LicenseGuard.decide(ctx, db, grant(gf));
+251:         check(new JSONObject(new String(Files.readAllBytes(mf.toPath()), StandardCharsets.UTF_8)).getJSONArray("log").length() == 1, "المحاولة نفسها في اليوم نفسه تُسجَّل مرة واحدة");
+252:         String reqText = License.requestText(ctx, db, "ORDER-127");
+253:         String body = reqText.startsWith("SA8-REQZ:") ? new String(inflate(java.util.Base64.getUrlDecoder().decode(reqText.substring(9))), StandardCharsets.UTF_8)
+254:                 : new String(java.util.Base64.getUrlDecoder().decode(reqText.substring(8)), StandardCharsets.UTF_8);
+255:         JSONObject rq = new JSONObject(body);
+256:         check(mine.equals(rq.optString("of")) && rq.optJSONArray("mis") != null && rq.getJSONArray("mis").length() == 1 && !rq.optString("misSig").isEmpty(),
+257:                 "طلب التفعيل يحمل هوية المكتب وسجل المحاولات وختمه");
+258:         java.security.Signature sv = java.security.Signature.getInstance("SHA256withECDSA");
+259:         sv.initVerify(java.security.KeyFactory.getInstance("EC").generatePublic(new java.security.spec.X509EncodedKeySpec(java.util.Base64.getDecoder().decode(rq.getString("pub")))));
+260:         String mb = (String) call(LicenseGuard.class, "misuseBody", new Class<?>[]{JSONArray.class}, rq.getJSONArray("mis"));
+261:         sv.update(mb.getBytes(StandardCharsets.UTF_8));
+262:         check(sv.verify(java.util.Base64.getUrlDecoder().decode(rq.getString("misSig"))), "الختم يتحقق بالمفتاح العام في الطلب (كما تفعل أداة البائع)");
+263:         if (data != null) {
+264:             Files.write(new File(data, "request-127.txt").toPath(), reqText.getBytes(StandardCharsets.UTF_8));
+265:             System.out.println("      كُتب tests/data/request-127.txt (طلب اصطناعي لاختبار أداة البائع)");
+266:         }
+267:         gf.remove("of");
+268:         check(LicenseGuard.decide(ctx, db, grant(gf)).pro, "رخصة قديمة بلا هوية مكتب: تعمل كما كانت");
+269:         // خزنة أقدم من 12.7: الجهاز المنضم لا يُنشئ هوية بنفسه؛ الرئيسي يُنشئها في المزامنة فتصل للكل
+270:         // كأنها قبل 12.7: لا هوية على الجهازين (حذف لا يُزامَن)
+271:         for (Db x : new Db[]{db, B}) {

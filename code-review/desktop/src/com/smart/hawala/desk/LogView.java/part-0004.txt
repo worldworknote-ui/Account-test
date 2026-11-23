@@ -1,0 +1,48 @@
+483:                 String why = Ui.input(parent, "إلغاء الحركة", "تُلغى الحركة بقيد عكسي (لا يُحذف شيء) وتبقى ظاهرة كملغاة." + (t.isFx() ? "\nتُلغى ساقا التبديل معًا." : t.isTransfer() ? "\nتُلغى ساقا التحويل بين المكتبين معًا." : "") + "\n\nسبب الإلغاء:", "");
+484:                 if (why == null) return;
+485:                 if (why.trim().isEmpty()) {
+486:                     Ui.toast("سبب الإلغاء مطلوب");
+487:                     return;
+488:                 }
+489:                 db.cancelTx(t.id, why);
+490:                 app.changed();
+491:                 Ui.toast("أُلغيت الحركة بقيد عكسي");
+492:                 refreshCurrent(app);
+493:             } else if (c.startsWith("الصور")) {
+494:                 showImages(parent, db, imgs);
+495:             } else if ("نسخ".equals(c)) {
+496:                 Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(b.toString()), null);
+497:                 Ui.toast("نُسخت التفاصيل");
+498:             }
+499:         } catch (Exception e) {
+500:             Ui.error(parent, e);
+501:         }
+502:     }
+503: 
+504:     static void refreshCurrent(App app) {
+505:         View v = app.views.get(app.current);
+506:         if (v instanceof OfficeView) v.refresh();
+507:         else if (v != null) v.refresh();
+508:     }
+509: 
+510:     static void showImages(Component parent, Db db, List<Long> ids) {
+511:         JPanel c = Ui.column();
+512:         for (Long id : ids) {
+513:             try {
+514:                 BufferedImage im = ImageIO.read(new java.io.ByteArrayInputStream(db.attachment(id)));
+515:                 if (im == null) continue;
+516:                 double s = Math.min(1, 640.0 / im.getWidth());
+517:                 Image sc = im.getScaledInstance((int) (im.getWidth() * s), (int) (im.getHeight() * s), Image.SCALE_SMOOTH);
+518:                 JLabel l = new JLabel(new ImageIcon(sc));
+519:                 l.setAlignmentX(Component.RIGHT_ALIGNMENT);
+520:                 c.add(l);
+521:                 c.add(Ui.gap(10));
+522:             } catch (Exception ignored) {
+523:                 c.add(Ui.label("(صورة غير قابلة للعرض)", 13, Ui.muted, false));
+524:             }
+525:         }
+526:         JScrollPane sp = new JScrollPane(c);
+527:         sp.setPreferredSize(new Dimension(700, 560));
+528:         Ui.form(parent, "صور الوصل", sp, "إغلاق");
+529:     }
+530: }

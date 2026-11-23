@@ -1,0 +1,114 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import javax.swing.*;
+6: 
+7: /**
+8:  * 10.16: قفل البرنامج بكلمة سر على الكمبيوتر حين لا يكون نظام المستخدمين مفعّلًا (في الهاتف: قفل التطبيق).
+9:  * تُطلب عند الفتح، وبعد مدة الخمول، وعند «قفل البرنامج». تُحفظ بصمتها فقط (مملّحة) في إعدادات هذا الجهاز.
+10:  * مع نظام المستخدمين يبقى الدخول برمز المستخدم كما هو.
+11:  */
+12: final class DeskLock {
+13:     private DeskLock() {}
+14: 
+15:     static boolean on(Db db) { return !db.usersEnabled() && !db.setting("desk_lock_hash", "").isEmpty(); }
+16: 
+17:     /** يطلب كلمة السر حتى تصح. false = اختار المستخدم إغلاق البرنامج. */
+18:     static boolean ask(Component parent, Db db) {
+19:         while (true) {
+20:             long until = db.settingLong("desk_lock_until", 0);
+21:             long wait = until - Clock.now();
+22:             JPasswordField f = Ui.password();
+23:             JPanel q = Ui.column();
+24:             q.add(Ui.label("البرنامج مقفل. اكتب كلمة سر القفل.", 14, Ui.ink, true));
+25:             if (wait > 0) q.add(Ui.label("محاولات خاطئة كثيرة: انتظر " + Math.max(1, wait / 1000) + " ثانية ثم حاول.", 13, Ui.red, false));
+26:             q.add(Ui.gap(8));
+27:             q.add(f);
+28:             SwingUtilities.invokeLater(f::requestFocusInWindow);
+29:             JOptionPane p = new JOptionPane(Ui.rtl(q), JOptionPane.PLAIN_MESSAGE, JOptionPane.DEFAULT_OPTION, null, new Object[]{"فتح", "إغلاق البرنامج"}, "فتح");
+30:             Ui.show(parent, p, "المحاسب الذكي — مقفل");
+31:             if ("إغلاق البرنامج".equals(p.getValue())) return false;
+32:             if (db.settingLong("desk_lock_until", 0) > Clock.now()) continue;
+33:             if (Pin.verify(new String(f.getPassword()), db.setting("desk_lock_salt", ""), db.setting("desk_lock_hash", ""))) {
+34:                 db.setSettingQuiet("desk_lock_fails", "0");
+35:                 return true;
+36:             }
+37:             int fails = (int) db.settingLong("desk_lock_fails", 0) + 1;
+38:             db.setSettingQuiet("desk_lock_fails", "" + fails);
+39:             long w = Pin.lockoutMillis(fails);
+40:             if (w > 0) db.setSettingQuiet("desk_lock_until", "" + (Clock.now() + w));
+41:         }
+42:     }
+43: 
+44:     private static boolean showing;
+45: 
+46:     /** يحجب النافذة ثم يطلب كلمة السر (من الخمول أو من «قفل البرنامج»). */
+47:     static void lockNow(App app) {
+48:         if (showing || !on(app.db) || App.frame == null) return;
+49:         showing = true;
+50:         Component old = App.frame.getGlassPane();
+51:         JPanel cover = new JPanel(new GridBagLayout());
+52:         cover.setBackground(Ui.bg);
+53:         cover.add(Ui.label(" البرنامج مقفل", 22, Ui.muted, true));
+54:         cover.addMouseListener(new java.awt.event.MouseAdapter() {});
+55:         App.frame.setGlassPane(cover);
+56:         cover.setVisible(true);
+57:         app.locked = true;
+58:         try {
+59:             if (!ask(App.frame, app.db)) app.quit();
+60:         } finally {
+61:             app.locked = false;
+62:             cover.setVisible(false);
+63:             App.frame.setGlassPane(old);
+64:             app.lastInput = Clock.now();
+65:             showing = false;
+66:         }
+67:     }
+68: 
+69:     /** من الإعدادات: تعيين كلمة السر أو تغييرها أو إلغاء القفل. */
+70:     static void setup(Component parent, Db db, Runnable after) {
+71:         if (db.usersEnabled()) {
+72:             Ui.info(parent, "قفل البرنامج", "نظام المستخدمين مفعّل: الدخول برمز كل مستخدم، والقفل بعد الخمول من الخانة نفسها هنا.");
+73:             return;
+74:         }
+75:         boolean has = !db.setting("desk_lock_hash", "").isEmpty();
+76:         JPasswordField old = Ui.password(), p1 = Ui.password(), p2 = Ui.password();
+77:         JPanel q = Ui.column();
+78:         q.add(Ui.para("كلمة سر تُطلب عند فتح البرنامج وبعد مدة الخمول على هذا الجهاز (4 أحرف أو أرقام على الأقل). "
+79:                 + "احفظها جيدًا: نسيانها يمنع فتح البرنامج على هذا الجهاز." + (has ? " لإلغاء القفل اترك الخانتين الجديدتين فارغتين." : ""), 13.5f, Ui.ink, 430));
+80:         q.add(Ui.gap(8));
+81:         if (has) q.add(Ui.labeled("كلمة السر الحالية", old));
+82:         q.add(Ui.labeled(has ? "كلمة السر الجديدة" : "كلمة السر", p1));
+83:         q.add(Ui.labeled("تأكيدها", p2));
+84:         if (!Ui.form(parent, "قفل البرنامج بكلمة سر", q, "حفظ")) return;
+85:         if (has && !Pin.verify(new String(old.getPassword()), db.setting("desk_lock_salt", ""), db.setting("desk_lock_hash", ""))) {
+86:             Ui.toast("كلمة السر الحالية غير صحيحة");
+87:             return;
+88:         }
+89:         String s1 = new String(p1.getPassword()), s2 = new String(p2.getPassword());
+90:         if (has && s1.isEmpty() && s2.isEmpty()) {
+91:             db.deleteSetting("desk_lock_hash");
+92:             db.deleteSetting("desk_lock_salt");
+93:             db.audit("SETTING", "settings", 0, "desk_lock off");
+94:             Ui.toast("أُلغي قفل البرنامج");
+95:             if (after != null) after.run();
+96:             return;
+97:         }
+98:         if (s1.length() < 4) {
+99:             Ui.toast("كلمة السر قصيرة (4 على الأقل)");
+100:             return;
+101:         }
+102:         if (!s1.equals(s2)) {
+103:             Ui.toast("الكلمتان غير متطابقتين");
+104:             return;
+105:         }
+106:         String salt = Pin.newSalt();
+107:         db.setSettingQuiet("desk_lock_salt", salt);
+108:         db.setSettingQuiet("desk_lock_hash", Pin.hash(s1, salt));
+109:         db.setSettingQuiet("desk_lock_fails", "0");
+110:         db.audit("SETTING", "settings", 0, "desk_lock on");
+111:         Ui.toast("فُعّل قفل البرنامج ✓");
+112:         if (after != null) after.run();
+113:     }
+114: }

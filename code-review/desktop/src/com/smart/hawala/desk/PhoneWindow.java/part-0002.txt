@@ -1,0 +1,118 @@
+179:             // الشاشة تملأ النافذة كلها (كما كانت). 11.6: المقياس لا يكبر فوق حجم الهاتف الطبيعي (كانت الأزرار والخانات
+180:             // تكبر حتى 4 أضعاف مع النافذة)؛ والأزرار والخانات نفسها بعرض أقصى في الشاشة العريضة (Ui.capWide).
+181:             float area = (float) Math.sqrt((W / REF_W) * (H / REF_H));
+182:             s = Math.max(0.6f, Math.min(1.7f, Math.max(0.75f, Math.min(1f, Math.min(area, H / FIT_H))) * z));
+183:             cw = W;
+184:         } else {
+185:             s = z;
+186:             cw = "full".equals(col) ? W : Math.min(W, Math.round(Integer.parseInt(col) * s));
+187:         }
+188:         return new float[]{s, cw};
+189:     }
+190: 
+191:     /**
+192:      * 11.5: بعد العودة إلى النافذة (من التصغير أو من برنامج آخر) يُعاد قياس الشاشة ورسمها كاملة مرتين:
+193:      * في ويندوز قد تصل العودة قبل أن تستعيد النافذة حجمها، فتبقى الشاشة (مثل شاشة القفل) بعنوانها فقط.
+194:      */
+195:     static void wake() {
+196:         Runnable r = () -> {
+197:             layout();
+198:             for (android.view.ViewRootImpl root : WindowStack.roots()) {
+199:                 android.view.View v = root.getView();
+200:                 if (v == null) continue;
+201:                 v.requestLayout();
+202:                 v.invalidate();
+203:             }
+204:             if (shell != null) shell.repaint();
+205:         };
+206:         SwingUtilities.invokeLater(r);
+207:         Timer again = new Timer(350, e -> r.run());
+208:         again.setRepeats(false);
+209:         again.start();
+210:     }
+211: 
+212:     static void layout() {
+213:         if (shell == null) return;
+214:         int W = shell.getWidth(), H = shell.getHeight();
+215:         if (W <= 0 || H <= 0) return;
+216:         float[] m = metrics(SmartApp.db, W, H);
+217:         int cw = (int) m[1];
+218:         WindowStack.rescale(m[0]);
+219:         Rectangle want = new Rectangle((W - cw) / 2, 0, cw, H);
+220:         JLayeredPane host = WindowStack.host();
+221:         if (!host.getBounds().equals(want)) host.setBounds(want);
+222:         shell.repaint();
+223:     }
+224: 
+225:     // ------------------------------------------------------------------ مكان النافذة وحجمها
+226:     static void persistBounds() {
+227:         Db db = SmartApp.db;
+228:         if (frame == null || db == null || (frame.getExtendedState() & Frame.ICONIFIED) != 0) return;
+229:         try {
+230:             boolean max = (frame.getExtendedState() & Frame.MAXIMIZED_BOTH) == Frame.MAXIMIZED_BOTH;
+231:             Rectangle b = frame.getBounds();
+232:             db.setSettingQuiet("desk_phone_bounds", b.x + "," + b.y + "," + b.width + "," + b.height + "," + (max ? 1 : 0));
+233:         } catch (Throwable ignored) {
+234:             // غير مهم
+235:         }
+236:     }
+237: 
+238:     static boolean restoreBounds(Db db) {
+239:         try {
+240:             String[] p = db.setting("desk_phone_bounds", "").split(",");
+241:             if (p.length < 4) return false;
+242:             Rectangle b = new Rectangle(Integer.parseInt(p[0]), Integer.parseInt(p[1]), Integer.parseInt(p[2]), Integer.parseInt(p[3]));
+243:             // يجب أن يقع جزء معقول منها على شاشة موجودة
+244:             boolean onScreen = false;
+245:             for (GraphicsDevice d : GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices()) {
+246:                 Rectangle s = d.getDefaultConfiguration().getBounds();
+247:                 Rectangle i = s.intersection(b);
+248:                 if (i.width >= 200 && i.height >= 200) onScreen = true;
+249:             }
+250:             if (!onScreen || b.width < 340 || b.height < 480) return false;
+251:             frame.setBounds(b);
+252:             if (p.length > 4 && "1".equals(p[4])) frame.setExtendedState(Frame.MAXIMIZED_BOTH);
+253:             return true;
+254:         } catch (Throwable t) {
+255:             return false;
+256:         }
+257:     }
+258: 
+259:     /** 11.0: إغلاق شكل الهاتف وحده (التبديل إلى الشكل القديم): البيانات تبقى مفتوحة. */
+260:     static void close() {
+261:         persistBounds();
+262:         try {
+263:             if (activity != null) activity.destroyFromWindow();
+264:         } catch (Throwable t) {
+265:             Main.log(t);
+266:         }
+267:         try { new android.app.job.JobScheduler(null).cancelAll(); } catch (Throwable ignored) { /* لا مهام */ }
+268:         // أي نافذة حوار أو إشعار بقي معلّقًا
+269:         for (android.view.ViewRootImpl r : WindowStack.roots()) {
+270:             try { WindowStack.remove(r); } catch (Throwable ignored) { /* تُترك */ }
+271:         }
+272:         activity = null;
+273:         if (frame != null) {
+274:             frame.getContentPane().remove(WindowStack.host());
+275:             frame.dispose();
+276:         }
+277:         frame = null;
+278:         shell = null;
+279:         Platform.frame = null;
+280:     }
+281: 
+282:     static void quit() {
+283:         persistBounds();
+284:         try {
+285:             if (activity != null) activity.destroyFromWindow();
+286:         } catch (Throwable t) {
+287:             Main.log(t);
+288:         }
+289:         try {
+290:             if (SmartApp.db != null) SmartApp.db.close();
+291:         } catch (Throwable ignored) {
+292:             // الخروج على أي حال
+293:         }
+294:         System.exit(0);
+295:     }
+296: }

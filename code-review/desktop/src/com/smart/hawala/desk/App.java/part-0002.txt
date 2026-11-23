@@ -1,0 +1,197 @@
+164:                 saveBounds.restart();
+165:             }
+166: 
+167:             @Override public void componentMoved(ComponentEvent e) { saveBounds.restart(); }
+168:         });
+169:         Model.User rem = db.usersEnabled() && SmartApp.currentUser == null ? db.rememberedUser() : null;
+170:         if (rem != null) {
+171:             // 10.2: «تذكرني» على هذا الجهاز: يُفتح بالحساب مباشرة (القفل بعد الخمول يطلب رمزه فقط)
+172:             Db.currentUserName = rem.name;
+173:             loggedIn(rem);
+174:         } else if (db.usersEnabled() && SmartApp.currentUser == null) lock();
+175:         else go("home");
+176:         frame.setVisible(true);
+177:         // فتح ملف .sba بالنقر المزدوج في Finder ← استعادته
+178:         try {
+179:             if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.APP_OPEN_FILE)) {
+180:                 Desktop.getDesktop().setOpenFileHandler(ev -> SwingUtilities.invokeLater(() -> {
+181:                     for (java.io.File f : ev.getFiles()) {
+182:                         if (!f.getName().toLowerCase().endsWith(".sba") || locked) continue;
+183:                         go("backup");
+184:                         View v = views.get("backup");
+185:                         if (v instanceof BackupView) ((BackupView) v).restoreFile(f);
+186:                         break;
+187:                     }
+188:                 }));
+189:             }
+190:             if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.APP_QUIT_HANDLER))
+191:                 Desktop.getDesktop().setQuitHandler((ev, resp) -> {
+192:                     resp.cancelQuit();
+193:                     quit();
+194:                 });
+195:         } catch (Throwable ignored) {
+196:             // غير مدعوم على هذا النظام
+197:         }
+198:         startTimers();
+199:         afterUnlock();
+200:     }
+201: 
+202:     String appTitle() {
+203:         String t = db.setting("app_title", "").trim();
+204:         return t.isEmpty() ? "المحاسب الذكي لمكاتب الحوالات" : t;
+205:     }
+206: 
+207:     // ===================================================================================
+208:     // الشريط الجانبي
+209:     // ===================================================================================
+210: 
+211:     final class NavItem extends JComponent {
+212:         final String key, label;
+213:         final Icons icon;
+214:         boolean hover;
+215: 
+216:         NavItem(String key, String label) {
+217:             this.key = key;
+218:             this.label = label;
+219:             icon = new Icons(key, 19, Ui.sidebarInk);
+220:             setPreferredSize(new Dimension(236, 38));
+221:             setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
+222:             setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+223:             setAlignmentX(Component.RIGHT_ALIGNMENT);
+224:             addMouseListener(new MouseAdapter() {
+225:                 @Override public void mouseClicked(MouseEvent e) { go(key); }
+226: 
+227:                 @Override public void mouseEntered(MouseEvent e) {
+228:                     hover = true;
+229:                     repaint();
+230:                 }
+231: 
+232:                 @Override public void mouseExited(MouseEvent e) {
+233:                     hover = false;
+234:                     repaint();
+235:                 }
+236:             });
+237:         }
+238: 
+239:         @Override protected void paintComponent(Graphics g) {
+240:             Graphics2D g2 = (Graphics2D) g.create();
+241:             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+242:             g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_LCD_HRGB);
+243:             boolean on = key.equals(navOf(current));
+244:             // 10.10: المحدد داخل إطار ملوّن ينزلق بين العناصر (يرسمه الشريط نفسه)، وكلمته بلونه
+245:             if (hover && !on) {
+246:                 g2.setColor(Ui.sidebarHover);
+247:                 g2.fill(new RoundRectangle2D.Float(12, 1, getWidth() - 24, getHeight() - 2, 12, 12));
+248:             }
+249:             icon.color = on ? navColor(key) : Ui.sidebarMuted;
+250:             icon.paintIcon(this, g2, getWidth() - 46, (getHeight() - 19) / 2);
+251:             g2.setFont(Ui.font(13.5f, on));
+252:             g2.setColor(on ? navColor(key) : Ui.sidebarInk);
+253:             FontMetrics fm = g2.getFontMetrics();
+254:             g2.drawString(label, getWidth() - 58 - fm.stringWidth(label), (getHeight() + fm.getAscent() - fm.getDescent()) / 2);
+255:             long p = "log".equals(key) ? pendingCached : 0;
+256:             if (p > 0) {
+257:                 String n = p > 99 ? "99+" : "" + p;
+258:                 g2.setFont(Ui.font(11, true));
+259:                 FontMetrics f2 = g2.getFontMetrics();
+260:                 int w = Math.max(20, f2.stringWidth(n) + 10), h = 18, x = 22, y = (getHeight() - h) / 2;
+261:                 g2.setColor(new Color(214, 64, 69));
+262:                 g2.fill(new RoundRectangle2D.Float(x, y, w, h, h, h));
+263:                 g2.setColor(Color.WHITE);
+264:                 g2.drawString(n, x + (w - f2.stringWidth(n)) / 2, y + (h + f2.getAscent() - f2.getDescent()) / 2);
+265:             }
+266:             g2.dispose();
+267:         }
+268:     }
+269: 
+270:     // ===================================================================================
+271:     // 10.10: إطار القسم المحدد في الشريط الجانبي — لكل قسم لون جذاب
+272:     // ===================================================================================
+273: 
+274:     JPanel navList;
+275:     double navY = -1;
+276:     Color navColorNow;
+277:     Timer navAnim;
+278: 
+279:     /** القسم الذي يُعلَّم في الشريط لهذه الشاشة. */
+280:     static String navOf(String cur) {
+281:         if ("office".equals(cur)) return "offices";
+282:         if ("fx".equals(cur) || "xfer".equals(cur)) return "tx";
+283:         if ("team".equals(cur)) return "users";
+284:         return cur;
+285:     }
+286: 
+287:     static Color navColor(String k) {
+288:         switch (k) {
+289:             case "home": return new Color(96, 165, 250);
+290:             case "tx": return new Color(61, 220, 151);
+291:             case "offices": return new Color(45, 212, 191);
+292:             case "mine": return new Color(134, 239, 172);
+293:             case "log": return new Color(167, 139, 250);
+294:             case "statement": return new Color(125, 211, 252);
+295:             case "balances": return new Color(34, 211, 238);
+296:             case "daily": return new Color(251, 191, 36);
+297:             case "cash": return new Color(233, 196, 106);
+298:             case "clients": return new Color(244, 114, 182);
+299:             case "builder": case "owner": case "reports": return new Color(129, 140, 248);
+300:             case "backup": case "sync": case "health": return new Color(251, 146, 60);
+301:             default: return new Color(203, 213, 225);
+302:         }
+303:     }
+304: 
+305:     /** يحرك الإطار إلى قسم الشاشة الحالية (من مكانه السابق) ويبدّل لونه تدريجيًا. */
+306:     void slideNav() {
+307:         if (navList == null) return;
+308:         NavItem n = nav.get(navOf(current));
+309:         if (n == null || n.getHeight() == 0) {
+310:             navY = -1;
+311:             navList.repaint();
+312:             if (n != null) SwingUtilities.invokeLater(() -> {
+313:                 if (n.getHeight() > 0) slideNav();
+314:             });
+315:             return;
+316:         }
+317:         double to = n.getY();
+318:         Color cTo = navColor(n.key);
+319:         if (navAnim != null) navAnim.stop();
+320:         if (navY < 0 || navColorNow == null) {
+321:             navY = to;
+322:             navColorNow = cTo;
+323:             navList.repaint();
+324:             return;
+325:         }
+326:         double from = navY;
+327:         Color cFrom = navColorNow;
+328:         long t0 = Clock.now();
+329:         navAnim = new Timer(15, null);
+330:         navAnim.addActionListener(e -> {
+331:             double x = Math.min(1, (Clock.now() - t0) / 560.0), y = Ui.backOut(x);
+332:             navY = from + (to - from) * y;
+333:             navColorNow = Ui.mix(cFrom, cTo, (float) Math.min(1, x * 1.2));
+334:             navList.repaint();
+335:             for (NavItem k : nav.values()) k.repaint();
+336:             if (x >= 1) navAnim.stop();
+337:         });
+338:         navAnim.start();
+339:     }
+340: 
+341:     void buildSide() {
+342:         side.removeAll();
+343:         side.setLayout(new BorderLayout());
+344:         side.setBackground(Ui.sidebar);
+345:         side.setPreferredSize(new Dimension(252, 10));
+346:         side.setBorder(Ui.dark ? BorderFactory.createCompoundBorder(BorderFactory.createMatteBorder(0, 1, 0, 0, Ui.line), new EmptyBorder(18, 0, 12, 0))
+347:                 : new EmptyBorder(18, 0, 12, 0));
+348:         // الرأس: الشعار واسم المكتب
+349:         JLabel logo = new JLabel(new ImageIcon(Main.appIcon(40)));
+350:         String full = shortTitle();
+351:         JLabel name = Ui.label(Ui.cut(full, 20), 15, Color.WHITE, true);
+352:         name.setToolTipText(full);
+353:         JPanel head = new JPanel(new BorderLayout(10, 0));
+354:         head.setOpaque(false);
+355:         head.add(logo, BorderLayout.LINE_START);
+356:         JPanel nm = new JPanel();
+357:         nm.setOpaque(false);
+358:         nm.setLayout(new BoxLayout(nm, BoxLayout.Y_AXIS));
+359:         nm.add(Box.createVerticalStrut(2));
+360:         nm.add(name);

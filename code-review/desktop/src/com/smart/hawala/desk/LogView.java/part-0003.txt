@@ -1,0 +1,143 @@
+340:                 if (v instanceof Ui.Money && ((Ui.Money) v).v != 0) c.setForeground("لنا".equals(n) ? Ui.green : Ui.red);
+341:                 return c;
+342:             }
+343:         });
+344:         boolean bal = false;
+345:         for (int i = 0; i < t.getColumnCount(); i++) if ("الرصيد بعدها".equals(t.getColumnName(i))) bal = true;
+346:         if (bal) {
+347:             if (withOffice) Ui.widths(t, 152, 140, 95, 95, 55, 115, 135, 140, 280, 85);
+348:             else Ui.widths(t, 152, 95, 95, 55, 115, 135, 140, 300, 85);
+349:             // الرصيد بلونه: لنا أخضر، علينا أحمر
+350:             t.getColumn("الرصيد بعدها").setCellRenderer(new Ui.Cell(SwingConstants.CENTER) {
+351:                 @Override public Component getTableCellRendererComponent(JTable tb, Object v, boolean sel, boolean focus, int row, int col) {
+352:                     Component c = super.getTableCellRendererComponent(tb, v, sel, focus, row, col);
+353:                     String x = String.valueOf(v);
+354:                     c.setForeground(x.contains("لنا") ? Ui.green : x.contains("علينا") ? Ui.red : Ui.muted);
+355:                     c.setFont(Ui.font(13.5f, true));
+356:                     return c;
+357:                 }
+358:             });
+359:         } else if (withOffice) Ui.widths(t, 152, 150, 100, 100, 55, 120, 150, 330, 85);
+360:         else Ui.widths(t, 152, 100, 100, 55, 120, 150, 380, 85);
+361:         t.applyComponentOrientation(Ui.RTL);
+362:     }
+363: 
+364:     /** 10.5 (§6): الحركات المحددة في جدول كل شاشة (بمفتاح الشاشة)، تُعاد بعد تحديث الجدول أو الرجوع إليه. */
+365:     static final java.util.Map<String, java.util.Set<Long>> SELECTED = new java.util.HashMap<>();
+366: 
+367:     static JTable txTable(App app, List<Model.Tx> txs, boolean withOffice) { return txTable(app, txs, withOffice, null, 2); }
+368: 
+369:     static JTable txTable(App app, List<Model.Tx> txs, boolean withOffice, Map<Long, Long> after, int afterDec) {
+370:         JTable t = Ui.table(model(app, txs, withOffice, after, afterDec));
+371:         styleTxTable(t, withOffice);
+372:         if (after != null) {
+373:             // «الرصيد بعدها» بعرض يتسع للمبلغ ورمز العملة
+374:             for (int i = 0; i < t.getColumnCount(); i++) if ("الرصيد بعدها".equals(t.getColumnName(i))) {
+375:                 t.getColumnModel().getColumn(i).setPreferredWidth(185);
+376:                 t.getColumnModel().getColumn(i).setMinWidth(150);
+377:             }
+378:             // والتاريخ كاملًا (لا «05:…»)
+379:             t.getColumnModel().getColumn(0).setMinWidth(150);
+380:         }
+381:         final String key = String.valueOf(app.current);
+382:         java.util.Set<Long> keep = SELECTED.get(key);
+383:         if (keep != null && !keep.isEmpty()) {
+384:             for (int i = 0; i < txs.size(); i++) {
+385:                 if (!keep.contains(txs.get(i).id)) continue;
+386:                 int v = t.convertRowIndexToView(i);
+387:                 if (v >= 0) t.addRowSelectionInterval(v, v);
+388:             }
+389:         }
+390:         t.getSelectionModel().addListSelectionListener(e -> {
+391:             if (e.getValueIsAdjusting()) return;
+392:             java.util.Set<Long> sel = new java.util.HashSet<>();
+393:             for (int r : t.getSelectedRows()) {
+394:                 int m = t.convertRowIndexToModel(r);
+395:                 if (m >= 0 && m < txs.size()) sel.add(txs.get(m).id);
+396:             }
+397:             SELECTED.put(key, sel);
+398:         });
+399:         t.addMouseListener(new MouseAdapter() {
+400:             @Override public void mouseClicked(MouseEvent e) {
+401:                 if (e.getClickCount() == 2 && t.getSelectedRow() >= 0) details(t, app, txs.get(t.convertRowIndexToModel(t.getSelectedRow())).id);
+402:             }
+403:         });
+404:         return t;
+405:     }
+406: 
+407:     // ===================================================================================
+408:     // تفاصيل حركة
+409:     // ===================================================================================
+410: 
+411:     static void details(Component parent, App app, long id) {
+412:         Db db = app.db;
+413:         Model.Tx t = db.tx(id);
+414:         if (t == null) return;
+415:         int d = db.decimals(t.currency);
+416:         Model.Office o = db.office(t.officeId);
+417:         StringBuilder b = new StringBuilder();
+418:         b.append(Model.TYPE_DEBIT.equals(t.type) ? "لنا " : "علينا ").append(Model.fmt(t.amount, d)).append(" ").append(t.currency).append("\n");
+419:         b.append("المكتب: ").append(o == null ? "" : o.name).append("\n");
+420:         b.append("التاريخ: ").append(Model.date(t.createdAt)).append("\n");
+421:         if (t.hasFee()) b.append(t.feeType).append(": ").append(Model.fmt(t.fee, db.decimals(t.feeCurrency))).append(" ").append(t.feeCurrency).append("\n");
+422:         if (!Model.nz(t.person).isEmpty()) b.append("المستفيد: ").append(t.person).append("\n");
+423:         if (!Model.nz(t.service).isEmpty() || !Model.nz(t.dest).isEmpty()) b.append("الخدمة/الوجهة: ").append(Model.nz(t.service)).append(" ").append(Model.nz(t.dest)).append("\n");
+424:         if (t.isFx()) b.append("تبديل عملة بسعر ").append(t.fxRate).append("\n");
+425:         else if (t.isTransfer()) b.append("ساق من تحويل بين مكتبين").append(Model.nz(t.dest).isEmpty() ? "" : " (الطرف الآخر: «" + t.dest + "»)").append(" — تُلغى وتُعتمد الساقان معًا\n");
+426:         b.append("الحالة: ").append(statusName(t)).append("\n");
+427:         // 10.5 (§7): من أدخلها ومن اعتمدها ومن تحقق منها ومتى (بأرقام المستخدمين الثابتة)
+428:         for (String line : db.txPeople(t)) b.append(line).append("\n");
+429:         b.append("المرجع: ").append(Model.shortRef(t.uuid)).append("\n");
+430:         if (!Model.nz(t.notes).isEmpty()) b.append("ملاحظات: ").append(t.notes).append("\n");
+431:         if (!Model.nz(t.description).isEmpty()) b.append("\nالبيان:\n").append(t.description);
+432:         Long repl = db.replacementOf(t.id);
+433:         if (repl != null) b.append("\n\nصُحّحت بالحركة ").append(Model.shortRef(db.tx(repl) == null ? "" : db.tx(repl).uuid));
+434:         List<Long> imgs = db.attachmentIds(t.id);
+435:         List<String> opts = new ArrayList<>();
+436:         if (t.isPending() && app.can(Auth.Perm.APPROVE)) {
+437:             opts.add("اعتماد");
+438:             opts.add("تصحيح واعتماد");
+439:             opts.add("رفض");
+440:             if (!db.similarTx(t).isEmpty()) b.append("\n\n! توجد حركة مشابهة (المكتب والمبلغ والاسم نفسها): تأكد أنها ليست مكررة قبل الاعتماد.");
+441:         }
+442:         if (t.isActive() && app.can(Auth.Perm.VERIFY) && db.usersEnabled()) opts.add("تم التحقق ✓");
+443:         if (t.isActive() && !t.isLinked() && app.can(Auth.Perm.TX_EDIT)) opts.add("تعديل");
+444:         // 10.18: قص العملات يُعدَّل بساقيه معًا من شاشة القص
+445:         if (t.isActive() && t.isFx() && app.can(Auth.Perm.TX_EDIT) && app.can(Auth.Perm.TX_ADD)) opts.add("تعديل القص");
+446:         if (t.isActive() && app.can(Auth.Perm.TX_CANCEL)) opts.add("إلغاء الحركة");
+447:         if (!imgs.isEmpty()) opts.add("الصور (" + imgs.size() + ")");
+448:         opts.add("نسخ");
+449:         opts.add("إغلاق");
+450:         JTextArea a = Ui.area(14);
+451:         a.setText(b.toString());
+452:         a.setEditable(false);
+453:         a.setCaretPosition(0);
+454:         JScrollPane sp = Ui.areaBox(a);
+455:         sp.setPreferredSize(new Dimension(520, 320));
+456:         JOptionPane p = new JOptionPane(sp, JOptionPane.PLAIN_MESSAGE, JOptionPane.DEFAULT_OPTION, null, opts.toArray(), "إغلاق");
+457:         Ui.show(parent, p, "تفاصيل الحركة");
+458:         Object v = p.getValue();
+459:         if (v == null) return;
+460:         String c = v.toString();
+461:         try {
+462:             if ("اعتماد".equals(c)) {
+463:                 db.approveTx(t.id);
+464:                 app.changed();
+465:                 Ui.toast("اعتُمدت الحركة ودخلت الأرصدة");
+466:                 refreshCurrent(app);
+467:             } else if ("رفض".equals(c)) {
+468:                 String why = Ui.input(parent, "رفض الحركة", (db.cashLinked(t.id) ? "! " + Db.REJECT_CASH_NOTE + "\n\n" : "") + "سبب الرفض", "");
+469:                 if (why == null) return;
+470:                 db.rejectTx(t.id, why);
+471:                 refreshCurrent(app);
+472:             } else if (c.startsWith("تم التحقق")) {
+473:                 db.verifyTx(t.id);
+474:                 Ui.toast("سُجّل تحققك ✓ (بلا قيد ولا أثر في الأرصدة)");
+475:                 refreshCurrent(app);
+476:             } else if ("تصحيح واعتماد".equals(c)) {
+477:                 app.go("tx", new TxView.Edit(t.id, true));
+478:             } else if ("تعديل القص".equals(c)) {
+479:                 app.go("fx", new FxView.Edit(t.id));
+480:             } else if ("تعديل".equals(c)) {
+481:                 app.go("tx", new TxView.Edit(t.id));
+482:             } else if ("إلغاء الحركة".equals(c)) {

@@ -1,0 +1,198 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.content.ClipData;
+5: import android.content.ClipboardManager;
+6: import android.content.Context;
+7: import android.graphics.Bitmap;
+8: import android.graphics.Color;
+9: import android.graphics.Typeface;
+10: import android.os.SystemClock;
+11: import android.text.InputType;
+12: import android.view.Gravity;
+13: import android.widget.Button;
+14: import android.widget.CheckBox;
+15: import android.widget.EditText;
+16: import android.widget.ImageView;
+17: import android.widget.LinearLayout;
+18: import android.widget.TextView;
+19: import java.util.ArrayList;
+20: import java.util.List;
+21: 
+22: /**
+23:  * المستخدمون والصلاحيات: لكل موظف اسم ودور ورمز سري (PIN). بدون مستخدمين يعمل التطبيق كما كان بصلاحيات كاملة.
+24:  *
+25:  * الأمان (5.2):
+26:  * - لا دخول كمدير ببصمة الهاتف أو قفله: البصمة تثبت أن صاحب الهاتف يفتحه، لا أنه المدير.
+27:  * - استرداد المدير برمز استرداد يُعرض مرة واحدة عند التفعيل ويُحفظ مجزّأً، ويُستبدل بعد كل استخدام.
+28:  * - المحاولات الخاطئة تُحفظ على الهاتف (لا تُصفَّر بإغلاق التطبيق)، والانتظار يتضاعف من 30 ثانية حتى ساعة.
+29:  * - تغيير الأدوار والرموز وإيقاف النظام يتطلب إعادة إدخال رمز المدير.
+30:  * - رمز المدير من 6 إلى 8 أرقام.
+31:  */
+32: final class UsersScreen {
+33:     private static final long REAUTH_MS = 120000L;
+34:     private static final int WARN_AT = 5;
+35: 
+36:     private final MainActivity a;
+37:     private long reauthAt;
+38: 
+39:     UsersScreen(MainActivity a) { this.a = a; }
+40: 
+41:     // ===================================================================================
+42:     // المحاولات الخاطئة (محفوظة على الهاتف)
+43:     // ===================================================================================
+44: 
+45:     /**
+46:      * 8.0: مهلة الانتظار تُقاس بزمن تشغيل الهاتف (elapsedRealtime) لا بساعته، فتقديم الساعة لا ينهيها.
+47:      * إن أُعيد تشغيل الهاتف (الزمن الحالي أصغر من وقت البدء) تبدأ المهلة كاملة من جديد.
+48:      */
+49:     static void startLock(Db db, long ms) {
+50:         db.setSettingQuiet("lock_start_rt", "" + SystemClock.elapsedRealtime());
+51:         db.setSettingQuiet("lock_ms", "" + ms);
+52:     }
+53: 
+54:     static long remaining(Db db) {
+55:         long ms = db.settingLong("lock_ms", 0);
+56:         if (ms <= 0) return 0;
+57:         long now = SystemClock.elapsedRealtime(), start = db.settingLong("lock_start_rt", 0);
+58:         if (now < start) {
+59:             start = now;
+60:             db.setSettingQuiet("lock_start_rt", "" + start);
+61:         }
+62:         return Math.max(0, ms - (now - start));
+63:     }
+64: 
+65:     private long lockRemaining() {
+66:         return remaining(a.db);
+67:     }
+68: 
+69:     /** يسجّل محاولة خاطئة ويعيد عدد المحاولات المتتالية. */
+70:     private int recordFail(String who, long userId) {
+71:         int f = (int) a.db.settingLong("login_fails", 0) + 1;
+72:         a.db.setSettingQuiet("login_fails", "" + f);
+73:         long ms = Pin.lockoutMillis(f);
+74:         if (ms > 0) startLock(a.db, ms);
+75:         String prev = Db.currentUserName;
+76:         Db.currentUserName = who;
+77:         a.db.audit("LOGIN_FAILED", "user", userId, "محاولة " + f);
+78:         Db.currentUserName = prev;
+79:         return f;
+80:     }
+81: 
+82:     private void resetFails() {
+83:         a.db.setSettingQuiet("login_fails", "0");
+84:         a.db.deleteSetting("login_locked_until");
+85:         a.db.deleteSetting("lock_ms");
+86:     }
+87: 
+88:     static String waitText(long ms) {
+89:         long s = (ms + 999) / 1000;
+90:         if (s < 60) return s + " ثانية";
+91:         long m = (s + 59) / 60;
+92:         return m + " دقيقة";
+93:     }
+94: 
+95:     /** يعيد true إن كان مسموحًا بالمحاولة الآن، وإلا يعرض مدة الانتظار. */
+96:     private boolean canTry() {
+97:         long w = lockRemaining();
+98:         if (w <= 0) return true;
+99:         a.toast("محاولات خاطئة كثيرة. انتظر " + waitText(w) + " ثم أعد المحاولة.");
+100:         return false;
+101:     }
+102: 
+103:     private void failMessage(EditText field, int f) {
+104:         long w = Pin.lockoutMillis(f);
+105:         if (w > 0) a.toast("رمز خاطئ. انتظر " + waitText(w) + " قبل المحاولة التالية.");
+106:         else field.setError("رمز خاطئ. بقيت " + (WARN_AT - f) + " محاولة قبل الانتظار.");
+107:     }
+108: 
+109:     // ===================================================================================
+110:     // الدخول
+111:     // ===================================================================================
+112: 
+113:     /** 10.2: الخروج من الحساب (ويُنسى «تذكرني» على هذا الجهاز). */
+114:     void logout() {
+115:         a.sessionEnd();
+116:         a.db.forgetUser();
+117:         SmartApp.currentUser = null;
+118:         Db.currentUserName = "المستخدم المحلي";
+119:         showLogin();
+120:     }
+121: 
+122:     /** 10.2: إن كان على هذا الجهاز حساب محفوظ («تذكرني») يُدخل به مباشرة. */
+123:     boolean autoLogin() {
+124:         Model.User u = a.db.rememberedUser();
+125:         if (u == null) return false;
+126:         SmartApp.currentUser = u;
+127:         Db.currentUserName = u.name;
+128:         a.lastAuthAt = SystemClock.elapsedRealtime();
+129:         return true;
+130:     }
+131: 
+132:     /**
+133:      * 10.2: شاشة الدخول لا تعرض أسماء المستخدمين (لا يعرف أحد حسابات غيره): يكتب كل شخص اسمه ورمزه.
+134:      * «تذكرني على هذا الجهاز» يفتح التطبيق بعدها بحسابه مباشرة.
+135:      */
+136:     void showLogin() {
+137:         Db.recoveryGrant = false;
+138:         a.base("تسجيل الدخول", null);
+139:         Bitmap bm = a.homeLogo();
+140:         if (bm != null) {
+141:             ImageView logo = new ImageView(a);
+142:             logo.setImageBitmap(bm);
+143:             logo.setAdjustViewBounds(true);
+144:             a.body.addView(logo, a.lp(-1, 90, 10));
+145:         }
+146:         String office = a.db.setting("office_name", "").trim();
+147:         if (!office.isEmpty()) {
+148:             TextView on = a.text(office, 20, a.primary, true);
+149:             on.setGravity(Gravity.CENTER);
+150:             a.add(on);
+151:         }
+152:         TextView t = a.text("اكتب اسم المستخدم ورمزك السري", 16, a.dark, false);
+153:         t.setGravity(Gravity.CENTER);
+154:         a.add(t);
+155:         final EditText name = a.field("اسم المستخدم");
+156:         name.setText(a.db.setting("last_login_name", ""));
+157:         a.body.addView(name, a.lp(-1, 54, 6));
+158:         final EditText pin = a.field("الرمز السري");
+159:         Ui.secret(pin, true);
+160:         pin.setGravity(Gravity.CENTER);
+161:         a.body.addView(pin, a.lp(-1, 54, 6));
+162:         final CheckBox remember = new CheckBox(a);
+163:         remember.setText("تذكرني على هذا الجهاز (الدخول مباشرة بعد ذلك)");
+164:         remember.setTextColor(a.ink);
+165:         remember.setChecked("1".equals(a.db.setting("remember_default", "0")));
+166:         a.add(remember);
+167:         a.button("دخول", a.primary, v -> {
+168:             if (!canTry()) return;
+169:             String n = name.getText().toString().trim(), p = pin.getText().toString();
+170:             pin.setText("");
+171:             Model.User u = a.db.userByName(n);
+172:             if (u != null && a.db.verifyPin(u.id, p)) {
+173:                 a.db.setSettingQuiet("last_login_name", u.name);
+174:                 a.db.setSettingQuiet("remember_default", remember.isChecked() ? "1" : "0");
+175:                 if (remember.isChecked()) a.db.rememberUser(u.id);
+176:                 else a.db.forgetUser();
+177:                 login(u);
+178:             } else {
+179:                 // رسالة واحدة للاسم والرمز: لا تكشف إن كان الاسم موجودًا
+180:                 int f = recordFail(n.isEmpty() ? "?" : n, u == null ? 0 : u.id);
+181:                 long w = Pin.lockoutMillis(f);
+182:                 if (w > 0) a.toast("الاسم أو الرمز غير صحيح. انتظر " + waitText(w) + " قبل المحاولة التالية.");
+183:                 else pin.setError("الاسم أو الرمز غير صحيح");
+184:             }
+185:         });
+186:         if (SyncEngine.enabled(a.db)) {
+187:             TextView h = a.text("الحسابات يُنشئها المدير من الجهاز الرئيسي. لا يقبل اسمك؟ اطلب من المدير إنشاء حسابك ثم اضغط «تحديث».", 13, a.muted, false);
+188:             h.setGravity(Gravity.CENTER);
+189:             a.add(h);
+190:             a.button("تحديث الحسابات (مزامنة الآن)", a.accent, v -> a.syncScreen.now(this::showLogin));
+191:         }
+192:         a.button("نسيت الرمز؟", Color.rgb(130, 130, 130), v -> forgotDialog());
+193:     }
+194: 
+195:     private EditText pinField(String hint) {
+196:         EditText p = new EditText(a);
+197:         p.setHint(hint);
+198:         Ui.secret(p, true);

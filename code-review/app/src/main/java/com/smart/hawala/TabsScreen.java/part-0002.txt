@@ -1,0 +1,178 @@
+170:                     r.addView(h, new LinearLayout.LayoutParams(a.dp(32), a.dp(38)));
+171:                     ds.bind(r, h, k);
+172:                 }
+173:                 r.addView(a.icon(Ui.tabIcon(k), k.equals("cash") ? a.goldInk : a.primaryInk, 22), new LinearLayout.LayoutParams(a.dp(22), a.dp(22)));
+174:                 TextView name = a.text("  " + Ui.tabName(k) + (shown ? "  (" + (on.indexOf(k) + 1) + ")" : "") + (a.tabAllowed(k) ? "" : " — بلا صلاحية"), 15,
+175:                         shown ? a.ink : a.muted, shown);
+176:                 r.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+177:                 if (shown) {
+178:                     r.addView(a.smallButton("▲", Color.rgb(120, 120, 120), v -> {
+179:                         int i = on.indexOf(k);
+180:                         if (i > 0) {
+181:                             on.remove(i);
+182:                             on.add(i - 1, k);
+183:                             saveTabs(on);
+184:                         }
+185:                     }), new LinearLayout.LayoutParams(a.dp(44), a.dp(38)));
+186:                     r.addView(a.smallButton("▼", Color.rgb(120, 120, 120), v -> {
+187:                         int i = on.indexOf(k);
+188:                         if (i < on.size() - 1) {
+189:                             on.remove(i);
+190:                             on.add(i + 1, k);
+191:                             saveTabs(on);
+192:                         }
+193:                     }), new LinearLayout.LayoutParams(a.dp(44), a.dp(38)));
+194:                 }
+195:                 Switch sw = new Switch(a);
+196:                 sw.setChecked(shown);
+197:                 sw.setEnabled(!k.equals("more"));
+198:                 sw.setOnCheckedChangeListener((b, c) -> {
+199:                     if (c) {
+200:                         if (on.size() >= a.maxTabs()) {
+201:                             a.toast("الحد " + a.maxTabs() + " عناصر على هذه الشاشة. أخفِ عنصرًا أولًا" + (a.maxTabs() < 10 ? "، أو وسّع النافذة." : "."));
+202:                             draw[0].run();
+203:                             return;
+204:                         }
+205:                         on.add(on.indexOf("more") >= 0 ? on.indexOf("more") : on.size(), k);
+206:                     } else {
+207:                         if (on.size() <= 3) {
+208:                             a.toast("ثلاثة عناصر على الأقل");
+209:                             draw[0].run();
+210:                             return;
+211:                         }
+212:                         on.remove(k);
+213:                     }
+214:                     saveTabs(on);
+215:                 });
+216:                 r.addView(sw, new LinearLayout.LayoutParams(-2, -2));
+217:                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+218:                 lp.bottomMargin = a.dp(6);
+219:                 box.addView(r, lp);
+220:             }
+221:         };
+222:         draw[0].run();
+223:     }
+224: 
+225:     private void saveTabs(List<String> on) {
+226:         a.db.setSettingQuiet("tabs", String.join(",", on));
+227:         // يُعاد رسم الشاشة نفسها ليظهر الشريط الجديد في الأسفل فورًا
+228:         show();
+229:     }
+230: 
+231:     static List<String> defaults() { return new ArrayList<>(Arrays.asList(Ui.TAB_KEYS)); }
+232: 
+233:     // ===================================================================================
+234:     // 10.15: قائمة «+»
+235:     // ===================================================================================
+236: 
+237:     private void fanSection(final NavPrefs p) {
+238:         a.title("زر «+» (تسجيل)");
+239:         Ui.Seg pm = a.new Seg(new String[]{"يفتح القائمة السريعة", "يفتح صفحة التسجيل"}, null, p.plusMenu ? 0 : 1, false);
+240:         pm.listener = i -> {
+241:             p.plusMenu = i == 0;
+242:             save(p);
+243:         };
+244:         a.body.addView(pm.view, a.lp(-1, -2, 2));
+245:         if (!a.savedTabs().contains("tx")) a.hint("«تسجيل» ليس في الشريط الآن: أظهره من القائمة أعلاه ليعمل زر «+».");
+246:         if (!p.plusMenu) return;
+247: 
+248:         a.title("قائمة «+»");
+249:         a.hint("اختر من " + NavPrefs.MIN_FAN + " إلى " + NavPrefs.MAX_FAN + " أزرار ورتّبها (الأول = أقصى اليمين). اضغط الدائرة الملوّنة لتغيير لون الزر أو إزالته. "
+250:                 + "ما لا يملك المستخدم صلاحيته لا يظهر له في القائمة.");
+251:         LinearLayout f = a.group();
+252:         for (int i = 0; i < p.fan.size(); i++) {
+253:             final int k = i;
+254:             final String key = p.fan.get(i);
+255:             orderRow(f, MainActivity.fanIcon(key), p.itemColor(key), NavPrefs.itemName(key), a.fanAllowed(key) ? "في القائمة" : "في القائمة — بلا صلاحية فلا يظهر لك",
+256:                     k > 0, k < p.fan.size() - 1, d -> {
+257:                         NavPrefs.move(p.fan, k, d);
+258:                         save(p);
+259:                     }, v -> itemMenu(p, key));
+260:         }
+261:         LinearLayout more = a.card();
+262:         more.addView(a.text("أزرار أخرى يمكن إضافتها", 14, a.ink, true));
+263:         for (final String key : NavPrefs.ITEMS.keySet()) {
+264:             if (p.fan.contains(key)) continue;
+265:             CheckBox cb = new CheckBox(a);
+266:             cb.setText(NavPrefs.itemName(key) + (a.fanAllowed(key) ? "" : " — بلا صلاحية"));
+267:             cb.setTextColor(a.ink);
+268:             cb.setOnCheckedChangeListener((x, on) -> {
+269:                 String err = p.toggleFan(key);
+270:                 if (err != null) {
+271:                     a.toast(err);
+272:                     x.setChecked(false);
+273:                     return;
+274:                 }
+275:                 save(p);
+276:             });
+277:             more.addView(cb);
+278:         }
+279: 
+280:         LinearLayout c = a.card();
+281:         c.addView(a.text("شكل القائمة", 14, a.ink, true));
+282:         Ui.Seg st = a.new Seg(NavPrefs.FAN_STYLES, null, p.fanStyle, false);
+283:         st.listener = i -> {
+284:             p.fanStyle = i;
+285:             save(p);
+286:         };
+287:         c.addView(st.view);
+288:         c.addView(a.text("حجم القائمة", 14, a.ink, true), a.lp(-1, -2, 8));
+289:         Ui.Seg sz = a.new Seg(NavPrefs.SIZES, null, p.fanSize, false);
+290:         sz.listener = i -> {
+291:             p.fanSize = i;
+292:             save(p);
+293:         };
+294:         c.addView(sz.view);
+295:     }
+296: 
+297:     private void itemMenu(final NavPrefs p, final String key) {
+298:         int[] cols = {(Integer) NavPrefs.ITEMS.get(key)[1], NavPrefs.rgb(31, 143, 90), NavPrefs.rgb(201, 63, 63), NavPrefs.rgb(30, 64, 110), NavPrefs.rgb(201, 162, 39),
+299:                 NavPrefs.rgb(13, 128, 128), NavPrefs.rgb(91, 70, 190), NavPrefs.rgb(190, 24, 93), NavPrefs.rgb(100, 116, 139), NavPrefs.rgb(24, 24, 27)};
+300:         LinearLayout l = new LinearLayout(a);
+301:         l.setOrientation(LinearLayout.VERTICAL);
+302:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+303:         final AlertDialog[] d = new AlertDialog[1];
+304:         l.addView(a.text("لون الزر", 14, a.ink, true));
+305:         l.addView(swatches(cols, p.itemColor(key), col -> {
+306:             if (col == (int) (Integer) NavPrefs.ITEMS.get(key)[1]) p.itemColors.remove(key);
+307:             else p.itemColors.put(key, col);
+308:             d[0].dismiss();
+309:             save(p);
+310:         }));
+311:         d[0] = new AlertDialog.Builder(a).setTitle(NavPrefs.itemName(key)).setView(l)
+312:                 .setNeutralButton("إزالة من القائمة", (x, w) -> {
+313:                     String err = p.toggleFan(key);
+314:                     if (err != null) a.toast(err);
+315:                     else save(p);
+316:                 }).setNegativeButton("إغلاق", null).create();
+317:         d[0].show();
+318:     }
+319: 
+320:     // ===================================================================================
+321:     // عناصر الشاشة
+322:     // ===================================================================================
+323: 
+324:     interface OnColor { void picked(int c); }
+325: 
+326:     interface OnMove { void moved(int d); }
+327: 
+328:     /** صف من دوائر الألوان؛ المختار بحلقة. لون NavPrefs.AUTO يُرسم خانة «تلقائي». */
+329:     private View swatches(int[] cols, int sel, final OnColor on) {
+330:         Ui.Flow fl = a.flow();
+331:         for (final int c : cols) {
+332:             FrameLayout cell = new FrameLayout(a);
+333:             View dot = new View(a);
+334:             GradientDrawable gd = new GradientDrawable();
+335:             gd.setShape(GradientDrawable.OVAL);
+336:             boolean isAuto = c == NavPrefs.AUTO;
+337:             gd.setColor(isAuto ? a.surface : c);
+338:             gd.setStroke(a.dp(c == sel ? 3 : 1), c == sel ? a.primary : a.line);
+339:             dot.setBackground(gd);
+340:             cell.addView(dot, new FrameLayout.LayoutParams(a.dp(34), a.dp(34), Gravity.CENTER));
+341:             if (isAuto) {
+342:                 TextView t = a.text("تلقائي", 9, a.muted, true);
+343:                 t.setGravity(Gravity.CENTER);
+344:                 cell.addView(t, new FrameLayout.LayoutParams(a.dp(34), a.dp(34), Gravity.CENTER));
+345:             } else if (c == sel) {
+346:                 ImageView ok = a.icon(R.drawable.ic_check2, NavPrefs.light(c) ? a.primaryInk : Color.WHITE, 16);
+347:                 cell.addView(ok, new FrameLayout.LayoutParams(a.dp(16), a.dp(16), Gravity.CENTER));

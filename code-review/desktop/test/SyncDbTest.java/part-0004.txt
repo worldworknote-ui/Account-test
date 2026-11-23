@@ -1,0 +1,139 @@
+417:         check(SyncEngine.duplicates(A).isEmpty() && SyncEngine.duplicates(B).isEmpty() && SyncEngine.duplicates(D).isEmpty(), "القرار (إلغاء إحداهما / إبقاء الاثنتين) أغلق المراجعة على كل الأجهزة");
+418:         check(b(A.balances(nour), "USD") == before12 - 45600 && bal(A).equals(bal(B)) && bal(A).equals(bal(D)), "أُلغيت المكررة مرة واحدة والأرصدة متطابقة");
+419: 
+420:         System.out.println("== 13) تصحيح حركة معلّقة ثم اعتمادها (بدل الرفض)");
+421:         SmartApp.currentUser = A.user(adminId);
+422:         A.setSetting("approval_on", "1");
+423:         long emp = A.addUser("موظف الصندوق", Auth.CUSTOM, "VIEW,TX_ADD," + Auth.REVIEW, "2468");
+424:         long free = A.addUser("محاسب موثوق", Auth.CUSTOM, "VIEW,TX_ADD", "1357");
+425:         SmartApp.currentUser = A.user(free);
+426:         Db.currentUserName = "محاسب موثوق";
+427:         long ft = A.addTx(tx(nour, false, 50, "USD", "صغيرة"), null);
+428:         check(A.tx(ft).isActive(), "10.3: مستخدم بلا «تحتاج اعتماد» تدخل حركته مباشرة");
+429:         SmartApp.currentUser = A.user(emp);
+430:         Db.currentUserName = "موظف الصندوق";
+431:         long tiny = A.addTx(tx(nour, false, 1, "USD", "مبلغ صغير جدًا"), null);
+432:         long pt = A.addTx(tx(nour, false, 99900, "USD", "خطأ بالاسم"), null);
+433:         check(A.tx(pt).isPending() && A.tx(tiny).isPending(), "10.3: مستخدم «حركاته تحتاج اعتماد»: كل حركاته معلّقة أيًا كان المبلغ (حتى 0.01)");
+434:         SmartApp.currentUser = A.user(adminId);
+435:         Db.currentUserName = "المدير";
+436:         A.rejectTx(tiny, "اختبار");
+437:         long nb13 = b(A.balances(nour), "USD");
+438:         Db.TxInput fix = tx(nour, false, 9990, "USD", "الاسم الصحيح");
+439:         fix.when = A.tx(pt).createdAt;
+440:         A.approveEdited(pt, fix, null, null);
+441:         Model.Tx done = A.tx(pt);
+442:         check(done.isActive() && done.amount == 9990 && done.person.equals("الاسم الصحيح") && done.userName.equals("موظف الصندوق"), "صُحّحت (المبلغ والاسم) واعتُمدت، وبقي اسم من اقترحها");
+443:         check(b(A.balances(nour), "USD") == nb13 - 9990, "دخلت الأرصدة بالقيمة المصححة فقط");
+444:         syncAll(eA, eB, eD);
+445:         check(bal(A).equals(bal(B)) && bal(A).equals(bal(D)), "التصحيح وصل لكل الأجهزة");
+446:         healthy(A, "بعد التكرار والتصحيح");
+447:         SmartApp.currentUser = null;
+448: 
+449:         section14();
+450:         section16();
+451:         section17();
+452: 
+453:         System.out.println("\n" + passes + " نجح، " + fails + " فشل");
+454:         if (fails > 0) System.exit(1);
+455:     }
+456: 
+457:     static Map<Character, Integer> kinds(File dir) {
+458:         Map<Character, Integer> m = new TreeMap<>();
+459:         for (String n : dir.list()) if (n.matches("[mpsa]-[0-9a-f]{32}\\.sab")) m.merge(n.charAt(0), 1, Integer::sum);
+460:         return m;
+461:     }
+462: 
+463:     static long biggest(File dir, char k) {
+464:         long b = 0;
+465:         for (File f : dir.listFiles()) if (f.getName().charAt(0) == k && f.getName().charAt(1) == '-') b = Math.max(b, f.length());
+466:         return b;
+467:     }
+468: 
+469:     /** 10.4: الصور ملفات مستقلة لا تتكرر، واللقطة بلا صور، والتنظيف التلقائي، وإزالة جهاز، ورمز استرداد جديد، وتغيير الاسم. */
+470:     static void section14() throws Exception {
+471:         System.out.println("== 14) 10.4: الصور ملفات مستقلة، والتنظيف التلقائي، وإزالة جهاز غائب");
+472:         SmartApp.currentUser = null;
+473:         File f = Files.createTempDirectory("sa-sync-14").toFile();
+474:         Db P = dev("syncP");
+475:         List<String> ue = Arrays.asList("USD", "EUR");
+476:         long off = P.addOffice("الصورة", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+477:         byte[] img = new byte[300_000], img2 = new byte[200_000];
+478:         new Random(7).nextBytes(img);
+479:         new Random(8).nextBytes(img2);
+480:         long t1 = P.addTx(tx(off, true, 5000, "USD", "مع صورة"), Arrays.asList(img));
+481:         SyncEngine eP = new SyncEngine(P, new FileSyncFolder(f));
+482:         String pw = "كلمة-سر-الخزنة-14";
+483:         String rc = eP.create(pw.toCharArray(), "الرئيسي");
+484:         String hdr = new String(Files.readAllBytes(new File(f, SyncEngine.HEADER).toPath()), "UTF-8");
+485:         check(hdr.contains("\"v\": " + SyncEngine.FORMAT), "الخزنة الجديدة بالصيغة " + SyncEngine.FORMAT);
+486:         Map<Character, Integer> k = kinds(f);
+487:         check(k.getOrDefault('a', 0) == 1 && biggest(f, 's') < 60_000 && biggest(f, 'a') > 290_000,
+488:                 "الصورة ملف مستقل (" + biggest(f, 'a') / 1024 + " ك.ب) واللقطة بلا صور (" + biggest(f, 's') / 1024 + " ك.ب)");
+489: 
+490:         Db Q = dev("syncQ");
+491:         SyncEngine eQ = new SyncEngine(Q, new FileSyncFolder(f));
+492:         eQ.join(pw.toCharArray(), false, "الثاني");
+493:         check(Arrays.equals(Q.attachment(Q.attachmentIds(t1).get(0)), img), "المنضم أخذ الصورة من ملفها المستقل بالبايتات نفسها");
+494:         long t2 = Q.addTx(tx(off, false, 700, "USD", "صورة من الثاني"), Arrays.asList(img2));
+495:         long t3 = Q.addTx(tx(off, false, 300, "USD", "الصورة الأولى مرة ثانية"), Arrays.asList(img));
+496:         syncAll(eQ, eP);
+497:         check(Arrays.equals(P.attachment(P.attachmentIds(t2).get(0)), img2) && Arrays.equals(P.attachment(P.attachmentIds(t3).get(0)), img),
+498:                 "صور الجهاز الثاني وصلت عبر ملفاتها المستقلة");
+499:         check(kinds(f).get('a') == 2, "الصورة المكررة لا تُرفع مرتين (ملفان للصورتين)");
+500:         check(bal(P).equals(bal(Q)), "الأرصدة متطابقة: " + bal(P));
+501: 
+502:         // حركات كثيرة ثم التنظيف
+503:         int before = kinds(f).get('p');
+504:         for (int i = 0; i < 170; i++) {
+505:             P.addTx(tx(off, i % 2 == 0, 100 + i, "USD", "حركة " + i), null);
+506:             eP.sync();
+507:         }
+508:         int peak = kinds(f).get('p');
+509:         syncAll(eQ, eP);
+510:         String gc = eP.clean(true);
+511:         int after = kinds(f).get('p');
+512:         check(peak - after >= 140, "التنظيف حذف " + (peak - after) + " حزمة استلمها الجميع (" + peak + " ← " + after + "): " + gc);
+513:         check(kinds(f).get('s') <= 4, "تبقى آخر لقطتين لكل جهاز (" + kinds(f).get('s') + ")");
+514:         Db R = dev("syncR");
+515:         SyncEngine eR = new SyncEngine(R, new FileSyncFolder(f));
+516:         eR.join(pw.toCharArray(), false, "الثالث");
+517:         check(bal(R).equals(bal(P)) && Arrays.equals(R.attachment(R.attachmentIds(t2).get(0)), img2), "جهاز جديد ينضم بعد التنظيف بالأرصدة والصور نفسها");
+518:         healthy(R, "المنضم بعد التنظيف");
+519: 
+520:         // جهاز غائب يمنع التنظيف، وإزالته تسمح به
+521:         for (int i = 0; i < 160; i++) {
+522:             Q.addTx(tx(off, true, 10 + i, "EUR", "من الثاني " + i), null);
+523:             eQ.sync();
+524:         }
+525:         syncAll(eP, eQ);
+526:         int held = kinds(f).get('p');
+527:         eQ.clean(true);
+528:         int held2 = kinds(f).get('p');
+529:         check(held2 >= held - 5, "الجهاز الثالث لم يستلم بعد: حزم الثاني باقية (" + held + " ← " + held2 + ")");
+530:         String rDev = SyncEngine.status(R).device;
+531:         int mBeforeRm = kinds(f).get('m');
+532:         long rm = eP.removeDevice(rDev);
+533:         syncAll(eP, eQ);
+534:         eQ.clean(true);
+535:         int freed = kinds(f).get('p');
+536:         check(freed < held2 - 100, "بعد إزالة الثالث حُذفت حزم الثاني القديمة (" + held2 + " ← " + freed + ")؛ آخر حزمة للمُزال: " + rm);
+537:         check(kinds(f).get('m') == mBeforeRm, "10.5: الإزالة لا تحذف ملفات المُزال لحظتها (بطاقته باقية حتى يحذفها الرئيسي)");
+538:         eP.clean(true);
+539:         check(kinds(f).get('m') == mBeforeRm - 1, "10.5: الرئيسي حذف بطاقة المُزال في التنظيف بعد أن وصل كل ما أرسله إلى الجميع");
+540:         check(throwsMsg(() -> {
+541:             try {
+542:                 eR.sync();
+543:             } catch (Exception e) {
+544:                 throw new RuntimeException(e);
+545:             }
+546:         }, "أزال المدير") && !SyncEngine.enabled(R) && bal(R).length() > 0, "الجهاز المُزال يخرج من المزامنة عند جولته وتبقى بياناته عليه");
+547:         boolean seen = false;
+548:         for (org.json.JSONObject m : SyncEngine.status(Q).members) if (m.optString("dev").equals(rDev)) seen = true;
+549:         check(!seen, "الجهاز المُزال لم يعد في قائمة الأجهزة لدى الآخرين");
+550:         check(throwsMsg(() -> {
+551:             try {
+552:                 eQ.removeDevice(SyncEngine.status(P).device);
+553:             } catch (Exception e) {
+554:                 throw new RuntimeException(e);
+555:             }

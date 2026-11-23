@@ -1,0 +1,142 @@
+779:         long all = 0, withS = 0, withD = 0;
+780:         for (Model.Tx t : in.txs) {
+781:             if (!active(t) || t.createdAt < from || feeRow(t)) continue;
+782:             all++;
+783:             String s = Model.nz(t.service).trim(), d = Model.nz(t.dest).trim();
+784:             if (!s.isEmpty()) withS++;
+785:             if (!d.isEmpty()) withD++;
+786:             String sk = s.isEmpty() ? "غير محددة" : s, dk = d.isEmpty() ? "غير محددة" : d;
+787:             sc.merge(sk, 1L, Long::sum);
+788:             dc.merge(dk, 1L, Long::sum);
+789:             sv.computeIfAbsent(sk, k -> new TreeMap<>()).merge(t.currency, t.amount, Long::sum);
+790:             dv.computeIfAbsent(dk, k -> new TreeMap<>()).merge(t.currency, t.amount, Long::sum);
+791:         }
+792:         for (int pass = 0; pass < 2; pass++) {
+793:             Map<String, Long> c = pass == 0 ? sc : dc;
+794:             Map<String, Map<String, Long>> v = pass == 0 ? sv : dv;
+795:             Report.Section s = r.section(pass == 0 ? "الخدمات — آخر 12 شهرًا" : "الوجهات — آخر 12 شهرًا", pass == 0 ? "الخدمات" : "الوجهات");
+796:             s.kv(pass == 0 ? "حركات حُدّدت خدمتها" : "حركات حُدّدت وجهتها", pct(pass == 0 ? withS : withD, all) + " من " + all, false);
+797:             s.col(pass == 0 ? "الخدمة" : "الوجهة", 1.6f, Report.TEXT).col("العمليات", 0.8f, Report.INT).col("النسبة", 0.7f, Report.TEXT).col("المبالغ", 2.6f, Report.TEXT);
+798:             List<String> keys = new ArrayList<>(c.keySet());
+799:             Collections.sort(keys, (a, b) -> Long.compare(c.get(b), c.get(a)));
+800:             int n = 0;
+801:             for (String k : keys) {
+802:                 if (++n > 40) break;
+803:                 List<String> amounts = new ArrayList<>();
+804:                 for (Map.Entry<String, Long> e : v.get(k).entrySet()) amounts.add(fmt(in, e.getKey(), e.getValue()));
+805:                 s.row("غير محددة".equals(k) ? Report.MUTED : Report.NORMAL, k, c.get(k), pct(c.get(k), all), Model.join(amounts, " • "));
+806:             }
+807:             if (pass == 0) s.note = "سجّل نوع الخدمة والوجهة في خانتيهما عند كل حركة ليصبح هذا التقرير دقيقًا (يقترحهما النموذج من الحركات السابقة).";
+808:         }
+809:     }
+810: 
+811:     // ===================================================================================
+812:     // 9) حجم الحوالة والعمليات الكبيرة
+813:     // ===================================================================================
+814: 
+815:     public static final class Size {
+816:         public long count, median, p90, p99, max, volume, top1Volume;
+817:     }
+818: 
+819:     public static Map<String, Size> sizes(Input in, long from) {
+820:         Map<String, List<Long>> m = new TreeMap<>();
+821:         for (Model.Tx t : in.txs) if (active(t) && t.createdAt >= from && !feeRow(t)) m.computeIfAbsent(t.currency, k -> new ArrayList<>()).add(t.amount);
+822:         Map<String, Size> out = new TreeMap<>();
+823:         for (Map.Entry<String, List<Long>> e : m.entrySet()) {
+824:             List<Long> l = e.getValue();
+825:             Collections.sort(l);
+826:             Size s = new Size();
+827:             s.count = l.size();
+828:             int n = l.size();
+829:             s.median = n % 2 == 1 ? l.get(n / 2) : (l.get(n / 2 - 1) + l.get(n / 2)) / 2;
+830:             s.p90 = l.get(Math.min(n - 1, (int) Math.ceil(n * 0.9) - 1));
+831:             s.p99 = l.get(Math.min(n - 1, (int) Math.ceil(n * 0.99) - 1));
+832:             s.max = l.get(n - 1);
+833:             int top = Math.max(1, (int) Math.ceil(n * 0.01));
+834:             for (int i = 0; i < n; i++) {
+835:                 s.volume += l.get(i);
+836:                 if (i >= n - top) s.top1Volume += l.get(i);
+837:             }
+838:             out.put(e.getKey(), s);
+839:         }
+840:         return out;
+841:     }
+842: 
+843:     static void sizeSection(Report r, Input in) {
+844:         long from = in.now - 365 * DAY;
+845:         Map<String, Size> m = sizes(in, from);
+846:         Report.Section s = r.section("حجم الحوالة — آخر 12 شهرًا", "حجم الحوالة");
+847:         s.col("العملة", 0.6f, Report.TEXT).col("العمليات", 0.8f, Report.INT).col("المعتادة (الوسيط)", 1.1f, Report.MONEY).col("أكبر 10% تبدأ من", 1.1f, Report.MONEY)
+848:                 .col("أكبر 1% تبدأ من", 1.1f, Report.MONEY).col("الأكبر", 1.1f, Report.MONEY).col("حصة أكبر 1% من المبالغ", 1f, Report.TEXT);
+849:         for (Map.Entry<String, Size> e : m.entrySet()) {
+850:             Size z = e.getValue();
+851:             String c = e.getKey();
+852:             s.row(Report.NORMAL, c, z.count, money(in, c, z.median), money(in, c, z.p90), money(in, c, z.p99), money(in, c, z.max), pct(z.top1Volume, z.volume));
+853:         }
+854:         s.note = "العملية الأكبر من «أكبر 10%» تستحق موافقتك قبل التسليم: فعّل «الاعتماد المزدوج» بهذا الحد من «القفل والبصمة وإقفال الفترة».";
+855:         // أكبر العمليات في آخر 90 يومًا
+856:         List<Model.Tx> big = new ArrayList<>();
+857:         for (Model.Tx t : in.txs) {
+858:             if (!active(t) || t.createdAt < in.now - 90 * DAY || feeRow(t)) continue;
+859:             Size z = m.get(t.currency);
+860:             if (z != null && t.amount >= z.p99) big.add(t);
+861:         }
+862:         Collections.sort(big, Comparator.comparingLong((Model.Tx t) -> t.amount).reversed());
+863:         Report.Section b = r.section("أكبر العمليات — آخر 90 يومًا", "الكبيرة");
+864:         b.col("التاريخ", 1f, Report.DATE).col("المكتب", 1.6f, Report.TEXT).col("المبلغ", 1.2f, Report.TEXT).col("النوع", 0.6f, Report.TEXT).col("البيان", 2f, Report.TEXT);
+865:         for (int i = 0; i < big.size() && i < 50; i++) {
+866:             Model.Tx t = big.get(i);
+867:             b.row(Report.NORMAL, new Report.DateV(t.createdAt), name(in, t.officeId), fmt(in, t.currency, t.amount), Model.TYPE_DEBIT.equals(t.type) ? "لنا" : "علينا",
+868:                     MessageParser.compact(t.description, t.person));
+869:         }
+870:         if (big.isEmpty()) b.note = "لا عمليات ضمن أكبر 1% في آخر 90 يومًا.";
+871:     }
+872: 
+873:     // ===================================================================================
+874:     // 10) جودة التسجيل
+875:     // ===================================================================================
+876: 
+877:     public static final class Quality {
+878:         public final List<long[]> bulkDays = new ArrayList<>();   // {بداية اليوم، العمليات}
+879:         public final List<String[]> similarNames = new ArrayList<>();
+880:         public long distinctDescriptions, numericNames;
+881:     }
+882: 
+883:     public static Quality quality(Input in) {
+884:         Quality q = new Quality();
+885:         Map<String, long[]> perDay = new TreeMap<>();
+886:         Set<String> desc = new HashSet<>();
+887:         for (Model.Tx t : in.txs) {
+888:             if (!active(t)) continue;
+889:             perDay.computeIfAbsent(Model.day(t.createdAt), k -> new long[]{t.createdAt, 0})[1]++;
+890:             String d = norm(t.description);
+891:             if (!d.isEmpty()) desc.add(d);
+892:         }
+893:         q.distinctDescriptions = desc.size();
+894:         List<Long> counts = new ArrayList<>();
+895:         for (long[] v : perDay.values()) counts.add(v[1]);
+896:         Collections.sort(counts);
+897:         long median = counts.isEmpty() ? 0 : counts.get(counts.size() / 2);
+898:         for (long[] v : perDay.values()) if (v[1] >= Math.max(100, median * 10)) q.bulkDays.add(new long[]{v[0], v[1]});
+899:         Collections.sort(q.bulkDays, (a, b) -> Long.compare(b[1], a[1]));
+900:         List<Map.Entry<Long, String>> names = new ArrayList<>(in.names.entrySet());
+901:         for (Map.Entry<Long, String> e : names) if (norm(e.getValue()).matches("[0-9٠-٩ ]+")) q.numericNames++;
+902:         for (int i = 0; i < names.size(); i++) {
+903:             String a = norm(names.get(i).getValue());
+904:             if (a.length() < 3) continue;
+905:             for (int j = 0; j < names.size(); j++) {
+906:                 if (i == j) continue;
+907:                 String b = norm(names.get(j).getValue());
+908:                 if (b.length() > a.length() && (b.startsWith(a + " ") || b.endsWith(" " + a))) q.similarNames.add(new String[]{names.get(i).getValue(), names.get(j).getValue()});
+909:             }
+910:         }
+911:         return q;
+912:     }
+913: 
+914:     static void qualitySection(Report r, Input in) {
+915:         Quality q = quality(in);
+916:         Report.Section s = r.section("ما يلزم تسجيله ليصبح التحليل أدق", "جودة التسجيل");
+917:         s.kv("أيام سُجّلت فيها عمليات كثيرة دفعة واحدة", q.bulkDays.isEmpty() ? "لا يوجد" : q.bulkDays.size() + " يوم؛ أكبرها " + Model.day(q.bulkDays.get(0)[0]) + " بـ" + q.bulkDays.get(0)[1]
+918:                 + " عملية (اختر تاريخ العملية الحقيقي عند التسجيل)", !q.bulkDays.isEmpty());
+919:         s.kv("أسماء مكاتب متشابهة", q.similarNames.isEmpty() ? "لا يوجد" : count(q.similarNames.size(), "زوج", "زوجان", "أزواج", "زوجًا") + " (ادمجهما إن كانا حسابًا واحدًا)", !q.similarNames.isEmpty());
+920:         if (q.numericNames > 0) s.kv("مكاتب أسماؤها أرقام فقط", q.numericNames + " (اكتب الاسم الحقيقي)", true);

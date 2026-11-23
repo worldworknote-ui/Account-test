@@ -1,0 +1,151 @@
+468:             LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(a.dp(164), -2);
+469:             p.setMargins(a.dp(4), a.dp(2), a.dp(4), a.dp(2));
+470:             strip.addView(c, p);
+471:         }
+472:         if (n == 0) {
+473:             a.add(a.text("لا توجد أرصدة بعد. سجّل أول حركة لتظهر هنا أرصدة كل عملة.", 14, a.muted, false));
+474:             return;
+475:         }
+476:         a.body.addView(a.strip(strip), a.lp(-1, -2, 2));
+477:     }
+478: 
+479:     private void totalsTable() {
+480:         if (!a.can(Auth.Perm.VIEW)) return;
+481:         Map<String, Ledger.CurrencyTotal> totals = totals();
+482:         Map<String, String> names = a.db.currencyNames();
+483:         Map<String, Integer> dec = a.db.decimalsMap();
+484:         Set<String> only = chosenCurrencies("hw_net_curs");
+485:         a.section("الإجمالي لكل عملة", "التفاصيل", v -> a.balancesScreen.show());
+486:         LinearLayout g = a.group();
+487:         for (Ledger.CurrencyTotal t : totals.values()) {
+488:             if (t.receivable == 0 && t.payable == 0) continue;
+489:             if (!only.isEmpty() && !only.contains(t.code)) continue;
+490:             int d = dec.containsKey(t.code) ? dec.get(t.code) : 2;
+491:             String nm = names.get(t.code);
+492:             String sub = "لنا " + a.mf(t.receivable, d) + " (" + t.officesReceivable + " مكتب) • علينا " + a.mf(t.payable, d) + " (" + t.officesPayable + " مكتب)";
+493:             a.groupRow(g, R.drawable.ic_coins, a.primaryInk, t.code + (nm == null || nm.isEmpty() ? "" : " — " + nm), sub, a.mb(t.net(), d), v -> a.balancesScreen.show());
+494:         }
+495:         if (g.getChildCount() == 0) a.groupRow(g, R.drawable.ic_info, a.muted, "لا توجد أرصدة بعد", null, null, null);
+496:     }
+497: 
+498:     private void usdValue() {
+499:         if (!a.can(Auth.Perm.VIEW)) return;
+500:         Map<String, BigDecimal> usd = a.db.usdRates();
+501:         Ledger.Valuation v = Ledger.value(totals(), usd, a.db.decimalsMap());
+502:         a.section("التقويم التقريبي بالدولار", "أسعار الصرف", x -> a.officesScreen.showRates(a::showHome));
+503:         LinearLayout c = a.card();
+504:         LinearLayout r = a.row();
+505:         r.addView(valueCol("لنا", Db.fmtUsd(v.receivableUsd), a.green), new LinearLayout.LayoutParams(0, -2, 1));
+506:         r.addView(valueCol("علينا", Db.fmtUsd(v.payableUsd), a.red), new LinearLayout.LayoutParams(0, -2, 1));
+507:         r.addView(valueCol("الصافي", Db.fmtUsd(v.netUsd()), v.netUsd().signum() >= 0 ? a.green : a.red), new LinearLayout.LayoutParams(0, -2, 1));
+508:         c.addView(r);
+509:         if (!v.missingRates.isEmpty()) c.addView(a.text("بدون سعر صرف (غير محسوبة): " + v.missingRates, 12, a.warnInk, false));
+510:         c.addView(a.text("تقريبي للمتابعة فقط؛ الأرصدة الحقيقية بعملاتها.", 11, a.muted, false));
+511:     }
+512: 
+513:     private View valueCol(String label, String value, int color) {
+514:         LinearLayout col = new LinearLayout(a);
+515:         col.setOrientation(LinearLayout.VERTICAL);
+516:         col.addView(small(label, 12, a.muted, false));
+517:         TextView t = small(a.m("$" + value), 17, color, true);
+518:         t.setTextDirection(View.TEXT_DIRECTION_LTR);
+519:         t.setGravity(Gravity.RIGHT);
+520:         col.addView(t);
+521:         return col;
+522:     }
+523: 
+524:     // ===================================================================================
+525:     // اليوم
+526:     // ===================================================================================
+527: 
+528:     private void todayGroup() {
+529:         if (!a.can(Auth.Perm.VIEW)) return;
+530:         LinearLayout g = a.group();
+531:         long start = DailyScreen.dayStart(Clock.now());
+532:         long count = 0;
+533:         for (long[] v : a.db.dailyStats(start, DailyScreen.nextDay(start)).values()) count += v[4];
+534:         a.groupRow(g, R.drawable.ic_clock, a.primaryInk, "حركات اليوم", count == 0 ? "لا توجد حركات اليوم بعد" : null,
+535:                 count == 0 ? null : String.valueOf(count), v -> a.dailyScreen.show(Clock.now()));
+536:         final List<Model.Office> pending = pendingOffices();
+537:         if (!pending.isEmpty()) {
+538:             a.groupRow(g, R.drawable.ic_check2, a.warnInk, "مطابقات بانتظار تأكيد المكتب", null, String.valueOf(pending.size()), v -> {
+539:                 if (pending.size() == 1) {
+540:                     a.officeHub.showOffice(pending.get(0));
+541:                     return;
+542:                 }
+543:                 String[] items = new String[pending.size()];
+544:                 for (int i = 0; i < items.length; i++) items[i] = pending.get(i).name;
+545:                 new AlertDialog.Builder(a).setTitle("بانتظار التأكيد").setItems(items, (d, w) -> a.officeHub.showOffice(pending.get(w))).show();
+546:             });
+547:         }
+548:         // 10.7: اختصار «مكاتبي» للمحاسب
+549:         if (a.mineScreen.available()) {
+550:             int mine = a.db.myOffices().size();
+551:             int waiting = a.can(Auth.Perm.VERIFY) ? a.db.awaitingMyCheck(60, 200).size() : 0;
+552:             a.groupRow(g, R.drawable.ic_check2, a.primaryInk, "مكاتبي", mine == 0 ? "لم تُخصص لك مكاتب بعد" : mine + " مكتب" + (waiting > 0 ? " • " + waiting + " بانتظار تحققك" : ""),
+553:                     waiting > 0 ? String.valueOf(waiting) : null, v -> a.mineScreen.show());
+554:         }
+555:         if (a.can(Auth.Perm.TX_ADD) && !a.db.setting("draft_tx", "").isEmpty()) {
+556:             a.groupRow(g, R.drawable.ic_edit, a.primaryInk, "حركة لم تُحفظ بعد (مسودة)", "تابع تسجيلها من حيث توقفت", null, v -> a.txScreen.showNew());
+557:         }
+558:     }
+559: 
+560:     private List<Model.Office> pendingOffices() {
+561:         List<Model.Office> pending = new ArrayList<>();
+562:         for (Map.Entry<Long, Model.Recon> e : a.db.lastReconsByOffice().entrySet()) {
+563:             if (!Model.RECON_SENT.equals(e.getValue().status)) continue;
+564:             Model.Office o = a.db.office(e.getKey());
+565:             if (o != null) pending.add(o);
+566:         }
+567:         return pending;
+568:     }
+569: 
+570:     private void dailyByCurrency() {
+571:         if (!a.can(Auth.Perm.VIEW)) return;
+572:         long start = DailyScreen.dayStart(Clock.now());
+573:         Map<String, long[]> stats = a.db.dailyStats(start, DailyScreen.nextDay(start));
+574:         Set<String> only = chosenCurrencies("hw_net_curs");
+575:         a.section("ملخص اليوم", "التقرير اليومي", v -> a.dailyScreen.show(Clock.now()));
+576:         LinearLayout g = a.group();
+577:         for (Map.Entry<String, long[]> e : stats.entrySet()) {
+578:             if (!only.isEmpty() && !only.contains(e.getKey())) continue;
+579:             long[] v = e.getValue();
+580:             int d = a.db.decimals(e.getKey());
+581:             StringBuilder sub = new StringBuilder("لنا " + Model.fmt(v[0], d) + " • علينا " + Model.fmt(v[1], d));
+582:             if (v[2] > 0) sub.append(" • أجور لنا ").append(Model.fmt(v[2], d));
+583:             if (v[3] > 0) sub.append(" • أجور علينا ").append(Model.fmt(v[3], d));
+584:             a.groupRow(g, R.drawable.ic_calendar, a.primaryInk, e.getKey(), sub.toString(), v[4] + " حركة", x -> a.dailyScreen.show(Clock.now()));
+585:         }
+586:         if (g.getChildCount() == 0) a.groupRow(g, R.drawable.ic_info, a.muted, "لا توجد حركات اليوم بعد", null, null, null);
+587:     }
+588: 
+589:     // ===================================================================================
+590:     // المكاتب والحركات
+591:     // ===================================================================================
+592: 
+593:     private void officeBalances() {
+594:         if (!a.can(Auth.Perm.VIEW)) return;
+595:         String mode = a.db.setting("hw_offices_mode", "pinned");
+596:         int n = (int) a.db.settingLong("hw_offices_n", 5);
+597:         final Map<Long, Map<String, Long>> bal = a.db.officeBalances();
+598:         final Map<String, Integer> dec = a.db.decimalsMap();
+599:         final Map<String, BigDecimal> usd = a.db.usdRates();
+600:         List<Model.Office> all = a.db.offices();
+601:         List<Model.Office> list = new ArrayList<>();
+602:         if ("pinned".equals(mode)) {
+603:             for (Model.Office o : all) if (o.pinned) list.add(o);
+604:         } else {
+605:             for (Model.Office o : all) {
+606:                 Map<String, Long> b = bal.get(o.id);
+607:                 if (b == null) continue;
+608:                 boolean has = false;
+609:                 for (long v : b.values()) if ("top_us".equals(mode) ? v > 0 : "top_them".equals(mode) ? v < 0 : v != 0) has = true;
+610:                 if (has) list.add(o);
+611:             }
+612:             // الترتيب بالقيمة التقريبية بالدولار (لنا أو علينا)
+613:             final boolean us = !"top_them".equals(mode);
+614:             Collections.sort(list, (x, y) -> worth(bal.get(y.id), usd, dec, us).compareTo(worth(bal.get(x.id), usd, dec, us)));
+615:         }
+616:         String title = "pinned".equals(mode) ? "المكاتب المثبّتة" : "top_us".equals(mode) ? "أكبر الأرصدة لنا" : "top_them".equals(mode) ? "أكبر الأرصدة علينا" : "أرصدة المكاتب";
+617:         a.section(title, "كل المكاتب", v -> a.officeHub.showList());
+618:         if (list.isEmpty()) {

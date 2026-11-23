@@ -1,0 +1,133 @@
+1009:                         + "• يجب أن يكون «" + m.optString("name") + "» قد زامن قريبًا واستلم كل ما أرسله هذا الهاتف.\n"
+1010:                         + "• يصبح هذا الهاتف جهازًا عاديًا فورًا، ويعرف الجهاز الآخر دوره في جولته التالية.\n• لا تتغير أي بيانات ولا رموز المستخدمين.",
+1011:                 "نقل الدور", () -> a.busy("جارٍ نقل الدور…", p -> {
+1012:                     SyncEngine e = new SyncEngine(a.db, folder(a, a.db));
+1013:                     e.sync();
+1014:                     e.transferFounder(m.optString("dev"));
+1015:                     return true;
+1016:                 }, res -> {
+1017:                     a.toast("نُقل دور الجهاز الرئيسي إلى «" + m.optString("name") + "» ✓");
+1018:                     show();
+1019:                 }));
+1020:     }
+1021: 
+1022:     /** 10.5 (AUDIT-002): استلام دور الجهاز الرئيسي بعد ضياعه: مدير + رمز الاسترداد + غياب الرئيسي. */
+1023:     private void claimFounder(final SyncEngine.Status st) {
+1024:         a.busy("جارٍ الفحص…", p -> {
+1025:             String b = new SyncEngine(a.db, folder(a, a.db)).founderClaimBlock(st.founderDev);
+1026:             return b == null ? "" : b;
+1027:         }, res -> {
+1028:             if (!((String) res).isEmpty()) {
+1029:                 new AlertDialog.Builder(a).setTitle("استلام دور الجهاز الرئيسي").setMessage((String) res).setPositiveButton("حسنًا", null).show();
+1030:                 return;
+1031:             }
+1032:             LinearLayout l = new LinearLayout(a);
+1033:             l.setOrientation(LinearLayout.VERTICAL);
+1034:             l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+1035:             l.addView(a.text("استعمله فقط إن ضاع الجهاز الرئيسي «" + st.founderName() + "» أو تعطل. يلزم رمز استرداد المزامنة (الورقة التي حفظتها عند الإنشاء)؛ "
+1036:                     + "كلمة السر ورابط الانضمام لا يكفيان. إن عاد الجهاز القديم يصبح جهازًا عاديًا تلقائيًا.", 13, a.ink, false));
+1037:             final EditText rc = secret(l, "رمز الاسترداد");
+1038:             new AlertDialog.Builder(a).setTitle("استلام دور الجهاز الرئيسي").setView(l).setPositiveButton("استلام الدور", (d, w) -> {
+1039:                 final char[] s = rc.getText().toString().toCharArray();
+1040:                 a.busy("جارٍ استلام الدور…", p -> {
+1041:                     new SyncEngine(a.db, folder(a, a.db)).claimFounder(s);
+1042:                     return true;
+1043:                 }, r2 -> {
+1044:                     a.toast("أصبح هذا الهاتف هو الجهاز الرئيسي ✓");
+1045:                     show();
+1046:                 });
+1047:             }).setNegativeButton("إلغاء", null).show();
+1048:         });
+1049:     }
+1050: 
+1051:     private void newRecovery() {
+1052:         LinearLayout l = new LinearLayout(a);
+1053:         l.setOrientation(LinearLayout.VERTICAL);
+1054:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+1055:         l.addView(a.text("يتوقف رمز الاسترداد القديم فورًا، ويظهر رمز جديد مرة واحدة. احفظه خارج هذا الهاتف.", 13, a.ink, false));
+1056:         final EditText pw = secret(l, "كلمة سر المزامنة الحالية");
+1057:         new AlertDialog.Builder(a).setTitle("رمز استرداد جديد").setView(l).setPositiveButton("إصدار", (d, w) -> {
+1058:             final char[] s = pw.getText().toString().toCharArray();
+1059:             a.busy("جارٍ إصدار الرمز…", p -> new SyncEngine(a.db, folder(a, a.db)).newRecoveryCode(s), res -> recoveryDialog((String) res));
+1060:         }).setNegativeButton("إلغاء", null).show();
+1061:     }
+1062: 
+1063:     private void editServer() {
+1064:         LinearLayout l = new LinearLayout(a);
+1065:         l.setOrientation(LinearLayout.VERTICAL);
+1066:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+1067:         final EditText url = a.field("https://عنوان-خادمك");
+1068:         url.setText(a.db.setting("sync_server", ""));
+1069:         url.setTextDirection(android.view.View.TEXT_DIRECTION_LTR);
+1070:         l.addView(url, a.lp(-1, 50, 3));
+1071:         final EditText key = secret(l, "رمز الخادم (إن وُجد)");
+1072:         key.setText(a.db.setting("sync_server_key", ""));
+1073:         l.addView(a.text("يُفحص الاتصال قبل الحفظ، والخزنة نفسها تبقى. إن كان العنوان لخادم آخر فاستعمل «الطريقة: تغيير» لتُنسخ الملفات إليه.", 12, a.muted, false));
+1074:         new AlertDialog.Builder(a).setTitle("خادم المزامنة").setView(l).setPositiveButton("فحص وحفظ", (d, w) -> {
+1075:             final String base = HttpSyncFolder.parseLink(url.getText().toString())[0];
+1076:             final String k = key.getText().toString().trim();
+1077:             try {
+1078:                 HttpSyncFolder.checkUrl(base);
+1079:             } catch (Exception e) {
+1080:                 a.error(e);
+1081:                 return;
+1082:             }
+1083:             final String vault = SyncEngine.status(a.db).vaultId;
+1084:             a.busy("جارٍ فحص الخادم…", p -> {
+1085:                 HttpSyncFolder h = new HttpSyncFolder(base, vault, k);
+1086:                 h.ping();
+1087:                 if (new SyncEngine(a.db, h).vaultExists()) return "ok";
+1088:                 return "empty";
+1089:             }, res -> {
+1090:                 if ("empty".equals(res)) {
+1091:                     a.error(new IllegalStateException("الخادم يعمل لكن خزنتك ليست عليه. للانتقال إليه استعمل «الطريقة: تغيير ← خادم المزامنة»."));
+1092:                     return;
+1093:                 }
+1094:                 a.db.setSettingQuiet("sync_server", base);
+1095:                 a.db.setSettingQuiet("sync_server_key", k);
+1096:                 a.toast("حُفظت إعدادات الخادم ✓");
+1097:                 now(this::show);
+1098:             });
+1099:         }).setNegativeButton("إلغاء", null).show();
+1100:     }
+1101: 
+1102:     /** 10.2: نقل الخزنة إلى طريقة أخرى (تُنسخ الملفات المشفّرة كما هي؛ كرّرها على كل جهاز بالطريقة نفسها). */
+1103:     // ===================================================================================
+1104:     // 10.14: تغيير حساب Google، تعيين كلمة سر جديدة، حذف ملفات المزامنة
+1105:     // ===================================================================================
+1106: 
+1107:     private void changeAccount(final String cur) {
+1108:         if (!a.require(Auth.Perm.SYNC)) return;
+1109:         String[] items = {"نقل المزامنة إلى الحساب الجديد (موصى به)", "بداية جديدة في الحساب الجديد"};
+1110:         new AlertDialog.Builder(a).setTitle("تغيير حساب Google").setItems(items, (d, w) -> {
+1111:             if (w == 0) a.confirm("نقل المزامنة إلى حساب آخر",
+1112:                     "تُنسخ الخزنة المشفّرة كما هي إلى الحساب الجديد، ويُترك في الحساب القديم علامة «نُقلت»: كل جهاز آخر يتوقف عن الإرسال إليه "
+1113:                             + "ويطلب منك الدخول بالحساب الجديد على ذلك الجهاز (بياناته لا تتغير). بعد أن تنتقل كل الأجهزة احذف الخزنة من الحساب القديم.",
+1114:                     "اختيار الحساب الجديد", () -> pickNew(cur, false));
+1115:             else a.confirm("بداية جديدة في حساب آخر",
+1116:                     "تُنشأ مزامنة جديدة في الحساب الجديد من بيانات هذا الجهاز، بكلمة سر ورمز استرداد جديدين. كل جهاز آخر يُطلب منه أن ينضم إليها، "
+1117:                             + "فتُستبدل بياناته ببيانات هذا الجهاز: ما سُجّل عليه ولم يصل إلى هنا يضيع. استعمل هذا فقط إن كانت كل الأجهزة متزامنة الآن.",
+1118:                     "اختيار الحساب الجديد", () -> pickNew(cur, true));
+1119:         }).setNegativeButton("إلغاء", null).show();
+1120:     }
+1121: 
+1122:     private void pickNew(final String cur, final boolean fresh) {
+1123:         DriveAuth.pickAccount(a, cur, email -> {
+1124:             if (email.equalsIgnoreCase(cur)) {
+1125:                 a.toast("هذا هو الحساب الحالي. اختر حسابًا آخر.");
+1126:                 return;
+1127:             }
+1128:             DriveAuth.connect(a, email, new DriveAuth.Done() {
+1129:                 @Override public void ok() {
+1130:                     a.usersScreen.confirmAdmin(fresh ? "بداية جديدة في حساب آخر" : "نقل المزامنة إلى حساب آخر", () -> {
+1131:                         if (fresh) freshIn(cur, email);
+1132:                         else moveTo(cur, email);
+1133:                     });
+1134:                 }
+1135: 
+1136:                 @Override public void fail(Exception e) { a.error(e); }
+1137:             });
+1138:         });
+1139:     }
+1140: 
+1141:     private void moveTo(final String cur, final String email) {

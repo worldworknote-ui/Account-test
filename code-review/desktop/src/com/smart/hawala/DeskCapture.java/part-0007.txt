@@ -1,0 +1,165 @@
+1128:             // سطر لكل نص: x y w h (نسبية 0..1 من أسفل الصورة) ثم النص بـBase64
+1129:             List<Bubbles.Node> nodes = new ArrayList<>();
+1130:             for (String line : out.split("\n")) {
+1131:                 String[] p = line.trim().split("\t");
+1132:                 if (p.length < 5) continue;
+1133:                 try {
+1134:                     double x = Double.parseDouble(p[0]), y = Double.parseDouble(p[1]), w = Double.parseDouble(p[2]), h = Double.parseDouble(p[3]);
+1135:                     String t = new String(java.util.Base64.getDecoder().decode(p[4]), StandardCharsets.UTF_8);
+1136:                     int jx = in.x + (int) Math.round(x * in.width), jw = (int) Math.round(w * in.width);
+1137:                     int jh = (int) Math.round(h * in.height), jy = in.y + (int) Math.round((1 - y - h) * in.height);
+1138:                     nodes.add(new Bubbles.Node('L', jx, jy, jw, jh, t));
+1139:                 } catch (Exception ignored) {
+1140:                     // سطر تالف
+1141:                 }
+1142:             }
+1143:             return nodes;
+1144:         }
+1145: 
+1146:         /** صورة ما تحت الإطار بأعلى دقة متاحة (شاشات Retina وتكبير ويندوز). */
+1147:         static BufferedImage grab(Rectangle in) throws Exception {
+1148:             Robot r = new Robot();
+1149:             Image best = null;
+1150:             try {
+1151:                 java.awt.image.MultiResolutionImage mr = r.createMultiResolutionScreenCapture(in);
+1152:                 for (Image v : mr.getResolutionVariants()) if (best == null || v.getWidth(null) > best.getWidth(null)) best = v;
+1153:             } catch (Throwable t) {
+1154:                 best = null;
+1155:             }
+1156:             if (best == null) return r.createScreenCapture(in);
+1157:             BufferedImage b = new BufferedImage(best.getWidth(null), best.getHeight(null), BufferedImage.TYPE_INT_RGB);
+1158:             Graphics2D g = b.createGraphics();
+1159:             g.drawImage(best, 0, 0, null);
+1160:             g.dispose();
+1161:             return b;
+1162:         }
+1163: 
+1164:         /** نافذة ظاهرة على الشاشة بإحداثيات جافا مع اسم برنامجها/عنوانها. */
+1165:         static final class Shown {
+1166:             final Rectangle r;
+1167:             final String name;
+1168: 
+1169:             Shown(Rectangle r, String name) {
+1170:                 this.r = r;
+1171:                 this.name = name == null ? "" : name;
+1172:             }
+1173:         }
+1174: 
+1175:         /** كل النوافذ الظاهرة من الأمام للخلف (عدا نوافذ البرنامج نفسه). */
+1176:         static List<Shown> windowsList(double scale, Rectangle bar) throws Exception {
+1177:             List<Shown> l = new ArrayList<>();
+1178:             long pid = ProcessHandle.current().pid();
+1179:             if (fake() != null) {
+1180:                 Rectangle sc = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
+1181:                 l.add(new Shown(new Rectangle(sc.x + 40, sc.y + 80, Math.min(900, sc.width - 80), Math.min(640, sc.height - 120)), "WhatsApp"));
+1182:                 return l;
+1183:             }
+1184:             if (WIN) {
+1185:                 List<String> args = new ArrayList<>(List.of("-SelfPid", String.valueOf(pid), "-List", "1"));
+1186:                 args.addAll(List.of(frameArgs(new Rectangle(0, 0, 0, 0), bar)));
+1187:                 for (Bubbles.Node n : toJava(Bubbles.parse(run(script("uia.ps1"), 30, args.toArray(new String[0]))), bar, scale))
+1188:                     if (n.kind == 'W') l.add(new Shown(new Rectangle(n.x, n.y, n.w, n.h), n.text));
+1189:             } else if (MAC) {
+1190:                 for (String line : run(script("macwins.js"), 15).split("\n")) {
+1191:                     String[] p = line.trim().split("\t", -1);
+1192:                     if (p.length < 6) continue;
+1193:                     try {
+1194:                         if (Long.parseLong(p[0].trim()) == pid) continue;
+1195:                         Rectangle r = new Rectangle(Integer.parseInt(p[1].trim()), Integer.parseInt(p[2].trim()), Integer.parseInt(p[3].trim()), Integer.parseInt(p[4].trim()));
+1196:                         if (r.width < 80 || r.height < 80) continue;
+1197:                         String name = p[5].isEmpty() ? "" : new String(java.util.Base64.getDecoder().decode(p[5].trim()), StandardCharsets.UTF_8);
+1198:                         l.add(new Shown(r, name));
+1199:                     } catch (Exception ignored) {
+1200:                         // سطر تالف
+1201:                     }
+1202:                 }
+1203:             }
+1204:             return l;
+1205:         }
+1206: 
+1207:         /** «حدد النافذة» بكبسة: أعلى نافذة تحت النقطة. */
+1208:         static Rectangle windowAt(Point p, double scale, Rectangle bar) throws Exception {
+1209:             for (Shown s : windowsList(scale, bar)) if (s.r.contains(p)) return s.r;
+1210:             return null;
+1211:         }
+1212: 
+1213:         /** نافذة واتساب (أو أول نافذة فيها WhatsApp في اسمها) بإحداثيات جافا، أو null. */
+1214:         static Rectangle whatsappWindow(double scale, Rectangle bar) throws Exception {
+1215:             for (Shown s : windowsList(scale, bar))
+1216:                 if (s.name.matches("(?is).*(whatsapp|واتساب).*")) return s.r;
+1217:             return null;
+1218:         }
+1219: 
+1220:         /** ينسخ سكربت القراءة من داخل البرنامج إلى ملف مؤقت. */
+1221:         static File script(String name) throws Exception {
+1222:             try (InputStream in = DeskCapture.class.getResourceAsStream("/res/capture/" + name)) {
+1223:                 if (in == null) throw new Exception("سكربت القراءة غير موجود: " + name);
+1224:                 String ext = name.substring(name.lastIndexOf('.'));
+1225:                 File f = File.createTempFile("sa-cap-", ext);
+1226:                 f.deleteOnExit();
+1227:                 byte[] b = in.readAllBytes();
+1228:                 // PowerShell 5 يقرأ الملف بلا BOM كترميز النظام: نضيف BOM ليُقرأ UTF-8
+1229:                 if (ext.equals(".ps1")) {
+1230:                     byte[] bom = {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF};
+1231:                     byte[] all = new byte[b.length + 3];
+1232:                     System.arraycopy(bom, 0, all, 0, 3);
+1233:                     System.arraycopy(b, 0, all, 3, b.length);
+1234:                     b = all;
+1235:                 }
+1236:                 Files.write(f.toPath(), b);
+1237:                 return f;
+1238:             }
+1239:         }
+1240: 
+1241:         static String run(File script, int seconds, String... args) throws Exception {
+1242:             List<String> cmd = new ArrayList<>();
+1243:             if (script.getName().endsWith(".ps1")) {
+1244:                 cmd.add(powershell());
+1245:                 cmd.add("-NoProfile");
+1246:                 cmd.add("-NonInteractive");
+1247:                 cmd.add("-ExecutionPolicy");
+1248:                 cmd.add("Bypass");
+1249:                 cmd.add("-File");
+1250:                 cmd.add(script.getAbsolutePath());
+1251:             } else {
+1252:                 cmd.add("/usr/bin/osascript");
+1253:                 cmd.add("-l");
+1254:                 cmd.add("JavaScript");
+1255:                 cmd.add(script.getAbsolutePath());
+1256:             }
+1257:             for (String a : args) cmd.add(a);
+1258:             ProcessBuilder pb = new ProcessBuilder(cmd);
+1259:             pb.redirectErrorStream(false);
+1260:             Process p = pb.start();
+1261:             p.getOutputStream().close();
+1262:             final byte[][] buf = new byte[1][];
+1263:             Thread t = new Thread(() -> {
+1264:                 try {
+1265:                     buf[0] = p.getInputStream().readAllBytes();
+1266:                 } catch (Exception e) {
+1267:                     buf[0] = new byte[0];
+1268:                 }
+1269:             });
+1270:             t.start();
+1271:             Thread drain = new Thread(() -> {
+1272:                 try {
+1273:                     p.getErrorStream().readAllBytes();
+1274:                 } catch (Exception ignored) {
+1275:                     // لا شيء
+1276:                 }
+1277:             });
+1278:             drain.start();
+1279:             if (!p.waitFor(seconds, TimeUnit.SECONDS)) {
+1280:                 p.destroyForcibly();
+1281:                 throw new Exception("القراءة أخذت وقتًا طويلًا. صغّر الإطار وحاول مرة أخرى.");
+1282:             }
+1283:             t.join(2000);
+1284:             try {
+1285:                 script.delete();
+1286:             } catch (Exception ignored) {
+1287:                 // لا شيء
+1288:             }
+1289:             return buf[0] == null ? "" : new String(buf[0], StandardCharsets.UTF_8);
+1290:         }
+1291:     }
+1292: }

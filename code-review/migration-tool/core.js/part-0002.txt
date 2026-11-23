@@ -1,0 +1,158 @@
+183:     var dmy = 0, mdy = 0;
+184:     values.forEach(function (v) {
+185:       if (typeof v !== "string" && !(v && v.s !== undefined)) return;
+186:       var s = normDigits(typeof v === "string" ? v : v.s);
+187:       var m = s.match(/^\s*(\d{1,2})\s*[\/\-.]\s*(\d{1,2})\s*[\/\-.]\s*(\d{2,4})/);
+188:       if (!m) return;
+189:       if (+m[1] > 12) dmy++;
+190:       if (+m[2] > 12) mdy++;
+191:     });
+192:     return mdy > dmy ? "mdy" : "dmy";
+193:   }
+194: 
+195:   function epoch(dt, defaultHour) {
+196:     var H = dt.hasTime ? dt.H : defaultHour, M = dt.hasTime ? dt.M : 0, S = dt.hasTime ? dt.S : 0;
+197:     return new Date(dt.y, dt.m - 1, dt.d, H, M, S).getTime();
+198:   }
+199: 
+200:   function fmtDate(t) {
+201:     var d = new Date(t);
+202:     function p(n) { return (n < 10 ? "0" : "") + n; }
+203:     return d.getFullYear() + "/" + p(d.getMonth() + 1) + "/" + p(d.getDate());
+204:   }
+205: 
+206:   // ===================================================================================
+207:   // قراءة أوراق Excel إلى صفوف
+208:   // ===================================================================================
+209: 
+210:   /** يحوّل ورقة SheetJS إلى مصفوفة صفوف من خلايا: {s} نص، {n} رقم، {date} تاريخ، أو null. */
+211:   function sheetRows(ws, XLSX) {
+212:     if (!ws || !ws["!ref"]) return [];
+213:     var rg = XLSX.utils.decode_range(ws["!ref"]);
+214:     var out = [];
+215:     var maxRows = Math.min(rg.e.r, rg.s.r + 200000);
+216:     for (var r = rg.s.r; r <= maxRows; r++) {
+217:       var row = [];
+218:       for (var c = 0; c <= rg.e.c; c++) {
+219:         var cell = ws[XLSX.utils.encode_cell({ r: r, c: c })];
+220:         row.push(cellValue(cell, XLSX));
+221:       }
+222:       out.push(row);
+223:     }
+224:     return out;
+225:   }
+226: 
+227:   function cellValue(cell, XLSX) {
+228:     if (!cell || cell.v === undefined || cell.v === null) return null;
+229:     switch (cell.t) {
+230:       case "s": case "str": return clean(cell.v) === "" ? null : { s: String(cell.v) };
+231:       case "n":
+232:         if (cell.z && XLSX.SSF.is_date(cell.z)) {
+233:           var p = XLSX.SSF.parse_date_code(cell.v);
+234:           return p ? { date: { y: p.y, m: p.m, d: p.d, H: p.H, M: p.M, S: p.S } } : { n: cell.v };
+235:         }
+236:         return { n: cell.v };
+237:       case "d":
+238:         var dt = cell.v instanceof Date ? cell.v : new Date(cell.v);
+239:         return { date: { y: dt.getFullYear(), m: dt.getMonth() + 1, d: dt.getDate(), H: dt.getHours(), M: dt.getMinutes(), S: dt.getSeconds() } };
+240:       case "b": return { s: cell.v ? "TRUE" : "FALSE" };
+241:       default: return null;
+242:     }
+243:   }
+244: 
+245:   function text(cell) {
+246:     if (!cell) return "";
+247:     if (cell.s !== undefined) return clean(cell.s);
+248:     if (cell.n !== undefined) {
+249:       var n = cell.n;
+250:       return Number.isInteger(n) ? String(n) : String(+n.toFixed(10));
+251:     }
+252:     if (cell.date) {
+253:       var x = cell.date;
+254:       return x.y + "/" + (x.m < 10 ? "0" : "") + x.m + "/" + (x.d < 10 ? "0" : "") + x.d;
+255:     }
+256:     return "";
+257:   }
+258: 
+259:   function isBlankRow(row) { return !row || row.every(function (c) { return c === null || text(c) === ""; }); }
+260: 
+261:   // ===================================================================================
+262:   // التعرف على الأعمدة والعملات والاتجاه
+263:   // ===================================================================================
+264: 
+265:   var SYN = {
+266:     office: ["المكتب", "اسم المكتب", "مكتب", "الحساب", "اسم الحساب", "حساب", "العميل", "اسم العميل", "الوكيل", "الجهه", "الطرف", "account", "office", "agent", "customer", "client", "accountname", "officename"],
+267:     date: ["التاريخ", "تاريخ", "تاريخ الحركه", "تاريخ العمليه", "تاريخ السند", "date", "datetime", "transactiondate"],
+268:     amount: ["المبلغ", "مبلغ", "القيمه", "قيمه", "amount", "value", "sum"],
+269:     debit: ["مدين", "لنا", "عليه", "مدين لنا", "debit", "dr", "debitamount"],
+270:     credit: ["دائن", "علينا", "له", "دائن علينا", "credit", "cr", "creditamount"],
+271:     type: ["النوع", "نوع", "نوع الحركه", "نوع العمليه", "الاتجاه", "type", "direction", "drcr"],
+272:     currency: ["العمله", "عمله", "نوع العمله", "currency", "cur", "ccy", "curr"],
+273:     person: ["المستفيد", "المستلم", "اسم المستفيد", "اسم المستلم", "الشخص", "المرسل اليه", "beneficiary", "receiver", "recipient", "person", "payee"],
+274:     description: ["البيان", "بيان", "الشرح", "التفاصيل", "الوصف", "description", "details", "memo", "narration", "particulars"],
+275:     notes: ["ملاحظات", "ملاحظه", "notes", "note", "remarks", "comment"],
+276:     ref: ["المرجع", "مرجع", "رقم الحواله", "رقم السند", "رقم العمليه", "رقم القيد", "الرقم", "ref", "reference", "no", "number", "voucher"],
+277:     fee: ["الاجره", "اجره", "العموله", "عموله", "fee", "fees", "commission"],
+278:     balance: ["الرصيد", "رصيد", "balance", "runningbalance"],
+279:     phone: ["الهاتف", "هاتف", "الجوال", "جوال", "موبايل", "رقم الهاتف", "phone", "mobile", "tel"]
+280:   };
+281:   var SYN_KEYS = {};
+282:   Object.keys(SYN).forEach(function (k) { SYN_KEYS[k] = SYN[k].map(headerKey); });
+283: 
+284:   /** يقترح صف العناوين: أول صف (من أول 25) فيه أكثر الأسماء المعروفة. */
+285:   function guessHeaderRow(rows) {
+286:     var best = 0, bestScore = -1;
+287:     for (var r = 0; r < Math.min(rows.length, 25); r++) {
+288:       var row = rows[r] || [];
+289:       var score = 0, texts = 0;
+290:       row.forEach(function (c) {
+291:         var t = text(c);
+292:         if (!t || (c && c.n !== undefined)) return;
+293:         texts++;
+294:         var k = headerKey(t);
+295:         Object.keys(SYN_KEYS).forEach(function (f) { if (SYN_KEYS[f].indexOf(k) >= 0) score += 3; });
+296:       });
+297:       score += Math.min(texts, 6) * 0.2;
+298:       if (texts >= 2 && score > bestScore) { bestScore = score; best = r; }
+299:     }
+300:     return best;
+301:   }
+302: 
+303:   /** يقترح عمودًا لكل حقل من عناوين الأعمدة. */
+304:   function guessColumns(headers) {
+305:     var keys = headers.map(function (h) { return headerKey(text(h)); });
+306:     var used = {};
+307:     var res = {};
+308:     var order = ["debit", "credit", "date", "currency", "office", "amount", "type", "person", "description", "notes", "ref", "fee", "balance", "phone"];
+309:     order.forEach(function (f) {
+310:       var idx = -1;
+311:       for (var i = 0; i < keys.length && idx < 0; i++) if (!used[i] && keys[i] && SYN_KEYS[f].indexOf(keys[i]) >= 0) idx = i;
+312:       for (var j = 0; j < keys.length && idx < 0; j++) {
+313:         if (used[j] || !keys[j]) continue;
+314:         if (SYN_KEYS[f].some(function (s) { return s.length >= 3 && keys[j].indexOf(s) >= 0; })) idx = j;
+315:       }
+316:       if (idx >= 0) { res[f] = idx; used[idx] = true; }
+317:     });
+318:     return res;
+319:   }
+320: 
+321:   var KNOWN = {
+322:     USD: { name: "دولار أمريكي", dec: 2, words: ["usd", "$", "دولار", "دولار امريكي", "الدولار", "dollar", "us dollar", "usd$", "دولار أمريكي"] },
+323:     EUR: { name: "يورو", dec: 2, words: ["eur", "€", "يورو", "اليورو", "euro"] },
+324:     TRY: { name: "ليرة تركية", dec: 2, words: ["try", "tl", "₺", "ليره تركيه", "ليرة تركية", "تركي", "تركيه", "lira", "turkish lira"] },
+325:     SYP: { name: "ليرة سورية", dec: 0, words: ["syp", "ل.س", "ل س", "ليره سوريه", "ليرة سورية", "سوري", "سوريه", "ليره", "ليرة", "syrian pound"] },
+326:     USDT: { name: "تيثر (USDT)", dec: 2, words: ["usdt", "تيثر", "يوز", "tether"] },
+327:     SAR: { name: "ريال سعودي", dec: 2, words: ["sar", "ريال سعودي", "ريال", "سعودي", "riyal"] },
+328:     AED: { name: "درهم إماراتي", dec: 2, words: ["aed", "درهم", "درهم اماراتي", "اماراتي", "dirham"] },
+329:     GBP: { name: "جنيه إسترليني", dec: 2, words: ["gbp", "£", "استرليني", "جنيه استرليني", "pound"] },
+330:     EGP: { name: "جنيه مصري", dec: 2, words: ["egp", "جنيه مصري", "مصري", "جنيه"] },
+331:     IQD: { name: "دينار عراقي", dec: 0, words: ["iqd", "دينار عراقي", "عراقي"] },
+332:     JOD: { name: "دينار أردني", dec: 3, words: ["jod", "دينار اردني", "اردني"] },
+333:     KWD: { name: "دينار كويتي", dec: 3, words: ["kwd", "دينار كويتي", "كويتي"] },
+334:     LBP: { name: "ليرة لبنانية", dec: 0, words: ["lbp", "ليره لبنانيه", "لبناني", "لبنانيه"] },
+335:     QAR: { name: "ريال قطري", dec: 2, words: ["qar", "ريال قطري", "قطري"] },
+336:     RON: { name: "ليو روماني", dec: 2, words: ["ron", "ليو", "روماني", "lei", "leu"] },
+337:     CHF: { name: "فرنك سويسري", dec: 2, words: ["chf", "فرنك", "فرنك سويسري"] },
+338:     SEK: { name: "كرونة سويدية", dec: 2, words: ["sek", "كرون", "كرونه سويديه"] },
+339:     CAD: { name: "دولار كندي", dec: 2, words: ["cad", "دولار كندي", "كندي"] },
+340:     AUD: { name: "دولار أسترالي", dec: 2, words: ["aud", "دولار استرالي", "استرالي"] },

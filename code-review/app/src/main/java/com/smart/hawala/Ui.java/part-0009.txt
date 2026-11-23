@@ -1,0 +1,213 @@
+1356:         b.setAllCaps(false);
+1357:         bold(b);
+1358:         b.setGravity(Gravity.CENTER);
+1359:         b.setPadding(dp(12), 0, dp(12), 0);
+1360:         styleButton(b, color, 16);
+1361:         b.setOnClickListener(l == null ? null : v -> {
+1362:             tick(v);
+1363:             l.onClick(v);
+1364:         });
+1365:         return b;
+1366:     }
+1367: 
+1368:     Button button(String label, int color, View.OnClickListener l) {
+1369:         Button b = makeButton(label, color, l);
+1370:         body.addView(b, capWide(lp(-1, 54, 4)));
+1371:         return b;
+1372:     }
+1373: 
+1374:     Button smallButton(String s, int col, View.OnClickListener l) {
+1375:         Button b = new Button(this);
+1376:         b.setText(s);
+1377:         b.setAllCaps(false);
+1378:         b.setTextSize(14);
+1379:         b.setPadding(dp(10), 0, dp(10), 0);
+1380:         b.setMinWidth(0);
+1381:         b.setMinimumWidth(0);
+1382:         styleButton(b, col, 12);
+1383:         b.setOnClickListener(l);
+1384:         return b;
+1385:     }
+1386: 
+1387:     LinearLayout card() {
+1388:         LinearLayout c = new LinearLayout(this);
+1389:         c.setOrientation(LinearLayout.VERTICAL);
+1390:         c.setPadding(dp(14), dp(12), dp(14), dp(12));
+1391:         c.setBackground(round(surface, cardStroke, 20));
+1392:         body.addView(c, lp(-1, -2, 5));
+1393:         return c;
+1394:     }
+1395: 
+1396:     LinearLayout row() {
+1397:         LinearLayout r = new LinearLayout(this);
+1398:         r.setOrientation(LinearLayout.HORIZONTAL);
+1399:         r.setGravity(Gravity.CENTER_VERTICAL);
+1400:         return r;
+1401:     }
+1402: 
+1403:     GradientDrawable round(int fill, int stroke, int r) {
+1404:         GradientDrawable g = new GradientDrawable();
+1405:         g.setColor(fillFor(fill));
+1406:         g.setCornerRadius(dp(r));
+1407:         g.setStroke(dp(1), fill == stroke ? fillFor(fill) : strokeFor(stroke));
+1408:         return g;
+1409:     }
+1410: 
+1411:     /** أثر اللمس فوق أي خلفية (أو بدون خلفية). */
+1412:     Drawable ripple(Drawable content, int r) {
+1413:         GradientDrawable mask = new GradientDrawable();
+1414:         mask.setColor(Color.WHITE);
+1415:         mask.setCornerRadius(dp(r));
+1416:         int rc = night ? Color.argb(46, 255, 255, 255) : Color.argb(28, 11, 60, 45);
+1417:         return new RippleDrawable(ColorStateList.valueOf(rc), content, mask);
+1418:     }
+1419: 
+1420:     LinearLayout.LayoutParams lp(int w, int h, int m) {
+1421:         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h < 0 ? h : dp(h));
+1422:         p.setMargins(0, dp(m), 0, dp(m));
+1423:         return p;
+1424:     }
+1425: 
+1426:     LinearLayout.LayoutParams weight(int h, float w, int side) {
+1427:         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, h < 0 ? h : dp(h), w);
+1428:         p.setMargins(dp(side), dp(3), dp(side), dp(3));
+1429:         return p;
+1430:     }
+1431: 
+1432:     int dp(int x) { return (int) (x * getResources().getDisplayMetrics().density + .5f); }
+1433: 
+1434:     Spinner spinner(String[] a) {
+1435:         Spinner s = new Spinner(this);
+1436:         s.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, a));
+1437:         return s;
+1438:     }
+1439: 
+1440:     void setItems(Spinner s, List<String> a) {
+1441:         s.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, a));
+1442:     }
+1443: 
+1444:     static void select(Spinner s, String value) {
+1445:         if (value == null || s.getAdapter() == null) return;
+1446:         for (int i = 0; i < s.getAdapter().getCount(); i++) {
+1447:             if (value.equals(String.valueOf(s.getAdapter().getItem(i)))) {
+1448:                 s.setSelection(i);
+1449:                 return;
+1450:             }
+1451:         }
+1452:     }
+1453: 
+1454:     static TextWatcher watcher(final Runnable r) {
+1455:         return new TextWatcher() {
+1456:             @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+1457: 
+1458:             @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
+1459: 
+1460:             @Override public void afterTextChanged(Editable e) { r.run(); }
+1461:         };
+1462:     }
+1463: 
+1464:     void toast(String m) { Toast.makeText(this, m, Toast.LENGTH_LONG).show(); }
+1465: 
+1466:     View swatch(int color, int sizeDp) {
+1467:         View v = new View(this);
+1468:         GradientDrawable g = new GradientDrawable();
+1469:         g.setShape(GradientDrawable.OVAL);
+1470:         g.setColor(color);
+1471:         g.setStroke(dp(2), night ? line : Color.rgb(200, 200, 200));
+1472:         v.setBackground(g);
+1473:         v.setMinimumHeight(dp(sizeDp));
+1474:         return v;
+1475:     }
+1476: 
+1477:     // ===================================================================================
+1478:     // عناصر التصميم الجديد: أيقونات، رقائق، قوائم مجمّعة، عناوين أقسام، إشعار مع تراجع
+1479:     // ===================================================================================
+1480: 
+1481:     ImageView icon(int res, int color, int sizeDp) {
+1482:         ImageView iv = new ImageView(this);
+1483:         iv.setImageResource(res);
+1484:         iv.setImageTintList(ColorStateList.valueOf(color));
+1485:         iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+1486:         iv.setMinimumWidth(dp(sizeDp));
+1487:         iv.setMinimumHeight(dp(sizeDp));
+1488:         return iv;
+1489:     }
+1490: 
+1491:     /**
+1492:      * 12.3: زر أداة صغير بأيقونة خطية ونص (لصق، التقاط، تجميع، قص، مسح): شكل حبة مستديرة متناسقة على كل المنصات بدل الرموز التعبيرية.
+1493:      * style: 0 أساسي ممتلئ، 1 ناعم بلون التطبيق، 2 محايد (للمسح).
+1494:      */
+1495:     LinearLayout toolChip(int res, String label, int style, View.OnClickListener l) {
+1496:         LinearLayout c = new LinearLayout(this);
+1497:         c.setOrientation(LinearLayout.HORIZONTAL);
+1498:         c.setGravity(Gravity.CENTER);
+1499:         c.setPadding(dp(12), 0, dp(14), 0);
+1500:         c.setMinimumHeight(dp(38));
+1501:         int fill = style == 0 ? primary : style == 1 ? primarySoft : surface;
+1502:         int stroke = style == 0 ? primary : style == 1 ? mix(primarySoft, primaryInk, 0.22f) : line;
+1503:         int ink = style == 0 ? Color.WHITE : style == 1 ? primaryInk : muted;
+1504:         c.setBackground(ripple(round(fill, stroke, 19), 19));
+1505:         ImageView iv = icon(res, ink, 18);
+1506:         c.addView(iv, new LinearLayout.LayoutParams(dp(18), dp(18)));
+1507:         TextView t = text(label, 13, ink, true);
+1508:         t.setSingleLine(true);
+1509:         LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-2, -2);
+1510:         tp.setMarginStart(dp(6));
+1511:         c.addView(t, tp);
+1512:         c.setContentDescription(label);
+1513:         c.setClickable(true);
+1514:         c.setOnClickListener(l);
+1515:         springy(c, 0.94f);
+1516:         return c;
+1517:     }
+1518: 
+1519:     FrameLayout iconButton(int res, int color, String desc, View.OnClickListener l) {
+1520:         FrameLayout f = new FrameLayout(this);
+1521:         f.addView(icon(res, color, 22), new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
+1522:         f.setBackground(ripple(null, 14));
+1523:         f.setContentDescription(desc);
+1524:         f.setOnClickListener(l);
+1525:         springy(f, 0.88f);
+1526:         return f;
+1527:     }
+1528: 
+1529:     /**
+1530:      * 10.13: ترتيب بالسحب والإفلات لصفوف عمودية متتالية داخل box: المس المقبض «≡» واسحب الصف إلى مكانه؛ تتنحّى الصفوف الأخرى
+1531:      * بحركة ناعمة، وعند الإفلات يُعاد ترتيب الصفوف ويُستدعى done بالمفاتيح بالترتيب الجديد. الأسهم (إن وُجدت) تبقى بديلًا.
+1532:      */
+1533:     final class DragSort {
+1534:         final LinearLayout box;
+1535:         final java.util.function.Consumer<List<Object>> done;
+1536: 
+1537:         DragSort(LinearLayout box, java.util.function.Consumer<List<Object>> done) {
+1538:             this.box = box;
+1539:             this.done = done;
+1540:         }
+1541: 
+1542:         /** مقبض جاهز للصف (يُضاف في بداية الصف). */
+1543:         TextView handle() {
+1544:             TextView h = text("≡", 24, muted, true);
+1545:             h.setGravity(Gravity.CENTER);
+1546:             h.setContentDescription("اسحب لتغيير الترتيب");
+1547:             return h;
+1548:         }
+1549: 
+1550:         /** يربط صفًا (ابنًا مباشرًا لـ box) بمقبضه ومفتاحه. */
+1551:         void bind(final View row, View handle, Object key) {
+1552:             row.setTag(R.id.drag_key, key);
+1553:             handle.setOnTouchListener(new View.OnTouchListener() {
+1554:                 float startY;
+1555:                 int from, to;
+1556:                 int[] tops, hs;
+1557:                 int dragH;
+1558: 
+1559:                 @Override public boolean onTouch(View v, android.view.MotionEvent e) {
+1560:                     switch (e.getActionMasked()) {
+1561:                         case android.view.MotionEvent.ACTION_DOWN: {
+1562:                             box.requestDisallowInterceptTouchEvent(true);
+1563:                             int n = box.getChildCount();
+1564:                             from = box.indexOfChild(row);
+1565:                             if (from < 0) return false;
+1566:                             to = from;
+1567:                             tops = new int[n];
+1568:                             hs = new int[n];

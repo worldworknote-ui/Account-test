@@ -1,0 +1,167 @@
+582:       T.tx.slice(0, 30).forEach(function (t) {
+583:         var us = t.type.indexOf("لنا") >= 0;
+584:         html += "<tr><td>" + C.fmtDate(t.created_at) + "</td><td>" + esc(names[t.office_id]) + '</td><td><span class="chip ' + (us ? "us" : "them") + '">' + (us ? "لنا" : "علينا") + '</span></td><td class="num">' +
+585:           C.fmtMinor(BigInt(t.amount_minor), dec[t.currency]) + " " + t.currency + "</td><td>" + esc(String(t.description).slice(0, 50)) + '</td><td class="hint">' + esc(String(t.notes).slice(0, 80)) + "</td></tr>";
+586:       });
+587:       html += "</table></div></div></details>";
+588:     }
+589:     box.innerHTML = html;
+590:     filter();
+591:   }
+592: 
+593:   function filter() {
+594:     var q = C.looseKey(S.q || "");
+595:     var shown = 0, total = 0;
+596:     document.querySelectorAll("#review tr[data-o]").forEach(function (tr) {
+597:       var hit = !q || tr.dataset.o.indexOf(q) >= 0;
+598:       tr.style.display = hit ? "" : "none";
+599:       if (tr.closest("#balTable")) { total++; if (hit) shown++; }
+600:     });
+601:     var qn = $("qn");
+602:     if (qn) qn.textContent = q ? shown + " من " + total : "";
+603:   }
+604: 
+605:   // ===================================================================================
+606:   // الإنشاء
+607:   // ===================================================================================
+608: 
+609:   function updateMake() {
+610:     var r = S.result;
+611:     var ok = !!r && !r.error && (r.T.tx.length + r.T.opening_balances.length) > 0;
+612:     var pw1 = $("pw1").value, pw2 = $("pw2").value;
+613:     $("make").disabled = !(ok && $("confirmed").checked && pw1.length >= 6 && pw1 === pw2);
+614:     $("csv").disabled = !ok;
+615:     var mm = $("makeMsg");
+616:     if (!ok) { if (mm.dataset.done !== "1") mm.innerHTML = ""; }
+617:     else if (pw1 && pw2 && pw1 !== pw2) mm.innerHTML = '<div class="msg err">كلمتا السر غير متطابقتين.</div>';
+618:     else if (pw1 && pw1.length < 6) mm.innerHTML = '<div class="msg warn">كلمة السر قصيرة: 6 أحرف على الأقل.</div>';
+619:     else if (mm.dataset.done !== "1") mm.innerHTML = "";
+620:   }
+621: 
+622:   function download(bytes, name, type) {
+623:     var blob = new Blob([bytes], { type: type || "application/octet-stream" });
+624:     var a = document.createElement("a");
+625:     a.href = URL.createObjectURL(blob);
+626:     a.download = name;
+627:     document.body.appendChild(a);
+628:     a.click();
+629:     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+630:   }
+631: 
+632:   function stamp() {
+633:     var d = new Date();
+634:     function p(x) { return (x < 10 ? "0" : "") + x; }
+635:     return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes());
+636:   }
+637: 
+638:   function make() {
+639:     var r = S.result;
+640:     if (!r || r.error) return;
+641:     var mm = $("makeMsg");
+642:     $("make").disabled = true;
+643:     mm.dataset.done = "";
+644:     mm.innerHTML = '<div class="msg info">جارٍ إنشاء الملف وتشفيره… (قد يستغرق بضع ثوانٍ)</div>';
+645:     S.cfg.now = Date.now();
+646:     var tc = tablesCfg();
+647:     var T = C.tables(r.model, tc, rand);
+648:     if (C.checkBalanced(T).length) { mm.innerHTML = '<div class="msg err">قيد غير متوازن — لم يُنشأ الملف.</div>'; return; }
+649:     C.makeBackup(T, tc, $("pw1").value, crypto.subtle, rand).then(function (bytes) {
+650:       var name = "استيراد-ذكي-" + stamp() + ".sba";
+651:       download(bytes, name);
+652:       mm.dataset.done = "1";
+653:       mm.innerHTML = '<div class="msg ok"><b>✓ تم إنشاء «' + esc(name) + "»</b> (" + n(Math.ceil(bytes.length / 1024)) + " ك.ب) — " + n(T.offices.length) + " مكتب، " + n(T.tx.length) + " حركة، " +
+654:         n(T.opening_balances.length) + " رصيد سابق.<ul><li>انقله إلى الهاتف (واتساب لنفسك، أو البريد، أو كابل).</li>" +
+655:         "<li>في التطبيق: المزيد ← مساعد النقل من برنامج آخر ← «3. استورد الملف هنا»، واكتب كلمة السر، ثم اختر «إضافة إلى بياناتي» حتى لا يُحذف شيء من بياناتك الحالية.</li>" +
+656:         "<li>قارن أرصدة المكاتب في التطبيق بتقرير الأرصدة (زر «تنزيل تقرير الأرصدة»).</li><li>لا تنسَ كلمة السر: لا يمكن فتح الملف بدونها.</li></ul></div>";
+657:       updateMake();
+658:     }).catch(function (e) {
+659:       mm.innerHTML = '<div class="msg err">تعذر إنشاء الملف: ' + esc(e.message || e) + "</div>";
+660:       updateMake();
+661:     });
+662:   }
+663: 
+664:   function csv() {
+665:     var r = S.result;
+666:     if (!r || r.error) return;
+667:     var m = r.model, errors = [], skipped = m.skipped.slice();
+668:     Object.keys(m.issues).forEach(function (k) {
+669:       var g = m.issues[k];
+670:       g.rows.forEach(function (x) { (g.counted ? skipped : errors).push(g.counted ? { sheet: x.sheet, row: x.row, reason: g.label } : { sheet: x.sheet, row: x.row, msg: g.label }); });
+671:     });
+672:     download(C.reportCsv(r.rep, { errors: errors, skipped: skipped }), "تقرير-الأرصدة-" + stamp() + ".csv", "text/csv;charset=utf-8");
+673:   }
+674: 
+675:   // ===================================================================================
+676:   // الأحداث
+677:   // ===================================================================================
+678: 
+679:   function newCode() {
+680:     var c = (prompt("رمز العملة بالإنجليزية (مثل GOLD أو USDT):") || "").trim().toUpperCase();
+681:     if (!/^[A-Z0-9]{2,10}$/.test(c)) { if (c) alert("الرمز يجب أن يكون من 2 إلى 10 أحرف إنجليزية أو أرقام."); return null; }
+682:     var name = (prompt("اسم العملة بالعربية:", c) || c).trim();
+683:     S.cfg.currencies[c] = { name: name || c, dec: 2, userSet: false };
+684:     return c;
+685:   }
+686: 
+687:   function setAccountFrom(t, from, name) {
+688:     S.accFrom[t.id] = { from: from, name: name || "" };
+689:     applyAccountFrom(t);
+690:   }
+691: 
+692:   function applyAccountFrom(t) {
+693:     var af = S.accFrom[t.id];
+694:     if (!af || t.roles.account !== undefined) return;
+695:     var src = af.from === "sheet" ? t.fromSheet : af.from === "file" ? t.fromFile : null;
+696:     var nm = src ? src.name : af.from === "custom" ? C.clean(af.name) : "";
+697:     t.accountFrom = af.from || null;
+698:     t.sheetAccount = nm;
+699:     // عملة مكتوبة في الاسم المختار (إن لم يحدد المستخدم عملة الجدول بنفسه)
+700:     t.sheetCurrency = src && t.roles.currency === undefined ? src.code : null;
+701:     if (t.sheetCurrency && !S.cfg.fixedCurrencyUser[t.id]) S.cfg.fixedCurrency[t.id] = t.sheetCurrency;
+702:     t.accountFromSheet = !!nm;
+703:     if (nm && t.kind === "journal-noaccount") { t.kind = "journal"; t.use = true; }
+704:     if (!nm && t.kind === "journal") { t.kind = "journal-noaccount"; t.use = false; }
+705:   }
+706: 
+707:   function changed(full) {
+708:     refreshValues();
+709:     later(full);
+710:   }
+711: 
+712:   document.addEventListener("change", function (e) {
+713:     var t = e.target, d = t.dataset;
+714:     if ((t.id === "file" || t.id === "file2") && t.files.length) { var fl = Array.prototype.slice.call(t.files); t.value = ""; readFiles(fl); return; }
+715:     if (t.id === "confirmed") { updateMake(); return; }
+716:     if (!S.a) return;
+717:     var val = t.value;
+718:     if (t.tagName === "SELECT" && val === "__new") {
+719:       var c = newCode();
+720:       if (!c) { renderValues(); renderUnderstand(); return; }
+721:       val = c;
+722:     }
+723:     if (d.use) { var tu = tableById(d.use); tu.use = t.checked; changed(true); return; }
+724:     if (d.listed) { S.cfg.listedAccounts = t.checked; later(false); return; }
+725:     if (d.role) {
+726:       var p = d.role.split("|"), tr = tableById(p[0]), role = p[1];
+727:       var col = val === "" ? undefined : +val;
+728:       if (col !== undefined) ROLE_ORDER.forEach(function (k) { if (k !== role && tr.roles[k] === col) delete tr.roles[k]; });
+729:       if (col !== undefined && tr.roles.wide) tr.roles.wide = tr.roles.wide.filter(function (w) { return w.c !== col; });
+730:       if (tr.roles.wide && !tr.roles.wide.length) delete tr.roles.wide;
+731:       if (col === undefined) delete tr.roles[role]; else tr.roles[role] = col;
+732:       // الاتجاه أو المبلغ يلغي عمودي لنا/علينا والعكس
+733:       if ((role === "debit" || role === "credit") && col !== undefined) delete tr.roles.direction;
+734:       X.reclassify(tr);
+735:       applyAccountFrom(tr);
+736:       changed(true);
+737:       return;
+738:     }
+739:     if (d.accfrom) { setAccountFrom(tableById(d.accfrom), val, (S.accFrom[d.accfrom] || {}).name); changed(true); return; }
+740:     if (d.accname) { setAccountFrom(tableById(d.accname), "custom", val); changed(true); return; }
+741:     if (d.fixcur) { S.cfg.fixedCurrency[d.fixcur] = val; S.cfg.fixedCurrencyUser[d.fixcur] = true; changed(true); return; }
+742:     if (d.dirmap !== undefined) { S.cfg.dirMap[d.dirmap] = val; later(false); return; }
+743:     if (d.curmap !== undefined) { S.cfg.curMap[d.curmap] = val; changed(true); return; }
+744:     if (d.curname) { S.cfg.currencies[d.curname].name = val; later(false); return; }
+745:     if (d.curdec) { S.cfg.currencies[d.curdec].dec = +val; S.cfg.currencies[d.curdec].userSet = true; later(false); return; }
+746:     if (d.rename !== undefined) { S.cfg.rename[d.rename] = val.trim(); later(false); return; }
+747:     if (d.infer) { S.cfg.inferOpening = t.checked; later(false); return; }
+748:     if (d.odate) {

@@ -1,0 +1,61 @@
+1: import com.smart.hawala.*;
+2: import java.nio.charset.StandardCharsets;
+3: 
+4: /** 10.0: تشفير المزامنة والساعة المنطقية (بلا قاعدة بيانات). */
+5: public class SyncCryptoTest {
+6:     static int fails, passes;
+7: 
+8:     static void check(boolean c, String m) {
+9:         if (c) passes++;
+10:         else fails++;
+11:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+12:     }
+13: 
+14:     public static void main(String[] a) throws Exception {
+15:         byte[] vk = SyncCrypto.random(32);
+16:         SyncCrypto.Keys k = new SyncCrypto.Keys("v123", vk);
+17:         byte[] msg = "{\"ops\":[1,2,3],\"name\":\"النور\"}".getBytes(StandardCharsets.UTF_8);
+18:         String name = k.fileName("p-", "dev:1");
+19:         byte[] sealed = k.sealFile("p", name, msg);
+20:         check(sealed.length % 4096 == 0, "الحجم مضاعف لـ 4KB: " + sealed.length);
+21:         check(new String(k.openFile("p", name, sealed), StandardCharsets.UTF_8).contains("النور"), "يُفك بالمفتاح نفسه");
+22:         boolean tamper = false;
+23:         byte[] bad = sealed.clone();
+24:         bad[100] ^= 1;
+25:         try {
+26:             k.openFile("p", name, bad);
+27:         } catch (Exception e) {
+28:             tamper = true;
+29:         }
+30:         check(tamper, "تغيير بايت واحد يُرفض");
+31:         boolean moved = false;
+32:         try {
+33:             k.openFile("p", k.fileName("p-", "dev:2"), sealed);
+34:         } catch (Exception e) {
+35:             moved = true;
+36:         }
+37:         check(moved, "نقل الملف إلى اسم آخر (إعادة ترتيب) يُرفض");
+38:         boolean other = false;
+39:         try {
+40:             new SyncCrypto.Keys("v123", SyncCrypto.random(32)).openFile("p", name, sealed);
+41:         } catch (Exception e) {
+42:             other = true;
+43:         }
+44:         check(other, "مفتاح خزنة آخر لا يفك");
+45:         check(!java.util.Arrays.equals(k.sealFile("p", name, msg), sealed), "كل تشفير برقم عشوائي جديد (لا يتكرر النص المشفّر)");
+46:         check(name.matches("p-[0-9a-f]{32}\\.sab") && name.equals(k.fileName("p-", "dev:1")), "اسم معتم ثابت");
+47:         byte[] kek = SyncCrypto.pbkdf2("كلمة سر".toCharArray(), SyncCrypto.random(16), 1000);
+48:         String w = SyncCrypto.wrap(kek, vk, "v123");
+49:         check(java.util.Arrays.equals(SyncCrypto.unwrap(kek, w, "v123"), vk), "تغليف مفتاح الخزنة وفكه");
+50:         String rc = SyncCrypto.newRecoveryCode();
+51:         check(rc.matches("[A-Z2-9]{4}(-[A-Z2-9]{4}){5}"), "رمز الاسترداد: " + rc);
+52:         check(SyncCrypto.normalizeRecovery(rc.toLowerCase().replace("-", " ")).equals(SyncCrypto.normalizeRecovery(rc)), "رمز الاسترداد بلا حساسية للحالة والفواصل");
+53:         Hlc h = new Hlc("aa");
+54:         String t1 = h.now(1000), t2 = h.now(1000), t3 = h.now(900);
+55:         check(t1.compareTo(t2) < 0 && t2.compareTo(t3) < 0, "الساعة لا تتراجع حتى لو رجع وقت الجهاز");
+56:         h.observe(Hlc.format(5000, 3, "bb"), 1000);
+57:         check(h.now(1000).compareTo(Hlc.format(5000, 3, "bb")) > 0, "تتقدم فوق ساعة جهاز آخر");
+58:         System.out.println("\n" + passes + " نجح، " + fails + " فشل");
+59:         if (fails > 0) System.exit(1);
+60:     }
+61: }

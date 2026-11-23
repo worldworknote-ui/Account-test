@@ -1,0 +1,170 @@
+1021:     return ok ? { date: g.date, debit: g.debit, credit: g.credit, balance: g.balance, description: g.description } : null;
+1022:   }
+1023: 
+1024:   /** «1410100092 الخال» أو «الخال 1410100092» أو «الخال - 1410100092». */
+1025:   function splitAccount(t) {
+1026:     var s = clean(normDigits(t));
+1027:     var m = s.match(/^(\d{3,})\s*[-–:]?\s*(\S.*)$/);
+1028:     if (m) return { code: m[1], name: clean(m[2]) };
+1029:     m = s.match(/^(.*\S)\s*[-–:]?\s*(\d{3,})$/);
+1030:     if (m && /[^\d\s]/.test(m[1])) return { code: m[2], name: clean(m[1]) };
+1031:     return { code: "", name: s };
+1032:   }
+1033: 
+1034:   /** معلومات الحساب والعملة والفترة من الأسطر التي فوق صف العناوين. */
+1035:   function stmtMeta(lines) {
+1036:     var meta = { account: null, curText: "", from: null, to: null, title: [] };
+1037:     var texts = [];
+1038:     lines.forEach(function (row) {
+1039:       var cells = row.filter(function (c) { return c && text(c); });
+1040:       var label = cells.map(text).join(" ");
+1041:       var isFrom = /تاريخ\s*(البدايه|البداية)|من\s*تاريخ|^من\b/.test(label), isTo = /تاريخ\s*(النهايه|النهاية)|(الى|إلى)\s*تاريخ/.test(label);
+1042:       cells.forEach(function (c) {
+1043:         var t = text(c);
+1044:         var dt = parseDate(c, "ymd", null);
+1045:         if (dt && /\d{1,4}\s*[\/\-.]\s*\d{1,2}\s*[\/\-.]\s*\d{1,4}/.test(normDigits(t))) {
+1046:           if (isFrom && !meta.from) meta.from = dt;
+1047:           else if (isTo && !meta.to) meta.to = dt;
+1048:           return;
+1049:         }
+1050:         if (META_SKIP_RE.test(clean(t))) return;
+1051:         texts.push(t);
+1052:       });
+1053:     });
+1054:     // العملة: نص يُعرف كعملة؛ الحساب: نص فيه رمز رقمي واسم، وإلا أول نص ليس عملة
+1055:     var curIdx = -1;
+1056:     for (var i = 0; i < texts.length; i++) if (guessCurrency(texts[i])) { curIdx = i; break; }
+1057:     var accIdx = -1;
+1058:     for (var j = 0; j < texts.length; j++) {
+1059:       if (j === curIdx) continue;
+1060:       var a = splitAccount(texts[j]);
+1061:       if (a.code && a.name) { accIdx = j; break; }
+1062:     }
+1063:     if (accIdx < 0) for (var k = 0; k < texts.length; k++) if (k !== curIdx) { accIdx = k; break; }
+1064:     if (accIdx >= 0) meta.account = splitAccount(texts[accIdx]);
+1065:     if (curIdx >= 0) meta.curText = clean(texts[curIdx]);
+1066:     else {
+1067:       // عملة غير معروفة (ذهب، عملة محلية…): أول نص بعد الحساب يُعرض للمطابقة
+1068:       for (var n = accIdx + 1; n < texts.length; n++) if (n !== accIdx) { meta.curText = clean(texts[n]); break; }
+1069:     }
+1070:     meta.title = texts.filter(function (x, idx) { return idx !== accIdx && idx !== curIdx; });
+1071:     return meta;
+1072:   }
+1073: 
+1074:   function footerOf(row) {
+1075:     var cells = row.filter(function (c) { return c && text(c); });
+1076:     if (!cells.some(function (c) { return FOOT_RE.test(clean(text(c)).replace(/\s*:\s*$/, "")); })) return null;
+1077:     var amount = null, side = null;
+1078:     cells.forEach(function (c) {
+1079:       var t = clean(text(c));
+1080:       if (FOOT_RE.test(t) || t === ":" || /نوع\s*الرصيد/.test(t)) return;
+1081:       var p = parseAmount(c);
+1082:       if (p.ok && !p.hadText && amount === null) { amount = p; return; }
+1083:       var k = looseKey(t);
+1084:       if (/دائن|علينا|credit|\bcr\b/i.test(t) || k === looseKey("له")) side = side || "C";
+1085:       else if (/مدين|لنا|debit|\bdr\b/i.test(t) || k === looseKey("عليه")) side = side || "D";
+1086:       else if (/متوازن|متعادل|صفر|balanced/i.test(t)) side = side || "0";
+1087:     });
+1088:     return amount ? { p: amount, side: side } : null;
+1089:   }
+1090: 
+1091:   /**
+1092:    * يقرأ ملفًا (كل أوراقه بالترتيب) ويعيد الكشوفات التي فيه. صفحات التقرير التي تكرر صف العناوين تُدمج،
+1093:    * ويبدأ كشف جديد بعد سطر الإجمالي أو عند ظهور حساب آخر قبل صف عناوين.
+1094:    */
+1095:   /** هل في الملف كشوفات حساب (صف عناوين كشف وفوقه اسم حساب)؟ */
+1096:   function isStatementFile(blocks) {
+1097:     return blocks.some(function (b) { return b.account && b.account.name; });
+1098:   }
+1099: 
+1100:   function parseStatements(fileName, sheets) {
+1101:     var blocks = [];
+1102:     var cur = null, pending = [], since = [];
+1103:     function close() { cur = null; pending = []; since = []; }
+1104:     sheets.forEach(function (sh) {
+1105:       (sh.rows || []).forEach(function (row, r) {
+1106:         if (isBlankRow(row)) return;
+1107:         var src = { sheet: fileName + (sheets.length > 1 ? " / " + sh.name : ""), row: r + 1 };
+1108:         var hc = stmtHeader(row);
+1109:         if (hc) {
+1110:           var fresh = !cur || cur.footer;
+1111:           if (!fresh && since.length) {
+1112:             // أسطر نصية بين آخر حركة وهذا العنوان: إن كان فيها حساب آخر فهو كشف جديد
+1113:             var m0 = stmtMeta(since);
+1114:             if (m0.account && m0.account.name && (m0.account.code ? m0.account.code !== cur.account.code : m0.account.name !== cur.account.name)) {
+1115:               pending = since;
+1116:               fresh = true;
+1117:             }
+1118:           }
+1119:           if (fresh) {
+1120:             var meta = stmtMeta(pending);
+1121:             cur = { file: fileName, src: src, cols: hc, account: meta.account || { code: "", name: "" }, curText: meta.curText, from: meta.from, to: meta.to,
+1122:               pre: null, rows: [], footer: null, skipped: [], headerRow: src.row };
+1123:             blocks.push(cur);
+1124:           } else cur.cols = hc;
+1125:           pending = [];
+1126:           since = [];
+1127:           return;
+1128:         }
+1129:         if (!cur || cur.footer) { pending.push(row); return; }
+1130:         var f = footerOf(row);
+1131:         if (f) { cur.footer = { p: f.p, side: f.side, src: src }; return; }
+1132:         var c = cur.cols;
+1133:         var desc = c.description !== undefined ? text(row[c.description]) : "";
+1134:         var item = { src: src, desc: desc, date: row[c.date], d: parseAmount(row[c.debit]), c: parseAmount(row[c.credit]), b: parseAmount(row[c.balance]) };
+1135:         if (PRE_RE.test(desc) || (!desc && OPENING_RE.test(rowLabel(row)))) {
+1136:           if (cur.pre || cur.rows.length) {
+1137:             // «رصيد منقول/مرحل» في رأس صفحة تالية: للتحقق من الرصيد فقط، ومجاميعه ليست حركات
+1138:             item.d = { empty: true };
+1139:             item.c = { empty: true };
+1140:             item.carry = true;
+1141:             cur.rows.push(item);
+1142:             return;
+1143:           }
+1144:           cur.pre = item;
+1145:           return;
+1146:         }
+1147:         if (item.d.empty && item.c.empty && item.b.empty) {
+1148:           // سطر نصي بلا مبالغ (عنوان حساب لكشف تالٍ، أو ملاحظة): لا أثر له على الرصيد
+1149:           since.push(row);
+1150:           cur.skipped.push({ src: src, reason: "سطر بلا مبالغ" });
+1151:           return;
+1152:         }
+1153:         since = [];
+1154:         cur.rows.push(item);
+1155:       });
+1156:     });
+1157:     return blocks;
+1158:   }
+1159: 
+1160:   /** يحوّل مبلغًا مقروءًا إلى وحدة صغرى بإشارته، أو يرمي سببًا مفهومًا. */
+1161:   function signedMinor(p, dec, what) {
+1162:     if (p.empty) return 0n;
+1163:     if (!p.ok) throw new Error(what + " غير مفهوم (" + p.reason + ")");
+1164:     var m = toMinor(p, dec);
+1165:     if (m === null) throw new Error(what + " فيه منازل عشرية أكثر من المسموح للعملة (" + dec + ")");
+1166:     return p.neg ? -m : m;
+1167:   }
+1168: 
+1169:   /**
+1170:    * يتحقق من كشف واحد ويحوّله إلى رصيد سابق وحركات. الإشارة الداخلية: موجب = «علينا» (دائن − مدين)،
+1171:    * ثم تُقلب عند الإخراج لأن التطبيق يحسب «لنا» موجبًا (مدين − دائن).
+1172:    * يُجرَّب تفسيرا عمود الرصيد (موجبه علينا أو لنا)، ويُقبل فقط التفسير الذي يطابق كل الصفوف والإجمالي.
+1173:    */
+1174:   function checkStatement(st, dec, fallbackPositive) {
+1175:     var rows = st.rows.map(function (x) {
+1176:       var d = signedMinor(x.d, dec, "مبلغ «مدين/لنا»"), c = signedMinor(x.c, dec, "مبلغ «دائن/علينا»");
+1177:       if (d < 0n || c < 0n) throw new Error("قيمة سالبة في عمود مدين أو دائن (صف " + x.src.row + ")");
+1178:       return { x: x, d: d, c: c, b: x.b.empty ? null : signedMinor(x.b, dec, "الرصيد") };
+1179:     });
+1180:     var preB = st.pre ? signedMinor(st.pre.b, dec, "الرصيد السابق") : 0n;
+1181:     var cum = null;
+1182:     if (st.pre && !st.pre.d.empty && !st.pre.c.empty) {
+1183:       var pd = signedMinor(st.pre.d, dec, "مجموع مدين السابق"), pc = signedMinor(st.pre.c, dec, "مجموع دائن السابق");
+1184:       if (pd !== 0n || pc !== 0n) cum = pc - pd;
+1185:     }
+1186:     var foot = null;
+1187:     if (st.footer) foot = { m: signedMinor(st.footer.p, dec, "اجمالي الرصيد"), side: st.footer.side };
+1188:     function attempt(mode) {
+1189:       var s = mode === "C" ? preB : -preB;
+1190:       var res = { mode: mode, s0: s, bad: null, checked: 0 };

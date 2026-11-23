@@ -1,0 +1,142 @@
+198:         String me = meU == null ? Db.currentUserName : meU.name;
+199:         // 10.18: فلاتر النوع والمحاسب ومدى المبلغ، والبحث يشمل اسم المكتب والمبلغ واسم المحاسب
+200:         int kd = kind.getSelectedIndex();
+201:         String whoSel = who.isVisible() && who.getSelectedIndex() > 0 ? String.valueOf(who.getSelectedItem()) : null;
+202:         java.math.BigDecimal lo = amountOf(minAmt.getText()), hi = amountOf(maxAmt.getText());
+203:         Map<Long, Integer> att = kd == 5 ? db.attachmentCounts(null) : null;
+204:         Map<Long, String> onames = db.officeNames();
+205:         Map<String, Integer> decs = db.decimalsMap();
+206:         for (Model.Tx t : list) {
+207:             // 10.5 (§7): «حركاته هو» برقمه الثابت (والقديمة بالاسم)
+208:             if (mineOnly && !(meU != null ? Db.enteredBy(t, meU) : t.realUser().equals(me))) continue;
+209:             if (kd == 1 && t.isLinked()) continue;
+210:             if (kd == 2 && !t.isFx()) continue;
+211:             if (kd == 3 && !t.isTransfer()) continue;
+212:             if (kd == 4 && (Model.FEE_NONE.equals(t.feeType) || t.fee == 0)) continue;
+213:             if (kd == 5 && (att.get(t.id) == null || att.get(t.id) == 0)) continue;
+214:             if (kd == 6 && t.replacesId == null) continue;
+215:             if (whoSel != null && !whoSel.equals(Model.nz(t.userName))) continue;
+216:             if (lo != null || hi != null) {
+217:                 java.math.BigDecimal v = java.math.BigDecimal.valueOf(t.amount, decs.getOrDefault(t.currency, 2));
+218:                 if (lo != null && v.compareTo(lo) < 0) continue;
+219:                 if (hi != null && v.compareTo(hi) > 0) continue;
+220:             }
+221:             if (!q.isEmpty()) {
+222:                 String hay = OwnerReports.norm(Model.nz(t.person) + " " + Model.nz(t.description) + " " + Model.nz(t.notes) + " " + Model.nz(t.dest) + " " + Model.nz(t.service)
+223:                         + " " + Model.shortRef(t.uuid) + " " + Model.nz(onames.get(t.officeId)) + " " + Model.nz(t.userName) + " " + t.currency + " "
+224:                         + Model.plain(t.amount, decs.getOrDefault(t.currency, 2)) + " " + Model.fmt(t.amount, decs.getOrDefault(t.currency, 2)));
+225:                 boolean all = true;
+226:                 for (String w : q.split(" ")) all &= w.isEmpty() || hay.contains(w);
+227:                 if (!all) continue;
+228:             }
+229:             rows.add(t);
+230:         }
+231:         // 10.18: مكتب واحد وعملة واحدة ⇒ عمود «الرصيد بعدها»
+232:         Object selO = office.getSelectedItem();
+233:         Map<Long, Long> after = selO instanceof Model.Office && currency.getSelectedIndex() > 0 ? db.balancesAfter(((Model.Office) selO).id, (String) currency.getSelectedItem()) : null;
+234:         table.setModel(model(app, rows, true, after, after == null ? 2 : db.decimals((String) currency.getSelectedItem())));
+235:         styleTxTable(table, true);
+236:         keep.restore(table, rows, t -> t.id);
+237:         Map<String, long[]> tot = new TreeMap<>();
+238:         for (Model.Tx t : rows) if (t.isActive()) {
+239:             long[] x = tot.computeIfAbsent(t.currency, k -> new long[2]);
+240:             if (Model.TYPE_DEBIT.equals(t.type)) x[0] += t.amount;
+241:             else x[1] += t.amount;
+242:         }
+243:         StringBuilder sb = new StringBuilder(rows.size() + " حركة");
+244:         for (Map.Entry<String, long[]> e : tot.entrySet()) {
+245:             int d = db.decimals(e.getKey());
+246:             sb.append("   •   ").append(e.getKey()).append(": لنا ").append(Model.fmt(e.getValue()[0], d)).append(" / علينا ").append(Model.fmt(e.getValue()[1], d));
+247:         }
+248:         count.setText(sb.toString());
+249:     }
+250: 
+251:     /** مبلغ مكتوب في خانة الفلتر (يقبل الفواصل والأرقام العربية)، أو null. */
+252:     static java.math.BigDecimal amountOf(String s) {
+253:         try {
+254:             StringBuilder b = new StringBuilder();
+255:             for (char ch : Model.nz(s).toCharArray()) {
+256:                 if (ch >= '٠' && ch <= '٩') b.append((char) ('0' + ch - '٠'));
+257:                 else if (ch >= '0' && ch <= '9' || ch == '.') b.append(ch);
+258:                 else if (ch == '٫') b.append('.');
+259:             }
+260:             String v = b.toString();
+261:             return v.isEmpty() ? null : new java.math.BigDecimal(v);
+262:         } catch (Exception e) {
+263:             return null;
+264:         }
+265:     }
+266: 
+267:     void export() {
+268:         List<Model.Tx> snap = new ArrayList<>(rows);
+269:         List<String> filters = new ArrayList<>();
+270:         filters.add("الفترة: " + period.getSelectedItem());
+271:         if (office.getSelectedItem() instanceof Model.Office) filters.add("المكتب: " + ((Model.Office) office.getSelectedItem()).name);
+272:         if (currency.getSelectedIndex() > 0) filters.add("العملة: " + currency.getSelectedItem());
+273:         if (!search.val().isEmpty()) filters.add("بحث: " + search.val());
+274:         if (kind.getSelectedIndex() > 0) filters.add("النوع: " + kind.getSelectedItem());
+275:         if (who.isVisible() && who.getSelectedIndex() > 0) filters.add("المحاسب: " + who.getSelectedItem());
+276:         if (!minAmt.val().isEmpty() || !maxAmt.val().isEmpty()) filters.add("المبلغ: " + (minAmt.val().isEmpty() ? "…" : minAmt.val()) + " – " + (maxAmt.val().isEmpty() ? "…" : maxAmt.val()));
+277:         Export.dialog(this, app, "سجل الحركات", () -> Reports.txList("سجل الحركات", filters, snap, db.officeNames(), db.decimalsMap(), db.setting("office_name", ""), Clock.now()));
+278:     }
+279: 
+280:     // ===================================================================================
+281:     // جدول الحركات (مشترك)
+282:     // ===================================================================================
+283: 
+284:     static DefaultTableModel model(App app, List<Model.Tx> txs, boolean withOffice) { return model(app, txs, withOffice, null, 2); }
+285: 
+286:     /** 10.18: after != null يضيف عمود «الرصيد بعدها» (رصيد المكتب بالعملة المختارة بعد كل حركة) بعد عمود الأجرة. */
+287:     static DefaultTableModel model(App app, List<Model.Tx> txs, boolean withOffice, Map<Long, Long> after, int afterDec) {
+288:         Db db = app.db;
+289:         Map<Long, String> names = db.officeNames();
+290:         Map<String, Integer> dec = db.decimalsMap();
+291:         List<String> cols = new ArrayList<>(Arrays.asList("التاريخ"));
+292:         if (withOffice) cols.add("المكتب");
+293:         cols.addAll(Arrays.asList("لنا", "علينا", "العملة", "الأجرة"));
+294:         if (after != null) cols.add("الرصيد بعدها");
+295:         cols.addAll(Arrays.asList("المستفيد", "البيان", "الحالة"));
+296:         DefaultTableModel m = new DefaultTableModel(cols.toArray(), 0) {
+297:             @Override public boolean isCellEditable(int r, int c) { return false; }
+298: 
+299:             @Override public Class<?> getColumnClass(int c) {
+300:                 String n = getColumnName(c);
+301:                 return "لنا".equals(n) || "علينا".equals(n) ? Ui.Money.class : String.class;
+302:             }
+303:         };
+304:         for (Model.Tx t : txs) {
+305:             int d = dec.getOrDefault(t.currency, 2);
+306:             boolean us = Model.TYPE_DEBIT.equals(t.type);
+307:             List<Object> r = new ArrayList<>();
+308:             r.add(Model.date(t.createdAt));
+309:             if (withOffice) r.add(names.getOrDefault(t.officeId, ""));
+310:             r.add(new Ui.Money(us ? t.amount : 0, d, false));
+311:             r.add(new Ui.Money(us ? 0 : t.amount, d, false));
+312:             r.add(t.currency);
+313:             r.add(t.hasFee() ? (Model.FEE_US.equals(t.feeType) ? "لنا " : "علينا ") + Model.fmt(t.fee, dec.getOrDefault(t.feeCurrency, 2)) + " " + t.feeCurrency : "");
+314:             if (after != null) {
+315:                 Long b = after.get(t.id);
+316:                 // afterDec < 0: كل العملات معًا ⇒ رصيد عملة الحركة نفسها مع رمزها
+317:                 r.add(b == null ? "" : app.hidden() ? "••••" : afterDec < 0 ? (b > 0 ? "لنا " : b < 0 ? "علينا " : "") + Ui.ltr(Model.fmt(Math.abs(b), d) + " " + t.currency) : Model.bal(b, afterDec));
+318:             }
+319:             r.add(Model.nz(t.person));
+320:             r.add(Ui.cut(MessageParser.compact(Model.nz(t.description), t.person), 90));
+321:             r.add(statusName(t));
+322:             m.addRow(r.toArray());
+323:         }
+324:         return m;
+325:     }
+326: 
+327:     static String statusName(Model.Tx t) {
+328:         if (t.isActive()) return t.isFx() ? "تبديل عملة" : t.isTransfer() ? "تحويل بين مكتبين" : t.replacesId != null ? "مُصحَّحة" : "نشطة";
+329:         if (t.isPending()) return "بانتظار الاعتماد";
+330:         if (t.isRejected()) return "مرفوضة";
+331:         if ("CANCELLED".equals(t.status)) return "ملغاة";
+332:         return Model.nz(t.status);
+333:     }
+334: 
+335:     static void styleTxTable(JTable t, boolean withOffice) {
+336:         t.setDefaultRenderer(Ui.Money.class, new Ui.Cell(SwingConstants.CENTER) {
+337:             @Override public Component getTableCellRendererComponent(JTable tb, Object v, boolean sel, boolean focus, int row, int col) {
+338:                 Component c = super.getTableCellRendererComponent(tb, v, sel, focus, row, col);
+339:                 String n = tb.getColumnName(col);

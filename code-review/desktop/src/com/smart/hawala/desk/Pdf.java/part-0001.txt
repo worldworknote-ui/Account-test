@@ -1,0 +1,215 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.Db;
+4: import com.smart.hawala.ExportStyle;
+5: import com.smart.hawala.Model;
+6: import com.smart.hawala.Report;
+7: import java.awt.*;
+8: import java.awt.font.FontRenderContext;
+9: import java.awt.font.LineBreakMeasurer;
+10: import java.awt.font.TextAttribute;
+11: import java.awt.font.TextLayout;
+12: import java.awt.geom.Line2D;
+13: import java.awt.geom.Rectangle2D;
+14: import java.awt.image.BufferedImage;
+15: import java.awt.print.PageFormat;
+16: import java.awt.print.Paper;
+17: import java.awt.print.Printable;
+18: import java.awt.print.PrinterJob;
+19: import java.io.ByteArrayOutputStream;
+20: import java.io.File;
+21: import java.io.FileOutputStream;
+22: import java.io.IOException;
+23: import java.io.OutputStream;
+24: import java.nio.charset.StandardCharsets;
+25: import java.text.AttributedString;
+26: import java.util.ArrayList;
+27: import java.util.List;
+28: import java.util.zip.Deflater;
+29: import javax.imageio.ImageIO;
+30: 
+31: /**
+32:  * يرسم أي تقرير (Report) كصفحات A4 بالتصميم نفسه الذي في الهاتف (ReportPdf): رأس واسم المكتب، ملخص لكل عملة،
+33:  * جداول بالتفاف النص العربي وتكرار رأس الجدول، الصور تحت حركاتها، خانات التوقيع، وترقيم الصفحات.
+34:  * المخرجات: PDF (صفحات بدقة عالية)، أو صور PNG، أو الطباعة عبر نظام الماك (ومنها «حفظ PDF» بنص قابل للتحديد).
+35:  */
+36: final class Pdf {
+37:     static final class Opts {
+38:         ExportStyle style = new ExportStyle();
+39:         Color accent = Ui.primary;
+40:         String developer = "";
+41:         Db db;
+42:     }
+43: 
+44:     private abstract static class Block {
+45:         float h;
+46:         Block repeatHeader;
+47:         boolean keepWithNext;
+48: 
+49:         abstract void draw(Graphics2D g, float top);
+50:     }
+51: 
+52:     static final int RIGHT = 0, CENTER = 1;
+53: 
+54:     /** نص ملتف من اليمين لليسار. */
+55:     static final class TB {
+56:         final List<TextLayout> lines = new ArrayList<>();
+57:         final List<Float> gaps = new ArrayList<>();
+58:         final float width;
+59:         final int align;
+60:         final Color color;
+61:         float h;
+62: 
+63:         TB(String s, Font f, Color color, float width, int align) {
+64:             this.width = Math.max(8, width);
+65:             this.align = align;
+66:             this.color = color;
+67:             FontRenderContext frc = new FontRenderContext(null, true, true);
+68:             String t = clean(s == null ? "" : s);
+69:             for (String p : t.split("\n", -1)) {
+70:                 if (p.isEmpty()) {
+71:                     lines.add(null);
+72:                     float lh = f.getSize2D() * 1.2f;
+73:                     gaps.add(lh);
+74:                     h += lh;
+75:                     continue;
+76:                 }
+77:                 AttributedString as = new AttributedString(p);
+78:                 as.addAttribute(TextAttribute.FONT, f);
+79:                 as.addAttribute(TextAttribute.RUN_DIRECTION, TextAttribute.RUN_DIRECTION_RTL);
+80:                 LineBreakMeasurer m = new LineBreakMeasurer(as.getIterator(), frc);
+81:                 while (m.getPosition() < p.length()) {
+82:                     TextLayout l = m.nextLayout(this.width);
+83:                     if (l == null) break;
+84:                     lines.add(l);
+85:                     float lh = (l.getAscent() + l.getDescent() + l.getLeading()) * 1.06f;
+86:                     gaps.add(lh);
+87:                     h += lh;
+88:                 }
+89:             }
+90:         }
+91: 
+92:         void draw(Graphics2D g, float x, float y) {
+93:             g.setColor(color);
+94:             float yy = y;
+95:             for (int i = 0; i < lines.size(); i++) {
+96:                 TextLayout l = lines.get(i);
+97:                 if (l != null) {
+98:                     float adv = l.getAdvance();
+99:                     float lx = align == CENTER ? x + (width - adv) / 2 : x + width - adv;
+100:                     l.draw(g, lx, yy + l.getAscent());
+101:                 }
+102:                 yy += gaps.get(i);
+103:             }
+104:         }
+105:     }
+106: 
+107:     /** علامات العزل الاتجاهي (\u2066…\u2069) تتحول إلى تضمين يفهمه محرك الرسم في كل إصدارات جافا. */
+108:     static String clean(String s) {
+109:         return s.replace('\u2066', '\u202A').replace('\u2069', '\u202C').replace('\u2067', '\u202B').replace('\u2068', '\u202A');
+110:     }
+111: 
+112:     private final Report r;
+113:     private final Opts o;
+114:     final float W, H, M = 28f, FOOTER = 24f, RUNNING = 22f, PAD = 3.5f, CW;
+115:     private final Font text, bold, small, title, heading, muted;
+116:     private final Color light, shade, total, lineC = new Color(212, 212, 212), ink = new Color(35, 35, 35), mutedC = new Color(140, 140, 140);
+117: 
+118:     Pdf(Report r, Opts o) {
+119:         this.r = r;
+120:         this.o = o;
+121:         boolean land = o.style.landscape;
+122:         W = land ? 842f : 595f;
+123:         H = land ? 595f : 842f;
+124:         CW = W - 2 * M;
+125:         float s = o.style.fontScale();
+126:         text = Ui.font(8.5f * s, false);
+127:         bold = Ui.font(8.8f * s, true);
+128:         small = Ui.font(7.4f * s, false);
+129:         muted = Ui.font(8.2f * s, false);
+130:         title = Ui.font(15f * s, true);
+131:         heading = Ui.font(10.5f * s, true);
+132:         light = blend(o.accent, 0.13f);
+133:         shade = new Color(248, 247, 243);
+134:         total = blend(o.accent, 0.22f);
+135:     }
+136: 
+137:     static Color blend(Color c, float a) {
+138:         return new Color((int) (255 - (255 - c.getRed()) * a), (int) (255 - (255 - c.getGreen()) * a), (int) (255 - (255 - c.getBlue()) * a));
+139:     }
+140: 
+141:     static Color darker(Color c) { return new Color((int) (c.getRed() * 0.8f), (int) (c.getGreen() * 0.8f), (int) (c.getBlue() * 0.8f)); }
+142: 
+143:     static Color argb(int c) { return c == 0 ? null : new Color(c, false); }
+144: 
+145:     private void hline(Graphics2D g, float x1, float y, float x2) {
+146:         g.setColor(lineC);
+147:         g.setStroke(new BasicStroke(0.6f));
+148:         g.draw(new Line2D.Float(x1, y, x2, y));
+149:     }
+150: 
+151:     private void vline(Graphics2D g, float x, float y1, float y2) {
+152:         g.setColor(lineC);
+153:         g.setStroke(new BasicStroke(0.6f));
+154:         g.draw(new Line2D.Float(x, y1, x, y2));
+155:     }
+156: 
+157:     // ---------------------------------------------------------------------------- الكتل
+158: 
+159:     private Block header() {
+160:         final BufferedImage logo = o.style.logo ? Main.icon(160) : null;
+161:         final float logoSize = logo != null ? 50f : 0f;
+162:         final float gap = logoSize > 0 ? 10f : 0f;
+163:         final TB t = new TB(r.title, title, o.accent, CW - logoSize - gap, RIGHT);
+164:         final TB lines = new TB(Model.join(r.headerLines, "\n"), small, new Color(110, 110, 110), CW - logoSize - gap, RIGHT);
+165:         Block b = new Block() {
+166:             @Override void draw(Graphics2D g, float top) {
+167:                 if (logo != null) g.drawImage(logo, (int) (W - M - logoSize), (int) top, (int) logoSize, (int) logoSize, null);
+168:                 t.draw(g, M, top);
+169:                 lines.draw(g, M, top + t.h + 4);
+170:                 g.setColor(o.accent);
+171:                 g.setStroke(new BasicStroke(1.6f));
+172:                 g.draw(new Line2D.Float(M, top + h - 5, W - M, top + h - 5));
+173:             }
+174:         };
+175:         b.h = Math.max(logoSize, t.h + 4 + lines.h) + 12;
+176:         return b;
+177:     }
+178: 
+179:     private Block band(String s, final int accentInt) {
+180:         final Color accent = argb(accentInt);
+181:         final TB l = new TB(s, heading, accent != null ? darker(accent) : darker(o.accent), CW - 2 * PAD - 4, RIGHT);
+182:         Block b = new Block() {
+183:             @Override void draw(Graphics2D g, float top) {
+184:                 g.setColor(accent != null ? blend(accent, 0.13f) : light);
+185:                 g.fill(new Rectangle2D.Float(M, top + 8, CW, h - 8));
+186:                 g.setColor(accent != null ? accent : o.accent);
+187:                 g.fill(new Rectangle2D.Float(W - M - 3, top + 8, 3, h - 8));
+188:                 l.draw(g, M + PAD, top + 8 + PAD);
+189:             }
+190:         };
+191:         b.h = l.h + 8 + 2 * PAD;
+192:         b.keepWithNext = true;
+193:         return b;
+194:     }
+195: 
+196:     private Block kv(final Report.Kv kv) {
+197:         final float boxW = Math.min(CW, 360f);
+198:         final float labelW = boxW * 0.52f;
+199:         final TB lab = new TB(kv.label, kv.emphasis ? bold : text, ink, labelW - 2 * PAD, RIGHT);
+200:         final TB val = new TB(Report.text(kv.value), kv.emphasis ? bold : text, ink, boxW - labelW - 2 * PAD, CENTER);
+201:         Block b = new Block() {
+202:             @Override void draw(Graphics2D g, float top) {
+203:                 float right = W - M, left = right - boxW;
+204:                 g.setColor(kv.emphasis ? total : new Color(246, 246, 246));
+205:                 g.fill(new Rectangle2D.Float(right - labelW, top, labelW, h));
+206:                 if (kv.emphasis) {
+207:                     g.setColor(total);
+208:                     g.fill(new Rectangle2D.Float(left, top, boxW - labelW, h));
+209:                 }
+210:                 lab.draw(g, right - labelW + PAD, top + PAD);
+211:                 val.draw(g, left + PAD, top + PAD);
+212:                 hline(g, left, top + h, right);
+213:                 vline(g, left, top, top + h);
+214:                 vline(g, right, top, top + h);
+215:                 vline(g, right - labelW, top, top + h);

@@ -1,0 +1,124 @@
+197:         p.setAlignmentX(Component.RIGHT_ALIGNMENT);
+198:         p.setComponentOrientation(Ui.RTL);
+199:         return p;
+200:     }
+201: 
+202:     /** بطاقة الملخص اليسرى (الملخص + سطر الحالة + زر التسجيل). */
+203:     JPanel summaryColumn(String saveLabel, Runnable onSave) {
+204:         JPanel left = Ui.column();
+205:         Ui.Card sc = Ui.tinted(Ui.primarySoft, null);
+206:         sc.add(Ui.label("الملخص", 15, Ui.primaryInk, true));
+207:         sc.add(Ui.gap(6));
+208:         sc.add(summary);
+209:         sc.add(Ui.gap(10));
+210:         sc.add(footLine);
+211:         sc.add(Ui.gap(8));
+212:         save = Ui.holdToConfirm(Ui.primary(saveLabel, e -> onSave.run()));
+213:         save.setFont(Ui.font(15, true));
+214:         sc.add(Ui.flow(save, Ui.ghost("تفريغ النموذج", e -> clearForm())));
+215:         left.add(sc);
+216:         return left;
+217:     }
+218: 
+219:     /** النموذج يمينًا والملخص يسارًا (كتسجيل حركة). */
+220:     void columns(JPanel form, JPanel left) {
+221:         Ui.Card fc = Ui.card();
+222:         fc.add(form);
+223:         JPanel right = Ui.column();
+224:         right.add(fc);
+225:         JPanel cols = new JPanel(new GridLayout(1, 2, 18, 0));
+226:         cols.setOpaque(false);
+227:         cols.add(right);
+228:         JPanel lw = new JPanel(new BorderLayout());
+229:         lw.setOpaque(false);
+230:         lw.add(left, BorderLayout.NORTH);
+231:         cols.add(lw);
+232:         cols.setAlignmentX(Component.RIGHT_ALIGNMENT);
+233:         body.add(cols);
+234:         scroll = Ui.scroll(body);
+235:         add(scroll, BorderLayout.CENTER);
+236:     }
+237: 
+238:     abstract void clearForm();
+239: 
+240:     static String hex(Color c) { return String.format("#%02x%02x%02x", c.getRed(), c.getGreen(), c.getBlue()); }
+241: 
+242:     /** يرسم الملخص (الناقص بالأحمر مع ✗) وسطر الحالة فوق زر التسجيل. */
+243:     void render(List<String> lines, String okLine) {
+244:         StringBuilder h = new StringBuilder("<html><div style='text-align:right;width:" + Ui.css(400) + "px'>");
+245:         List<String> missing = new ArrayList<>();
+246:         boolean inTable = false;
+247:         for (String l : lines) {
+248:             // 10.8: جدول المقاصة «▤عملة|قبل|الأثر|بعد»
+249:             if (l.startsWith("▤")) {
+250:                 if (!inTable) {
+251:                     h.append("<table cellpadding='3' style='margin:4px 0'><tr style='color:").append(hex(Ui.muted)).append("'><td align='right'>بعد</td><td align='right'>أثر العملية</td>")
+252:                             .append("<td align='right'>قبل</td><td align='right'>العملة</td></tr>");
+253:                     inTable = true;
+254:                 }
+255:                 String[] c = l.substring(1).split("\\|", 4);
+256:                 h.append("<tr><td align='right'><b>").append(Ui.esc(c[3])).append("</b></td><td align='right' style='color:").append(hex(c[2].startsWith("خصم") ? Ui.red : Ui.green))
+257:                         .append("'>").append(Ui.esc(c[2])).append("</td><td align='right'>").append(Ui.esc(c[1])).append("</td><td align='right'><b>").append(Ui.esc(c[0])).append("</b></td></tr>");
+258:                 continue;
+259:             }
+260:             if (inTable) {
+261:                 h.append("</table>");
+262:                 inTable = false;
+263:             }
+264:             if (l.startsWith("!")) {
+265:                 // تنبيه غير مانع: سطر كامل بالأحمر، لا يُعد ناقصًا
+266:                 h.append("<div style='margin:6px 0;color:").append(hex(Ui.red)).append("'><b>").append(Ui.esc(l)).append("</b></div>");
+267:                 continue;
+268:             }
+269:             boolean bad = l.startsWith("×");
+270:             String b = bad ? l.substring(1).trim() : l;
+271:             int c = b.indexOf(": ");
+272:             String label = c > 0 ? b.substring(0, c) : b, value = c > 0 ? b.substring(c + 2) : "";
+273:             if (bad) missing.add(label);
+274:             h.append("<div style='margin:3px 0'><span style='color:").append(hex(bad ? Ui.red : Ui.muted)).append("'>").append(bad ? "× " : "").append(Ui.esc(label))
+275:                     .append(":</span>&nbsp; <b style='color:").append(hex(bad ? Ui.red : Ui.ink)).append("'>").append(Ui.esc(value)).append("</b></div>");
+276:         }
+277:         if (inTable) h.append("</table>");
+278:         summary.setText(h.append("</div></html>").toString());
+279:         if (missing.isEmpty()) {
+280:             footLine.setText("✓ " + okLine);
+281:             footLine.setForeground(Ui.primaryInk);
+282:         } else {
+283:             footLine.setText("ناقص: " + Model.join(missing, "، "));
+284:             footLine.setForeground(Ui.red);
+285:         }
+286:     }
+287: 
+288:     String amountText(Ui.Field f, String cur) {
+289:         try {
+290:             int d = db.decimals(cur);
+291:             long v = Db.minor(f.getText(), d);
+292:             return v > 0 ? "\u2066" + Model.fmt(v, d) + " " + cur + "\u2069" : null;
+293:         } catch (Exception e) {
+294:             return null;
+295:         }
+296:     }
+297: 
+298:     /** زر صغير في منتصف النموذج (قلب العملية / تبديل الطرفين). */
+299:     /** زر «قلب/تبديل» بأيقونة السهمين (الرمز ⇅ لا يوجد في كل الخطوط). */
+300:     static Ui.Btn swapButton(String text, java.awt.event.ActionListener a) {
+301:         Ui.Btn b = Ui.ghost(text, a);
+302:         b.setIcon(new Icons("xfer", 16, Ui.primaryInk));
+303:         b.setIconTextGap(6);
+304:         return b;
+305:     }
+306: 
+307:     static JComponent centered(JComponent c) {
+308:         JPanel p = new JPanel(new FlowLayout(FlowLayout.CENTER, 0, 0));
+309:         p.setOpaque(false);
+310:         p.setAlignmentX(Component.RIGHT_ALIGNMENT);
+311:         p.add(c);
+312:         p.setMaximumSize(new Dimension(Integer.MAX_VALUE, 48));
+313:         return p;
+314:     }
+315: 
+316:     static void big(Ui.Field f) {
+317:         f.setFont(Ui.font(19, true));
+318:         f.setMaximumSize(new Dimension(Integer.MAX_VALUE, 46));
+319:     }
+320: }

@@ -1,0 +1,39 @@
+333:         c.add(Ui.para("العلامة تساعدك لتعرف من أين تكمل؛ حفظها ليس دليلًا على تسجيل أي حركة.", 12, Ui.muted, w - 60));
+334:         List<Component> bs = new ArrayList<>();
+335:         if (m != null) bs.add(Ui.ghost("نسخ النص", e -> {
+336:             Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(m.text), null);
+337:             Ui.toast("نُسخ نص آخر رسالة");
+338:         }));
+339:         if (can(Auth.Perm.TX_ADD)) bs.add(Ui.ghost("تحديث العلامة…", e -> updateMark(this, db, o, this::refresh)));
+340:         bs.add(Ui.ghost("التاريخ", e -> history(this, db, o)));
+341:         c.add(Ui.flow(bs.toArray(new Component[0])));
+342:     }
+343: 
+344:     static void updateMark(Component parent, Db db, Model.Office o, Runnable after) {
+345:         JTextArea text = Ui.area(5);
+346:         Ui.Field time = Ui.field("وقت الرسالة كما في واتساب (اختياري)");
+347:         JPanel c = Ui.column();
+348:         c.add(Ui.para("الصق نص آخر رسالة واتساب نقلتها إلى الدفتر لـ«" + o.name + "». يُحفظ مع اسمك ووقت الحفظ، ويبقى التاريخ السابق.", 13, Ui.muted, 440));
+349:         c.add(Ui.gap(6));
+350:         JScrollPane sp = Ui.areaBox(text);
+351:         sp.setPreferredSize(new Dimension(440, 120));
+352:         c.add(sp);
+353:         c.add(Ui.gap(6));
+354:         c.add(Ui.labeled("وقت الرسالة", time));
+355:         if (!Ui.form(parent, "آخر رسالة نُقلت — " + o.name, Ui.rtl(c), "حفظ العلامة")) return;
+356:         try {
+357:             db.setWaMark(o.id, text.getText(), time.val());
+358:             Ui.toast("حُفظت العلامة");
+359:             if (after != null) after.run();
+360:         } catch (Exception e) {
+361:             Ui.error(parent, e);
+362:         }
+363:     }
+364: 
+365:     static void history(Component parent, Db db, Model.Office o) {
+366:         StringBuilder b = new StringBuilder();
+367:         for (Db.WaMark m : db.waMarks(o.id, 50))
+368:             b.append(Model.date(m.at)).append(" — ").append(m.userName).append(m.msgTime.isEmpty() ? "" : " — وقت الرسالة " + m.msgTime).append("\n").append(m.text).append("\n\n");
+369:         Ui.info(parent, "تاريخ علامة آخر رسالة — " + o.name, b.length() == 0 ? "لا توجد علامات بعد." : b.toString().trim());
+370:     }
+371: }

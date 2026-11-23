@@ -1,0 +1,105 @@
+112:             a.section("إدارة المكتب", null, null);
+113:             LinearLayout s = a.group();
+114:             if (a.can(Auth.Perm.USERS)) a.groupRow(s, R.drawable.ic_users, ic, "المستخدمون والصلاحيات", null, null, v -> a.usersScreen.showManager());
+115:             if (a.can(Auth.Perm.AUDIT)) a.groupRow(s, R.drawable.ic_pulse, ic, "سجل العمليات", "من فعل ماذا ومتى", null, v -> a.settingsScreen.showAudit());
+116:             if (a.can(Auth.Perm.SETTINGS)) {
+117:                 a.groupRow(s, R.drawable.ic_lock, ic, "أمان المكتب وإقفال الفترة", "لقطات الشاشة، وتوقيت المكتب، وإقفال الحركات حتى تاريخ", null, v -> a.settingsScreen.showSecurity());
+118:                 int lv = Reliability.overall(Reliability.items(a));
+119:                 a.groupRow(s, R.drawable.ic_health, Reliability.color(a, lv), "اعتمادية التطبيق وفحص البيانات", "النسخ، الفحص، المفتاح، القفل، المساحة، تمرين الاستعادة",
+120:                         "● " + Reliability.word(lv), v -> Reliability.screen(a));
+121:             }
+122:         }
+123: 
+124:         // 10.12: مظهر كل مستخدم له وحده، فيخصّصه كل مستخدم؛ ما يمسّ الجميع (الشعار، الكشوفات، القوالب) لصاحب صلاحية التصميم
+125:         {
+126:             a.section("المظهر والتصميم", null, null);
+127:             LinearLayout m = a.group();
+128:             boolean shared = a.can(Auth.Perm.DESIGN);
+129:             a.groupRow(m, R.drawable.ic_palette, ic, "الخط والألوان والوضع الليلي والاهتزاز", shared ? "والصفحة الرئيسية والشعار" : "والصفحة الرئيسية — لك وحدك", null, v -> a.designScreen.show());
+130:             if (shared) {
+131:                 a.groupRow(m, R.drawable.ic_doc, ic, "تصميم الكشوفات المصدّرة", null, null, v -> a.exportUi.showStyle(this::show));
+132:                 a.groupRow(m, R.drawable.ic_check2, ic, "قالب رسالة مطابقة الرصيد", null, null, v -> a.reconScreen.templateScreen(this::show));
+133:             }
+134:         }
+135: 
+136:         a.section("حول التطبيق", null, null);
+137:         LinearLayout ab = a.group();
+138:         Entitlements ent = License.current;
+139:         if (a.can(Auth.Perm.LICENSE)) a.groupRow(ab, R.drawable.ic_key, ic, "الترخيص", ent.pro ? ent.edition() + " — " + ent.lid : "النسخة المجانية — اعرف ما تضيفه النسخة الكاملة",
+140:                 ent.note.isEmpty() ? null : "تنبيه", v -> a.licenseScreen.show());
+141:         a.groupRow(ab, R.drawable.ic_info, ic, "معلومات عن التطبيق", "الإصدار " + a.versionName() + " — ما يقدمه لك باختصار", null, v -> About.appInfo(a, this::show));
+142:         a.groupRow(ab, R.drawable.ic_users, ic, "من نحن", About.COMPANY, null, v -> About.aboutUs(a, this::show));
+143:         a.groupRow(ab, R.drawable.ic_phone, ic, "اتصل بنا", About.PHONE_SHOWN, null, v -> About.contact(a, this::show));
+144: 
+145:         // 10.4: إعادة التعيين (للمدير، أو لصاحب الهاتف بلا نظام مستخدمين)
+146:         if (ResetScreen.allowed(a.db)) {
+147:             a.section("إعادة التعيين", null, null);
+148:             LinearLayout rs = a.group();
+149:             a.groupRow(rs, R.drawable.ic_trash, a.red, "إعادة تعيين البرنامج", "يصبح التطبيق على هذا الهاتف كأنه مثبت للتو: حذف البيانات (مع إبقاء الرخصة أو بدونها)",
+150:                     null, v -> a.resetScreen.start());
+151:         }
+152:     }
+153: 
+154:     interface OnToggle { void changed(boolean on); }
+155: 
+156:     /** سطر بمفتاح تشغيل/إيقاف لإعداد بسيط. */
+157:     private void toggle(LinearLayout g, int icon, String title, String sub, final String key, String def, final OnToggle after) {
+158:         LinearLayout r = a.groupRow(g, icon, a.primaryInk, title, sub, null, null);
+159:         final Switch sw = new Switch(a);
+160:         sw.setChecked("1".equals(a.db.setting(key, def)));
+161:         int[][] st = {{android.R.attr.state_checked}, {}};
+162:         sw.setThumbTintList(new ColorStateList(st, new int[]{a.night ? a.green : a.primary, a.night ? Color.rgb(150, 160, 156) : Color.rgb(250, 250, 250)}));
+163:         sw.setTrackTintList(new ColorStateList(st, new int[]{Ui.mix(a.surface, a.primary, 0.5f), Ui.mix(a.surface, a.muted, 0.45f)}));
+164:         sw.setOnCheckedChangeListener((b, c) -> {
+165:             a.db.setSetting(key, c ? "1" : "0");
+166:             if (after != null) after.changed(c);
+167:         });
+168:         r.addView(sw, new LinearLayout.LayoutParams(-2, -2));
+169:         r.setOnClickListener(v -> sw.toggle());
+170:         r.setBackground(a.ripple(null, 0));
+171:     }
+172: 
+173:     // ===================================================================================
+174:     // مساعد النقل من برنامج آخر
+175:     // ===================================================================================
+176: 
+177:     void migration() {
+178:         if (!a.require(Auth.Perm.RESTORE)) return;
+179:         a.here(this::migration);
+180:         a.tabbedScreen("مساعد النقل", this::show, "more");
+181:         LinearLayout c = a.card();
+182:         c.addView(a.text("انقل بياناتك من برنامجك الحالي في ثلاث خطوات", 16, a.ink, true));
+183:         c.addView(a.text("يعمل المساعد على الكمبيوتر بدون إنترنت: يقرأ ملف Excel الذي يصدّره برنامج الميزان بيست ريت (أو جدول Excel الذي تعمل عليه)، "
+184:                 + "ويحوّله إلى ملف نسخة احتياطية مشفّر بكلمة سر تختارها، ثم تستورده هنا. أداتان: «أداة النقل» للكشوفات وملفات برنامج الميزان بيست ريت، "
+185:                 + "و«الاستيراد الذكي» لأي ملف Excel تحفظ فيه حساباتك.", 14, a.muted, false));
+186:         LinearLayout g = a.group();
+187:         a.groupRow(g, R.drawable.ic_share, a.primaryInk, "1. أرسل أداة النقل إلى الكمبيوتر", "للكشوفات وملفات برنامج الميزان بيست ريت — عبر واتساب أو البريد، وافتحها بكروم أو إيدج", null,
+188:                 v -> shareTool("migration-tool.html", "أداة-النقل-المحاسب-الذكي.html", "أداة النقل — المحاسب الذكي"));
+189:         a.groupRow(g, R.drawable.ic_share, a.primaryInk, "أو أرسل «الاستيراد الذكي» إلى الكمبيوتر", "لأي ملف Excel: يفهم الأوراق والأعمدة وحده، ويتحقق من مجاميع ملفك ومعادلاته قبل النقل", null,
+190:                 v -> shareTool("smart-import.html", "الاستيراد-الذكي-المحاسب-الذكي.html", "الاستيراد الذكي — المحاسب الذكي"));
+191:         a.groupRow(g, R.drawable.ic_migrate, a.primaryInk, "2. حوّل ملفاتك على الكمبيوتر", "ملف Excel واحد، أو كشوفات حساب (ملف لكل مكتب وعملة) تختارها كلها معًا؛ راجع المطابقة ثم احفظ ملف \u200E.sba", null, null);
+192:         a.groupRow(g, R.drawable.ic_download, a.primaryInk, "3. استورد الملف هنا", "انقل ملف \u200E.sba للهاتف ثم اضغط هنا", null, v -> importFile());
+193:         a.notice(R.drawable.ic_shield, "عند الاستيراد تختار: «إضافة إلى بياناتي» (لا يُحذف شيء؛ تُضاف الأرصدة والحركات، والمكتب الموجود بالاسم نفسه تُضاف إليه) "
+194:                 + "أو «استبدال الكل». في الحالتين تُعرض معاينة الأرصدة قبل أي تغيير، وتُحفظ نسخة أمان يمكنك التراجع إليها.", false, null, null);
+195:         a.hint("بعد الاستيراد قارن أرصدة المكاتب هنا بأرصدة برنامج الميزان بيست ريت: الأداة تعطيك تقريرًا بالأرصدة المتوقعة لكل مكتب وعملة.");
+196:     }
+197: 
+198:     private void shareTool(String asset, String fileName, String title) {
+199:         try {
+200:             java.io.File f = new java.io.File(a.sharedDir(), fileName);
+201:             try (InputStream in = a.getAssets().open(asset); java.io.FileOutputStream out = new java.io.FileOutputStream(f)) {
+202:                 byte[] buf = new byte[65536];
+203:                 int n;
+204:                 while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+205:             }
+206:             a.shareFiles(java.util.Collections.singletonList(f), "text/html", title);
+207:         } catch (Exception e) {
+208:             a.error(new Exception("تعذر تجهيز " + title + ": " + Ui.friendly(e)));
+209:         }
+210:     }
+211: 
+212:     private void importFile() {
+213:         new AlertDialog.Builder(a).setTitle("استيراد ملف النقل")
+214:                 .setMessage("اختر ملف \u200E.sba الذي أنشأته أداة النقل أو الاستيراد الذكي. سيُفحص الملف ويُعرض ملخصه قبل أي تغيير، وتُحفظ نسخة أمان من بياناتك الحالية.")
+215:                 .setPositiveButton("اختيار الملف", (d, w) -> {
+216:                     Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);

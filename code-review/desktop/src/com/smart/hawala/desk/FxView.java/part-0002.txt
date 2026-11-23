@@ -1,0 +1,186 @@
+196:         // العملة المحفوظة قد تكون أُوقفت للمكتب بعد التسجيل: تبقى ظاهرة ليُرى ما يُعدَّل
+197:         for (Model.Tx x : legs) if (!curs.contains(x.currency)) curs.add(x.currency);
+198:         sell = chips(sellHolder, curs, Ui.red, i -> picked(true, i), "");
+199:         buy = chips(buyHolder, curs, Ui.green, i -> picked(false, i), "");
+200:         Ui.rtl(sellHolder);
+201:         Ui.rtl(buyHolder);
+202:         quiet = true;
+203:         sell.set(curs.indexOf(legs[0].currency));
+204:         buy.set(curs.indexOf(legs[1].currency));
+205:         dir.set(0);
+206:         amount.setText(Model.plain(legs[0].amount, db.decimals(legs[0].currency)));
+207:         counter.setText(Model.plain(legs[1].amount, db.decimals(legs[1].currency)));
+208:         rate.setText(Model.nz(legs[0].fxRate));
+209:         desc.setText(Model.nz(legs[0].description));
+210:         quiet = false;
+211:         // المبلغان كما سُجّلا: لا يُعاد حساب المقابل حتى يغيّر المحاسب شيئًا
+212:         rateAuto = false;
+213:         manual = true;
+214:         fromBuy = false;
+215:         labels();
+216:         reference();
+217:         calc();
+218:     }
+219: 
+220:     void clearInputs() {
+221:         quiet = true;
+222:         amount.setText("");
+223:         counter.setText("");
+224:         rate.setText("");
+225:         desc.setText("");
+226:         quiet = false;
+227:         manual = false;
+228:         if (sell != null) sell.set(-1);
+229:         if (buy != null) buy.set(-1);
+230:     }
+231: 
+232:     @Override void clearForm() {
+233:         setEditing(null);
+234:         clearInputs();
+235:         calc();
+236:     }
+237: 
+238:     void officeChanged() {
+239:         String ps = label(sell), pb = label(buy);
+240:         curs.clear();
+241:         Model.Office o = office.get();
+242:         if (o != null) curs.addAll(db.officeCurrencies(o.id));
+243:         List<String> show = curs.size() < 2 ? new ArrayList<>() : curs;
+244:         String empty = o == null ? "اختر المكتب أولًا لتظهر عملاته" : "فعّل عملتين على الأقل لهذا المكتب (تعديل بيانات المكتب)";
+245:         sell = chips(sellHolder, show, Ui.red, i -> picked(true, i), empty);
+246:         buy = chips(buyHolder, show, Ui.green, i -> picked(false, i), empty);
+247:         if (sell != null && ps != null && show.contains(ps)) sell.set(show.indexOf(ps));
+248:         if (buy != null && pb != null && show.contains(pb) && !pb.equals(ps)) buy.set(show.indexOf(pb));
+249:         Ui.rtl(sellHolder);
+250:         Ui.rtl(buyHolder);
+251:         labels();
+252:         reference();
+253:         calc();
+254:     }
+255: 
+256:     /** عملة في طرف تمنع العملة نفسها في الطرف الآخر؛ ومع عملتين فقط يُختار الطرف الآخر تلقائيًا. */
+257:     void picked(boolean isSell, int i) {
+258:         Ui.Seg other = isSell ? buy : sell;
+259:         if (other != null) {
+260:             if (other.selected == i) other.set(-1);
+261:             if (other.none() && curs.size() == 2) other.set(1 - i);
+262:         }
+263:         manual = false;
+264:         labels();
+265:         reference();
+266:         calc();
+267:     }
+268: 
+269:     /** سعر البرنامج بالاتجاه المختار: يُقترح في الخانة ما دام المحاسب لم يكتب سعره، ويبقى ظاهرًا دائمًا. */
+270:     void reference() {
+271:         if (dir == null) return;
+272:         FxDeal x = deal();
+273:         java.math.BigDecimal ref = FxDeal.referenceIn(FxDeal.reference(db.usdRates(), x.sell, x.buy), x.buyPerSell);
+274:         if (ref == null) {
+275:             refLine.setText(x.sell.isEmpty() || x.buy.isEmpty() ? " " : "لا يوجد سعر محفوظ في البرنامج لإحدى العملتين (الإعدادات ← العملات وأسعار الصرف).");
+276:             useRef.setVisible(false);
+277:             return;
+278:         }
+279:         java.util.Map<String, Db.Rate> rates = db.rates();
+280:         String from = x.buyPerSell ? x.sell : x.buy, to = x.buyPerSell ? x.buy : x.sell;
+281:         StringBuilder src = new StringBuilder();
+282:         long at = 0;
+283:         for (String c : new String[]{x.sell, x.buy}) {
+284:             Db.Rate r = rates.get(c);
+285:             if (r == null || "ثابت".equals(r.source)) continue;
+286:             if (src.indexOf(r.source) < 0) src.append(src.length() > 0 ? "/" : "").append(r.source);
+287:             if (r.at > 0 && (at == 0 || r.at < at)) at = r.at;
+288:         }
+289:         refLine.setText("سعر البرنامج للاستئناس: 1 " + from + " = " + ref.toPlainString() + " " + to + (src.length() > 0 ? " (" + src + (at > 0 ? "، " + Model.day(at) : "") + ")" : ""));
+290:         useRef.setVisible(!rateAuto);
+291:         if (rateAuto && !ref.toPlainString().equals(rate.getText().trim())) {
+292:             quiet = true;
+293:             rate.setText(ref.toPlainString());
+294:             quiet = false;
+295:             manual = false;
+296:         }
+297:     }
+298: 
+299:     FxDeal deal() {
+300:         FxDeal x = new FxDeal();
+301:         x.sell = Model.nz(label(sell));
+302:         x.buy = Model.nz(label(buy));
+303:         x.sellDec = x.sell.isEmpty() ? 2 : db.decimals(x.sell);
+304:         x.buyDec = x.buy.isEmpty() ? 2 : db.decimals(x.buy);
+305:         try {
+306:             x.sellAmount = x.sell.isEmpty() ? 0 : Db.minor(amount.getText(), x.sellDec);
+307:         } catch (Exception e) {
+308:             x.sellAmount = 0;
+309:         }
+310:         x.rate = FxDeal.parseRate(rate.getText());
+311:         x.buyPerSell = dir.selected != 1;
+312:         return x;
+313:     }
+314: 
+315:     void labels() {
+316:         FxDeal x = deal();
+317:         String u = x.sell.isEmpty() ? "المباعة" : x.sell, t = x.buy.isEmpty() ? "المشتراة" : x.buy;
+318:         dir.buttons.get(0).setText("1 " + u + " = ؟ " + t);
+319:         dir.buttons.get(1).setText("1 " + t + " = ؟ " + u);
+320:     }
+321: 
+322:     void calc() {
+323:         if (quiet || building || dir == null) return;
+324:         FxDeal x = deal();
+325:         meaning.setText(x.meaning().isEmpty() ? " " : "المعنى: " + x.meaning());
+326:         if (fromBuy && !x.sell.isEmpty()) {
+327:             Long sv = null;
+328:             try {
+329:                 sv = x.sellAmountFor(Db.minor(counter.getText(), x.buyDec));
+330:             } catch (Exception ignored) {
+331:                 // مبلغ غير مكتمل
+332:             }
+333:             String v = sv == null ? "" : Model.plain(sv, x.sellDec);
+334:             if (!amount.getText().equals(v)) {
+335:                 quiet = true;
+336:                 amount.setText(v);
+337:                 quiet = false;
+338:             }
+339:             update();
+340:             return;
+341:         }
+342:         if (!manual && !x.buy.isEmpty()) {
+343:             Long b = x.buyAmount();
+344:             String v = b == null ? "" : Model.plain(b, x.buyDec);
+345:             if (!counter.getText().equals(v)) {
+346:                 quiet = true;
+347:                 counter.setText(v);
+348:                 quiet = false;
+349:             }
+350:         }
+351:         update();
+352:     }
+353: 
+354:     void update() {
+355:         FxDeal x = deal();
+356:         Model.Office o = office.get();
+357:         List<String> l = new ArrayList<>();
+358:         l.add(o == null ? "× المكتب: لم يُختر" : "المكتب: " + o.name);
+359:         String sa = x.sell.isEmpty() ? null : amountText(amount, x.sell);
+360:         l.add(x.sell.isEmpty() ? "× نبيع: اختر العملة المباعة" : sa == null ? "× نبيع: اكتب المبلغ" : "نبيع من رصيدنا: " + sa);
+361:         String ba = x.buy.isEmpty() ? null : amountText(counter, x.buy);
+362:         l.add(x.buy.isEmpty() ? "× نشتري: اختر العملة المشتراة" : ba == null ? "× نشتري: اكتب السعر أو المبلغ المقابل" : "نأخذ مقابلها: " + ba);
+363:         if (sa != null && ba != null) {
+364:             try {
+365:                 long ua = Db.minor(amount.getText(), x.sellDec), ta = Db.minor(counter.getText(), x.buyDec);
+366:                 String eff = FxDeal.effectiveRate(ua, x.sellDec, ta, x.buyDec);
+367:                 l.add("السعر الفعلي: 1 " + x.sell + " = " + eff + " " + x.buy);
+368:                 java.math.BigDecimal ref = FxDeal.reference(db.usdRates(), x.sell, x.buy);
+369:                 if (ref != null) {
+370:                     java.math.BigDecimal pct = new java.math.BigDecimal(eff).subtract(ref).multiply(java.math.BigDecimal.valueOf(100)).divide(ref, 2, java.math.RoundingMode.HALF_UP);
+371:                     l.add("مقارنة بسعر البرنامج: " + (pct.signum() == 0 ? "مطابق" : (pct.signum() > 0 ? "أعلى بـ " : "أقل بـ ") + pct.abs().toPlainString() + "٪") + " (1 " + x.sell + " = "
+372:                             + ref.toPlainString() + " " + x.buy + ")");
+373:                 }
+374:                 if (o != null && editing != null) {
+375:                     // تعديل: «قبل» هو الرصيد بعد عكس العملية القديمة
+376:                     java.util.Map<String, long[]> pv = db.fxEditPreview(editing, x.sell, ua, x.buy, ta);
+377:                     for (java.util.Map.Entry<String, long[]> e : pv.entrySet()) {
+378:                         String[] r = FxDeal.row(e.getKey(), e.getValue()[0], e.getValue()[1] - e.getValue()[0], db.decimals(e.getKey()));
+379:                         l.add("▤" + r[0] + "|" + r[1] + "|" + r[2] + "|" + r[3]);
+380:                     }
+381:                     String warn = FxDeal.overdraft(x.sell, pv.get(x.sell)[0], ua, x.sellDec);

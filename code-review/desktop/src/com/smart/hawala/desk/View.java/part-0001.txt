@@ -1,0 +1,146 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.Auth;
+4: import com.smart.hawala.Db;
+5: import java.awt.*;
+6: import javax.swing.*;
+7: import javax.swing.border.EmptyBorder;
+8: 
+9: /** شاشة في النافذة الرئيسية: رأس بعنوان وأزرار، ومحتوى قابل للتمرير يُعاد بناؤه في refresh(). */
+10: abstract class View extends JPanel {
+11:     final App app;
+12:     final Db db;
+13:     final JPanel body = Ui.column();
+14:     final JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+15:     final JLabel titleLabel = Ui.label("", 24, Ui.ink, true);
+16:     final JLabel subtitle = Ui.label("", 13, Ui.muted, false);
+17:     JScrollPane scroll;
+18:     boolean scrollable = true;
+19: 
+20:     View(App app, String title) {
+21:         super(new BorderLayout());
+22:         this.app = app;
+23:         this.db = app.db;
+24:         setBackground(Ui.bg);
+25:         titleLabel.setText(title);
+26:         JPanel head = new JPanel(new BorderLayout());
+27:         head.setBackground(Ui.bg);
+28:         // 10.4: رأس أوسع بعنوان أكبر وخط فاصل خفيف
+29:         head.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, Ui.line), new EmptyBorder(20, 28, 14, 28)));
+30:         JPanel t = Ui.column();
+31:         t.add(titleLabel);
+32:         t.add(subtitle);
+33:         // 10.18: زر رجوع ظاهر في كل شاشة (يظهر حين توجد شاشة سابقة)
+34:         backBtn = Ui.ghost("→ رجوع", e -> app.back());
+35:         backBtn.setToolTipText("رجوع إلى الشاشة السابقة (Ctrl+Z أو Esc أو Alt+←)");
+36:         backBtn.setVisible(false);
+37:         JPanel lead = new JPanel(new FlowLayout(FlowLayout.RIGHT, 12, 0));
+38:         lead.setOpaque(false);
+39:         lead.applyComponentOrientation(Ui.RTL);
+40:         lead.add(backBtn);
+41:         lead.add(t);
+42:         head.add(lead, BorderLayout.LINE_START);
+43:         actions.setOpaque(false);
+44:         head.add(actions, BorderLayout.LINE_END);
+45:         add(head, BorderLayout.NORTH);
+46:     }
+47: 
+48:     Ui.Btn backBtn;
+49: 
+50:     void updateBack() {
+51:         if (backBtn != null) backBtn.setVisible(!app.history.isEmpty() && !"home".equals(app.current));
+52:     }
+53: 
+54:     /** يُستدعى عند الإنشاء الأول للشاشة. الافتراضي: محتوى يتمرر. */
+55:     void build() {
+56:         scroll = Ui.scroll(body);
+57:         add(scroll, BorderLayout.CENTER);
+58:     }
+59: 
+60:     /** يُعيد ملء المحتوى من قاعدة البيانات (عند فتح الشاشة وبعد أي تغيير). */
+61:     abstract void refresh();
+62: 
+63:     /** عند فتح الشاشة بوسيط (مثل مكتب محدد أو حركة للتعديل). */
+64:     void open(Object arg) { refresh(); }
+65: 
+66:     /** 10.5 (§6): موضع تمرير الصفحة قبل إعادة بنائها؛ يُستعاد إن بقيت الصفحة نفسها (العنوان نفسه). */
+67:     private int keptScroll = -1;
+68:     private String keptTitle;
+69: 
+70:     void clear() {
+71:         if (scroll != null) {
+72:             keptScroll = scroll.getVerticalScrollBar().getValue();
+73:             keptTitle = titleLabel.getText();
+74:         }
+75:         body.removeAll();
+76:         actions.removeAll();
+77:     }
+78: 
+79:     void done() {
+80:         if (scroll != null && keptScroll > 0 && titleLabel.getText().equals(keptTitle)) {
+81:             final int y = keptScroll;
+82:             final JScrollPane sp = scroll;
+83:             SwingUtilities.invokeLater(() -> sp.getVerticalScrollBar().setValue(y));
+84:         }
+85:         keptScroll = -1;
+86:         Ui.rtl(this);
+87:         body.revalidate();
+88:         body.repaint();
+89:         actions.revalidate();
+90:         actions.repaint();
+91:     }
+92: 
+93:     void action(JComponent c) { actions.add(c); }
+94: 
+95:     /** 10.10: دخول الشاشة بظهور وصعود خفيفين (0 → 1). */
+96:     double intro = 1;
+97:     private Timer introT;
+98: 
+99:     void enter() {
+100:         if (introT != null) introT.stop();
+101:         if (!Ui.motion()) {
+102:             intro = 1;
+103:             repaint();
+104:             return;
+105:         }
+106:         intro = 0;
+107:         repaint();
+108:         introT = Ui.tween(520, x -> {
+109:             intro = x;
+110:             repaint();
+111:         }, () -> {
+112:             intro = 1;
+113:             repaint();
+114:         });
+115:     }
+116: 
+117:     @Override public void paint(Graphics g) {
+118:         if (intro >= 1) {
+119:             super.paint(g);
+120:             return;
+121:         }
+122:         Graphics2D g2 = (Graphics2D) g.create();
+123:         g2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, (float) Math.max(0, Math.min(1, intro))));
+124:         g2.translate(0, (1 - intro) * 22);
+125:         super.paint(g2);
+126:         g2.dispose();
+127:     }
+128: 
+129:     void add(JComponent c) {
+130:         c.setAlignmentX(Component.RIGHT_ALIGNMENT);
+131:         body.add(c);
+132:     }
+133: 
+134:     void space(int h) { body.add(Ui.gap(h)); }
+135: 
+136:     boolean can(Auth.Perm p) { return app.can(p); }
+137: 
+138:     boolean require(Auth.Perm p) { return app.require(p); }
+139: 
+140:     /** عرض محتوى الصفحة لحساب عرض النصوص الملتفة. */
+141:     int textWidth() {
+142:         int w = scroll != null ? scroll.getViewport().getWidth() : getWidth();
+143:         if (w <= 0 && App.frame != null) w = App.frame.getWidth() - 260;
+144:         return Math.max(420, w - 120);
+145:     }
+146: }

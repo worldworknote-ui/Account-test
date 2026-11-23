@@ -1,0 +1,153 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.List;
+5: 
+6: /**
+7:  * نموذج تقرير موحّد تُبنى منه كل الملفات المصدّرة (PDF، صور PNG، Excel).
+8:  * كشف المكتب، أرصدة كل المكاتب، التقرير اليومي، وسجل الحركات كلها تُبنى بنفس النموذج،
+9:  * فيكون شكلها وحساباتها متسقة في كل الصيغ.
+10:  */
+11: public final class Report {
+12: 
+13:     public static final int TEXT = 0, MONEY = 1, BAL = 2, DATE = 3, INT = 4;
+14:     public static final int NORMAL = 0, SHADED = 1, BOLD = 2, MUTED = 3, TOTAL = 4;
+15: 
+16:     public String title = "";
+17:     public final List<String> headerLines = new ArrayList<>();
+18:     public String footer = "";
+19:     /** سطر ظاهر في كل صفحة/ورقة للنسخة المجانية (فارغ في المرخّصة). */
+20:     public String watermark = "";
+21:     /** رقم الرخصة يُضمَّن في خصائص الملف (المرخّصة)، فيُعرف مصدر أي ملف مسرّب. */
+22:     public String licenseId = "";
+23:     public boolean signature;
+24:     public String fileBase = "report";
+25:     public final List<Section> sections = new ArrayList<>();
+26: 
+27:     /** مبلغ بالوحدة الصغرى مع منازله العشرية. */
+28:     public static final class Money {
+29:         public final long v;
+30:         public final int dec;
+31: 
+32:         public Money(long v, int dec) {
+33:             this.v = v;
+34:             this.dec = dec;
+35:         }
+36: 
+37:         @Override public String toString() { return Model.fmt(v, dec); }
+38:     }
+39: 
+40:     /** رصيد يُعرض «لنا X» أو «علينا Y». */
+41:     public static final class Bal {
+42:         public final long v;
+43:         public final int dec;
+44: 
+45:         public Bal(long v, int dec) {
+46:             this.v = v;
+47:             this.dec = dec;
+48:         }
+49: 
+50:         @Override public String toString() { return Model.bal(v, dec); }
+51:     }
+52: 
+53:     public static final class DateV {
+54:         public final long t;
+55: 
+56:         public DateV(long t) { this.t = t; }
+57: 
+58:         @Override public String toString() { return Model.date(t); }
+59:     }
+60: 
+61:     public static final class Col {
+62:         public final String title;
+63:         public final float weight;
+64:         public final int type;
+65: 
+66:         public Col(String title, float weight, int type) {
+67:             this.title = title;
+68:             this.weight = weight;
+69:             this.type = type;
+70:         }
+71:     }
+72: 
+73:     public static final class Row {
+74:         public final Object[] cells;
+75:         public int style = NORMAL;
+76:         public List<Long> images;
+77:         /** لون العملة لهذا الصف (ARGB) أو 0: خلفية خفيفة وأرقام بلون العملة حتى لا تختلط العملات على القارئ. */
+78:         public int tint;
+79: 
+80:         public Row(int style, Object... cells) {
+81:             this.style = style;
+82:             this.cells = cells;
+83:         }
+84:     }
+85: 
+86:     public static final class Kv {
+87:         public final String label;
+88:         public final Object value;
+89:         public final boolean emphasis;
+90: 
+91:         public Kv(String label, Object value, boolean emphasis) {
+92:             this.label = label;
+93:             this.value = value;
+94:             this.emphasis = emphasis;
+95:         }
+96:     }
+97: 
+98:     public static final class Section {
+99:         /** لون القسم (رأس الجدول وشريط العنوان) لقسم عملة واحدة، أو 0 = لون الكشف. */
+100:         public int accent;
+101:         public String heading = "";
+102:         public String sheetName = "";
+103:         public String note = "";
+104:         public final List<Kv> summary = new ArrayList<>();
+105:         public final List<Col> cols = new ArrayList<>();
+106:         public final List<Row> rows = new ArrayList<>();
+107: 
+108:         public Section col(String title, float weight, int type) {
+109:             cols.add(new Col(title, weight, type));
+110:             return this;
+111:         }
+112: 
+113:         public Row row(int style, Object... cells) {
+114:             Row r = new Row(style, cells);
+115:             rows.add(r);
+116:             return r;
+117:         }
+118: 
+119:         public Section kv(String label, Object value, boolean emphasis) {
+120:             summary.add(new Kv(label, value, emphasis));
+121:             return this;
+122:         }
+123:     }
+124: 
+125:     public Section section(String heading, String sheetName) {
+126:         Section s = new Section();
+127:         s.heading = heading;
+128:         s.sheetName = sheetName;
+129:         sections.add(s);
+130:         return s;
+131:     }
+132: 
+133:     /** نص الخلية كما يظهر في PDF/PNG. */
+134:     public static String text(Object v) {
+135:         if (v == null) return "";
+136:         return v.toString();
+137:     }
+138: 
+139:     public static final String FREE_MARK = "نسخة مجانية — المحاسب الذكي";
+140: 
+141:     /** علامة النسخة المجانية أو بصمة الرخصة، قبل الكتابة بأي صيغة. */
+142:     public void stamp(boolean watermark, String lid) {
+143:         this.watermark = watermark ? FREE_MARK : "";
+144:         this.licenseId = watermark || lid == null ? "" : lid;
+145:     }
+146: 
+147:     /** عدد صفوف البيانات في كل الأقسام (للتأكد أن التقرير ليس فارغًا). */
+148:     public int dataRows() {
+149:         int n = 0;
+150:         for (Section s : sections) n += s.rows.size();
+151:         return n;
+152:     }
+153: }

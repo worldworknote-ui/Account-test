@@ -1,0 +1,64 @@
+1: package android.graphics;
+2: 
+3: import java.awt.geom.AffineTransform;
+4: 
+5: public class Matrix {
+6:     public enum ScaleToFit { FILL, START, CENTER, END }
+7:     final AffineTransform t = new AffineTransform();
+8:     public Matrix() {}
+9:     public Matrix(Matrix m) { if (m != null) t.setTransform(m.t); }
+10:     public void reset() { t.setToIdentity(); }
+11:     public boolean isIdentity() { return t.isIdentity(); }
+12:     public void set(Matrix m) { if (m == null) reset(); else t.setTransform(m.t); }
+13:     public void setTranslate(float dx, float dy) { t.setToTranslation(dx, dy); }
+14:     public void setScale(float sx, float sy) { t.setToScale(sx, sy); }
+15:     public void setScale(float sx, float sy, float px, float py) { t.setToIdentity(); t.translate(px, py); t.scale(sx, sy); t.translate(-px, -py); }
+16:     public void setRotate(float d) { t.setToRotation(Math.toRadians(d)); }
+17:     public void setRotate(float d, float px, float py) { t.setToRotation(Math.toRadians(d), px, py); }
+18:     public boolean preTranslate(float dx, float dy) { t.translate(dx, dy); return true; }
+19:     public boolean preScale(float sx, float sy) { t.scale(sx, sy); return true; }
+20:     public boolean preScale(float sx, float sy, float px, float py) { t.translate(px, py); t.scale(sx, sy); t.translate(-px, -py); return true; }
+21:     public boolean preRotate(float d) { t.rotate(Math.toRadians(d)); return true; }
+22:     public boolean preRotate(float d, float px, float py) { t.rotate(Math.toRadians(d), px, py); return true; }
+23:     public boolean postTranslate(float dx, float dy) { t.preConcatenate(AffineTransform.getTranslateInstance(dx, dy)); return true; }
+24:     public boolean postScale(float sx, float sy) { t.preConcatenate(AffineTransform.getScaleInstance(sx, sy)); return true; }
+25:     public boolean postScale(float sx, float sy, float px, float py) {
+26:         AffineTransform a = new AffineTransform(); a.translate(px, py); a.scale(sx, sy); a.translate(-px, -py);
+27:         t.preConcatenate(a); return true;
+28:     }
+29:     public boolean postRotate(float d) { t.preConcatenate(AffineTransform.getRotateInstance(Math.toRadians(d))); return true; }
+30:     public boolean postRotate(float d, float px, float py) { t.preConcatenate(AffineTransform.getRotateInstance(Math.toRadians(d), px, py)); return true; }
+31:     public boolean postConcat(Matrix m) { t.preConcatenate(m.t); return true; }
+32:     public boolean preConcat(Matrix m) { t.concatenate(m.t); return true; }
+33:     public boolean invert(Matrix out) {
+34:         try { out.t.setTransform(t.createInverse()); return true; } catch (Exception e) { return false; }
+35:     }
+36:     public void mapPoints(float[] pts) {
+37:         t.transform(pts, 0, pts, 0, pts.length / 2);
+38:     }
+39:     public boolean mapRect(RectF r) {
+40:         java.awt.geom.Rectangle2D b = t.createTransformedShape(r.awt()).getBounds2D();
+41:         r.set((float) b.getMinX(), (float) b.getMinY(), (float) b.getMaxX(), (float) b.getMaxY());
+42:         return true;
+43:     }
+44:     public boolean setRectToRect(RectF src, RectF dst, ScaleToFit fit) {
+45:         float sx = dst.width() / src.width(), sy = dst.height() / src.height();
+46:         t.setToIdentity();
+47:         if (fit == ScaleToFit.FILL) {
+48:             t.translate(dst.left, dst.top); t.scale(sx, sy); t.translate(-src.left, -src.top); return true;
+49:         }
+50:         float s = Math.min(sx, sy);
+51:         float w = src.width() * s, h = src.height() * s;
+52:         float dx = dst.left, dy = dst.top;
+53:         if (fit == ScaleToFit.CENTER) { dx += (dst.width() - w) / 2; dy += (dst.height() - h) / 2; }
+54:         else if (fit == ScaleToFit.END) { dx += dst.width() - w; dy += dst.height() - h; }
+55:         t.translate(dx, dy); t.scale(s, s); t.translate(-src.left, -src.top);
+56:         return true;
+57:     }
+58:     public void getValues(float[] v) {
+59:         v[0] = (float) t.getScaleX(); v[1] = (float) t.getShearX(); v[2] = (float) t.getTranslateX();
+60:         v[3] = (float) t.getShearY(); v[4] = (float) t.getScaleY(); v[5] = (float) t.getTranslateY();
+61:         v[6] = 0; v[7] = 0; v[8] = 1;
+62:     }
+63:     public AffineTransform awt() { return t; }
+64: }

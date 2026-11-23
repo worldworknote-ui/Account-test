@@ -1,0 +1,183 @@
+587:                         say(fe != null ? fe : "لم أجد نافذة واتساب مفتوحة. اضغط «حدد النافذة» ثم اضغط على النافذة التي فيها الرسائل.");
+588:                         return;
+589:                     }
+590:                     around(fw);
+591:                     read();
+592:                 });
+593:             }, "capture-fit").start();
+594:         }
+595: 
+596:         /** يضع الإطار حول مستطيل (داخله = المستطيل). */
+597:         void around(Rectangle target) {
+598:             clearBadges();
+599:             setArea(new Rectangle(target.x - EDGE, target.y - EDGE, target.width + 2 * EDGE, target.height + 2 * EDGE));
+600:             settle.stop();
+601:             save.restart();
+602:             lastSig = null;
+603:             pending = false;
+604:         }
+605: 
+606:         /** «حدد النافذة»: كبسة على نافذة أو سحب مستطيل. */
+607:         void selectArea() {
+608:             clearBadges();
+609:             new Picker(this).begin();
+610:         }
+611: 
+612:         // ------------------------------- القراءة التلقائية -------------------------------
+613: 
+614:         /** كل 450 م.ث: صورة صغيرة لما تحت الإطار؛ إن تغيّرت ثم ثبتت تُقرأ من جديد. */
+615:         private void tick() {
+616:             if (boxMode || !auto.isSelected() || reading || dragging || hovering || !isShowing() || fake() != null) return;
+617:             if (!sampling.compareAndSet(false, true)) return;
+618:             final Rectangle in = inner();
+619:             final List<Rectangle> mask = new ArrayList<>();
+620:             for (JWindow w : badgeWins) mask.add(w.getBounds());
+621:             new Thread(() -> {
+622:                 int[] sig = null;
+623:                 try {
+624:                     sig = signature(new Robot().createScreenCapture(in), in, mask);
+625:                 } catch (Throwable ignored) {
+626:                     sig = null;
+627:                 } finally {
+628:                     sampling.set(false);
+629:                 }
+630:                 final int[] s = sig;
+631:                 SwingUtilities.invokeLater(() -> compare(s));
+632:             }, "capture-watch").start();
+633:         }
+634: 
+635:         private void compare(int[] sig) {
+636:             if (sig == null || reading || !auto.isSelected()) return;
+637:             if (lastSig == null || lastSig.length != sig.length) {
+638:                 lastSig = sig;
+639:                 return;
+640:             }
+641:             if (changed(lastSig, sig)) {
+642:                 lastSig = sig;
+643:                 pending = true;
+644:                 stable = 0;
+645:                 if (!badgeWins.isEmpty()) {
+646:                     clearBadges();
+647:                     say("…");
+648:                 }
+649:                 return;
+650:             }
+651:             if (pending && ++stable >= 1) {
+652:                 pending = false;
+653:                 read();
+654:             }
+655:         }
+656: 
+657:         @Override public void dispose() {
+658:             settle.stop();
+659:             watch.stop();
+660:             if (save.isRunning()) {
+661:                 save.stop();
+662:                 saveBounds();
+663:             }
+664:             clearBadges();
+665:             left.dispose();
+666:             right.dispose();
+667:             bottom.dispose();
+668:             super.dispose();
+669:             if (open == this) open = null;
+670:         }
+671: 
+672:         void saveShot() {
+673:             final Rectangle in = inner();
+674:             new Thread(() -> {
+675:                 String res;
+676:                 try {
+677:                     BufferedImage img = Reader.grab(in);
+678:                     File dir = new File(System.getProperty("user.home"), "Desktop");
+679:                     if (!dir.isDirectory()) dir = new File(System.getProperty("user.home"));
+680:                     File f = new File(dir, "sa-capture-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss").format(new java.util.Date()) + ".png");
+681:                     javax.imageio.ImageIO.write(img, "png", f);
+682:                     res = "حُفظت الصورة: " + f.getName() + " (على سطح المكتب). أرسلها للمطوّر.";
+683:                 } catch (Throwable t) {
+684:                     res = "تعذّر حفظ الصورة: " + t.getMessage();
+685:                 }
+686:                 final String m = res;
+687:                 SwingUtilities.invokeLater(() -> say(m));
+688:             }, "capture-shot").start();
+689:         }
+690: 
+691:         void help() {
+692:             String msg = "<html><div style='width:330px' dir='rtl'>"
+693:                     + "<b>1.</b> اضغط <b>«حدد النافذة»</b> ثم اضغط على نافذة واتساب، أو اسحب بالماوس مستطيلًا فوق الرسائل.<br><br>"
+694:                     + "<b>2.</b> على كل رسالة يظهر رقم. اضغط الرقم فتنتقل الرسالة كلها إلى البرنامج.<br><br>"
+695:                     + "<b>3.</b> مرّر الرسائل في واتساب كالعادة من داخل الإطار. مع <b>«قراءة تلقائية: تعمل»</b> تُقرأ من جديد وحدها حين تتوقف.<br><br>"
+696:                     + "<b>4.</b> لعدة رسائل: <b>«عدة رسائل»</b> ثم اضغط الأرقام ثم <b>«نقل المحدد»</b>.<br><br>"
+697:                     + "<b>5.</b> حرّك الإطار من شريطه الأخضر، وغيّر حجمه من حوافه.<br><br>"
+698:                     + "<b>6.</b> <b>«مربع نسخ»</b>: مربع صغير تضعه فوق رسالة واحدة، ثم «نسخ ما في المربع» فينتقل كل ما تحته.<br><br>"
+699:                     + "رسائل الصور والملصقات لا تُرقَّم.<br><br>"
+700:                     + (MAC ? "على الماك: اسمح للبرنامج بـ«تسجيل الشاشة» من إعدادات النظام ← الخصوصية والأمان.<br><br>" : "")
+701:                     + "البرنامج يقرأ الشاشة فقط ولا يضغط شيئًا في واتساب، ولا يُسجَّل شيء قبل مراجعتك في نموذج التسجيل.</div></html>";
+702:             JOptionPane pane = new JOptionPane(msg, JOptionPane.INFORMATION_MESSAGE);
+703:             // 12.5: صورة لما تحت الإطار تُحفظ على سطح المكتب لترسلها للمطوّر حين لا تُعرف الرسائل
+704:             JButton shotBtn = new JButton("حفظ صورة ما تحت الإطار (للفحص)");
+705:             shotBtn.addActionListener(e -> saveShot());
+706:             pane.setOptions(new Object[]{"فهمت", shotBtn});
+707:             pane.setComponentOrientation(ComponentOrientation.RIGHT_TO_LEFT);
+708:             JDialog d = pane.createDialog(this, "كيف أستعمل إطار الالتقاط؟");
+709:             d.setModal(false);
+710:             d.setAlwaysOnTop(true);
+711:             d.setVisible(true);
+712:         }
+713: 
+714:         /** سحب الإطار من شريطه (8)، وتغيير حجمه من حوافه: 1 يسار، 2 يمين، 4 أسفل. */
+715:         private final class Mover extends MouseAdapter {
+716:             final int base;
+717:             Point start;
+718:             Rectangle startA;
+719:             int mode;
+720: 
+721:             Mover(int base) { this.base = base; }
+722: 
+723:             int modeAt(MouseEvent e) {
+724:                 if (base != 4) return base;
+725:                 int x = e.getX(), w = e.getComponent().getWidth();
+726:                 if (x >= w - 24) return 4 | 2;
+727:                 if (x <= 24) return 4 | 1;
+728:                 return 4;
+729:             }
+730: 
+731:             @Override public void mouseMoved(MouseEvent e) {
+732:                 int m = modeAt(e);
+733:                 int c = m == 8 ? Cursor.MOVE_CURSOR : m == 6 ? Cursor.SE_RESIZE_CURSOR : m == 5 ? Cursor.SW_RESIZE_CURSOR
+734:                         : m == 1 ? Cursor.W_RESIZE_CURSOR : m == 2 ? Cursor.E_RESIZE_CURSOR : Cursor.S_RESIZE_CURSOR;
+735:                 e.getComponent().setCursor(Cursor.getPredefinedCursor(c));
+736:             }
+737: 
+738:             @Override public void mousePressed(MouseEvent e) {
+739:                 start = e.getLocationOnScreen();
+740:                 startA = new Rectangle(area);
+741:                 mode = modeAt(e);
+742:                 dragging = true;
+743:             }
+744: 
+745:             @Override public void mouseDragged(MouseEvent e) {
+746:                 if (start == null) return;
+747:                 int dx = e.getXOnScreen() - start.x, dy = e.getYOnScreen() - start.y;
+748:                 Rectangle b = new Rectangle(startA);
+749:                 if (mode == 8) b.setLocation(startA.x + dx, startA.y + dy);
+750:                 else {
+751:                     if ((mode & 1) != 0) { b.x = startA.x + dx; b.width = startA.width - dx; }
+752:                     if ((mode & 2) != 0) b.width = startA.width + dx;
+753:                     if ((mode & 4) != 0) b.height = startA.height + dy;
+754:                     if (b.width < minW()) { if ((mode & 1) != 0) b.x -= minW() - b.width; b.width = minW(); }
+755:                     if (b.height < minH()) b.height = minH();
+756:                 }
+757:                 clearBadges();
+758:                 setArea(b);
+759:             }
+760: 
+761:             @Override public void mouseReleased(MouseEvent e) {
+762:                 boolean was = start != null && !area.equals(startA);
+763:                 start = null;
+764:                 dragging = false;
+765:                 if (was) moved();
+766:             }
+767:         }
+768:     }
+769: 

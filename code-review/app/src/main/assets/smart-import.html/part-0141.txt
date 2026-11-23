@@ -1,0 +1,162 @@
+3789:       html += '<details class="box" data-k="sample"><summary>أول الحركات كما ستظهر في التطبيق</summary><div><div class="tablebox" style="max-height:300px"><table><tr><th>التاريخ</th><th>المكتب</th><th>النوع</th><th class="num">المبلغ</th><th>البيان</th><th>ملاحظات</th></tr>';
+3790:       T.tx.slice(0, 30).forEach(function (t) {
+3791:         var us = t.type.indexOf("لنا") >= 0;
+3792:         html += "<tr><td>" + C.fmtDate(t.created_at) + "</td><td>" + esc(names[t.office_id]) + '</td><td><span class="chip ' + (us ? "us" : "them") + '">' + (us ? "لنا" : "علينا") + '</span></td><td class="num">' +
+3793:           C.fmtMinor(BigInt(t.amount_minor), dec[t.currency]) + " " + t.currency + "</td><td>" + esc(String(t.description).slice(0, 50)) + '</td><td class="hint">' + esc(String(t.notes).slice(0, 80)) + "</td></tr>";
+3794:       });
+3795:       html += "</table></div></div></details>";
+3796:     }
+3797:     box.innerHTML = html;
+3798:     filter();
+3799:   }
+3800: 
+3801:   function filter() {
+3802:     var q = C.looseKey(S.q || "");
+3803:     var shown = 0, total = 0;
+3804:     document.querySelectorAll("#review tr[data-o]").forEach(function (tr) {
+3805:       var hit = !q || tr.dataset.o.indexOf(q) >= 0;
+3806:       tr.style.display = hit ? "" : "none";
+3807:       if (tr.closest("#balTable")) { total++; if (hit) shown++; }
+3808:     });
+3809:     var qn = $("qn");
+3810:     if (qn) qn.textContent = q ? shown + " من " + total : "";
+3811:   }
+3812: 
+3813:   // ===================================================================================
+3814:   // الإنشاء
+3815:   // ===================================================================================
+3816: 
+3817:   function updateMake() {
+3818:     var r = S.result;
+3819:     var ok = !!r && !r.error && (r.T.tx.length + r.T.opening_balances.length) > 0;
+3820:     var pw1 = $("pw1").value, pw2 = $("pw2").value;
+3821:     $("make").disabled = !(ok && $("confirmed").checked && pw1.length >= 6 && pw1 === pw2);
+3822:     $("csv").disabled = !ok;
+3823:     var mm = $("makeMsg");
+3824:     if (!ok) { if (mm.dataset.done !== "1") mm.innerHTML = ""; }
+3825:     else if (pw1 && pw2 && pw1 !== pw2) mm.innerHTML = '<div class="msg err">كلمتا السر غير متطابقتين.</div>';
+3826:     else if (pw1 && pw1.length < 6) mm.innerHTML = '<div class="msg warn">كلمة السر قصيرة: 6 أحرف على الأقل.</div>';
+3827:     else if (mm.dataset.done !== "1") mm.innerHTML = "";
+3828:   }
+3829: 
+3830:   function download(bytes, name, type) {
+3831:     var blob = new Blob([bytes], { type: type || "application/octet-stream" });
+3832:     var a = document.createElement("a");
+3833:     a.href = URL.createObjectURL(blob);
+3834:     a.download = name;
+3835:     document.body.appendChild(a);
+3836:     a.click();
+3837:     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+3838:   }
+3839: 
+3840:   function stamp() {
+3841:     var d = new Date();
+3842:     function p(x) { return (x < 10 ? "0" : "") + x; }
+3843:     return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes());
+3844:   }
+3845: 
+3846:   function make() {
+3847:     var r = S.result;
+3848:     if (!r || r.error) return;
+3849:     var mm = $("makeMsg");
+3850:     $("make").disabled = true;
+3851:     mm.dataset.done = "";
+3852:     mm.innerHTML = '<div class="msg info">جارٍ إنشاء الملف وتشفيره… (قد يستغرق بضع ثوانٍ)</div>';
+3853:     S.cfg.now = Date.now();
+3854:     var tc = tablesCfg();
+3855:     var T = C.tables(r.model, tc, rand);
+3856:     if (C.checkBalanced(T).length) { mm.innerHTML = '<div class="msg err">قيد غير متوازن — لم يُنشأ الملف.</div>'; return; }
+3857:     C.makeBackup(T, tc, $("pw1").value, crypto.subtle, rand).then(function (bytes) {
+3858:       var name = "استيراد-ذكي-" + stamp() + ".sba";
+3859:       download(bytes, name);
+3860:       mm.dataset.done = "1";
+3861:       mm.innerHTML = '<div class="msg ok"><b>✓ تم إنشاء «' + esc(name) + "»</b> (" + n(Math.ceil(bytes.length / 1024)) + " ك.ب) — " + n(T.offices.length) + " مكتب، " + n(T.tx.length) + " حركة، " +
+3862:         n(T.opening_balances.length) + " رصيد سابق.<ul><li>انقله إلى الهاتف (واتساب لنفسك، أو البريد، أو كابل).</li>" +
+3863:         "<li>في التطبيق: المزيد ← مساعد النقل من برنامج آخر ← «3. استورد الملف هنا»، واكتب كلمة السر، ثم اختر «إضافة إلى بياناتي» حتى لا يُحذف شيء من بياناتك الحالية.</li>" +
+3864:         "<li>قارن أرصدة المكاتب في التطبيق بتقرير الأرصدة (زر «تنزيل تقرير الأرصدة»).</li><li>لا تنسَ كلمة السر: لا يمكن فتح الملف بدونها.</li></ul></div>";
+3865:       updateMake();
+3866:     }).catch(function (e) {
+3867:       mm.innerHTML = '<div class="msg err">تعذر إنشاء الملف: ' + esc(e.message || e) + "</div>";
+3868:       updateMake();
+3869:     });
+3870:   }
+3871: 
+3872:   function csv() {
+3873:     var r = S.result;
+3874:     if (!r || r.error) return;
+3875:     var m = r.model, errors = [], skipped = m.skipped.slice();
+3876:     Object.keys(m.issues).forEach(function (k) {
+3877:       var g = m.issues[k];
+3878:       g.rows.forEach(function (x) { (g.counted ? skipped : errors).push(g.counted ? { sheet: x.sheet, row: x.row, reason: g.label } : { sheet: x.sheet, row: x.row, msg: g.label }); });
+3879:     });
+3880:     download(C.reportCsv(r.rep, { errors: errors, skipped: skipped }), "تقرير-الأرصدة-" + stamp() + ".csv", "text/csv;charset=utf-8");
+3881:   }
+3882: 
+3883:   // ===================================================================================
+3884:   // الأحداث
+3885:   // ===================================================================================
+3886: 
+3887:   function newCode() {
+3888:     var c = (prompt("رمز العملة بالإنجليزية (مثل GOLD أو USDT):") || "").trim().toUpperCase();
+3889:     if (!/^[A-Z0-9]{2,10}$/.test(c)) { if (c) alert("الرمز يجب أن يكون من 2 إلى 10 أحرف إنجليزية أو أرقام."); return null; }
+3890:     var name = (prompt("اسم العملة بالعربية:", c) || c).trim();
+3891:     S.cfg.currencies[c] = { name: name || c, dec: 2, userSet: false };
+3892:     return c;
+3893:   }
+3894: 
+3895:   function setAccountFrom(t, from, name) {
+3896:     S.accFrom[t.id] = { from: from, name: name || "" };
+3897:     applyAccountFrom(t);
+3898:   }
+3899: 
+3900:   function applyAccountFrom(t) {
+3901:     var af = S.accFrom[t.id];
+3902:     if (!af || t.roles.account !== undefined) return;
+3903:     var src = af.from === "sheet" ? t.fromSheet : af.from === "file" ? t.fromFile : null;
+3904:     var nm = src ? src.name : af.from === "custom" ? C.clean(af.name) : "";
+3905:     t.accountFrom = af.from || null;
+3906:     t.sheetAccount = nm;
+3907:     // عملة مكتوبة في الاسم المختار (إن لم يحدد المستخدم عملة الجدول بنفسه)
+3908:     t.sheetCurrency = src && t.roles.currency === undefined ? src.code : null;
+3909:     if (t.sheetCurrency && !S.cfg.fixedCurrencyUser[t.id]) S.cfg.fixedCurrency[t.id] = t.sheetCurrency;
+3910:     t.accountFromSheet = !!nm;
+3911:     if (nm && t.kind === "journal-noaccount") { t.kind = "journal"; t.use = true; }
+3912:     if (!nm && t.kind === "journal") { t.kind = "journal-noaccount"; t.use = false; }
+3913:   }
+3914: 
+3915:   function changed(full) {
+3916:     refreshValues();
+3917:     later(full);
+3918:   }
+3919: 
+3920:   document.addEventListener("change", function (e) {
+3921:     var t = e.target, d = t.dataset;
+3922:     if ((t.id === "file" || t.id === "file2") && t.files.length) { var fl = Array.prototype.slice.call(t.files); t.value = ""; readFiles(fl); return; }
+3923:     if (t.id === "confirmed") { updateMake(); return; }
+3924:     if (!S.a) return;
+3925:     var val = t.value;
+3926:     if (t.tagName === "SELECT" && val === "__new") {
+3927:       var c = newCode();
+3928:       if (!c) { renderValues(); renderUnderstand(); return; }
+3929:       val = c;
+3930:     }
+3931:     if (d.use) { var tu = tableById(d.use); tu.use = t.checked; changed(true); return; }
+3932:     if (d.listed) { S.cfg.listedAccounts = t.checked; later(false); return; }
+3933:     if (d.role) {
+3934:       var p = d.role.split("|"), tr = tableById(p[0]), role = p[1];
+3935:       var col = val === "" ? undefined : +val;
+3936:       if (col !== undefined) ROLE_ORDER.forEach(function (k) { if (k !== role && tr.roles[k] === col) delete tr.roles[k]; });
+3937:       if (col !== undefined && tr.roles.wide) tr.roles.wide = tr.roles.wide.filter(function (w) { return w.c !== col; });
+3938:       if (tr.roles.wide && !tr.roles.wide.length) delete tr.roles.wide;
+3939:       if (col === undefined) delete tr.roles[role]; else tr.roles[role] = col;
+3940:       // الاتجاه أو المبلغ يلغي عمودي لنا/علينا والعكس
+3941:       if ((role === "debit" || role === "credit") && col !== undefined) delete tr.roles.direction;
+3942:       X.reclassify(tr);
+3943:       applyAccountFrom(tr);
+3944:       changed(true);
+3945:       return;
+3946:     }
+3947:     if (d.accfrom) { setAccountFrom(tableById(d.accfrom), val, (S.accFrom[d.accfrom] || {}).name); changed(true); return; }
+3948:     if (d.accname) { setAccountFrom(tableById(d.accname), "custom", val); changed(true); return; }
+3949:     if (d.fixcur) { S.cfg.fixedCurrency[d.fixcur] = val; S.cfg.fixedCurrencyUser[d.fixcur] = true; changed(true); return; }
+3950:     if (d.dirmap !== undefined) { S.cfg.dirMap[d.dirmap] = val; later(false); return; }

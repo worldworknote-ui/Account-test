@@ -1,0 +1,161 @@
+2768:         if (me == null || Auth.isAdmin(me) || me.id == u.id || u.nick == null || u.nick.trim().isEmpty()) return u.name;
+2769:         return u.nick.trim();
+2770:     }
+2771: 
+2772:     /** حركات نافذة في المكتب خلال آخر days يومًا لم يتحقق منها أحد غير مُدخلها. */
+2773:     public int unverifiedCount(long office, int days) {
+2774:         try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM tx WHERE office_id=" + office + " AND status='ACTIVE' AND created_at>="
+2775:                 + (Clock.now() - days * 86_400_000L) + " AND NOT EXISTS(SELECT 1 FROM tx_checks k WHERE k.tx_id=tx.id AND k.status='VALID'"
+2776:                 + " AND (tx.user_id IS NULL OR k.user_id<>tx.user_id))", null)) {
+2777:             return c.moveToFirst() ? c.getInt(0) : 0;
+2778:         }
+2779:     }
+2780: 
+2781:     /** آخر رسالة واتساب نُقلت إلى الدفتر لمكتب: علامة يضعها المحاسب ليعرف من أين يكمل. ليست دليلًا على تسجيل شيء. */
+2782:     public static final class WaMark {
+2783:         public String uuid = "", text = "", msgTime = "", userName = "";
+2784:         public long officeId, at;
+2785:         public Long userId;
+2786:     }
+2787: 
+2788:     public void setWaMark(long office, String text, String msgTime) {
+2789:         require(Auth.Perm.TX_ADD);
+2790:         if (text == null || text.trim().isEmpty()) throw new IllegalArgumentException("الصق نص آخر رسالة نُقلت");
+2791:         if (office(office) == null) throw new IllegalArgumentException("المكتب غير موجود");
+2792:         ContentValues v = new ContentValues();
+2793:         v.put("uuid", UUID.randomUUID().toString());
+2794:         v.put("office_id", office);
+2795:         v.put("text", Crypto.enc(text.trim()));
+2796:         v.put("msg_time", Crypto.enc(Model.nz(msgTime).trim()));
+2797:         Model.User me = actor();
+2798:         if (me != null) v.put("user_id", me.id);
+2799:         v.put("user_name", Crypto.enc(currentUserName));
+2800:         v.put("created_at", Clock.now());
+2801:         SQLiteDatabase d = getWritableDatabase();
+2802:         d.beginTransaction();
+2803:         try {
+2804:             d.insertOrThrow("wa_marks", null, v);
+2805:             audit(d, "WA_MARK", "office", office, "");
+2806:             d.setTransactionSuccessful();
+2807:         } finally {
+2808:             d.endTransaction();
+2809:         }
+2810:     }
+2811: 
+2812:     /** تاريخ العلامة لمكتب، الأحدث أولًا. */
+2813:     public List<WaMark> waMarks(long office, int limit) {
+2814:         List<WaMark> out = new ArrayList<>();
+2815:         try (Cursor c = getReadableDatabase().rawQuery("SELECT uuid,office_id,text,msg_time,user_id,user_name,created_at FROM wa_marks WHERE office_id=" + office
+2816:                 + " ORDER BY created_at DESC,uuid LIMIT " + Math.max(1, limit), null)) {
+2817:             while (c.moveToNext()) {
+2818:                 WaMark m = new WaMark();
+2819:                 m.uuid = c.getString(0);
+2820:                 m.officeId = c.getLong(1);
+2821:                 m.text = Model.nz(Crypto.dec(c.getString(2)));
+2822:                 m.msgTime = Model.nz(Crypto.dec(c.getString(3)));
+2823:                 m.userId = c.isNull(4) ? null : c.getLong(4);
+2824:                 m.userName = shown(Model.nz(Crypto.dec(c.getString(5))));
+2825:                 m.at = c.getLong(6);
+2826:                 out.add(m);
+2827:             }
+2828:         }
+2829:         return out;
+2830:     }
+2831: 
+2832:     public WaMark lastWaMark(long office) {
+2833:         List<WaMark> l = waMarks(office, 1);
+2834:         return l.isEmpty() ? null : l.get(0);
+2835:     }
+2836: 
+2837:     private String userLabel(Long id, String fallback) {
+2838:         if (id != null) {
+2839:             Model.User u = user(id);
+2840:             if (u != null) return shown(u.name) + (u.deleted ? " (حساب محذوف)" : "");
+2841:         }
+2842:         return Model.nz(fallback).isEmpty() ? "—" : fallback;
+2843:     }
+2844: 
+2845:     /** سطور «من أدخلها، ومن اعتمدها، ومن تحقق منها، ومتى» للعرض في تفاصيل الحركة (الهاتف والكمبيوتر). */
+2846:     public List<String> txPeople(Model.Tx t) {
+2847:         List<String> l = new ArrayList<>();
+2848:         l.add("أدخلها: " + userLabel(t.userId, t.userName) + " — " + Model.date(t.createdAt));
+2849:         if (t.approvedAt > 0) l.add("اعتمدها: " + userLabel(t.approvedBy, "") + " — " + Model.date(t.approvedAt));
+2850:         else if (t.isPending()) l.add("بانتظار الاعتماد");
+2851:         for (TxCheck c : checks(t.id)) {
+2852:             String who = userLabel(c.userId, c.userName);
+2853:             if (c.valid()) l.add((t.userId != null && c.userId == t.userId ? "تحقق (لا يُحتسب: أدخلها هو): " : "تحقق منها: ") + who + " — " + Model.date(c.at));
+2854:             else l.add("تحقق أُبطل: " + who + " — " + Model.date(c.at) + " (أُبطل " + Model.date(c.voidAt) + ": " + c.voidReason + ")");
+2855:         }
+2856:         return l;
+2857:     }
+2858: 
+2859:     // ===================================================================================
+2860:     // 10.5 (§11): معاينة الرصيد قبل الحفظ — بقواعد الترحيل نفسها (postTx)
+2861:     // ===================================================================================
+2862: 
+2863:     /** أثر حركة على رصيد مكتبها لكل عملة (موجب = «لنا»)، كما يكتبه postTx بالضبط. */
+2864:     public static Map<String, Long> effect(TxInput in) {
+2865:         Map<String, Long> m = new TreeMap<>();
+2866:         m.merge(in.currency, TYPE_DEBIT.equals(in.type) ? in.amount : -in.amount, Long::sum);
+2867:         if (!FEE_NONE.equals(in.feeType) && in.fee > 0 && in.feeCurrency != null)
+2868:             m.merge(in.feeCurrency, FEE_US.equals(in.feeType) ? in.fee : -in.fee, Long::sum);
+2869:         return m;
+2870:     }
+2871: 
+2872:     public static final class Preview {
+2873:         public long office;
+2874:         public String officeName = "";
+2875:         /** الرصيد الآن، والرصيد بعد الحفظ (أو بعد الاعتماد إن كانت تحتاجه)، لكل عملة تتأثر. */
+2876:         public final Map<String, Long> before = new TreeMap<>(), after = new TreeMap<>();
+2877:         /** الحركة تحتاج اعتمادًا: «after» هو الرصيد المتوقع بعد اعتمادها، والرصيد لا يتغير قبله. */
+2878:         public boolean pending;
+2879:     }
+2880: 
+2881:     /**
+2882:      * معاينة أثر عملية (ساق أو أكثر) على أرصدة مكاتبها، مع طرح أثر الحركة التي تُستبدل عند التعديل (replacing).
+2883:      * تُحسب من قاعدة البيانات لحظة الطلب، فتُستدعى من جديد عند عرض التأكيد وعند الحفظ.
+2884:      */
+2885:     public List<Preview> preview(List<TxInput> legs, Long replacing) {
+2886:         Map<Long, Preview> out = new LinkedHashMap<>();
+2887:         SQLiteDatabase d = getReadableDatabase();
+2888:         boolean pending = false;
+2889:         for (TxInput x : legs) pending |= approvalRequired(x);
+2890:         Map<Long, Map<String, Long>> delta = new LinkedHashMap<>();
+2891:         for (TxInput x : legs) for (Map.Entry<String, Long> e : effect(x).entrySet()) delta.computeIfAbsent(x.office, k -> new TreeMap<>()).merge(e.getKey(), e.getValue(), Long::sum);
+2892:         if (replacing != null) {
+2893:             Model.Tx old = tx(replacing);
+2894:             if (old != null && old.isActive())
+2895:                 for (Map.Entry<String, Long> e : effect(inputOf(old)).entrySet()) delta.computeIfAbsent(old.officeId, k -> new TreeMap<>()).merge(e.getKey(), -e.getValue(), Long::sum);
+2896:         }
+2897:         for (Map.Entry<Long, Map<String, Long>> e : delta.entrySet()) {
+2898:             Preview p = new Preview();
+2899:             p.office = e.getKey();
+2900:             Model.Office o = office(p.office);
+2901:             p.officeName = o == null ? "" : Model.nz(o.name);
+2902:             p.pending = pending;
+2903:             Map<String, Long> now = officeBalances(d, p.office);
+2904:             for (Map.Entry<String, Long> c : e.getValue().entrySet()) {
+2905:                 long b = now.containsKey(c.getKey()) ? now.get(c.getKey()) : 0;
+2906:                 p.before.put(c.getKey(), b);
+2907:                 p.after.put(c.getKey(), b + c.getValue());
+2908:             }
+2909:             out.put(p.office, p);
+2910:         }
+2911:         return new ArrayList<>(out.values());
+2912:     }
+2913: 
+2914:     /** مختصر: معاينة حركة واحدة. */
+2915:     public List<Preview> preview(TxInput in, Long replacing) {
+2916:         List<TxInput> l = new ArrayList<>();
+2917:         l.add(in);
+2918:         return preview(l, replacing);
+2919:     }
+2920: 
+2921:     // ===================================================================================
+2922:     // دمج مكتبين (8.0): اسمان لحساب واحد مثل «الأمل» و«مكتب الأمل»
+2923:     // ===================================================================================
+2924: 
+2925:     /** أوامر الدمج بالترتيب ({from} و{into} أرقام). كل ما للمصدر ينتقل للهدف، ثم يُحذف المصدر فارغًا. */
+2926:     static final String[] MERGE_SQL = {
+2927:             "INSERT OR IGNORE INTO office_currencies(office_id,code) SELECT {into},code FROM office_currencies WHERE office_id={from}",
+2928:             "UPDATE tx SET office_id={into} WHERE office_id={from}",

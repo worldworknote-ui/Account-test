@@ -1,0 +1,189 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.Context;
+4: import net.zetetic.database.sqlcipher.SQLiteDatabase;
+5: import java.io.File;
+6: import java.io.FileOutputStream;
+7: import java.io.IOException;
+8: import java.nio.charset.StandardCharsets;
+9: import java.util.ArrayList;
+10: import java.util.List;
+11: 
+12: /**
+13:  * نسخ أمان محلية تُؤخذ تلقائيًا قبل كل عملية كبيرة (استعادة، إضافة ملف نقل، حذف مكتب): ملف قاعدة البيانات + الصور.
+14:  * 8.0: ثلاث خانات تدور (الأحدث أولًا)، فيمكن التراجع عن آخر ثلاث عمليات. الجديدة تُكتب كاملة أولًا ثم تُدار الخانات
+15:  * بإعادة تسمية، فإن فشلت خطوة أُعيدت الخانات كما كانت ولا يبقى المستخدم بلا نسخة أمان.
+16:  * الحقول فيها مشفّرة بمفتاح هذا الهاتف، فهي تصلح على هذا الهاتف فقط.
+17:  */
+18: public final class Snapshot {
+19:     private Snapshot() {}
+20: 
+21:     public static final int SLOTS = 3;
+22: 
+23:     /** الخانة i (0 = الأحدث): pre_restore، pre_restore_2، pre_restore_3. */
+24:     static File slot(Context c, int i) { return new File(c.getFilesDir(), i == 0 ? "pre_restore" : "pre_restore_" + (i + 1)); }
+25: 
+26:     public static File dir(Context c) { return slot(c, 0); }
+27: 
+28:     public static final class Info {
+29:         public int slot;
+30:         public long time;
+31:         public String label = "";
+32:     }
+33: 
+34:     static boolean valid(File d) { return new File(d, Db.NAME).exists() && new File(d, "info.txt").exists(); }
+35: 
+36:     /** نسخ الأمان الموجودة، الأحدث أولًا. */
+37:     public static List<Info> list(Context c) {
+38:         List<Info> l = new ArrayList<>();
+39:         for (int i = 0; i < SLOTS; i++) {
+40:             File d = slot(c, i);
+41:             if (!valid(d)) continue;
+42:             Info x = new Info();
+43:             x.slot = i;
+44:             x.time = new File(d, "info.txt").lastModified();
+45:             x.label = label(d);
+46:             l.add(x);
+47:         }
+48:         return l;
+49:     }
+50: 
+51:     public static boolean exists(Context c) { return valid(slot(c, 0)); }
+52: 
+53:     public static long time(Context c) {
+54:         File f = new File(slot(c, 0), "info.txt");
+55:         return f.exists() ? f.lastModified() : 0;
+56:     }
+57: 
+58:     /** وصف نسخة الأمان: «استعادة» أو «حذف مكتب …». */
+59:     public static String label(Context c) { return label(slot(c, 0)); }
+60: 
+61:     private static String label(File d) {
+62:         try {
+63:             String t = new String(Db.readAll(new File(d, "info.txt")), StandardCharsets.UTF_8);
+64:             int i = t.indexOf('\n');
+65:             return i < 0 ? "" : t.substring(i + 1).trim();
+66:         } catch (Exception e) {
+67:             return "";
+68:         }
+69:     }
+70: 
+71:     public static void take(Context ctx, Db db) throws IOException { take(ctx, db, ""); }
+72: 
+73:     public static void take(Context ctx, Db db, String label) throws IOException {
+74:         Db.stopMaintenance = true;
+75:         synchronized (Db.MAINT_LOCK) {
+76:             // تنتظر انتهاء أي دفعة تحويل تشفير جارية قبل نسخ قاعدة البيانات
+77:         }
+78:         File tmp = new File(ctx.getFilesDir(), "pre_restore_tmp");
+79:         deleteTree(tmp);
+80:         File ev = new File(tmp, "evidence");
+81:         if (!ev.mkdirs()) throw new IOException("تعذر إنشاء مجلد نسخة الأمان");
+82:         db.checkpoint();
+83:         File dbFile = ctx.getDatabasePath(Db.NAME);
+84:         Db.copyFile(dbFile, new File(tmp, Db.NAME));
+85:         File[] imgs = db.evidenceDir().listFiles();
+86:         if (imgs != null) for (File f : imgs) if (f.isFile()) BackupManager.linkOrCopy(f, new File(ev, f.getName()));
+87:         try (FileOutputStream o = new FileOutputStream(new File(tmp, "info.txt"))) {
+88:             o.write(("snapshot " + Clock.now() + "\n" + (label == null ? "" : label)).getBytes(StandardCharsets.UTF_8));
+89:             o.getFD().sync();
+90:         }
+91:         rotateIn(ctx, tmp);
+92:     }
+93: 
+94:     /**
+95:      * تدوير آمن: الأقدم يُنقل جانبًا (لا يُحذف بعد)، ثم تُزاح الخانات، ثم تدخل الجديدة. فشل أي خطوة يعيد كل شيء.
+96:      * الأقدم يُحذف في النهاية فقط بعد نجاح الإدخال.
+97:      */
+98:     static void rotateIn(Context ctx, File fresh) throws IOException {
+99:         File drop = new File(ctx.getFilesDir(), "pre_restore_drop");
+100:         deleteTree(drop);
+101:         List<File[]> done = new ArrayList<>();   // {من، إلى} لكل نقل نجح، للتراجع بالعكس
+102:         try {
+103:             File last = slot(ctx, SLOTS - 1);
+104:             if (last.exists()) move(last, drop, done);
+105:             for (int i = SLOTS - 2; i >= 0; i--) {
+106:                 File s = slot(ctx, i);
+107:                 if (s.exists()) move(s, slot(ctx, i + 1), done);
+108:             }
+109:             move(fresh, slot(ctx, 0), done);
+110:         } catch (IOException e) {
+111:             for (int i = done.size() - 1; i >= 0; i--) done.get(i)[1].renameTo(done.get(i)[0]);
+112:             throw e;
+113:         }
+114:         deleteTree(drop);
+115:     }
+116: 
+117:     private static void move(File from, File to, List<File[]> done) throws IOException {
+118:         deleteTree(to);
+119:         if (!from.renameTo(to)) throw new IOException("تعذر حفظ نسخة الأمان (نقل " + from.getName() + ")");
+120:         done.add(new File[]{from, to});
+121:     }
+122: 
+123:     /** يعيد البيانات كما كانت قبل آخر عملية كبيرة. */
+124:     public static Db revert(Context ctx, Db current) throws IOException { return revert(ctx, current, 0); }
+125: 
+126:     /**
+127:      * يعيد البيانات كما كانت في نسخة الأمان رقم slot. يغلق قاعدة البيانات ويستبدل ملفها ثم يعيد فتحها.
+128:      * 8.0: الإقفال المحاسبي لا يُفك بالتراجع (يبقى الأحدث)، وسجل العمليات الحالي يُضاف إلى أرشيف السجل لا يضيع.
+129:      * @return قاعدة البيانات الجديدة المفتوحة
+130:      */
+131:     public static Db revert(Context ctx, Db current, int slot) throws IOException {
+132:         File dir = slot(ctx, slot);
+133:         File snapDb = new File(dir, Db.NAME);
+134:         if (!valid(dir)) throw new IOException("لا توجد نسخة أمان سابقة للاستعادة");
+135:         String lockNow = current.setting("lock_before", "0");
+136:         // نحفظ الوضع الحالي أولًا، حتى يمكن الرجوع إليه إن فشل التراجع (ومنه يُنقل سجل العمليات إلى الأرشيف)
+137:         File backupNow = new File(ctx.getFilesDir(), "pre_revert");
+138:         deleteTree(backupNow);
+139:         backupNow.mkdirs();
+140:         current.checkpoint();
+141:         File dbFile = ctx.getDatabasePath(Db.NAME);
+142:         File nowCopy = new File(backupNow, Db.NAME);
+143:         Db.copyFile(dbFile, nowCopy);
+144: 
+145:         current.close();
+146:         new File(dbFile.getPath() + "-wal").delete();
+147:         new File(dbFile.getPath() + "-shm").delete();
+148:         new File(dbFile.getPath() + "-journal").delete();
+149:         try {
+150:             Db.copyFile(snapDb, dbFile);
+151:         } catch (IOException e) {
+152:             Db.copyFile(nowCopy, dbFile);
+153:             throw e;
+154:         }
+155:         File evidence = new File(ctx.getFilesDir(), "evidence");
+156:         evidence.mkdirs();
+157:         File[] snapImgs = new File(dir, "evidence").listFiles();
+158:         if (snapImgs != null) {
+159:             for (File f : snapImgs) {
+160:                 File to = new File(evidence, f.getName());
+161:                 if (!to.exists()) BackupManager.linkOrCopy(f, to);
+162:             }
+163:         }
+164:         Crypto.clearCache();
+165:         Db fresh = new Db(ctx.getApplicationContext());
+166:         SQLiteDatabase d = fresh.getWritableDatabase();
+167:         try {
+168:             d.execSQL("ATTACH DATABASE ? AS cur", new Object[]{nowCopy.getAbsolutePath()});
+169:             try {
+170:                 d.execSQL("INSERT INTO audit_archive(orig_id,action,entity,entity_id,user_name,reason,created_at,prev_hash,row_hash,archived_at) "
+171:                         + "SELECT id,action,entity,entity_id,user_name,reason,created_at,prev_hash,row_hash," + Clock.now() + " FROM cur.audit_logs");
+172:             } finally {
+173:                 d.execSQL("DETACH DATABASE cur");
+174:             }
+175:         } catch (Exception ignored) {
+176:             // الأرشفة تحسين؛ التراجع نفسه تم
+177:         }
+178:         // 10.5 (AUDIT-030): التراجع على جهاز في المزامنة لا يعيد هويته ومؤشراته إلى الوراء
+179:         lastSyncNote = "";
+180:         try {
+181:             d.execSQL("ATTACH DATABASE ? AS cur", new Object[]{nowCopy.getAbsolutePath()});
+182:             try {
+183:                 lastSyncNote = syncAfterRevert(d);
+184:             } finally {
+185:                 d.execSQL("DETACH DATABASE cur");
+186:             }
+187:         } catch (Exception e) {
+188:             // لا نعرف حالة المزامنة قبل التراجع: الأسلم الخروج منها (البيانات تبقى)
+189:             if (SyncStore.meta(d, "vault_id") != null) {

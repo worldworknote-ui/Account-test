@@ -1,0 +1,121 @@
+1: import com.smart.hawala.AuditChain;
+2: import com.smart.hawala.Pin;
+3: import java.util.ArrayList;
+4: import java.util.List;
+5: 
+6: /** 8.0: رموز v2 بسرّ الهاتف + ترقية الصيغة القديمة، وسجل العمليات المتسلسل. */
+7: public class PinTest {
+8:     static int fails = 0, passes = 0;
+9: 
+10:     static void check(boolean c, String m) {
+11:         if (c) passes++;
+12:         else fails++;
+13:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+14:     }
+15: 
+16:     public static void main(String[] a) {
+17:         System.out.println("== رموز الدخول v2");
+18:         byte[] p1 = Pin.newPepper(), p2 = Pin.newPepper();
+19:         String salt = Pin.newSalt();
+20:         String h = Pin.hashV2("1234", salt, p1);
+21:         check(h.startsWith("v2:") && h.length() == 3 + 64, "الصيغة v2: بادئة و64 خانة hex");
+22:         check(h.equals(Pin.hashV2("1234", salt, p1)), "ثابتة لنفس الرمز والملح والسرّ");
+23:         check(!h.equals(Pin.hashV2("1234", salt, p2)), "سرّ آخر = تجزئة أخرى (ملف القاعدة وحده لا يكفي للتخمين)");
+24:         check(!h.equals(Pin.hashV2("1235", salt, p1)), "رمز آخر = تجزئة أخرى");
+25:         check(Pin.verifyAny("1234", salt, h, p1) && !Pin.verifyAny("1234", salt, h, p2) && !Pin.verifyAny("0000", salt, h, p1), "التحقق v2");
+26:         check(!Pin.verifyAny("1234", salt, h, null), "v2 بلا سرّ لا ينجح ولا يرمي");
+27:         String old = Pin.hash("123456", salt);
+28:         check(Pin.needsUpgrade(old) && !Pin.needsUpgrade(h), "الصيغة القديمة تُعلَّم للترقية");
+29:         check(Pin.verifyAny("123456", salt, old, null) && Pin.verifyAny("123456", salt, old, p1) && !Pin.verifyAny("123457", salt, old, p1), "القديمة تُقبل بلا سرّ حتى تُرقّى");
+30:         boolean threw;
+31:         try {
+32:             Pin.hashV2("1234", salt, new byte[4]);
+33:             threw = false;
+34:         } catch (IllegalStateException e) {
+35:             threw = true;
+36:         }
+37:         check(threw, "سرّ قصير مرفوض");
+38:         long t0 = System.nanoTime();
+39:         Pin.hashV2("1234", salt, p1);
+40:         long ms = (System.nanoTime() - t0) / 1000000;
+41:         long t1 = System.nanoTime();
+42:         Pin.hash("1234", salt);
+43:         long ms1 = Math.max(1, (System.nanoTime() - t1) / 1000000);
+44:         check(ms >= ms1 * 2, "v2 أبطأ عمدًا من القديمة (" + ms + "ms مقابل " + ms1 + "ms)");
+45:         check(Pin.normalizeRecovery("abcd-efgh ٢٣٤٥").equals("ABCDEFGH2345") || Pin.normalizeRecovery("abcd-efgh ٢٣٤٥").startsWith("ABCDEFGH"), "رمز الاسترداد يبقى بالصيغة الأولى ويُوحَّد");
+46: 
+47:         System.out.println("== سجل العمليات المتسلسل");
+48:         List<AuditChain.Row> rows = new ArrayList<>();
+49:         // سطران قديمان بلا بصمة (قبل 8.0)
+50:         for (int i = 1; i <= 2; i++) rows.add(row(i, "CREATE_TRANSACTION", null, null, i * 10));
+51:         String prev = "";
+52:         for (int i = 3; i <= 8; i++) {
+53:             AuditChain.Row r = row(i, i == 5 ? "EDIT_TRANSACTION" : "CREATE_TRANSACTION", prev, null, i * 10);
+54:             r.hash = AuditChain.hash(r);
+55:             prev = r.hash;
+56:             rows.add(r);
+57:         }
+58:         AuditChain.Result ok = AuditChain.verify(rows, prev);
+59:         check(ok.intact() && ok.legacy == 2 && ok.ok == 6, "سلسلة سليمة: 2 قديمان و6 متسلسلة");
+60:         check(AuditChain.verify(rows, "").intact(), "بلا بصمة محفوظة (هاتف جديد) تُفحص السلسلة وحدها");
+61: 
+62:         List<AuditChain.Row> edited = copy(rows);
+63:         edited.get(4).reason = "مبلغ آخر";
+64:         AuditChain.Result e1 = AuditChain.verify(edited, prev);
+65:         check(!e1.intact() && e1.brokenAt == 5 && e1.problem.contains("عُدّل"), "تعديل نص سطر يُكشف عند السطر نفسه");
+66: 
+67:         List<AuditChain.Row> deleted = copy(rows);
+68:         deleted.remove(5);
+69:         AuditChain.Result e2 = AuditChain.verify(deleted, prev);
+70:         check(!e2.intact() && e2.brokenAt == 7 && e2.problem.contains("محذوف"), "حذف سطر من الوسط يُكشف عند الذي بعده");
+71: 
+72:         List<AuditChain.Row> tail = copy(rows);
+73:         tail.remove(tail.size() - 1);
+74:         AuditChain.Result e3 = AuditChain.verify(tail, prev);
+75:         check(!e3.intact() && e3.brokenAt < 0 && e3.problem.contains("نهايته"), "حذف آخر سطر يُكشف بالبصمة المحفوظة");
+76: 
+77:         List<AuditChain.Row> head = copy(rows);
+78:         head.remove(2);
+79:         check(!AuditChain.verify(head, prev).intact(), "حذف أول سطر متسلسل يُكشف");
+80: 
+81:         List<AuditChain.Row> inserted = copy(rows);
+82:         inserted.add(7, row(99, "CANCEL_TRANSACTION", null, null, 75));
+83:         check(!AuditChain.verify(inserted, prev).intact(), "سطر بلا بصمة بعد بدء التسلسل يُكشف");
+84: 
+85:         List<AuditChain.Row> swapped = copy(rows);
+86:         java.util.Collections.swap(swapped, 4, 5);
+87:         check(!AuditChain.verify(swapped, prev).intact(), "تبديل ترتيب سطرين يُكشف");
+88: 
+89:         check(!AuditChain.hash("", "A", "b", 1, "x|y", "", 5).equals(AuditChain.hash("", "A", "b", 1, "x", "|y", 5)), "لا لبس بين الحقول (أطوال مسبقة)");
+90: 
+91:         System.out.println(fails == 0 ? "ALL " + passes + " PASSED" : fails + " FAILED of " + (passes + fails));
+92:         if (fails > 0) System.exit(1);
+93:     }
+94: 
+95:     static AuditChain.Row row(long id, String action, String prev, String hash, long at) {
+96:         AuditChain.Row r = new AuditChain.Row();
+97:         r.id = id;
+98:         r.action = action;
+99:         r.entity = "tx";
+100:         r.entityId = id * 3;
+101:         r.user = "المدير";
+102:         r.reason = "سبب " + id;
+103:         r.createdAt = at;
+104:         r.prev = prev;
+105:         r.hash = hash;
+106:         return r;
+107:     }
+108: 
+109:     static List<AuditChain.Row> copy(List<AuditChain.Row> l) {
+110:         List<AuditChain.Row> o = new ArrayList<>();
+111:         for (AuditChain.Row r : l) {
+112:             AuditChain.Row c = row(r.id, r.action, r.prev, r.hash, r.createdAt);
+113:             c.entity = r.entity;
+114:             c.entityId = r.entityId;
+115:             c.user = r.user;
+116:             c.reason = r.reason;
+117:             o.add(c);
+118:         }
+119:         return o;
+120:     }
+121: }

@@ -1,0 +1,186 @@
+2448:         if (m == null) throw new IllegalArgumentException("الجهاز غير موجود في المزامنة");
+2449:         // آخر حزمة: ما أعلنته بطاقته، وما رفعه بعدها قبل أن يكتب بطاقته (سلسلة متصلة في المكان)
+2450:         long upTo = m.optLong("seq");
+2451:         Set<String> present = new HashSet<>(folder.list("p-"));
+2452:         while (present.contains(keys.fileName("p-", dev + ":" + (upTo + 1)))) upTo++;
+2453:         Map<String, JSONObject> removed = removedMap();
+2454:         JSONObject x = new JSONObject();
+2455:         x.put("dev", dev);
+2456:         x.put("prefix", m.optLong("prefix"));
+2457:         x.put("name", m.optString("name"));
+2458:         x.put("at", Clock.now());
+2459:         x.put("by", nz(SyncStore.meta(d, "device_name")));
+2460:         x.put("upTo", upTo);
+2461:         x.put("snaps", m.optLong("seq") / SNAPSHOT_EVERY + 5);
+2462:         JSONObject sp = m.optJSONObject("snap");
+2463:         if (sp != null) x.put("snapName", sp.optString("name"));
+2464:         removed.put(dev, x);
+2465:         saveRemoved(removed);
+2466:         writeMember();
+2467:         cacheMembers();
+2468:         db.audit("SYNC_REMOVE", "sync", 0, "أُزيل الجهاز «" + m.optString("name") + "» من المزامنة؛ تُستلم حزمه حتى الحزمة " + upTo + " ثم تتوقف");
+2469:         return upTo;
+2470:     }
+2471: 
+2472:     /** 10.5: ما تشمله لقطة (مؤشرها كما في البطاقة) من حزم جهاز. */
+2473:     static long snapCur(String snapPtr, String dev) {
+2474:         if (snapPtr == null) return 0;
+2475:         try {
+2476:             JSONObject c = new JSONObject(snapPtr).optJSONObject("cur");
+2477:             return c == null ? 0 : c.optLong(dev, 0);
+2478:         } catch (Exception e) {
+2479:             return 0;
+2480:         }
+2481:     }
+2482: 
+2483:     /** 10.5: هل تشمل اللقطة كل ما حُذف من حزم الأجهزة المُزالة؟ (وإلا احتاج المنضم منها حزمًا لم تعد موجودة) */
+2484:     static boolean covers(JSONObject snapPtr, Map<String, JSONObject> removed) {
+2485:         for (JSONObject x : removed.values()) {
+2486:             long done = purgedTo(x);
+2487:             if (!x.has("upTo") || done <= 0) continue;
+2488:             JSONObject c = snapPtr.optJSONObject("cur");
+2489:             if (c == null || c.optLong(x.optString("dev"), 0) < done) return false;
+2490:         }
+2491:         return true;
+2492:     }
+2493: 
+2494:     /** 10.5: أين وصل حذف ملفات جهاز مُزال (-1 لم يبدأ). سجلات 10.4: «purged» = حُذف كل شيء. */
+2495:     static long purgedTo(JSONObject x) {
+2496:         if (x.has("purgedTo")) return x.optLong("purgedTo", -1);
+2497:         return x.optBoolean("purged") ? x.optLong("upTo", 0) : -1;
+2498:     }
+2499: 
+2500:     /** 10.5: آخر حزمة تُقبل من كل جهاز مُزال يُكمَل استلامه (المُزال بلا upTo لا يُستلم منه شيء). */
+2501:     Map<String, Long> removedCaps() {
+2502:         Map<String, Long> out = new java.util.HashMap<>();
+2503:         for (JSONObject x : removedMap().values()) out.put(x.optString("dev"), Math.max(0, x.optLong("upTo", 0)));
+2504:         return out;
+2505:     }
+2506: 
+2507:     /**
+2508:      * 10.4: قبل إعادة تعيين البرنامج: جولة أخيرة (ترسل ما لم يُرسل)، ثم يعلن هذا الجهاز خروجه في بطاقته فلا ينتظره أحد.
+2509:      * يذكر آخر حزمة له (upTo): يكمل الآخرون استلام حزمه حتى آخرها ثم يتوقفون، ويحذفها الجهاز الرئيسي بعد أن تصل للجميع.
+2510:      * أفضل جهد: إن تعذر الوصول يظهر الجهاز للآخرين غائبًا فيُزال لاحقًا.
+2511:      */
+2512:     public void retire() throws Exception {
+2513:         VAULT.lock();
+2514:         try {
+2515:             retireLocked();
+2516:         } finally {
+2517:             VAULT.unlock();
+2518:         }
+2519:     }
+2520: 
+2521:     private void retireLocked() throws Exception {
+2522:         if (!enabled(db)) return;
+2523:         try {
+2524:             sync();
+2525:         } catch (Exception ignored) {
+2526:             // نكمل: الأهم ألا ينتظره الآخرون
+2527:         }
+2528:         if (!enabled(db)) return;
+2529:         SyncCrypto.Keys keys = keys();
+2530:         SQLiteDatabase d = db.getWritableDatabase();
+2531:         String me = SyncStore.meta(d, "device");
+2532:         Map<String, JSONObject> removed = removedMap();
+2533:         JSONObject x = new JSONObject();
+2534:         x.put("dev", me);
+2535:         x.put("prefix", lng(SyncStore.meta(d, "prefix")));
+2536:         x.put("name", nz(SyncStore.meta(d, "device_name")));
+2537:         x.put("at", Clock.now());
+2538:         x.put("by", "إعادة تعيين البرنامج على الجهاز نفسه");
+2539:         // ما أرسله ولم تُطبّقه الأجهزة الأخرى بعد لا يضيع: تُكمل استلامه حتى هذه الحزمة
+2540:         x.put("upTo", lng(SyncStore.meta(d, "my_seq")));
+2541:         x.put("snaps", lng(SyncStore.meta(d, "snap_no")));
+2542:         removed.put(me, x);
+2543:         saveRemoved(removed);
+2544:         // لقطته لا تصلح بداية لمنضم جديد بعد خروجه
+2545:         SyncStore.setMeta(d, "snap", null);
+2546:         writeMember();
+2547:     }
+2548: 
+2549:     /** حجم مكان المزامنة: عدد الملفات بأنواعها وحجمها (إن عرفه الناقل). */
+2550:     public static final class Usage {
+2551:         public int members, packets, snapshots, images, other;
+2552:         public long bytes = -1, imageBytes = -1, snapBytes = -1;
+2553: 
+2554:         public int total() { return members + packets + snapshots + images + other; }
+2555:     }
+2556: 
+2557:     public Usage usage() throws IOException {
+2558:         Usage u = new Usage();
+2559:         Map<String, long[]> st = folder.stat("");
+2560:         java.util.Collection<String> names = st != null ? st.keySet() : folder.list("");
+2561:         if (st != null) {
+2562:             u.bytes = 0;
+2563:             u.imageBytes = 0;
+2564:             u.snapBytes = 0;
+2565:         }
+2566:         for (String n : names) {
+2567:             long sz = st == null ? 0 : st.get(n)[0];
+2568:             if (n.startsWith("m-")) u.members++;
+2569:             else if (n.startsWith("p-")) u.packets++;
+2570:             else if (n.startsWith("s-")) {
+2571:                 u.snapshots++;
+2572:                 if (st != null) u.snapBytes += sz;
+2573:             } else if (n.startsWith("a-")) {
+2574:                 u.images++;
+2575:                 if (st != null) u.imageBytes += sz;
+2576:             } else u.other++;
+2577:             if (st != null) u.bytes += sz;
+2578:         }
+2579:         return u;
+2580:     }
+2581: 
+2582:     public static String size(long b) {
+2583:         if (b < 0) return "غير معروف";
+2584:         if (b < 1024 * 1024) return Math.max(1, b / 1024) + " ك.ب";
+2585:         if (b < 1024L * 1024 * 1024) return String.format(java.util.Locale.US, "%.1f م.ب", b / 1048576.0);
+2586:         return String.format(java.util.Locale.US, "%.2f غ.ب", b / 1073741824.0);
+2587:     }
+2588: 
+2589:     /** سجل آخر 15 جولة (للشاشة). */
+2590:     /** 11.5: خطأ في حزم جهاز بعينه: يُعرف «مع من» حصل. */
+2591:     private void devError(Result res, String dev, String msg) {
+2592:         res.errors.add(msg);
+2593:         res.errFrom.putIfAbsent(dev, msg);
+2594:         if (res.firstErrWith.isEmpty()) {
+2595:             int a = msg.indexOf('«'), b = msg.indexOf('»', a + 1);
+2596:             res.firstErrWith = a >= 0 && b > a ? "جهاز «" + msg.substring(a + 1, b) + "»" : "جهاز آخر";
+2597:         }
+2598:     }
+2599: 
+2600:     /** 11.5: اسم مكان المزامنة للعرض. */
+2601:     static String placeName(SyncFolder f) {
+2602:         if (f instanceof DriveSyncFolder) return "Google Drive";
+2603:         if (f instanceof HttpSyncFolder) return "خادم المزامنة";
+2604:         return "مجلد المزامنة";
+2605:     }
+2606: 
+2607:     static final int DEVLOG_MAX = 40;
+2608: 
+2609:     /** 11.5: سجل لكل جهاز (على هذا الجهاز): ما وصل منه وأخطاؤه، ولهذا الجهاز: جولاته. */
+2610:     static void devLog(SQLiteDatabase d, String dev, String text, String err) {
+2611:         if (dev == null || dev.isEmpty()) return;
+2612:         try {
+2613:             String old = SyncStore.meta(d, "devlog");
+2614:             JSONObject all = new JSONObject(old == null ? "{}" : old);
+2615:             JSONArray a = all.optJSONArray(dev), out = new JSONArray();
+2616:             JSONObject x = new JSONObject();
+2617:             x.put("at", Clock.now());
+2618:             x.put("t", text);
+2619:             if (err != null && !err.isEmpty()) x.put("e", err);
+2620:             out.put(x);
+2621:             for (int i = 0; a != null && i < a.length() && out.length() < DEVLOG_MAX; i++) out.put(a.get(i));
+2622:             all.put(dev, out);
+2623:             SyncStore.setMeta(d, "devlog", all.toString());
+2624:         } catch (Exception ignored) {
+2625:             // السجل للعرض فقط
+2626:         }
+2627:     }
+2628: 
+2629:     public static List<JSONObject> devHistory(Db db, String dev) {
+2630:         List<JSONObject> out = new ArrayList<>();
+2631:         try {
+2632:             String s = SyncStore.meta(db.getReadableDatabase(), "devlog");
+2633:             JSONArray a = new JSONObject(s == null ? "{}" : s).optJSONArray(dev);

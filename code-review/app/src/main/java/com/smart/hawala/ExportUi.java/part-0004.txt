@@ -1,0 +1,68 @@
+498:         a.title("الصفحة");
+499:         a.add(a.label("حجم الخط"));
+500:         final Ui.Seg font = a.seg(new String[]{"صغير", "عادي", "كبير"}, "small".equals(st.font) ? 0 : "large".equals(st.font) ? 2 : 1, i -> refresh[0].run());
+501:         a.add(a.label("اتجاه الصفحة"));
+502:         final Ui.Seg orient = a.seg(new String[]{"طولي", "عرضي"}, st.landscape ? 1 : 0, i -> refresh[0].run());
+503:         a.add(a.label("حجم الصور داخل الكشف"));
+504:         final Ui.Seg img = a.seg(new String[]{"صغير", "متوسط", "كبير"}, "small".equals(st.imageSize) ? 0 : "large".equals(st.imageSize) ? 2 : 1, i -> refresh[0].run());
+505:         final CheckBox sign = check("خانات توقيع في نهاية الكشف", st.signature, refresh);
+506:         final EditText footer = a.input("نص أسفل كل صفحة (اختياري)");
+507:         footer.setText(st.footer);
+508: 
+509:         a.title("المعاينة");
+510:         a.body.addView(preview, a.lp(-1, -2, 4));
+511:         a.button("تحديث المعاينة", Color.rgb(120, 120, 120), v -> refresh[0].run());
+512: 
+513:         refresh[0] = () -> {
+514:             st.title = title.getText().toString().trim().isEmpty() ? "كشف حساب" : title.getText().toString().trim();
+515:             st.issuerInfo = info.getText().toString().trim();
+516:             st.logo = logo.isChecked();
+517:             st.showPerson = person.isChecked();
+518:             st.showDesc = desc.isChecked();
+519:             st.showRef = ref.isChecked();
+520:             st.showNotes = notes.isChecked();
+521:             st.showRunning = running.isChecked();
+522:             st.showSummary = summary.isChecked();
+523:             st.hideCancelled = hideCancelled.isChecked();
+524:             st.newestFirst = newest.isChecked();
+525:             st.font = font.selected == 0 ? "small" : font.selected == 2 ? "large" : "normal";
+526:             st.landscape = orient.selected == 1;
+527:             st.imageSize = img.selected == 0 ? "small" : img.selected == 2 ? "large" : "medium";
+528:             st.signature = sign.isChecked();
+529:             st.footer = footer.getText().toString().trim();
+530:             st.curColors = curColors.isChecked();
+531:             try {
+532:                 Bitmap bm = ReportPdf.preview(Reports.sample(st, a.db.setting("office_name", "")), opts(st, false), pw);
+533:                 preview.setImageBitmap(bm);
+534:             } catch (Throwable t) {
+535:                 preview.setImageDrawable(null);
+536:             }
+537:         };
+538:         refresh[0].run();
+539: 
+540:         a.button("حفظ خيارات التصميم", a.primary, v -> {
+541:             refresh[0].run();
+542:             for (Map.Entry<String, String> e : st.toMap().entrySet()) a.db.setSettingQuiet(e.getKey(), e.getValue());
+543:             a.db.audit("SETTING", "settings", 0, "export_style");
+544:             a.toast("تم حفظ تصميم الكشوفات");
+545:             if (back != null) back.run();
+546:             else a.settingsScreen.show();
+547:         });
+548:         a.button("استعادة التصميم الافتراضي", Color.rgb(140, 140, 140), v -> a.confirm("التصميم الافتراضي", "ستعود كل خيارات الكشوفات إلى الوضع الافتراضي.", "استعادة", () -> {
+549:             for (Map.Entry<String, String> e : new ExportStyle().toMap().entrySet()) a.db.setSettingQuiet(e.getKey(), e.getValue());
+550:             showStyle(back);
+551:         }));
+552:     }
+553: 
+554:     private CheckBox check(String label, boolean value, final Runnable[] refresh) {
+555:         CheckBox c = new CheckBox(a);
+556:         c.setText(label);
+557:         c.setTextSize(15);
+558:         c.setChecked(value);
+559:         c.setOnCheckedChangeListener((b, x) -> {
+560:             if (refresh[0] != null) refresh[0].run();
+561:         });
+562:         a.body.addView(c);
+563:         return c;
+564:     }
+565: }

@@ -1,0 +1,191 @@
+341:     RUB: { name: "روبل روسي", dec: 2, words: ["rub", "روبل", "₽"] }
+342:   };
+343:   var DEFAULT_CODES = ["USD", "EUR", "TRY", "SYP"];
+344: 
+345:   function guessCurrency(t) {
+346:     var k = looseKey(normDigits(t)).replace(/\s/g, "");
+347:     if (!k) return null;
+348:     var up = clean(t).toUpperCase();
+349:     if (KNOWN[up]) return up;
+350:     var codes = Object.keys(KNOWN);
+351:     for (var i = 0; i < codes.length; i++) {
+352:       var ws = KNOWN[codes[i]].words;
+353:       for (var j = 0; j < ws.length; j++) if (looseKey(ws[j]).replace(/\s/g, "") === k) return codes[i];
+354:     }
+355:     return null;
+356:   }
+357: 
+358:   var DIR_D = ["لنا", "مدين", "عليه", "debit", "dr", "d", "+", "مدين لنا"].map(looseKey);
+359:   var DIR_C = ["علينا", "دائن", "له", "credit", "cr", "c", "-", "دائن علينا"].map(looseKey);
+360: 
+361:   function guessDirection(t) {
+362:     var k = looseKey(t);
+363:     if (!k) return null;
+364:     if (DIR_D.indexOf(k) >= 0) return "D";
+365:     if (DIR_C.indexOf(k) >= 0) return "C";
+366:     if (/(^|\s)مدين/.test(clean(t))) return "D";
+367:     if (/(^|\s)دائن/.test(clean(t))) return "C";
+368:     return null;
+369:   }
+370: 
+371:   var OPENING_RE = /^(رصيد\s*(سابق|افتتاحي|مدور|مرحل|اول\s*المده|أول\s*المدة|قبل)|الرصيد\s*(السابق|الافتتاحي|المدور|المرحل)|opening\s*balance|balance\s*(b\/?f|brought\s*forward)|b\/f)/i;
+372:   var TOTAL_RE = /^(المجموع|مجموع|الإجمالي|الاجمالي|إجمالي|اجمالي|المجاميع|total|totals|grand\s*total|sum)(?=$|[\s:：\-–—(])/i;
+373: 
+374:   function rowLabel(row) {
+375:     for (var i = 0; i < row.length; i++) {
+376:       var c = row[i];
+377:       if (c && c.s !== undefined && clean(c.s)) return clean(c.s);
+378:     }
+379:     return "";
+380:   }
+381: 
+382:   // ===================================================================================
+383:   // البناء: من الصفوف إلى مكاتب وأرصدة وحركات
+384:   // ===================================================================================
+385: 
+386:   function newModel() {
+387:     return { offices: [], officeIndex: {}, openings: [], txs: [], errors: [], warnings: [], skipped: [], checks: [], used: {}, rowsRead: 0, both: 0 };
+388:   }
+389: 
+390:   function displayName(cfg, name) {
+391:     var r = cfg.rename && cfg.rename[officeKey(name)];
+392:     return r && clean(r) ? clean(r) : clean(name);
+393:   }
+394: 
+395:   function keyOf(cfg, name) {
+396:     var n = displayName(cfg, name);
+397:     return cfg.mergeSimilar ? looseKey(n) : officeKey(n);
+398:   }
+399: 
+400:   function officeFor(model, name, phone, cfg) {
+401:     var orig = clean(name);
+402:     name = displayName(cfg, name);
+403:     var key = keyOf(cfg, orig);
+404:     var i = model.officeIndex[key];
+405:     if (i === undefined) {
+406:       i = model.offices.length;
+407:       model.officeIndex[key] = i;
+408:       model.offices.push({ name: clean(name), key: key, phone: clean(phone || ""), variants: {}, tx: 0, openings: 0 });
+409:     }
+410:     var o = model.offices[i];
+411:     o.variants[orig] = true;
+412:     if (!o.phone && phone) o.phone = clean(phone);
+413:     return i;
+414:   }
+415: 
+416:   function err(model, src, msg) { model.errors.push({ sheet: src.sheet, row: src.row, msg: msg }); }
+417: 
+418:   function skip(model, src, reason) { model.skipped.push({ sheet: src.sheet, row: src.row, reason: reason }); }
+419: 
+420:   function curDef(cfg, code) {
+421:     var d = cfg.currencies && cfg.currencies[code];
+422:     if (d) return d;
+423:     var k = KNOWN[code];
+424:     return k ? { name: k.name, dec: k.dec } : null;
+425:   }
+426: 
+427:   /** يحدد عملة الصف: من عمود (عبر جدول المطابقة) أو عملة ثابتة. */
+428:   function rowCurrency(cfg, sec, row, model, src) {
+429:     if (sec.currencyFrom === "fixed") {
+430:       if (!sec.fixedCurrency) { err(model, src, "لم تُحدَّد العملة الثابتة لهذا القسم"); return null; }
+431:       return sec.fixedCurrency;
+432:     }
+433:     var t = text(row[sec.cols.currency]);
+434:     if (!t) { err(model, src, "خانة العملة فارغة"); return null; }
+435:     var code = cfg.currencyMap[officeKey(t)];
+436:     if (code === "__skip") return "__skip";
+437:     if (!code) { err(model, src, "العملة «" + t + "» غير مطابَقة مع رمز عملة"); return null; }
+438:     return code;
+439:   }
+440: 
+441:   function amountMinor(cfg, model, src, p, code, what) {
+442:     var def = curDef(cfg, code);
+443:     if (!def) { err(model, src, "العملة " + code + " غير معرّفة"); return null; }
+444:     var m = toMinor(p, def.dec);
+445:     if (m === null) {
+446:       err(model, src, what + " فيه منازل عشرية أكثر من المسموح لعملة " + code + " (" + def.dec + "). غيّر عدد المنازل للعملة أو صحّح الخلية.");
+447:       return null;
+448:     }
+449:     if (m > 9000000000000000n) { err(model, src, what + " كبير جدًا"); return null; }
+450:     return m;
+451:   }
+452: 
+453:   function flip(dir, cfg) { return cfg.reverse ? (dir === "D" ? "C" : "D") : dir; }
+454: 
+455:   /** قسم الأرصدة الافتتاحية: صف لكل مكتب (وعملة). */
+456:   function buildOpenings(model, cfg, sec, sheets) {
+457:     sheets.forEach(function (sh) {
+458:       var rows = sh.rows;
+459:       for (var r = sec.headerRow + 1; r < rows.length; r++) {
+460:         var row = rows[r];
+461:         var src = { sheet: sh.name, row: r + 1 };
+462:         if (isBlankRow(row)) continue;
+463:         model.rowsRead++;
+464:         var name = text(row[sec.cols.office]);
+465:         var label = rowLabel(row);
+466:         if (TOTAL_RE.test(name) || (!name && TOTAL_RE.test(label))) { skip(model, src, "صف مجموع"); continue; }
+467:         var values = [];
+468:         if (sec.layout === "wide") {
+469:           (sec.wide || []).forEach(function (w) {
+470:             if (w.code && w.code !== "__skip") values.push({ code: w.code, v: row[w.col], signed: true });
+471:           });
+472:         } else {
+473:           var code = rowCurrency(cfg, sec, row, model, src);
+474:           if (code === null) continue;
+475:           if (code === "__skip") { skip(model, src, "عملة مستبعدة"); continue; }
+476:           if (sec.layout === "split") {
+477:             values.push({ code: code, v: row[sec.cols.debit], dir: "D" });
+478:             values.push({ code: code, v: row[sec.cols.credit], dir: "C" });
+479:           } else values.push({ code: code, v: row[sec.cols.amount], signed: true });
+480:         }
+481:         var any = false, bad = false, net = {};
+482:         values.forEach(function (x) {
+483:           var p = parseAmount(x.v);
+484:           if (p.empty) return;
+485:           if (!p.ok) { err(model, src, "مبلغ غير مفهوم: «" + text(x.v) + "» — " + p.reason); bad = true; return; }
+486:           if (p.zero) return;
+487:           if (!x.signed && p.neg) { err(model, src, "قيمة سالبة في عمود " + (x.dir === "D" ? "لنا/مدين" : "علينا/دائن") + ": «" + text(x.v) + "»"); bad = true; return; }
+488:           var m = amountMinor(cfg, model, src, p, x.code, "المبلغ");
+489:           if (m === null) { bad = true; return; }
+490:           var pos = sec.positiveIs || "D";
+491:           var dir = x.signed ? (p.neg ? (pos === "D" ? "C" : "D") : pos) : x.dir;
+492:           dir = flip(dir, cfg);
+493:           net[x.code] = (net[x.code] || 0n) + (dir === "D" ? m : -m);
+494:           any = true;
+495:         });
+496:         if (bad) continue;
+497:         if (!name) {
+498:           if (any) err(model, src, "يوجد رصيد بلا اسم مكتب");
+499:           else skip(model, src, "صف بلا مكتب ولا رصيد");
+500:           continue;
+501:         }
+502:         var oi = officeFor(model, name, sec.cols.phone !== undefined ? text(row[sec.cols.phone]) : "", cfg);
+503:         if (!any) { skip(model, src, "مكتب بلا رصيد (أُضيف المكتب فقط)"); model.offices[oi].emptyOk = true; continue; }
+504:         Object.keys(net).forEach(function (code) {
+505:           if (net[code] === 0n) return;
+506:           model.openings.push({ office: oi, code: code, minor: net[code], when: sec.date || null, src: src });
+507:           model.offices[oi].openings++;
+508:           model.used[code] = true;
+509:         });
+510:       }
+511:     });
+512:   }
+513: 
+514:   /** قسم الحركات: صف لكل حركة، من ورقة واحدة أو من أوراق متعددة (كل ورقة مكتب). */
+515:   function buildTxs(model, cfg, sec, sheets, serialToDate) {
+516:     sheets.forEach(function (sh) {
+517:       var rows = sh.rows;
+518:       var prevDate = null, prevOffice = "";
+519:       var firstDate = null;
+520:       var pendingOpen = [];
+521:       for (var r = sec.headerRow + 1; r < rows.length; r++) {
+522:         var row = rows[r];
+523:         var src = { sheet: sh.name, row: r + 1 };
+524:         if (isBlankRow(row)) continue;
+525:         model.rowsRead++;
+526:         var label = rowLabel(row);
+527:         var officeName = sec.officeFrom === "sheet" ? sh.name : text(row[sec.cols.office]);
+528:         var dateRaw = text(row[sec.cols.date]);
+529:         // صف المجموع: عنوانه «المجموع/الإجمالي» ولا تاريخ فيه (الحركة الحقيقية لها تاريخ دائمًا)
+530:         if (!dateRaw && (TOTAL_RE.test(label) || (sec.officeFrom !== "sheet" && TOTAL_RE.test(officeName)))) { skip(model, src, "صف مجموع"); continue; }
+531:         var isOpening = OPENING_RE.test(label) || (sec.cols.description !== undefined && OPENING_RE.test(text(row[sec.cols.description])));

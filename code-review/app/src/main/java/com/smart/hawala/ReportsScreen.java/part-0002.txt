@@ -1,0 +1,179 @@
+158:             String f = q.getText().toString().trim().toLowerCase(Locale.ROOT);
+159:             for (CheckBox cb : boxes) cb.setVisibility(f.isEmpty() || MainActivity.officeMatches((Model.Office) cb.getTag(), f) ? View.VISIBLE : View.GONE);
+160:         }));
+161:         LinearLayout acts = a.row();
+162:         acts.addView(a.smallButton("تحديد الظاهرة", a.accent, v -> {
+163:             for (CheckBox cb : boxes) if (cb.getVisibility() == View.VISIBLE) cb.setChecked(true);
+164:         }), a.weight(40, 1, 2));
+165:         acts.addView(a.smallButton("إلغاء التحديد", Color.rgb(140, 140, 140), v -> {
+166:             for (CheckBox cb : boxes) cb.setChecked(false);
+167:         }), a.weight(40, 1, 2));
+168:         l.addView(acts);
+169:         new AlertDialog.Builder(a).setTitle("مكاتب التقرير").setView(l)
+170:                 .setPositiveButton("تم", (dd, w) -> {
+171:                     chosen.clear();
+172:                     chosen.addAll(pick);
+173:                     after.run();
+174:                 }).setNegativeButton("إلغاء", null).show();
+175:     }
+176: 
+177:     /** بطاقة الفترة: أزرار الفترات السريعة، ومن–إلى للمخصصة. */
+178:     void periodCard(final Runnable redraw) {
+179:         LinearLayout c = a.card();
+180:         c.addView(a.text("الفترة", 15, a.ink, true));
+181:         LinearLayout pills = a.row();
+182:         for (int i = 0; i < ReportBuilder.PERIODS.length; i++) {
+183:             final int k = i;
+184:             pills.addView(a.pill(ReportBuilder.PERIODS[i], i == period, v -> {
+185:                 if (k == ReportBuilder.P_CUSTOM) pickCustom(redraw);
+186:                 else {
+187:                     period = k;
+188:                     redraw.run();
+189:                 }
+190:             }), a.gap(-2, -2, 3));
+191:         }
+192:         c.addView(a.strip(pills), a.lp(-1, -2, 2));
+193:         TextView rt = a.text(rangeText(), 14, a.primaryInk, true);
+194:         c.addView(rt);
+195:     }
+196: 
+197:     private void pickCustom(final Runnable redraw) {
+198:         final Calendar c = Model.cal();
+199:         if (customFrom > 0) c.setTimeInMillis(customFrom);
+200:         DatePickerDialog first = new DatePickerDialog(a, (v1, y1, m1, d1) -> {
+201:             Calendar f = Model.cal();
+202:             f.set(y1, m1, d1, 0, 0, 0);
+203:             f.set(Calendar.MILLISECOND, 0);
+204:             final long from = f.getTimeInMillis();
+205:             Calendar t0 = Model.cal();
+206:             if (customTo > 0) t0.setTimeInMillis(customTo - 1);
+207:             DatePickerDialog second = new DatePickerDialog(a, (v2, y2, m2, d2) -> {
+208:                 Calendar t = Model.cal();
+209:                 t.set(y2, m2, d2, 0, 0, 0);
+210:                 t.set(Calendar.MILLISECOND, 0);
+211:                 long to = ReportBuilder.addDays(t.getTimeInMillis(), 1);
+212:                 if (to <= from) {
+213:                     a.toast("تاريخ النهاية قبل البداية");
+214:                     return;
+215:                 }
+216:                 customFrom = from;
+217:                 customTo = to;
+218:                 period = ReportBuilder.P_CUSTOM;
+219:                 redraw.run();
+220:             }, t0.get(Calendar.YEAR), t0.get(Calendar.MONTH), t0.get(Calendar.DAY_OF_MONTH));
+221:             second.setTitle("إلى تاريخ");
+222:             second.show();
+223:         }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH));
+224:         first.setTitle("من تاريخ");
+225:         first.show();
+226:     }
+227: 
+228:     // ===================================================================================
+229:     // التشغيل والعرض
+230:     // ===================================================================================
+231: 
+232:     Report build(ReportBuilder.Spec s) {
+233:         Report r = ReportBuilder.build(s, a.db.builderData(), a.db.setting("office_name", ""));
+234:         Entitlements e = License.current;
+235:         r.stamp(e.watermark(), e.lid);
+236:         return r;
+237:     }
+238: 
+239:     void run(final ReportBuilder.Spec s, final Runnable back) {
+240:         a.busy("جارٍ بناء التقرير…", p -> build(s), res -> showReport((Report) res, s, back));
+241:     }
+242: 
+243:     private void showReport(final Report r, final ReportBuilder.Spec s, final Runnable back) {
+244:         a.here(() -> run(s, back));
+245:         a.tabbedScreen(r.title, back, "more");
+246:         LinearLayout head = a.card();
+247:         head.addView(a.text(r.title, 17, a.primaryInk, true));
+248:         for (String h : r.headerLines) head.addView(a.text(h, 12, a.muted, false));
+249:         LinearLayout bar = a.row();
+250:         bar.addView(a.smallButton("تصدير PDF / Excel", a.primary, v -> a.exportUi.reportDialog(r.title, () -> showReport(r, s, back),
+251:                 (images, st) -> Collections.singletonList(build(s)))), a.weight(44, 1.3f, 2));
+252:         bar.addView(a.smallButton("CSV", Color.rgb(120, 120, 120), v -> shareCsv(r)), a.weight(44, 0.6f, 2));
+253:         bar.addView(a.smallButton("تعديل", a.accent, v -> builder(s)), a.weight(44, 0.7f, 2));
+254:         a.body.addView(bar, a.lp(-1, -2, 4));
+255:         if (r.dataRows() == 0) a.notice(R.drawable.ic_info, "لا توجد حركات مطابقة لهذه الشروط في الفترة المختارة.", false, null, null);
+256:         ReportRender.render(a, r);
+257:     }
+258: 
+259:     /** 10.12: تقرير التسجيل والتحقق للفترة المختارة. */
+260:     void teamReport(final long from, final long to) {
+261:         final String label = rangeText();
+262:         final java.util.function.Supplier<Report> make = () -> {
+263:             Report r = a.db.teamCheckReport(from, to, label);
+264:             Entitlements e = License.current;
+265:             r.stamp(e.watermark(), e.lid);
+266:             return r;
+267:         };
+268:         a.busy("جارٍ بناء التقرير…", p -> make.get(), res -> showPlain((Report) res, make, this::show));
+269:     }
+270: 
+271:     /** عرض تقرير جاهز (بلا منشئ): تصدير PDF / Excel و CSV. */
+272:     void showPlain(final Report r, final java.util.function.Supplier<Report> make, final Runnable back) {
+273:         a.here(() -> showPlain(make == null ? r : make.get(), make, back));
+274:         a.tabbedScreen(r.title, back, "more");
+275:         LinearLayout head = a.card();
+276:         head.addView(a.text(r.title, 17, a.primaryInk, true));
+277:         for (String h : r.headerLines) head.addView(a.text(h, 12, a.muted, false));
+278:         LinearLayout bar = a.row();
+279:         bar.addView(a.smallButton("تصدير PDF / Excel", a.primary, v -> a.exportUi.reportDialog(r.title, () -> showPlain(r, make, back),
+280:                 (images, st) -> Collections.singletonList(make.get()))), a.weight(44, 1.3f, 2));
+281:         bar.addView(a.smallButton("CSV", Color.rgb(120, 120, 120), v -> shareCsv(r)), a.weight(44, 0.6f, 2));
+282:         a.body.addView(bar, a.lp(-1, -2, 4));
+283:         if (r.dataRows() == 0) a.notice(R.drawable.ic_info, "لا توجد بيانات في الفترة المختارة.", false, null, null);
+284:         ReportRender.render(a, r);
+285:     }
+286: 
+287:     private void shareCsv(Report r) {
+288:         try {
+289:             File f = new File(a.sharedDir(), Ui.safeName(r.title) + ".csv");
+290:             try (FileOutputStream o = new FileOutputStream(f)) {
+291:                 o.write(ReportBuilder.csv(r).getBytes(StandardCharsets.UTF_8));
+292:             }
+293:             a.shareFiles(Collections.singletonList(f), "text/csv", r.title);
+294:         } catch (Exception e) {
+295:             a.error(e);
+296:         }
+297:     }
+298: 
+299:     // ===================================================================================
+300:     // المنشئ
+301:     // ===================================================================================
+302: 
+303:     void builder(ReportBuilder.Spec given) {
+304:         if (!a.require(Auth.Perm.VIEW)) return;
+305:         final ReportBuilder.Spec s = given != null ? ReportBuilder.Spec.fromJson(given.toJson()) : draft != null ? draft : new ReportBuilder.Spec();
+306:         draft = s;
+307:         a.here(() -> builder(given));
+308:         a.tabbedScreen("تقرير مخصص", this::show, "more");
+309:         if (given != null && (given.from > 0 || given.to > 0)) {
+310:             period = ReportBuilder.P_CUSTOM;
+311:             customFrom = given.from;
+312:             customTo = given.to;
+313:         }
+314:         periodCard(() -> builder(null));
+315: 
+316:         a.title("العنوان (اختياري)");
+317:         final EditText title = a.input("مثل: أجور مكاتب حلب");
+318:         title.setText(s.title);
+319: 
+320:         a.title("المكاتب والعملات");
+321:         final List<Model.Office> offs = a.db.offices();
+322:         final TextView offT = a.add(a.text("", 14, a.ink, true));
+323:         final Runnable offText = () -> offT.setText(s.offices.isEmpty() ? "المكاتب: الكل" : "المكاتب: " + s.offices.size() + " مختارة");
+324:         offText.run();
+325:         a.body.addView(a.smallButton("اختيار المكاتب", a.accent, v -> chooseOffices(offs, s.offices, offText)), a.lp(-1, 44, 2));
+326:         Ui.Flow curs = a.flow();
+327:         for (final Model.Currency c : a.db.currencies(false)) {
+328:             final CheckBox cb = new CheckBox(a);
+329:             cb.setText(c.code);
+330:             cb.setChecked(s.currencies.contains(c.code));
+331:             cb.setOnCheckedChangeListener((b, on) -> {
+332:                 if (on) s.currencies.add(c.code);
+333:                 else s.currencies.remove(c.code);
+334:             });
+335:             curs.addView(cb);
+336:         }

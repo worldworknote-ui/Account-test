@@ -1,0 +1,130 @@
+177:                 .setPositiveButton("اختيار هذا اللون", (d, w) -> cb.on(hexOf(chosen[0])))
+178:                 .setNegativeButton("إلغاء", null);
+179:         if (allowDefault) b.setNeutralButton("الافتراضي", (d, w) -> cb.on(""));
+180:         b.show();
+181:     }
+182: 
+183:     static String hexOf(int c) { return String.format(Locale.US, "#%02X%02X%02X", Color.red(c), Color.green(c), Color.blue(c)); }
+184: 
+185:     // ===================================================================================
+186:     // الشاشة
+187:     // ===================================================================================
+188: 
+189:     private void render() {
+190:         a.here(this::render);
+191:         a.tabbedScreen("المظهر والصفحة الرئيسية", a.moreScreen::show, "more");
+192:         a.hint("كل تغيير يُحفظ فورًا. «استعادة الافتراضي» في الأسفل تعيد الشكل الأصلي.");
+193:         if (perUser()) a.hint("الوضع والخط والألوان والاهتزاز والصفحة الرئيسية والشريط السفلي خاصة بك وحدك: لا تتغيّر عند غيرك من المستخدمين.");
+194: 
+195:         // ---------------------------------------------------------------- 11.3: ثيمات جاهزة وأنماطي
+196:         a.title("ثيمات جاهزة");
+197:         Ui.Flow pf = a.flow();
+198:         for (final String[] pz : PRESETS) pf.addView(presetChip(pz), new android.view.ViewGroup.LayoutParams(-2, -2));
+199:         a.body.addView(pf, a.lp(-1, -2, 2));
+200:         a.hint("ألوان مجرّبة في الفاتح والليلي. الشكل الحالي يُحفظ تلقائيًا في «أنماطي» قبل التطبيق، فتعود إليه متى شئت.");
+201:         myStyles();
+202: 
+203:         // ---------------------------------------------------------------- الوضع والخط
+204:         a.title("الوضع");
+205:         final String theme0 = get("theme_mode", "light");
+206:         a.seg(new String[]{"فاتح", "ليلي", "حسب الهاتف"}, indexOf(THEME_KEYS, theme0), i -> {
+207:             if (THEME_KEYS[i].equals(get("theme_mode", "light"))) return;
+208:             put("theme_mode", THEME_KEYS[i]);
+209:             a.restyle("design");
+210:         });
+211:         a.hint(Ui.DESKTOP ? "«حسب الهاتف» يتبع الوضع الليلي في إعدادات الجهاز تلقائيًا." : "«حسب الهاتف» يتبع الوضع الليلي في إعدادات الهاتف تلقائيًا.");
+212: 
+213:         // 11.0: على الماك والويندوز فقط — شكل البرنامج وحجم النافذة (لهذا الجهاز)
+214:         if (Ui.DESKTOP && Ui.deskDesign != null) Ui.deskDesign.accept(a);
+215: 
+216:         // 10.12: اهتزاز خفيف عند الضغط على الأزرار المهمة (التسجيل، الحفظ، الشريط السفلي، الاختيارات)
+217:         a.title("الاهتزاز عند الضغط");
+218:         a.seg(new String[]{"تشغيل", "إيقاف"}, a.hapticsOn() ? 0 : 1, i -> {
+219:             put("haptics", i == 0 ? "on" : "off");
+220:             if (i == 0) a.tick(a.body);
+221:         });
+222:         a.hint("رجّة صغيرة عند الضغط على الأزرار المهمة. تعمل إن كانت «الاهتزاز عند اللمس» مفعّلة في إعدادات الهاتف.");
+223: 
+224:         // 10.13: خيارات الشكل والسلوك — كلها لك وحدك
+225:         a.title("زر التسجيل");
+226:         a.seg(new String[]{"ضغطة عادية", "ضغط مطوّل"}, a.holdOn() ? 1 : 0, i -> put("hold_confirm", i == 1 ? "on" : "off"));
+227:         a.hint("في الحالتين تظهر نافذة التأكيد قبل الحفظ. «ضغط مطوّل»: يمتلئ الزر تحت إصبعك أولًا، فلا تحفظ بلمسة خاطئة.");
+228: 
+229:         a.title("حركة الصفحات");
+230:         String pm = a.pageMotion();
+231:         a.seg(new String[]{"متتابعة", "دفعة واحدة", "بلا حركة"}, "whole".equals(pm) ? 1 : "none".equals(pm) ? 2 : 0,
+232:                 i -> put("page_motion", i == 1 ? "whole" : i == 2 ? "none" : "stagger"));
+233:         a.hint("«متتابعة»: عناصر الصفحة تظهر واحدًا بعد الآخر. «دفعة واحدة»: الصفحة كلها معًا.");
+234: 
+235:         a.title("إطارات الأزرار والبطاقات");
+236:         a.seg(new String[]{"ظاهرة", "بلا إطار"}, a.frames ? 0 : 1, i -> {
+237:             put("btn_frames", i == 0 ? "on" : "off");
+238:             a.applyColors();
+239:             render();
+240:         });
+241: 
+242:         // 10.15: كل إعدادات الشريط السفلي (النمط والألوان والترتيب وقائمة «+») في «المزيد ← الشريط السفلي»
+243:         a.title("الشريط السفلي");
+244:         a.button("الشريط السفلي: " + NavPrefs.styleName(a.tabStyle()) + " — تخصيص…", a.accent, v -> a.tabsScreen.show());
+245: 
+246:         a.title("الخط");
+247:         final Ui.Seg font = a.new Seg(FONT_NAMES, null, indexOf(FONT_KEYS, get("app_font", "plex")), false);
+248:         for (int i = 0; i < font.buttons.size(); i++) {
+249:             font.buttons.get(i).setTypeface(typeface(FONT_KEYS[i]));
+250:             font.buttons.get(i).setTextSize(13);
+251:         }
+252:         font.listener = i -> {
+253:             if (FONT_KEYS[i].equals(get("app_font", "plex"))) return;
+254:             put("app_font", FONT_KEYS[i]);
+255:             a.restyle("design");
+256:         };
+257:         a.body.addView(font.view, a.lp(-1, -2, 2));
+258:         TextView sample = a.text("المحاسب الذكي — لنا 1,250.00 USD — حمدي احمد محمد", 16, a.ink, false);
+259:         sample.setBackground(a.round(a.surface, a.line, 12));
+260:         sample.setPadding(a.dp(12), a.dp(10), a.dp(12), a.dp(10));
+261:         a.body.addView(sample, a.lp(-1, -2, 4));
+262: 
+263:         // ---------------------------------------------------------------- الألوان
+264:         a.title("الألوان");
+265:         colorRow("اللون الأساسي (الأزرار والعناوين)", "primary_color", "#0B6B53", PALETTE, false);
+266:         colorRow("اللون الثانوي (الذهبي)", "accent_color", "#C7922F", PALETTE, false);
+267:         colorRow("لون الشريط العلوي", "header_color", "", PALETTE, true);
+268:         colorRow("لون الخلفية" + (a.night ? " (في الوضع الفاتح)" : ""), "bg_color", "#F7F4ED", BG_PALETTE, false);
+269:         colorRow("خلفية الوضع الليلي", "night_bg", "", NIGHT_PALETTE, true);
+270:         a.add(a.label("لون الزر المختار في الشريط السفلي"));
+271:         a.seg(new String[]{"اللون الأساسي", "لون لكل تبويب"}, "multi".equals(get("tab_tint", "primary")) ? 1 : 0, i -> {
+272:             put("tab_tint", i == 1 ? "multi" : "primary");
+273:             a.restyle("design");
+274:         });
+275: 
+276:         // ---------------------------------------------------------------- الصفحة الرئيسية
+277:         a.title("الصفحة الرئيسية");
+278:         final boolean classic = "classic".equals(get("home_style", "modern"));
+279:         a.seg(new String[]{"حديثة", "كلاسيكية (أزرار كبيرة)"}, classic ? 1 : 0, i -> {
+280:             put("home_style", i == 1 ? "classic" : "modern");
+281:             render();
+282:         });
+283:         if (!classic) {
+284:             a.hint("الحديثة: أنت تختار عناصرها وترتيبها (الأرصدة، اليوم، آخر الحركات، المكاتب، الاختصارات…).");
+285:             a.button("اختيار عناصر الصفحة الرئيسية وترتيبها", a.primary, v -> a.homeScreen.editor());
+286:         } else {
+287:             a.hint("الكلاسيكية: الشعار والاسم والرسالة ثم أزرار كبيرة كما في الإصدارات السابقة، بترتيبك وألوانك أدناه.");
+288:             a.add(a.label("شكل الأزرار"));
+289:             a.seg(new String[]{"زر في كل سطر", "زران في كل سطر"}, "grid".equals(get("home_layout", "list")) ? 1 : 0, i -> put("home_layout", i == 1 ? "grid" : "list"));
+290:             a.seg(new String[]{"حجم عادي", "حجم كبير"}, "big".equals(get("btn_size", "normal")) ? 1 : 0, i -> put("btn_size", i == 1 ? "big" : "normal"));
+291:         }
+292: 
+293:         // ---------------------------------------------------------------- الاسم والرسالة (مشتركة: لصاحب صلاحية التصميم)
+294:         final EditText title, office, welcome;
+295:         if (shared()) {
+296:         a.title("الاسم والرسالة");
+297:         title = textSetting("اسم البرنامج (يظهر إن لم تكتب اسم مكتبك)", "app_title", "المحاسب الذكي لمكاتب الحوالات");
+298:         office = textSetting("اسم مكتبك (في أعلى الرئيسية وفي الكشوفات)", "office_name", "");
+299:         welcome = textSetting("الرسالة الترحيبية", "welcome", "");
+300:         welcome.setSingleLine(false);
+301:         welcome.setMinLines(2);
+302:         welcome.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+303:         welcome.setLayoutParams(a.lp(-1, -2, 4));
+304:         welcome.setPadding(a.dp(14), a.dp(10), a.dp(14), a.dp(10));
+305:         a.hint("اكتب {المكتب} داخل الرسالة ليُستبدل باسم مكتبك. مثال: أهلًا بكم في {المكتب}");
+306: 

@@ -1,0 +1,178 @@
+356:     boolean returning;
+357: 
+358:     private void rememberScroll() {
+359:         if (screenTitle == null || scroll == null) return;
+360:         scrollMemory.put(screenTitle.getText().toString(), new long[]{scroll.getScrollY(), Clock.now()});
+361:     }
+362: 
+363:     private void restoreScroll(final String title, boolean sameScreen) {
+364:         final long[] m = scrollMemory.get(title);
+365:         if (m == null || m[0] <= 0 || Clock.now() - m[1] > 20 * 60_000L) return;
+366:         if (!sameScreen && !returning) return;
+367:         final ScrollView sv = scroll;
+368:         Runnable go = () -> { if (sv == scroll) sv.scrollTo(0, (int) m[0]); };
+369:         sv.post(go);
+370:         sv.postDelayed(go, 150);
+371:     }
+372: 
+373:     private void build(String title, Runnable backAction, String tab) {
+374:         String prevTitle = screenTitle == null ? null : screenTitle.getText().toString();
+375:         rememberScroll();
+376:         if (themeOwner != null && !themeKeep) {
+377:             String left = themeOwner;
+378:             themeOwner = null;
+379:             applyColors();
+380:             themeLeft(left);
+381:         }
+382:         themeKeep = false;
+383:         beforeScreenChange();
+384:         trackHistory(title, tab, backAction);
+385:         onHome = false;
+386:         back = backAction;
+387:         frame = new FrameLayout(this);
+388:         frame.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+389:         frame.setBackgroundColor(bg);
+390:         column = new LinearLayout(this);
+391:         column.setOrientation(LinearLayout.VERTICAL);
+392:         // القص مفعّل هنا عمدًا: بدونه يُرسم محتوى التمرير فوق الشريط العلوي
+393:         frame.addView(column, new FrameLayout.LayoutParams(-1, -1));
+394: 
+395:         bar = new LinearLayout(this);
+396:         bar.setOrientation(LinearLayout.HORIZONTAL);
+397:         bar.setGravity(Gravity.CENTER_VERTICAL);
+398:         bar.setBackgroundColor(header);
+399:         bar.setPadding(dp(8), 0, dp(8), 0);
+400:         // 11.5: سهم رجوع صغير بجانب العنوان في كل صفحة لها ما قبلها (السجل أو رجوع محدد)
+401:         if (backAction != null || !history.isEmpty()) {
+402:             View bk = iconButton(R.drawable.ic_back, headerInk, "رجوع", v -> onBackPressed());
+403:             bk.setPadding(dp(8), dp(8), dp(8), dp(8));
+404:             bar.addView(bk, new LinearLayout.LayoutParams(dp(40), dp(40)));
+405:         } else bar.addView(new View(this), new LinearLayout.LayoutParams(dp(8), 1));
+406:         boolean big = tab != null && backAction == null;
+407:         screenTitle = text(title, big ? 22 : 19, headerInk, true);
+408:         screenTitle.setSingleLine(true);
+409:         screenTitle.setEllipsize(TextUtils.TruncateAt.END);
+410:         screenTitle.setGravity(Gravity.CENTER_VERTICAL | Gravity.RIGHT);
+411:         bar.addView(screenTitle, new LinearLayout.LayoutParams(0, -1, 1));
+412:         barActions = row();
+413:         bar.addView(barActions, new LinearLayout.LayoutParams(-2, -1));
+414:         if (!title.equals(prevTitle)) headerOpen = false;
+415:         // 10.12: ثلاث أيقونات أو أكثر تُطوى خلف أيقونة واحدة (بعد أن تضيف الشاشة أيقوناتها)
+416:         final LinearLayout acts = barActions;
+417:         acts.post(() -> foldActions(acts));
+418:         rootTab = tab != null && backAction == null ? tab : null;
+419:         globalActions();
+420:         if (tab == null && showHomeButton()) {
+421:             bar.addView(iconButton(R.drawable.ic_home, headerInk, "الرئيسية", v -> goHome()), new LinearLayout.LayoutParams(dp(44), dp(44)));
+422:         }
+423:         column.addView(bar, new LinearLayout.LayoutParams(-1, dp(big ? 64 : 58)));
+424: 
+425:         scroll = new ScrollView(this);
+426:         scroll.setFillViewport(true);
+427:         scroll.setClipToPadding(false);
+428:         body = new LinearLayout(this);
+429:         body.setOrientation(LinearLayout.VERTICAL);
+430:         // 10.13: على التابلت والوضع العرضي: المحتوى بعرض مريح في الوسط لا ممدودًا على الشاشة كلها
+431:         int side = dp(16);
+432:         int sw = getResources().getConfiguration().screenWidthDp;
+433:         if (sw >= 720) side = Math.max(dp(24), dp((sw - Math.min(sw - 48, 1180)) / 2));
+434:         body.setPadding(side, dp(4), side, dp(tab != null ? 48 : 40));
+435:         scroll.addView(body);
+436:         column.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+437: 
+438:         footerBox = new LinearLayout(this);
+439:         footerBox.setOrientation(LinearLayout.VERTICAL);
+440:         footerBox.setVisibility(View.GONE);
+441:         column.addView(footerBox, new LinearLayout.LayoutParams(-1, -2));
+442: 
+443:         tabs = null;
+444:         tabCover = 0;
+445:         hideWithKeyboard = null;
+446:         if (tab != null) tabBar(tab);
+447:         systemBars(header, navBarColor());
+448:         setContentView(frame);
+449:         watchKeyboard();
+450:         restoreScroll(title, title.equals(prevTitle));
+451:         // 10.10: عناصر الشاشة الجديدة تصعد واحدًا بعد الآخر (لا عند إعادة رسم الشاشة نفسها)
+452:         String pm = pageMotion();
+453:         if (!NO_MOTION && !title.equals(prevTitle) && !returning && "whole".equals(pm)) {
+454:             // 10.13: الشاشة كلها دفعة واحدة (تظهر وتصعد قليلًا معًا)
+455:             body.setAlpha(0f);
+456:             body.setTranslationY(dp(14));
+457:             body.animate().alpha(1f).translationY(0).setDuration(380).setInterpolator(new android.view.animation.DecelerateInterpolator(2f)).start();
+458:         } else if (!NO_MOTION && !title.equals(prevTitle) && !returning && !"none".equals(pm)) {
+459:             final LinearLayout bd = body;
+460:             bd.getViewTreeObserver().addOnPreDrawListener(new android.view.ViewTreeObserver.OnPreDrawListener() {
+461:                 @Override public boolean onPreDraw() {
+462:                     bd.getViewTreeObserver().removeOnPreDrawListener(this);
+463:                     int n = bd.getChildCount();
+464:                     for (int i = 0; i < n; i++) {
+465:                         View c = bd.getChildAt(i);
+466:                         c.setAlpha(0f);
+467:                         c.setTranslationY(dp(26));
+468:                         c.animate().alpha(1f).translationY(0).setStartDelay(Math.min(i, 10) * 70L).setDuration(560)
+469:                                 .setInterpolator(new android.view.animation.DecelerateInterpolator(2.2f)).start();
+470:                     }
+471:                     return true;
+472:                 }
+473:             });
+474:         }
+475:         returning = false;
+476:     }
+477: 
+478:     /** 10.13: شاشة عريضة (تابلت، أو هاتف بالعرض): النصفان متقابلان بدل التمرير. */
+479:     boolean wide() { return getResources().getConfiguration().screenWidthDp >= 720; }
+480: 
+481:     /**
+482:      * 10.13: على الشاشة العريضة يصير محتوى الشاشة عمودين متقابلين: ما قبل at في العمود الأول (يمين) وما بعده في الثاني.
+483:      * على الهاتف بالطول لا يتغير شيء. ما يُضاف لاحقًا في أعلى الشاشة (رأس واتساب مثلًا) يبقى بعرضها كله.
+484:      */
+485:     void splitBody(View at) {
+486:         if (!wide() || at == null) return;
+487:         int k = body.indexOfChild(at);
+488:         int n = body.getChildCount();
+489:         if (k <= 0 || k >= n) return;
+490:         List<View> all = new ArrayList<>();
+491:         for (int i = 0; i < n; i++) all.add(body.getChildAt(i));
+492:         body.removeAllViews();
+493:         LinearLayout row = row();
+494:         row.setBaselineAligned(false);
+495:         row.setGravity(Gravity.TOP);
+496:         LinearLayout c1 = new LinearLayout(this), c2 = new LinearLayout(this);
+497:         c1.setOrientation(LinearLayout.VERTICAL);
+498:         c2.setOrientation(LinearLayout.VERTICAL);
+499:         for (int i = 0; i < n; i++) {
+500:             View v = all.get(i);
+501:             ViewGroup.LayoutParams lp = v.getLayoutParams();
+502:             (i < k ? c1 : c2).addView(v, lp != null ? lp : new LinearLayout.LayoutParams(-1, -2));
+503:         }
+504:         LinearLayout.LayoutParams p1 = new LinearLayout.LayoutParams(0, -2, 1), p2 = new LinearLayout.LayoutParams(0, -2, 1);
+505:         p1.setMarginEnd(dp(10));
+506:         p2.setMarginStart(dp(10));
+507:         row.addView(c1, p1);
+508:         row.addView(c2, p2);
+509:         body.addView(row, new LinearLayout.LayoutParams(-1, -2));
+510:     }
+511: 
+512:     /** 10.13: يقسم الشاشة العريضة عمودين عند منتصف عناصرها (للقوائم والبطاقات). */
+513:     void splitBodyHalf(int skipTop) {
+514:         int n = body.getChildCount();
+515:         if (!wide() || n - skipTop < 4) return;
+516:         splitBody(body.getChildAt(skipTop + (n - skipTop + 1) / 2));
+517:     }
+518: 
+519:     /** 10.1: تبويب الشاشة الجذرية الحالية (null لشاشة فرعية): يُعاد رسمها عند وصول تحديثات. */
+520:     String rootTab;
+521: 
+522:     /** 10.1: أيقونات تظهر في كل شاشة (زر المزامنة السريع). */
+523:     void globalActions() {}
+524: 
+525:     /** يُستدعى قبل تغيير الشاشة (حفظ المسودة مثلًا). */
+526:     void beforeScreenChange() {}
+527: 
+528:     boolean showHomeButton() { return true; }
+529: 
+530:     abstract void goHome();
+531: 
+532:     /** فتح تبويب من الشريط السفلي: home / offices / tx / log / more. */
+533:     void openTab(String key) {}

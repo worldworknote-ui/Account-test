@@ -1,0 +1,93 @@
+192:         if (!Model.FEE_NONE.equals(in.fromFeeType)) in.fromFee = Db.minor(fromFeeAmt.getText(), d);
+193:         if (!Model.FEE_NONE.equals(in.toFeeType)) in.toFee = Db.minor(toFeeAmt.getText(), d);
+194:         return in;
+195:     }
+196: 
+197:     void update() {
+198:         if (building || feeMode == null) return;
+199:         boolean fees = feeMode.selected == 1;
+200:         feeBox.setVisible(fees);
+201:         fromFeeAmt.setVisible(fromFee.selected > 0);
+202:         toFeeAmt.setVisible(toFee.selected > 0);
+203:         Model.Office f = from.get(), t = to.get();
+204:         String c = label(cur);
+205:         String at = c == null ? null : amountText(amount, c);
+206:         List<String> l = new ArrayList<>();
+207:         l.add(f == null ? "× طالب الحركة: لم يُختر" : "طالب الحركة: " + f.name + " — «لنا» عليه");
+208:         l.add(t == null ? "× المنفّذ: لم يُختر" : "المنفّذ: " + t.name + " — «علينا» له");
+209:         if (f != null && t != null && common.isEmpty()) l.add("× العملة: لا عملة مشتركة مفعّلة للمكتبين");
+210:         else if (c == null) l.add("× العملة: لم تُختر");
+211:         l.add(amount.getText().trim().isEmpty() ? "× المبلغ: لم يُكتب" : at == null ? "× المبلغ غير صحيح: اكتب أرقامًا فقط" : "المبلغ: " + at);
+212:         if (fees) {
+213:             for (int k = 0; k < 2; k++) {
+214:                 Ui.Seg s = k == 0 ? fromFee : toFee;
+215:                 Ui.Field e = k == 0 ? fromFeeAmt : toFeeAmt;
+216:                 String who = k == 0 ? "أجرة الطالب" : "أجرة المنفّذ";
+217:                 if (s.selected <= 0) l.add(who + ": بدون");
+218:                 else {
+219:                     String fa = c == null ? null : amountText(e, c);
+220:                     l.add(fa == null ? "× " + who + ": اكتب المبلغ" : who + ": " + FEE_KINDS[s.selected].replace("الأجرة ", "") + " " + fa);
+221:                 }
+222:             }
+223:             // ربحنا = ما لنا من أجرة ناقص ما علينا منها
+224:             try {
+225:                 long net = 0;
+226:                 int d = db.decimals(c);
+227:                 for (int k = 0; k < 2; k++) {
+228:                     Ui.Seg s = k == 0 ? fromFee : toFee;
+229:                     if (s.selected <= 0) continue;
+230:                     long v = Db.minor((k == 0 ? fromFeeAmt : toFeeAmt).getText(), d);
+231:                     net += Model.FEE_US.equals(FEE_KINDS[s.selected]) ? v : -v;
+232:                 }
+233:                 l.add("صافي الأجرة: " + (net >= 0 ? "ربح لنا " : "خسارة علينا ") + "\u2066" + Model.fmt(Math.abs(net), d) + " " + c + "\u2069");
+234:             } catch (Exception ignored) {
+235:                 // الناقص ظاهر بالأحمر
+236:             }
+237:         } else l.add("الأجرة: بدون");
+238:         String p = person.val();
+239:         l.add("المستفيد: " + (p.isEmpty() ? "—" : p));
+240:         if (at != null && f != null && t != null && f.id != t.id) {
+241:             try {
+242:                 for (Db.Preview pv : db.preview(java.util.Arrays.asList(db.transferLegs(input())), null))
+243:                     for (String k : pv.before.keySet())
+244:                         l.add("«" + pv.officeName + "» " + k + ": " + Model.bal(pv.before.get(k), db.decimals(k)) + "  ←  " + Model.bal(pv.after.get(k), db.decimals(k))
+245:                                 + (pv.pending ? " (بعد الاعتماد)" : ""));
+246:             } catch (Exception ignored) {
+247:                 // الناقص ظاهر بالأحمر
+248:             }
+249:         }
+250:         l.add("التاريخ: اليوم " + Model.day(Clock.now()));
+251:         render(l, (f == null ? "" : f.name) + " ← " + (t == null ? "" : t.name) + " • " + at);
+252:         body.revalidate();
+253:     }
+254: 
+255:     void save() {
+256:         if (saving) return;
+257:         if (!require(Auth.Perm.TX_ADD)) return;
+258:         saving = true;
+259:         try {
+260:             Db.TransferInput in = input();
+261:             if (in.amount <= 0) throw new IllegalArgumentException("اكتب المبلغ");
+262:             List<Db.TxInput> legs = java.util.Arrays.asList(db.transferLegs(in));
+263:             while (true) {
+264:                 TxConfirm.View ok = Ui.confirmTx(this, "تأكيد الحركة بين مكتبين", "", () -> TxConfirm.build(db, legs, null, null), "تسجيل الحركة");
+265:                 if (ok == null) return;
+266:                 if (TxConfirm.changed(db, ok, legs, null)) {
+267:                     Ui.toast("تغيّر الرصيد لحظة الضغط؛ راجع التأكيد من جديد");
+268:                     continue;
+269:                 }
+270:                 break;
+271:             }
+272:             long[] ids = db.addTransfer(in);
+273:             app.changed();
+274:             Model.Tx t = db.tx(ids[0]);
+275:             Ui.toast(t != null && t.isPending() ? "سُجّلت الحركة بانتظار الاعتماد (الساقان معًا)" : "✓ سُجّلت الحركة بين المكتبين");
+276:             clearInputs();
+277:             app.go("office", in.from);
+278:         } catch (Exception e) {
+279:             Ui.error(this, e);
+280:         } finally {
+281:             saving = false;
+282:         }
+283:     }
+284: }

@@ -1,0 +1,107 @@
+811:         System.out.println("== 17) 10.5: «تم التحقق» ومكاتب المحاسبين وعلامة آخر رسالة عبر المزامنة");
+812:         File f = Files.createTempDirectory("sa-sync-17").toFile();
+813:         String pw = "كلمة-سر-القسم-17";
+814:         List<String> ue = Arrays.asList("USD", "EUR");
+815:         Db P = dev("17P");
+816:         long off = P.addOffice("مكتب 17", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+817:         long admin = P.addUser("مدير 17", Auth.ADMIN, null, "123456");
+818:         SmartApp.currentUser = P.user(admin);
+819:         long acct = P.addUser("محاسب 17", Auth.CUSTOM, "VIEW,TX_ADD", "1111");
+820:         long v1 = P.addUser("محقق أول", Auth.CUSTOM, "VIEW,VERIFY", "2222");
+821:         long v2 = P.addUser("محقق ثان", Auth.CUSTOM, "VIEW,VERIFY", "3333");
+822:         SyncEngine eP = new SyncEngine(P, new FileSyncFolder(f));
+823:         eP.create(pw.toCharArray(), "رئيسي 17");
+824:         Db Q = dev("17Q");
+825:         SmartApp.currentUser = null;
+826:         SyncEngine eQ = new SyncEngine(Q, new FileSyncFolder(f));
+827:         eQ.join(pw.toCharArray(), false, "ثان 17");
+828:         SmartApp.currentUser = P.user(acct);
+829:         long t = P.addTx(tx(off, true, 25000, "USD", "للتحقق"), null);
+830:         syncAll(eP, eQ);
+831:         check(Q.tx(t) != null && Q.tx(t).userId != null && Q.tx(t).userId == acct, "رقم من أدخلها وصل مع الحركة");
+832:         // تحقق متزامن قبل أي مزامنة: محقق أول على الجهازين، ومحقق ثان على الثاني
+833:         SmartApp.currentUser = P.user(v1);
+834:         P.verifyTx(t);
+835:         SmartApp.currentUser = Q.user(v1);
+836:         Q.verifyTx(t);
+837:         SmartApp.currentUser = Q.user(v2);
+838:         Q.verifyTx(t);
+839:         SmartApp.currentUser = P.user(admin);
+840:         P.setUserOffices(v2, new HashSet<>(Collections.singletonList(off)));
+841:         P.setWaMark(off, "آخر رسالة نُقلت", "09:15");
+842:         syncAll(eP, eQ);
+843:         int vp = 0, vq = 0;
+844:         for (Db.TxCheck c : P.checks(t)) if (c.valid()) vp++;
+845:         for (Db.TxCheck c : Q.checks(t)) if (c.valid()) vq++;
+846:         check(vp == 2 && vq == 2, "بعد المزامنة: تحققان على كل جهاز (المحقق نفسه من جهازين = واحد، ولا شيء ضاع): " + vp + "/" + vq);
+847:         check(Q.userOffices(v2).contains(off) && Q.lastWaMark(off) != null && "آخر رسالة نُقلت".equals(Q.lastWaMark(off).text), "مكاتب المحاسب وعلامة آخر رسالة وصلت للجهاز الآخر");
+848:         // تعديل المبلغ على جهاز يُبطل التحقق على الجهازين
+849:         SmartApp.currentUser = P.user(admin);
+850:         long t2 = P.editTx(t, tx(off, true, 26000, "USD", "للتحقق"), null, null, "المبلغ");
+851:         syncAll(eP, eQ);
+852:         boolean allVoid = true;
+853:         for (Db.TxCheck c : Q.checks(t)) if (c.valid()) allVoid = false;
+854:         check(allVoid && Q.checks(t2).isEmpty() && bal(P).equals(bal(Q)), "تعديل المبلغ أبطل التحقق على الجهازين وبقي في التاريخ، والأرصدة متطابقة");
+855:         healthy(P, "17P");
+856:         healthy(Q, "17Q");
+857: 
+858:         System.out.println("== 18) 10.14: كلمة سر جديدة من جهاز منضم، نقل الخزنة وترك المكان القديم، حذف ملفات المزامنة");
+859:         File o18 = Files.createTempDirectory("sa-sync-18a").toFile(), n18 = Files.createTempDirectory("sa-sync-18b").toFile();
+860:         String p18 = "كلمة-سر-القسم-18";
+861:         Db X8 = dev("18X");
+862:         X8.addOffice("مكتب 18", "", "", "", "", "", null, null, Arrays.asList("USD", "EUR"), new HashMap<>(), Arrays.asList(new Db.Opening("USD", "لنا", 50000)));
+863:         SyncEngine eX8 = new SyncEngine(X8, new FileSyncFolder(o18));
+864:         String rc18 = eX8.create(p18.toCharArray(), "الرئيسي-18");
+865:         Db Y8 = dev("18Y");
+866:         SyncEngine eY8 = new SyncEngine(Y8, new FileSyncFolder(o18));
+867:         eY8.join(p18.toCharArray(), false, "الثاني-18");
+868:         syncAll(eX8, eY8);
+869:         // نسي كلمة السر: الجهاز المنضم يعيّن كلمة جديدة دون القديمة
+870:         eY8.resetPassword("جديدة-بعد-النسيان".toCharArray());
+871:         Db Z8 = dev("18Z");
+872:         check(!errOf(() -> new SyncEngine(Z8, new FileSyncFolder(o18)).join(p18.toCharArray(), false, "ز")).isEmpty(), "الكلمة القديمة لم تعد تفتح الخزنة");
+873:         new SyncEngine(Z8, new FileSyncFolder(o18)).join("جديدة-بعد-النسيان".toCharArray(), false, "ز");
+874:         check(SyncEngine.enabled(Z8) && bal(Z8).equals(bal(X8)), "جهاز جديد ينضم بالكلمة الجديدة، والأرصدة نفسها");
+875:         Db R8 = dev("18R");
+876:         new SyncEngine(R8, new FileSyncFolder(o18)).join(rc18.toCharArray(), true, "بالرمز");
+877:         check(SyncEngine.enabled(R8), "ورمز الاسترداد القديم ما زال يعمل");
+878:         // نقل الخزنة إلى مكان جديد (مثل حساب Google آخر) ثم ترك شاهد في القديم
+879:         int moved = eX8.moveTo(new FileSyncFolder(n18));
+880:         eX8.retire("حساب Google الجديد", false, false);
+881:         SyncEngine eX8n = new SyncEngine(X8, new FileSyncFolder(n18));
+882:         X8.addTx(tx(X8.offices().get(0).id, true, 700, "USD", "بعد النقل"), null);
+883:         eX8n.sync();
+884:         String err = errOf(() -> eY8.sync());
+885:         check(moved > 0 && err.contains("نُقلت المزامنة") && err.contains("حساب Google الجديد"), "جهاز على المكان القديم يرى «نُقلت» ولا يرسل إليه: " + err);
+886:         SyncEngine.Status sY8 = SyncEngine.status(Y8);
+887:         check(!sY8.movedTo.isEmpty() && "حساب Google الجديد".equals(sY8.movedTarget) && !sY8.movedFresh, "الحالة تعرض النقل ووجهته للواجهة: " + sY8.movedTarget);
+888:         // الانتقال من مكان قديم فيه شاهد: يُكتب رأس الخزنة المحفوظ على الجهاز، لا الشاهد
+889:         File e18 = Files.createTempDirectory("sa-sync-18c").toFile();
+890:         eY8.moveTo(new FileSyncFolder(e18));
+891:         String hdr = new String(Files.readAllBytes(new File(e18, SyncEngine.HEADER).toPath()), "UTF-8");
+892:         check(!SyncEngine.tombstone(new org.json.JSONObject(hdr)) && hdr.contains("\"pw\""), "النقل من مكان قديم لا ينسخ الشاهد إلى الوجهة");
+893:         check(eY8.moveTo(new FileSyncFolder(n18)) >= 0, "النقل إلى المكان الجديد نفسه (الخزنة هناك) لا يكسر شيئًا");
+894:         check(SyncEngine.sameFolder(new FileSyncFolder(n18), new FileSyncFolder(n18)) && !SyncEngine.sameFolder(new FileSyncFolder(o18), new FileSyncFolder(n18)),
+895:                 "كشف «المكان نفسه» (اختيار الحساب الحالي حسابًا جديدًا)");
+896:         check(new FileSyncFolder(n18).list("probe-").isEmpty(), "ملف الفحص يُحذف بعده");
+897:         SyncEngine eY8n = new SyncEngine(Y8, new FileSyncFolder(n18));
+898:         syncAll(eX8n, eY8n);
+899:         check(SyncEngine.status(Y8).movedTo.isEmpty(), "بعد الانتقال يختفي تنبيه النقل");
+900:         check(bal(Y8).equals(bal(X8)), "بعد الانتقال إلى المكان الجديد تتطابق الأرصدة");
+901:         check(errOf(() -> eY8.repair(null)).contains("لا يُعاد رفع"), "«الإصلاح» لا يعيد رفع الخزنة إلى المكان القديم");
+902:         check(!errOf(() -> new SyncEngine(dev("18Q"), new FileSyncFolder(o18)).join(p18.toCharArray(), false, "ق")).isEmpty(), "ولا انضمام إلى المكان القديم");
+903:         int purged = new SyncEngine(X8, new FileSyncFolder(o18)).purgeRetired();
+904:         check(purged > 0 && o18.list().length == 1, "حذف الخزنة من المكان القديم: يبقى الشاهد وحده (" + purged + " ملفًا حُذف)");
+905:         // حذف ملفات المزامنة: بكلمة السر أو الرمز فقط
+906:         check(errOf(() -> eX8n.wipe(null, "خطأ-خطأ-خطأ".toCharArray(), false)).contains("غير صحيحة"), "الحذف يرفض كلمة سر خاطئة");
+907:         // 11.5: أمر حذف مزوّر (بلا توقيع بمفتاح الخزنة) يكتبه من يملك الكتابة في المجلد فقط: لا يُنفَّذ ولا تُمسح الحزم غير المرسلة
+908:         {
+909:             FileSyncFolder ff = new FileSyncFolder(n18);
+910:             org.json.JSONObject real = new org.json.JSONObject(new String(ff.read(SyncEngine.HEADER), java.nio.charset.StandardCharsets.UTF_8));
+911:             Y8.addTx(tx(Y8.offices().get(0).id, true, 12300, "USD", "قبل التزوير"), null);
+912:             long outBefore = countRows(Y8, "sync_chg") + countRows(Y8, "sync_outbox");
+913:             org.json.JSONObject forged = new org.json.JSONObject();
+914:             forged.put("format", "smart-accountant-sync").put("v", real.optInt("v")).put("vault", real.optString("vault"))
+915:                     .put("deleted", new org.json.JSONObject().put("by", "مزوّر").put("at", System.currentTimeMillis()));
+916:             ff.write(SyncEngine.HEADER, forged.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+917:             String ef = errOf(() -> eY8n.sync());

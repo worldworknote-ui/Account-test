@@ -1,0 +1,163 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import android.content.Context;
+4: import com.smart.hawala.*;
+5: import java.awt.*;
+6: import java.awt.event.*;
+7: import java.awt.geom.RoundRectangle2D;
+8: import java.util.LinkedHashMap;
+9: import java.util.Map;
+10: import java.util.function.Function;
+11: import javax.swing.*;
+12: import javax.swing.border.EmptyBorder;
+13: 
+14: /**
+15:  * النافذة الرئيسية: شريط جانبي على اليمين بالأقسام، والمحتوى في الوسط. تُبنى الشاشات عند أول فتح.
+16:  * تتولى أيضًا: الدخول والقفل بعد الخمول، والنسخ التلقائي وفحص البيانات في الخلفية، وقائمة الماك العلوية.
+17:  */
+18: final class App {
+19:     static JFrame frame;
+20:     /** 11.0: للتبديل إلى شكل الهاتف دون إغلاق البرنامج: كل ما يعمل في الخلفية يُوقف. */
+21:     final java.util.List<Timer> timers = new java.util.ArrayList<>();
+22:     private KeyEventDispatcher ked;
+23:     private final java.util.List<java.awt.event.AWTEventListener> awt = new java.util.ArrayList<>();
+24:     boolean stopped;
+25:     static App instance;
+26: 
+27:     final Context ctx;
+28:     final Db db;
+29:     final JPanel content = new JPanel(new CardLayout());
+30:     final JPanel side = new JPanel();
+31:     final Map<String, View> views = new LinkedHashMap<>();
+32:     final Map<String, Function<App, View>> factories = new LinkedHashMap<>();
+33:     final Map<String, NavItem> nav = new LinkedHashMap<>();
+34:     final JLabel who = Ui.label("", 12.5f, Ui.sidebarInk, false);
+35:     final JLabel badge = Ui.label("", 12, Ui.sidebarInk, true);
+36:     String current = "";
+37:     /** عدد الحركات بانتظار الاعتماد (يُحدَّث بعد كل تغيير؛ لا قراءة من القاعدة أثناء الرسم). */
+38:     volatile long pendingCached;
+39:     long lastInput = Clock.now();
+40:     boolean locked;
+41: 
+42:     /** 10.4: الأقسام في مجموعات بعناوين («-» = عنوان مجموعة). */
+43:     static final String[][] SECTIONS = {
+44:             {"-", "العمل اليومي"}, {"home", "الرئيسية"}, {"tx", "تسجيل حركة"}, {"offices", "المكاتب"}, {"mine", "مكاتبي"}, {"log", "السجل"}, {"statement", "كشف حساب"}, {"balances", "الأرصدة"},
+45:             {"daily", "اليومي"}, {"cash", "صندوق المكتب"}, {"clients", "حسابات العملاء"},
+46:             {"-", "التقارير"}, {"builder", "منشئ التقارير"}, {"owner", "تقارير صاحب المكتب"}, {"reports", "تقارير جاهزة"},
+47:             {"-", "الإدارة"}, {"backup", "النسخ الاحتياطي"}, {"sync", "المزامنة"}, {"health", "الاعتمادية"}, {"users", "المستخدمون"}, {"settings", "الإعدادات"}, {"license", "الترخيص"}, {"about", "حول التطبيق"}};
+48: 
+49:     App(Context ctx, Db db) {
+50:         this.ctx = ctx;
+51:         this.db = db;
+52:         instance = this;
+53:         factories.put("home", HomeView::new);
+54:         factories.put("tx", TxView::new);
+55:         factories.put("fx", FxView::new);
+56:         factories.put("xfer", TransferView::new);
+57:         factories.put("offices", OfficesView::new);
+58:         factories.put("mine", MineView::new);
+59:         factories.put("team", TeamView::new);
+60:         factories.put("office", OfficeView::new);
+61:         factories.put("log", LogView::new);
+62:         factories.put("statement", StatementView::new);
+63:         factories.put("balances", BalancesView::new);
+64:         factories.put("daily", DailyView::new);
+65:         factories.put("cash", CashView::new);
+66:         factories.put("clients", ClientsView::new);
+67:         factories.put("sync", SyncView::new);
+68:         factories.put("builder", BuilderView::new);
+69:         factories.put("owner", OwnerView::new);
+70:         factories.put("reports", ReportsView::new);
+71:         factories.put("backup", BackupView::new);
+72:         factories.put("health", HealthView::new);
+73:         factories.put("users", UsersView::new);
+74:         factories.put("settings", SettingsView::new);
+75:         factories.put("license", LicenseView::new);
+76:         factories.put("about", AboutView::new);
+77:         factories.put("login", LoginView::new);
+78:     }
+79: 
+80:     void show() {
+81:         frame = new JFrame(appTitle());
+82:         frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
+83:         // 10.18: رجوع بلوحة المفاتيح من أي مكان: Ctrl+Z أو Esc (خارج خانات الكتابة والنوافذ)، وزر الفأرة «رجوع»
+84:         ked = e -> {
+85:             if (e.getID() != KeyEvent.KEY_PRESSED || locked || frame == null || !frame.isActive()) return false;
+86:             Component fo = e.getComponent();
+87:             boolean typing = fo instanceof javax.swing.text.JTextComponent && ((javax.swing.text.JTextComponent) fo).isEditable();
+88:             // Esc يغلق القائمة المنسدلة المفتوحة أو يلغي تحرير خلية جدول — لا يخرج من الشاشة
+89:             JComboBox<?> cb = fo instanceof JComboBox ? (JComboBox<?>) fo : (JComboBox<?>) SwingUtilities.getAncestorOfClass(JComboBox.class, fo);
+90:             if (cb != null && cb.isPopupVisible()) typing = true;
+91:             JTable tb = fo instanceof JTable ? (JTable) fo : (JTable) SwingUtilities.getAncestorOfClass(JTable.class, fo);
+92:             if (tb != null && tb.isEditing()) typing = true;
+93:             boolean ctrlZ = e.getKeyCode() == KeyEvent.VK_Z && (e.getModifiersEx() & Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx()) != 0 && !e.isShiftDown();
+94:             boolean esc = e.getKeyCode() == KeyEvent.VK_ESCAPE && e.getModifiersEx() == 0;
+95:             if ((ctrlZ || esc) && !typing && !history.isEmpty() && MenuSelectionManager.defaultManager().getSelectedPath().length == 0) {
+96:                 back();
+97:                 return true;
+98:             }
+99:             return false;
+100:         };
+101:         KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(ked);
+102:         listen(ev -> {
+103:             if (ev instanceof MouseEvent && ev.getID() == MouseEvent.MOUSE_PRESSED && ((MouseEvent) ev).getButton() == 4 && !locked && frame != null && frame.isActive()) back();
+104:         }, AWTEvent.MOUSE_EVENT_MASK);
+105:         // 10.16: عند العودة إلى البرنامج والرئيسية ظاهرة: تُحدَّث إن تغيّر نص الحافظة (بطاقة «اللصق من واتساب»)
+106:         frame.addWindowListener(new WindowAdapter() {
+107:             String lastClip;
+108: 
+109:             @Override public void windowActivated(java.awt.event.WindowEvent e) {
+110:                 if (locked || !"home".equals(current)) return;
+111:                 String c = HomeView.clipText(db);
+112:                 if (c != null && !c.equals(lastClip)) {
+113:                     lastClip = c;
+114:                     View v = views.get("home");
+115:                     if (v != null) v.refresh();
+116:                 }
+117:             }
+118:         });
+119:         frame.addWindowListener(new WindowAdapter() {
+120:             @Override public void windowClosing(WindowEvent e) { quit(); }
+121:         });
+122:         try {
+123:             frame.setIconImages(java.util.Arrays.asList(Main.appIcon(16), Main.appIcon(32), Main.appIcon(48), Main.appIcon(64), Main.appIcon(256)));
+124:         } catch (Throwable ignored) {
+125:             // غير مهم
+126:         }
+127:         JPanel root = new JPanel(new BorderLayout());
+128:         root.setBackground(Ui.bg);
+129:         buildSide();
+130:         root.add(side, BorderLayout.LINE_START);
+131:         content.setBackground(Ui.bg);
+132:         root.add(content, BorderLayout.CENTER);
+133:         frame.setContentPane(root);
+134:         frame.setJMenuBar(menu());
+135:         root.applyComponentOrientation(Ui.RTL);
+136:         Dimension scr = Toolkit.getDefaultToolkit().getScreenSize();
+137:         frame.setSize(Math.min(1360, scr.width - 80), Math.min(880, scr.height - 80));
+138:         // 10.5 (§12): حد أدنى لا يتجاوز الشاشة الصغيرة، ومكان النافذة وحجمها يُستعادان كما تركهما المستخدم (إن بقيا على شاشة موجودة)
+139:         frame.setMinimumSize(new Dimension(Math.min(1024, scr.width - 40), Math.min(680, scr.height - 60)));
+140:         frame.setLocationRelativeTo(null);
+141:         restoreBounds();
+142:         listen(e -> lastInput = Clock.now(), AWTEvent.KEY_EVENT_MASK | AWTEvent.MOUSE_EVENT_MASK);
+143:         // إعادة لفّ النصوص بعد تغيير حجم النافذة (عدا نموذج الحركة حتى لا يُلمس ما يُكتب)
+144:         Timer relayout = new Timer(450, e -> {
+145:             View v = views.get(current);
+146:             if (v != null && !(v instanceof TxView) && !(v instanceof RecordView) && !(v instanceof BuilderView) && !locked) {
+147:                 try {
+148:                     v.refresh();
+149:                 } catch (Throwable ignored) {
+150:                     // تُعاد عند الفتح التالي
+151:                 }
+152:             }
+153:         });
+154:         relayout.setRepeats(false);
+155:         timers.add(relayout);
+156:         frame.addComponentListener(new ComponentAdapter() {
+157:             int lastW = -1;
+158: 
+159:             @Override public void componentResized(ComponentEvent e) {
+160:                 if (Math.abs(frame.getWidth() - lastW) > 40) {
+161:                     lastW = frame.getWidth();
+162:                     relayout.restart();
+163:                 }

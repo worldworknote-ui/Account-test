@@ -1,0 +1,188 @@
+399:         Model.Office o = (Model.Office) office.getSelectedItem();
+400:         if (o == null) return "النسخة المجانية: " + e.maxTxPerOffice() + " حركة جديدة لكل مكتب";
+401:         QuotaState q = db.quotaNow();
+402:         return "النسخة المجانية: بقي " + QuotaState.remaining(q.txOf(o.id), e.maxTxPerOffice()) + " حركة جديدة لـ«" + o.name + "»";
+403:     }
+404: 
+405:     void loadOffices(long select) {
+406:         List<Model.Office> l = new ArrayList<>();
+407:         for (Model.Office o : RecordView.myFirst(db, db.offices())) if (o.active) l.add(o);
+408:         String q = OwnerReports.norm(officeSearch.getText());
+409:         DefaultComboBoxModel<Model.Office> m = new DefaultComboBoxModel<>();
+410:         m.addElement(null);
+411:         for (Model.Office o : l) if (q.isEmpty() || OwnerReports.norm(o.name + " " + Model.nz(o.shortName)).contains(q)) m.addElement(o);
+412:         office.setModel(m);
+413:         for (int i = 0; i < m.getSize(); i++) if (m.getElementAt(i) != null && m.getElementAt(i).id == select) office.setSelectedIndex(i);
+414:     }
+415: 
+416:     /** يختار مكتبًا بعينه في القائمة (يمسح البحث إن أخفاه). */
+417:     void selectOffice(long id) {
+418:         officeSearch.setText("");
+419:         building = true;
+420:         loadOffices(id);
+421:         building = false;
+422:         officeChanged();
+423:     }
+424: 
+425:     void filterOffices() {
+426:         Model.Office cur = (Model.Office) office.getSelectedItem();
+427:         building = true;
+428:         loadOffices(cur == null ? -1 : cur.id);
+429:         if (office.getSelectedItem() == null && office.getItemCount() == 2) office.setSelectedIndex(1);
+430:         building = false;
+431:         officeChanged();
+432:     }
+433: 
+434:     void loadServices() {
+435:         Object cur = service.getEditor().getItem();
+436:         DefaultComboBoxModel<String> m = new DefaultComboBoxModel<>();
+437:         m.addElement("");
+438:         for (String s : db.usedServices(30)) m.addElement(s);
+439:         for (String s : new String[]{"اعتماد", "سويفت", "USDT", "تسليم باليد", "إيداع بنكي"}) if (m.getIndexOf(s) < 0) m.addElement(s);
+440:         service.setModel(m);
+441:         service.getEditor().setItem(cur == null ? "" : cur);
+442:     }
+443: 
+444:     void officeChanged() {
+445:         fillRecentOffices();
+446:         fillRateChips();
+447:         Model.Office o = (Model.Office) office.getSelectedItem();
+448:         Object curSel = currency.getSelectedItem();
+449:         building = true;
+450:         DefaultComboBoxModel<String> cm = new DefaultComboBoxModel<>(), fm = new DefaultComboBoxModel<>();
+451:         if (o != null) for (String c : db.officeCurrencies(o.id)) {
+452:             cm.addElement(c);
+453:             fm.addElement(c);
+454:         }
+455:         currency.setModel(cm);
+456:         feeCur.setModel(fm);
+457:         currency.setSelectedIndex(-1);
+458:         if (curSel != null && cm.getIndexOf(curSel) >= 0) currency.setSelectedItem(curSel);
+459:         else if (cm.getSize() == 1) currency.setSelectedIndex(0);
+460:         if (currency.getSelectedItem() != null) feeCur.setSelectedItem(currency.getSelectedItem());
+461:         building = false;
+462:         subtitle.setText(editing != null ? subtitle.getText() : quotaText());
+463:         if (parsed != null && !filled) renderParse();
+464:         recalcFee();
+465:     }
+466: 
+467:     // ===================================================================================
+468:     // الأجرة
+469:     // ===================================================================================
+470: 
+471:     void applyFee() {
+472:         boolean on = feeMode.selected == 1;
+473:         feeBox.setVisible(on);
+474:         boolean byRate = feeKind.selected == 1;
+475:         rateBox.setVisible(byRate);
+476:         fee.setEditable(!byRate);
+477:         fee.setHint(byRate ? "الأجرة المحسوبة تظهر هنا" : "مبلغ الأجرة");
+478:         feeCur.setEnabled(!byRate);
+479:         if (byRate && currency.getSelectedItem() != null) feeCur.setSelectedItem(currency.getSelectedItem());
+480:         recalcFee();
+481:         body.revalidate();
+482:     }
+483: 
+484:     int per() { return ratePer.selected == 1 ? Model.PER_MILLE : Model.PER_CENT; }
+485: 
+486:     void recalcFee() {
+487:         if (feeMode == null) return;
+488:         if (feeMode.selected == 1 && feeKind.selected == 1) {
+489:             String c = (String) currency.getSelectedItem();
+490:             String msg;
+491:             try {
+492:                 BigDecimal r = Model.parseRate(rate.getText());
+493:                 if (c == null) throw new IllegalArgumentException("اختر العملة");
+494:                 long a = Db.minor(amount.getText(), db.decimals(c));
+495:                 long f = Model.feeFromRate(a, r, per());
+496:                 String v = Model.plain(f, db.decimals(c));
+497:                 if (!fee.getText().equals(v)) fee.setText(v);
+498:                 msg = Model.fmt(a, db.decimals(c)) + " × " + Model.rateLabel(r, per()) + " = " + Model.fmt(f, db.decimals(c)) + " " + c
+499:                         + (Model.feeRounded(a, r, per()) ? " (مقرّبة)" : "");
+500:             } catch (Exception e) {
+501:                 if (!fee.getText().isEmpty()) fee.setText("");
+502:                 msg = rate.getText().trim().isEmpty() ? (per() == Model.PER_MILLE ? "اكتب النسبة بالألف، مثل 5" : "اكتب النسبة بالمئة، مثل 1") : "";
+503:             }
+504:             rateResult.setText(msg);
+505:         }
+506:         updateSummary();
+507:     }
+508: 
+509:     // ===================================================================================
+510:     // الرسالة: الاستخراج والطابور
+511:     // ===================================================================================
+512: 
+513:     void pasteClipboard() {
+514:         try {
+515:             String s = (String) Toolkit.getDefaultToolkit().getSystemClipboard().getData(DataFlavor.stringFlavor);
+516:             if (s == null || s.trim().isEmpty()) {
+517:                 Ui.toast("الحافظة فارغة");
+518:                 return;
+519:             }
+520:             List<WaText.Msg> msgs = WaText.split(s);
+521:             if (msgs.size() > 1) {
+522:                 queue = msgs;
+523:                 queueAt = 0;
+524:                 desc.setText(msgs.get(0).body);
+525:                 updateQueue();
+526:                 Ui.toast("وُجدت " + msgs.size() + " رسائل؛ تُسجَّل واحدة بعد الأخرى.");
+527:             } else desc.setText(s.trim());
+528:         } catch (Exception e) {
+529:             Ui.error(this, e);
+530:         }
+531:     }
+532: 
+533:     /** 10.5 (§5): يعرض المكتب المثبّت لرسائل واتساب، أو أنه سيُطلب تأكيده قبل أول حفظ. */
+534:     void updatePin() {
+535:         Model.Office p = WaPin.current(db);
+536:         boolean wa = fromWa();
+537:         pinLabel.setVisible(wa);
+538:         if (!wa) return;
+539:         pinLabel.setHorizontalAlignment(SwingConstants.RIGHT);
+540:         pinLabel.setAlignmentX(Component.RIGHT_ALIGNMENT);
+541:         pinLabel.setFont(Ui.font(14, true));
+542:         pinLabel.setText(p == null ? "<html><div style='text-align:right'><font color='" + Ui.hex(Ui.red) + "'> لم يُثبَّت مكتب لرسائل واتساب في هذه الجلسة: سيُطلب تأكيده قبل أول حفظ.</font></div></html>"
+543:                 : "<html><div style='text-align:right'> المكتب المثبّت لرسائل واتساب: <b><font color='" + Ui.hex(Ui.red) + "'>«" + Ui.esc(p.name) + "»</font></b> — لا يتغير تلقائيًا</div></html>");
+544:     }
+545: 
+546:     /** النموذج من رسالة واتساب (دفعة، أو نص فيه حوالة مستخرجة). */
+547:     boolean fromWa() { return editing == null && (queue.size() > 1 || parsed != null && !desc.getText().trim().isEmpty()); }
+548: 
+549:     void updateQueue() {
+550:         updatePin();
+551:         if (queue.size() > 1) {
+552:             queueLabel.setText("الرسالة " + (queueAt + 1) + " من " + queue.size() + (queue.get(queueAt).sender == null || queue.get(queueAt).sender.isEmpty() ? "" : " — من " + queue.get(queueAt).sender));
+553:             queueLabel.setVisible(true);
+554:         } else {
+555:             queueLabel.setText("");
+556:             queueLabel.setVisible(false);
+557:         }
+558:     }
+559: 
+560:     void scheduleParse() {
+561:         filled = false;
+562:         parseTimer.restart();
+563:         updateSummary();
+564:     }
+565: 
+566:     List<MessageParser.Cur> parserCurrencies() {
+567:         List<MessageParser.Cur> out = new ArrayList<>();
+568:         Map<String, String> names = db.currencyNames();
+569:         Model.Office o = (Model.Office) office.getSelectedItem();
+570:         if (o != null) for (String c : db.officeCurrencies(o.id)) out.add(new MessageParser.Cur(c, names.get(c), db.decimals(c)));
+571:         if (out.isEmpty()) for (Model.Currency c : db.currencies(false)) out.add(new MessageParser.Cur(c.code, c.name, c.decimals));
+572:         return out;
+573:     }
+574: 
+575:     void previewParse() {
+576:         String text = desc.getText();
+577:         if (text.trim().length() < 3 || editing != null) {
+578:             parsed = null;
+579:             duplicate = null;
+580:             parseBox.removeAll();
+581:             parseBox.revalidate();
+582:             return;
+583:         }
+584:         // 10.16: مفتاح «استخراج معلومات رسائل واتساب» (كالهاتف): عند إيقافه إدخال يدوي عادي
+585:         if ("0".equals(db.setting("wa_parse", "1"))) {
+586:             parsed = null;

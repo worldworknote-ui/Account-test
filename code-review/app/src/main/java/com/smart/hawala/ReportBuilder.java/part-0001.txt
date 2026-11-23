@@ -1,0 +1,148 @@
+1: package com.smart.hawala;
+2: 
+3: import java.math.BigDecimal;
+4: import java.math.RoundingMode;
+5: import java.util.ArrayList;
+6: import java.util.Calendar;
+7: import java.util.Collections;
+8: import java.util.Comparator;
+9: import java.util.HashMap;
+10: import java.util.HashSet;
+11: import java.util.LinkedHashMap;
+12: import java.util.List;
+13: import java.util.Locale;
+14: import java.util.Map;
+15: import java.util.Set;
+16: import java.util.TreeMap;
+17: import java.util.TreeSet;
+18: import org.json.JSONArray;
+19: import org.json.JSONObject;
+20: 
+21: /**
+22:  * 8.1: «منشئ التقارير» — منطق بحت مشترك بين الهاتف والماك. يختار المستخدم الفترة والمكاتب والعملات والاتجاه ونوع الحركة
+23:  * والحالة والبحث في النصوص والخدمة والوجهة والمستخدم وحدود المبلغ، ثم التجميع (بالمكتب، باليوم/الأسبوع/الشهر/الربع/السنة،
+24:  * بيوم الأسبوع، بالساعة، بالخدمة، بالوجهة، بالمستخدم، بالمستفيد، بالاتجاه، بنوع الحركة، بشريحة المبلغ) وجدولًا متقاطعًا
+25:  * اختياريًا ومقارنة بالفترة السابقة، فيخرج Report يُصدَّر PDF أو Excel أو CSV كباقي التقارير.
+26:  *
+27:  * <p>القاعدة المحاسبية: كل حركة نشطة إما حوالة (مبلغها في «لنا/علينا» وأجرتها من خانة الأجرة في «الأجور»)
+28:  * أو حركة أجور/راجع مستقلة (مبلغها كله في «الأجور»)، فلا يُحسب مبلغ مرتين، و«الأثر على الرصيد» = صافي الحوالات + صافي الأجور
+29:  * يساوي حركة رصيد المكاتب في دفتر القيود للفترة نفسها (يتحقق منه الاختبار على ملف حقيقي).
+30:  */
+31: public final class ReportBuilder {
+32:     private ReportBuilder() {}
+33: 
+34:     public static final long DAY = 86400000L;
+35: 
+36:     // الاتجاه
+37:     public static final int DIR_ALL = 0, DIR_US = 1, DIR_THEM = 2;
+38:     // نوع الحركة
+39:     public static final int K_ALL = 0, K_TRANSFERS = 1, K_FEE_ROWS = 2, K_RAJE = 3, K_WITH_FEE = 4, K_NO_FEE = 5, K_FX = 6, K_XFER = 7;
+40:     // الحالة
+41:     public static final int S_ACTIVE = 0, S_ALL = 1, S_CANCELLED = 2, S_EDITED = 3, S_PENDING = 4;
+42:     // التجميع
+43:     public static final int G_NONE = 0, G_OFFICE = 1, G_CURRENCY = 2, G_DAY = 3, G_WEEK = 4, G_MONTH = 5, G_QUARTER = 6, G_YEAR = 7, G_WEEKDAY = 8,
+44:             G_HOUR = 9, G_SERVICE = 10, G_DEST = 11, G_USER = 12, G_PERSON = 13, G_DIRECTION = 14, G_KIND = 15, G_SIZE = 16;
+45:     // المقياس في الجدول المتقاطع
+46:     public static final int M_COUNT = 0, M_US = 1, M_THEM = 2, M_NET = 3, M_VOLUME = 4, M_FEES_NET = 5, M_IMPACT = 6;
+47:     // الترتيب
+48:     public static final int SORT_KEY = 0, SORT_COUNT = 1, SORT_VOLUME = 2, SORT_NET = 3, SORT_FEES = 4;
+49: 
+50:     public static final String[] DIR_NAMES = {"الكل", "لنا فقط", "علينا فقط"};
+51:     public static final String[] KIND_NAMES = {"كل الحركات", "الحوالات فقط (دون حركات الأجور)", "حركات الأجور فقط", "حركات الأجور فقط",
+52:             "حوالات بأجرة", "حوالات بلا أجرة", "قص العملات فقط", "الحركات بين مكتبين فقط"};
+53:     public static final String[] STATUS_NAMES = {"النشطة فقط", "كل الحالات", "الملغاة فقط", "المعدّلة وتصحيحاتها", "بانتظار الاعتماد"};
+54:     public static final String[] GROUP_NAMES = {"بلا تجميع (كشف تفصيلي)", "المكتب", "العملة", "اليوم", "الأسبوع", "الشهر", "الربع", "السنة", "يوم الأسبوع",
+55:             "ساعة اليوم", "الخدمة", "الوجهة", "المستخدم", "المستفيد", "الاتجاه (لنا/علينا)", "نوع الحركة", "شريحة المبلغ"};
+56:     public static final String[] MEASURE_NAMES = {"عدد العمليات", "مجموع لنا", "مجموع علينا", "الصافي (لنا − علينا)", "الحجم (لنا + علينا)", "صافي الأجور",
+57:             "الأثر على الرصيد"};
+58:     public static final String[] SORT_NAMES = {"حسب المجموعة (الزمن أولًا)", "الأكثر عمليات", "الأكبر حجمًا", "الأكبر صافيًا", "الأكثر أجورًا"};
+59:     static final String[] WEEKDAYS = {"الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"};
+60:     static final long[] SIZE_EDGES = {500, 2000, 10000, 50000};
+61: 
+62:     /** مواصفات التقرير (تُحفظ كقالب باسم). */
+63:     public static final class Spec {
+64:         public String title = "";
+65:         public long from = 0, to = 0;   // to = 0: حتى الآن (حصريًا)
+66:         public Set<Long> offices = new TreeSet<>();
+67:         public Set<String> currencies = new TreeSet<>();
+68:         public int direction = DIR_ALL, kind = K_ALL, status = S_ACTIVE;
+69:         public String text = "", service = "", dest = "", user = "";
+70:         public BigDecimal minAmount, maxAmount;
+71:         public int group = G_OFFICE, group2 = G_NONE, measure = M_NET, sort = SORT_KEY, top = 0;
+72:         public boolean compare, details, runningBalance = true;
+73: 
+74:         public JSONObject toJson() {
+75:             JSONObject j = new JSONObject();
+76:             try {
+77:                 j.put("title", title).put("from", from).put("to", to).put("direction", direction).put("kind", kind).put("status", status)
+78:                         .put("text", text).put("service", service).put("dest", dest).put("user", user).put("group", group).put("group2", group2)
+79:                         .put("measure", measure).put("sort", sort).put("top", top).put("compare", compare).put("details", details).put("running", runningBalance);
+80:                 if (minAmount != null) j.put("min", minAmount.toPlainString());
+81:                 if (maxAmount != null) j.put("max", maxAmount.toPlainString());
+82:                 JSONArray o = new JSONArray();
+83:                 for (long x : offices) o.put(x);
+84:                 j.put("offices", o);
+85:                 JSONArray c = new JSONArray();
+86:                 for (String x : currencies) c.put(x);
+87:                 j.put("currencies", c);
+88:             } catch (Exception ignored) {
+89:                 // لا يحدث مع هذه الأنواع
+90:             }
+91:             return j;
+92:         }
+93: 
+94:         public static Spec fromJson(JSONObject j) {
+95:             Spec s = new Spec();
+96:             s.title = j.optString("title", "");
+97:             s.from = j.optLong("from", 0);
+98:             s.to = j.optLong("to", 0);
+99:             s.direction = clamp(j.optInt("direction", 0), DIR_NAMES.length);
+100:             s.kind = clamp(j.optInt("kind", 0), KIND_NAMES.length);
+101:             s.status = clamp(j.optInt("status", 0), STATUS_NAMES.length);
+102:             s.text = j.optString("text", "");
+103:             s.service = j.optString("service", "");
+104:             s.dest = j.optString("dest", "");
+105:             s.user = j.optString("user", "");
+106:             s.group = clamp(j.optInt("group", G_OFFICE), GROUP_NAMES.length);
+107:             s.group2 = clamp(j.optInt("group2", 0), GROUP_NAMES.length);
+108:             s.measure = clamp(j.optInt("measure", M_NET), MEASURE_NAMES.length);
+109:             s.sort = clamp(j.optInt("sort", 0), SORT_NAMES.length);
+110:             s.top = Math.max(0, j.optInt("top", 0));
+111:             s.compare = j.optBoolean("compare", false);
+112:             s.details = j.optBoolean("details", false);
+113:             s.runningBalance = j.optBoolean("running", true);
+114:             try {
+115:                 if (j.has("min")) s.minAmount = new BigDecimal(j.getString("min"));
+116:                 if (j.has("max")) s.maxAmount = new BigDecimal(j.getString("max"));
+117:             } catch (Exception ignored) {
+118:                 // حد غير صالح يُهمل
+119:             }
+120:             JSONArray o = j.optJSONArray("offices");
+121:             for (int i = 0; o != null && i < o.length(); i++) s.offices.add(o.optLong(i));
+122:             JSONArray c = j.optJSONArray("currencies");
+123:             for (int i = 0; c != null && i < c.length(); i++) s.currencies.add(c.optString(i));
+124:             return s;
+125:         }
+126: 
+127:         static int clamp(int v, int n) { return v < 0 || v >= n ? 0 : v; }
+128:     }
+129: 
+130:     /** البيانات: كل الحركات (كل الحالات) والأرصدة السابقة والأسماء ومنازل العملات. */
+131:     public static final class Data {
+132:         public final List<Model.Tx> txs = new ArrayList<>();
+133:         public final List<OwnerReports.Opening> openings = new ArrayList<>();
+134:         public final Map<Long, String> names = new HashMap<>();
+135:         public final Map<String, Integer> decimals = new HashMap<>();
+136:         public long now = Clock.now();
+137:     }
+138: 
+139:     /** مجاميع مجموعة واحدة بعملة واحدة. */
+140:     public static final class Agg {
+141:         public long count, us, them, feeUs, feeThem, max;
+142: 
+143:         public long net() { return us - them; }
+144: 
+145:         public long volume() { return us + them; }
+146: 
+147:         public long feesNet() { return feeUs - feeThem; }
+148: 

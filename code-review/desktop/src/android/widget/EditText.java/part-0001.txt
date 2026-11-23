@@ -1,0 +1,149 @@
+1: package android.widget;
+2: 
+3: import android.content.Context;
+4: import android.graphics.*;
+5: import android.graphics.drawable.Drawable;
+6: import android.text.*;
+7: import android.view.*;
+8: 
+9: /** خانة الكتابة: تُرسم كما في الهاتف، وحين تُركَّز تظهر فوقها خانة حقيقية للكتابة (TextOverlay). */
+10: public class EditText extends TextView implements TextHost {
+11:     private final Buffer buf = new Buffer();
+12:     private int selS, selE;
+13:     private boolean live, quiet;
+14: 
+15:     /** النص القابل للتعديل: كل تعديل يمر بمراقبي النص كما في أندرويد. */
+16:     private final class Buffer extends SpannableStringBuilder {
+17:         @Override public SpannableStringBuilder replace(int st, int en, CharSequence s, int a, int b) {
+18:             CharSequence src = s.subSequence(a, b);
+19:             for (InputFilter f : getFilters()) {
+20:                 CharSequence r = f.filter(src, 0, src.length(), this, st, en);
+21:                 if (r != null) src = r;
+22:             }
+23:             int before = en - st, after = src.length();
+24:             for (TextWatcher w : new java.util.ArrayList<>(watchers)) w.beforeTextChanged(this, st, before, after);
+25:             super.replace(st, en, src, 0, src.length());
+26:             int caret = st + after;
+27:             selS = selE = Math.min(caret, length());
+28:             textChangedInternal();
+29:             for (TextWatcher w : new java.util.ArrayList<>(watchers)) w.onTextChanged(this, st, before, after);
+30:             for (TextWatcher w : new java.util.ArrayList<>(watchers)) w.afterTextChanged(this);
+31:             return this;
+32:         }
+33:     }
+34: 
+35:     public EditText(Context c) {
+36:         super(c);
+37:         text = buf;
+38:         setFocusable(true);
+39:         setFocusableInTouchMode(true);
+40:         setClickable(true);
+41:         setLongClickable(true);
+42:         float d = c.getResources().getDisplayMetrics().density;
+43:         setTextSize(18);
+44:         setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+45:         setMinimumHeight(Math.round(48 * d));
+46:         setPadding(Math.round(4 * d), Math.round(10 * d), Math.round(4 * d), Math.round(12 * d));
+47:         setBackground(new Underline(c, d));
+48:         setSingleLine(false);
+49:         setInputType(InputType.TYPE_CLASS_TEXT);
+50:     }
+51:     public EditText(Context c, android.util.AttributeSet a) { this(c); }
+52:     public EditText(Context c, android.util.AttributeSet a, int s) { this(c); }
+53: 
+54:     @Override public Editable getText() { return buf; }
+55:     @Override public void setText(CharSequence t, BufferType type) {
+56:         if (t == null) t = "";
+57:         if (t == buf) return;
+58:         buf.replace(0, buf.length(), t);
+59:         selS = selE = buf.length();
+60:     }
+61:     private void textChangedInternal() {
+62:         textChanged(null);
+63:         TextOverlay.textChanged(this);
+64:     }
+65:     @Override protected void textChanged(CharSequence old) { super.textChanged(old); }
+66: 
+67:     public void setSelection(int i) { setSelection(i, i); }
+68:     public void setSelection(int s, int e) {
+69:         int n = buf.length();
+70:         if (s < 0 || s > n || e < 0 || e > n) throw new IndexOutOfBoundsException("setSpan (" + s + " ... " + e + ") ends beyond length " + n);
+71:         selS = Math.min(s, e);
+72:         selE = Math.max(s, e);
+73:         TextOverlay.textChanged(this);
+74:     }
+75:     public void selectAll() { setSelection(0, buf.length()); }
+76:     public void extendSelection(int i) { setSelection(selS, i); }
+77:     @Override public int getSelectionStart() { return selS; }
+78:     @Override public int getSelectionEnd() { return selE; }
+79:     @Override public boolean hasSelection() { return selS != selE; }
+80:     @Override public boolean onCheckIsTextEditor() { return true; }
+81:     @Override protected boolean hideTextForOverlay() { return live; }
+82:     @Override public boolean performClick() { boolean r = super.performClick(); return r; }
+83: 
+84:     @Override public void setEnabled(boolean e) {
+85:         super.setEnabled(e);
+86:         if (!e && isFocused()) clearFocus();
+87:     }
+88: 
+89:     // ------------------------------------------------------------------ TextHost
+90:     @Override public String hostText() { return buf.toString(); }
+91:     @Override public void userText(String s, int a, int b) {
+92:         String cur = buf.toString();
+93:         if (s.equals(cur)) return;
+94:         int pre = 0, max = Math.min(s.length(), cur.length());
+95:         while (pre < max && s.charAt(pre) == cur.charAt(pre)) pre++;
+96:         int suf = 0;
+97:         while (suf < max - pre && s.charAt(s.length() - 1 - suf) == cur.charAt(cur.length() - 1 - suf)) suf++;
+98:         buf.replace(pre, cur.length() - suf, s.substring(pre, s.length() - suf));
+99:         selS = Math.min(a, buf.length());
+100:         selE = Math.min(b, buf.length());
+101:     }
+102:     @Override public void userSelection(int s, int e) { selS = Math.min(s, buf.length()); selE = Math.min(e, buf.length()); }
+103:     @Override public int selStart() { return selS; }
+104:     @Override public int selEnd() { return selE; }
+105:     @Override public java.awt.Font hostFont() { return awtFont(); }
+106:     @Override public int hostColor() { return getCurrentTextColor(); }
+107:     @Override public int hostHighlight() { return getContext() instanceof android.app.Activity ? ((android.app.Activity) getContext()).themeAccent() : 0xFF0B6B53; }
+108:     @Override public boolean singleLine() { return isSingleLineMode(); }
+109:     @Override public boolean password() {
+110:         return getTransformationMethod() instanceof android.text.method.PasswordTransformationMethod;
+111:     }
+112:     @Override public int numeric() {
+113:         int t = getInputType(), cls = t & InputType.TYPE_MASK_CLASS;
+114:         if (cls == InputType.TYPE_CLASS_NUMBER) return (t & InputType.TYPE_NUMBER_FLAG_DECIMAL) != 0 ? 2 : 1;
+115:         if (cls == InputType.TYPE_CLASS_PHONE) return 3;
+116:         return 0;
+117:     }
+118:     @Override public int maxLength() { return super.maxLength(); }
+119:     @Override public int align() { return swingAlign(); }
+120:     @Override public boolean rtlText() { return textRtl(); }
+121:     @Override public boolean enterPressed() { return fireEditorAction(); }
+122:     @Override public boolean editable() { return isEnabled(); }
+123:     @Override public void liveChanged(boolean l) { live = l; invalidate(); }
+124: 
+125:     /** خط Material السفلي (للخانات بلا خلفية مخصصة). */
+126:     static final class Underline extends Drawable {
+127:         final float d;
+128:         final int accent, normal;
+129:         Underline(Context c, float d) {
+130:             this.d = d;
+131:             android.app.Activity a = c instanceof android.app.Activity ? (android.app.Activity) c : null;
+132:             accent = a == null ? 0xFF0B6B53 : a.themeAccent();
+133:             normal = a == null ? 0x8A000000 : a.themeHintColor();
+134:         }
+135:         @Override public boolean isStateful() { return true; }
+136:         @Override protected boolean onStateChange(int[] s) { return true; }
+137:         @Override public boolean getPadding(Rect p) { return false; }
+138:         @Override public void draw(Canvas c) {
+139:             Rect b = getBounds();
+140:             boolean f = false;
+141:             for (int s : getState()) if (s == android.R.attr.state_focused) f = true;
+142:             Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+143:             p.setColor(f ? accent : normal);
+144:             float th = f ? 2 * d : 1 * d;
+145:             float y = b.bottom - 8 * d;
+146:             c.drawRect(b.left + 4 * d, y - th, b.right - 4 * d, y, p);
+147:         }
+148:     }
+149: }

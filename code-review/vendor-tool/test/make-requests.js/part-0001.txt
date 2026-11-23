@@ -1,0 +1,37 @@
+1: /* يولّد طلبات تفعيل وإيصال تحرير لاختبار الواجهة: node make-requests.js <مجلد> */
+2: "use strict";
+3: var fs = require("fs"), path = require("path"), nc = require("crypto");
+4: var VT = require("../core.js");
+5: var OUT = process.argv[2];
+6: fs.mkdirSync(OUT, { recursive: true });
+7: 
+8: function dev() {
+9:   var kp = nc.generateKeyPairSync("ec", { namedCurve: "P-256" });
+10:   return { priv: kp.privateKey, spki: new Uint8Array(kp.publicKey.export({ type: "spki", format: "der" })) };
+11: }
+12: 
+13: async function req(d, o) {
+14:   var j = Object.assign({ t: "sa-activate", v: 1, order: "2026-0153", pkg: VT.PKG, ver: "8.0", build: 20261014, dk: await VT.deviceFingerprint(d.spki), pub: VT.bytesToB64(d.spki), chain: [], model: "Samsung A15 / Android 15", at: Date.now() }, o || {});
+15:   return "SA8-REQ:" + VT.b64url(VT.utf8(JSON.stringify(j)));
+16: }
+17: 
+18: (async function () {
+19:   var d1 = dev(), d2 = dev();
+20:   var chain = VT.pemBlocks(fs.readFileSync(path.join(__dirname, "vectors", "tegu_sdk36_SB_EC_2026_ROOT.pem"), "utf8"), "CERTIFICATE");
+21:   var leaf = VT.parseCert(chain[0]);
+22:   var year = new Date().getFullYear();
+23:   var lid = "SA-" + year + "-0001";
+24:   var dk1 = await VT.deviceFingerprint(d1.spki);
+25:   var body = "v=1;t=release;lid=" + lid + ";dk=" + dk1 + ";n=e2e;at=" + Date.now();
+26:   var sig = nc.sign("sha256", Buffer.from(body, "utf8"), { key: d1.priv, dsaEncoding: "der" });
+27:   var out = {
+28:     good: "السلام عليكم، هذا طلب التفعيل:\n" + (await req(d1)).replace(/(.{70})/g, "$1\n") + "\nشكرًا لكم",
+29:     xss: await req(dev(), { order: "2026-0999", model: "<img src=x onerror=window.__xss=1>" }),
+30:     other: await req({ spki: leaf.spki }, { order: "2026-0200", chain: chain.map(VT.bytesToB64), model: "Pixel (تطبيق آخر)" }),
+31:     second: await req(d2, { order: "2026-0154", model: "Xiaomi Redmi Note 13" }),
+32:     receipt: "إيصال التحرير:\nSA8-REL:" + VT.b64url(VT.utf8(body)) + "." + VT.b64url(new Uint8Array(sig)),
+33:     pub1: VT.bytesToB64(d1.spki), pub2: VT.bytesToB64(d2.spki), lid: lid
+34:   };
+35:   fs.writeFileSync(path.join(OUT, "requests.json"), JSON.stringify(out, null, 1));
+36:   console.log("wrote", path.join(OUT, "requests.json"));
+37: })();

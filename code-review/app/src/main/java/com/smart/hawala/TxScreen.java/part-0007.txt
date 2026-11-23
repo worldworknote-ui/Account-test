@@ -1,0 +1,176 @@
+982:             } catch (Exception e) {
+983:                 amt = -1;
+984:             }
+985:             if (amt <= 0) {
+986:                 msg = "✗ المبلغ غير صحيح";
+987:                 color = a.red;
+988:             } else {
+989:                 long fee = Model.feeFromRate(amt, r, per);
+990:                 if (fee <= 0) {
+991:                     msg = "✗ الأجرة أصغر من أصغر وحدة في " + cur;
+992:                     color = a.red;
+993:                 } else {
+994:                     value = Model.plain(fee, d);
+995:                     msg = "الأجرة = \u2066" + Model.fmt(fee, d) + " " + cur + "\u2069  (" + Model.rateLabel(r, per) + " من \u2066" + Model.fmt(amt, d) + "\u2069"
+996:                             + (Model.feeRounded(amt, r, per) ? "، مقرّبة" : "") + ")";
+997:                     color = a.primaryInk;
+998:                 }
+999:             }
+1000:         }
+1001:         form.rateResult.setText(msg);
+1002:         form.rateResult.setTextColor(color);
+1003:         if (!form.fee.getText().toString().equals(value)) form.fee.setText(value);
+1004:         updateSummary();
+1005:     }
+1006: 
+1007:     /** آخر النسب المستخدمة («1|100,1.5|1000») أزرارًا سريعة: ضغطة تملأ النسبة ونوعها. */
+1008:     private void fillRateChips(final Form form) {
+1009:         form.rateChips.removeAllViews();
+1010:         for (String item : a.db.setting("fee_rates_recent", "").split(",")) {
+1011:             String[] p = item.split("\\|");
+1012:             if (p.length != 2) continue;
+1013:             final java.math.BigDecimal r = Model.parseRate(p[0]);
+1014:             final int per = "1000".equals(p[1]) ? Model.PER_MILLE : Model.PER_CENT;
+1015:             if (r == null) continue;
+1016:             form.rateChips.addView(a.pill(Model.rateLabel(r, per), false, v -> {
+1017:                 form.ratePer.set(per == Model.PER_MILLE ? 1 : 0, false);
+1018:                 form.rate.setText(r.stripTrailingZeros().toPlainString());
+1019:                 recalcFee();
+1020:             }));
+1021:         }
+1022:         form.rateChips.setVisibility(form.rateChips.getChildCount() == 0 ? View.GONE : View.VISIBLE);
+1023:     }
+1024: 
+1025:     /** يحفظ طريقة الأجرة، ونسبتها في أول قائمة آخر النسب (حتى 4). */
+1026:     private void rememberFee(boolean byRate, String rateText, int per) {
+1027:         a.db.setSettingQuiet("fee_kind_last", byRate ? "1" : "0");
+1028:         if (!byRate) return;
+1029:         java.math.BigDecimal r = Model.parseRate(rateText);
+1030:         if (r == null) return;
+1031:         String key = r.stripTrailingZeros().toPlainString() + "|" + per;
+1032:         List<String> l = new ArrayList<>();
+1033:         l.add(key);
+1034:         for (String item : a.db.setting("fee_rates_recent", "").split(",")) {
+1035:             if (!item.isEmpty() && !item.equals(key) && l.size() < 4) l.add(item);
+1036:         }
+1037:         a.db.setSettingQuiet("fee_rates_recent", Model.join(l, ","));
+1038:         a.db.setSettingQuiet("fee_per_last", "" + per);
+1039:     }
+1040: 
+1041:     private Ui.Seg curSeg(LinearLayout holder, List<String> codes, Ui.OnPick l) {
+1042:         holder.removeAllViews();
+1043:         if (codes.isEmpty()) {
+1044:             holder.addView(a.text("لا توجد عملات مفعّلة لهذا المكتب", 13, a.red, false));
+1045:             return null;
+1046:         }
+1047:         // لا عملة محددة مسبقًا: المحاسب يختار العملة في كل حركة (إلا إن كان للمكتب عملة واحدة)
+1048:         Ui.Seg s = a.new Seg(codes.toArray(new String[0]), null, codes.size() == 1 ? 0 : -1, true);
+1049:         s.listener = l;
+1050:         holder.addView(s.view, new LinearLayout.LayoutParams(-1, -2));
+1051:         return s;
+1052:     }
+1053: 
+1054:     private static void selectCur(Ui.Seg s, List<String> codes, String code) {
+1055:         if (s == null || code == null) return;
+1056:         int i = codes.indexOf(code);
+1057:         if (i >= 0) s.set(i, false);
+1058:     }
+1059: 
+1060:     /** 9.0: اسم المكتب المختار بلون مميز وإطار حوله، حتى لا تُسجَّل حركة على مكتب آخر سهوًا. */
+1061:     void markOffice(Button b, boolean chosen) {
+1062:         if (!chosen) return;
+1063:         android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
+1064:         g.setColor(a.fillFor(a.primarySoft));
+1065:         g.setCornerRadius(a.dp(14));
+1066:         g.setStroke(a.dp(2), a.primary);
+1067:         b.setBackground(a.ripple(g, 14));
+1068:         b.setTextColor(a.readable(a.primaryInk));
+1069:         b.setTextSize(18);
+1070:     }
+1071: 
+1072:     private void selectOffice(Model.Office o) {
+1073:         if (f == null) return;
+1074:         final Form form = f;
+1075:         form.office = o;
+1076:         form.officeBtn.setText((o.pinned ? "📌 " : "") + "المكتب: " + o.name);
+1077:         markOffice(form.officeBtn, true);
+1078:         String prevCur = form.cur == null ? null : form.cur.label();
+1079:         form.curs = a.db.officeCurrencies(o.id);
+1080:         form.cur = curSeg(form.curHolder, form.curs, i -> {
+1081:             if ((!form.feeCurTouched || feeByRate()) && form.feeCur != null) form.feeCur.set(i, false);
+1082:             if (form.cur != null) form.cur.flagMissing(false);
+1083:             metalLabels(form);
+1084:             if (feeByRate()) recalcFee();
+1085:             else updateSummary();
+1086:         });
+1087:         form.feeCur = curSeg(form.feeCurHolder, form.curs, i -> {
+1088:             form.feeCurTouched = true;
+1089:             if (form.feeCur != null) form.feeCur.flagMissing(false);
+1090:             metalLabels(form);
+1091:             updateSummary();
+1092:         });
+1093:         if (prevCur != null) {
+1094:             selectCur(form.cur, form.curs, prevCur);
+1095:             if (!form.feeCurTouched) selectCur(form.feeCur, form.curs, prevCur);
+1096:         } else if (form.cur != null && form.feeCur != null && !form.cur.none() && !form.feeCurTouched) {
+1097:             form.feeCur.set(form.cur.selected, false);
+1098:         }
+1099:         StringBuilder sb = new StringBuilder();
+1100:         for (java.util.Map.Entry<String, Long> e : a.db.balances(o.id).entrySet()) {
+1101:             if (sb.length() > 0) sb.append("   •   ");
+1102:             sb.append(e.getKey()).append(": ").append(Model.bal(e.getValue(), a.db.decimals(e.getKey())));
+1103:         }
+1104:         form.balance.setText(sb.length() == 0 ? "" : "الرصيد الحالي: " + sb);
+1105:         if (form.parseBox != null && form.parseBox.getVisibility() == View.VISIBLE) previewParse();
+1106:         if (feeByRate()) recalcFee();
+1107:         else updateSummary();
+1108:     }
+1109: 
+1110:     // ===================================================================================
+1111:     // استخراج المعلومات من رسالة واتساب
+1112:     // ===================================================================================
+1113: 
+1114:     private LinearLayout.LayoutParams toolLp(LinearLayout row) {
+1115:         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-2, a.dp(38));
+1116:         if (row.getChildCount() > 0) p.setMarginStart(a.dp(8));
+1117:         return p;
+1118:     }
+1119: 
+1120:     /** 12.3: «مسح النموذج»: بعد تأكيد إن كان فيه شيء مكتوب، ثم نموذج جديد فارغ. */
+1121:     private void clearForm() {
+1122:         Runnable go = () -> {
+1123:             f = null;
+1124:             a.db.deleteSetting("draft_tx");
+1125:             a.pendingImages.clear();
+1126:             showNew();
+1127:         };
+1128:         boolean any = f != null && ((f.desc != null && f.desc.getText().toString().trim().length() > 0)
+1129:                 || (f.amount != null && f.amount.getText().toString().trim().length() > 0)
+1130:                 || (f.person != null && f.person.getText().toString().trim().length() > 0) || !a.pendingImages.isEmpty());
+1131:         if (!any) {
+1132:             go.run();
+1133:             return;
+1134:         }
+1135:         new AlertDialog.Builder(a).setTitle("مسح النموذج؟").setMessage("يُمسح كل ما كتبته في هذا النموذج (الرسالة والحقول والصور) ويبدأ نموذج جديد فارغ.")
+1136:                 .setPositiveButton("مسح", (d, w) -> go.run()).setNegativeButton("إلغاء", null).show();
+1137:     }
+1138: 
+1139:     /**
+1140:      * 12.3: «قص»: نص فيه عدة رسائل ملزوقة (في الخانة، أو في الحافظة إن كانت الخانة فارغة) يُقطع يدويًا عند حدود الرسائل.
+1141:      */
+1142:     private void cutFromForm() {
+1143:         if (f == null) return;
+1144:         String text = f.desc == null ? "" : f.desc.getText().toString().trim();
+1145:         if (text.isEmpty()) text = WaClip.read(a).text == null ? "" : WaClip.read(a).text.trim();
+1146:         if (WaCuts.lines(text).size() < 2) {
+1147:             new AlertDialog.Builder(a).setTitle("قص الرسائل")
+1148:                     .setMessage("«قص» لنص فيه عدة رسائل ملزوقة ببعض.\n\n1. انسخ الرسائل من واتساب (أو الصقها في خانة الرسالة).\n2. اضغط «قص».\n"
+1149:                             + "3. اضغط الخط المنقّط بين سطرين ليبدأ من هناك رسالة جديدة، ثم «متابعة».")
+1150:                     .setPositiveButton("حسنًا", null).show();
+1151:             return;
+1152:         }
+1153:         a.beforeScreenChange();
+1154:         a.waMove.cutScreen(text);
+1155:     }
+1156: 
+1157:     private void pasteMessage() {

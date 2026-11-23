@@ -1,0 +1,185 @@
+1556:                 try {
+1557:                     ByteArrayOutputStream o = new ByteArrayOutputStream();
+1558:                     BackupFormat.write(withoutAttachments(db.backupSource(src)), o, BuildInfo.VERSION, Db.VER);
+1559:                     zip = o.toByteArray();
+1560:                 } finally {
+1561:                     src.close();
+1562:                 }
+1563:             } finally {
+1564:                 DbCipher.deleteDb(copy);
+1565:             }
+1566:         }
+1567:         JSONArray attRefs = uploadBlobs(keys, atts);
+1568:         long n = lng(SyncStore.meta(d, "snap_no")) + 1;
+1569:         String name = keys.fileName("s-", dev + ":" + n);
+1570:         JSONObject s = new JSONObject();
+1571:         s.put("vault", keys.vaultId);
+1572:         s.put("dev", dev);
+1573:         s.put("at", Clock.now());
+1574:         s.put("cursors", cursors);
+1575:         s.put("hashes", hashes);
+1576:         s.put("zip", Base64.getEncoder().encodeToString(zip));
+1577:         s.put("fmt", FORMAT);
+1578:         s.put("atts", attRefs);
+1579:         folder.write(name, keys.sealFile("s", name, s.toString().getBytes(StandardCharsets.UTF_8)));
+1580:         JSONObject ptr = new JSONObject();
+1581:         ptr.put("name", name);
+1582:         ptr.put("at", s.getLong("at"));
+1583:         ptr.put("seq", mySeq);
+1584:         // 10.4: ما تشمله اللقطة من حزم كل جهاز (يحدد ما يمكن حذفه بأمان)
+1585:         ptr.put("cur", cursors);
+1586:         SQLiteDatabase w = db.getWritableDatabase();
+1587:         SyncStore.setMeta(w, "snap", ptr.toString());
+1588:         SyncStore.setMeta(w, "snap_no", "" + n);
+1589:         SyncStore.setMeta(w, "snap_seq", "" + mySeq);
+1590:         SyncStore.setMeta(w, "snap_fmt", "" + FORMAT);
+1591:         SyncStore.setMeta(w, "snap_sum", "" + progress(w));
+1592:         SyncStore.setMeta(w, "snap_at", "" + s.getLong("at"));
+1593:     }
+1594: 
+1595:     /** 10.4: مجموع ما أرسله هذا الجهاز وما استلمه من الكل (يقيس تقدم الدفتر منذ آخر لقطة). */
+1596:     static long progress(SQLiteDatabase d) {
+1597:         long n = lng(SyncStore.meta(d, "my_seq"));
+1598:         for (Long v : SyncStore.cursors(d).values()) n += v;
+1599:         return n;
+1600:     }
+1601: 
+1602:     /** 10.4: مصدر النسخة نفسه بلا صور (لقطة المزامنة). */
+1603:     static BackupFormat.Source withoutAttachments(final BackupFormat.Source src) {
+1604:         return new BackupFormat.Source() {
+1605:             @Override public Map<String, Long> counts() throws Exception {
+1606:                 Map<String, Long> m = new LinkedHashMap<>(src.counts());
+1607:                 m.put("attachments", 0L);
+1608:                 return m;
+1609:             }
+1610: 
+1611:             @Override public void rows(String table, BackupFormat.RowSink sink) throws Exception { src.rows(table, sink); }
+1612: 
+1613:             @Override public List<BackupFormat.AttachmentRef> attachments() { return new ArrayList<>(); }
+1614: 
+1615:             @Override public byte[] attachmentData(BackupFormat.AttachmentRef ref) { return null; }
+1616: 
+1617:             @Override public List<String> warnings() { return src.warnings(); }
+1618: 
+1619:             @Override public int unreadable() { return src.unreadable(); }
+1620:         };
+1621:     }
+1622: 
+1623:     /**
+1624:      * 10.4: يرفع ما ينقص الخزنة من صور (كل صورة مرة واحدة، باسم مشتق من بصمتها) ويرجع مراجعها للقطة:
+1625:      * [{id, tx, mime, at, sha, ref}]. صورة تالفة أو مفقودة على هذا الجهاز لا تدخل اللقطة.
+1626:      */
+1627:     JSONArray uploadBlobs(SyncCrypto.Keys keys, List<Object[]> atts) throws Exception {
+1628:         JSONArray out = new JSONArray();
+1629:         if (atts.isEmpty()) return out;
+1630:         Set<String> there = new HashSet<>(folder.list("a-"));
+1631:         SQLiteDatabase d = db.getWritableDatabase();
+1632:         for (Object[] a : atts) {
+1633:             long id = (Long) a[0];
+1634:             File f = a[2] == null ? null : db.attachmentFile((String) a[2]);
+1635:             if (f == null || !f.isFile()) continue;
+1636:             String sha = SyncStore.blobSha(d, id, f);
+1637:             if (sha == null) continue;
+1638:             String ref = blobName(keys, sha);
+1639:             if (!there.contains(ref)) {
+1640:                 byte[] plain = Crypto.decBytes(java.nio.file.Files.readAllBytes(f.toPath()));
+1641:                 folder.write(ref, keys.sealFile("a", ref, plain));
+1642:                 there.add(ref);
+1643:             }
+1644:             JSONObject x = new JSONObject();
+1645:             x.put("id", id);
+1646:             x.put("tx", a[1]);
+1647:             x.put("mime", a[3] == null ? "image/jpeg" : a[3]);
+1648:             x.put("at", a[4]);
+1649:             x.put("sha", sha);
+1650:             x.put("ref", ref);
+1651:             out.put(x);
+1652:         }
+1653:         return out;
+1654:     }
+1655: 
+1656:     // ===================================================================================
+1657:     // الإرسال
+1658:     // ===================================================================================
+1659: 
+1660:     /** يختم التغييرات المكتملة في حزمة جديدة محفوظة محليًا (تُرفع بعدها). يرجع رقمها أو 0. */
+1661:     long sealPending() throws Exception {
+1662:         SyncCrypto.Keys keys = keys();
+1663:         SQLiteDatabase d = db.getWritableDatabase();
+1664:         d.beginTransaction();
+1665:         try {
+1666:             Hlc clock = clock(d);
+1667:             String h = clock.now(Clock.now());
+1668:             JSONArray ops = SyncStore.seal(db, d, h);
+1669:             if (ops == null) {
+1670:                 d.setTransactionSuccessful();
+1671:                 return 0;
+1672:             }
+1673:             SyncStore.setMeta(d, "hlc", h);
+1674:             String dev = SyncStore.meta(d, "device");
+1675:             long seq = lng(SyncStore.meta(d, "my_seq")) + 1;
+1676:             JSONObject p = new JSONObject();
+1677:             p.put("v", FORMAT);
+1678:             p.put("vault", keys.vaultId);
+1679:             p.put("dev", dev);
+1680:             p.put("seq", seq);
+1681:             p.put("prev", nz(SyncStore.meta(d, "my_hash")));
+1682:             p.put("hlc", h);
+1683:             p.put("at", Clock.now());
+1684:             p.put("schema", Db.VER);
+1685:             p.put("app", BuildInfo.VERSION);
+1686:             p.put("deps", new JSONObject(SyncStore.cursors(d)));
+1687:             // 10.4: كل صورة في الحزمة مرجع لملفها المستقل (يُرفع قبل الحزمة)
+1688:             JSONArray blobs = new JSONArray();
+1689:             for (int i = 0; i < ops.length(); i++) {
+1690:                 JSONObject op = ops.getJSONObject(i);
+1691:                 JSONObject r = op.optJSONObject("r");
+1692:                 if (!"attachments".equals(op.optString("t")) || r == null || !r.has("_sha")) continue;
+1693:                 String ref = blobName(keys, r.getString("_sha"));
+1694:                 r.put("_ref", ref);
+1695:                 blobs.put(new JSONArray().put(ref).put(r.optLong("id")));
+1696:             }
+1697:             p.put("ops", ops);
+1698:             String name = keys.fileName("p-", dev + ":" + seq);
+1699:             byte[] sealed = keys.sealFile("p", name, p.toString().getBytes(StandardCharsets.UTF_8));
+1700:             String hash = SyncCrypto.hex(SyncCrypto.sha256(sealed));
+1701:             d.execSQL("INSERT INTO sync_outbox(seq,name,data,hash,uploaded,created_at,blobs) VALUES(?,?,?,?,0,?,?)",
+1702:                     new Object[]{seq, name, sealed, hash, Clock.now(), blobs.length() == 0 ? null : blobs.toString()});
+1703:             SyncStore.setMeta(d, "my_seq", "" + seq);
+1704:             SyncStore.setMeta(d, "my_hash", hash);
+1705:             d.setTransactionSuccessful();
+1706:             return seq;
+1707:         } finally {
+1708:             d.endTransaction();
+1709:         }
+1710:     }
+1711: 
+1712:     static Hlc clock(SQLiteDatabase d) {
+1713:         Hlc c = new Hlc(SyncStore.meta(d, "device"));
+1714:         c.restore(SyncStore.meta(d, "hlc"));
+1715:         return c;
+1716:     }
+1717: 
+1718:     /**
+1719:      * يرفع الحزم المحفوظة (الرفع قبل العلامة: التكرار آمن لأن المحتوى نفسه بالاسم نفسه).
+1720:      * 10.4: قائمة المكان تُقرأ مرة واحدة (لا قراءة لكل ملف قبل كتابته)، وصور الحزمة تُرفع قبلها.
+1721:      */
+1722:     int upload() throws Exception {
+1723:         SQLiteDatabase d = db.getWritableDatabase();
+1724:         List<Object[]> rows = new ArrayList<>();
+1725:         try (Cursor c = d.rawQuery("SELECT seq,name,data,blobs FROM sync_outbox WHERE uploaded=0 ORDER BY seq", null)) {
+1726:             while (c.moveToNext()) rows.add(new Object[]{c.getLong(0), c.getString(1), c.getBlob(2), c.getString(3)});
+1727:         }
+1728:         if (rows.isEmpty()) return 0;
+1729:         SyncCrypto.Keys keys = keys();
+1730:         Set<String> present = new HashSet<>(folder.list(""));
+1731:         int n = 0;
+1732:         for (Object[] r : rows) {
+1733:             String name = (String) r[1];
+1734:             byte[] data = (byte[]) r[2];
+1735:             if (r[3] != null) {
+1736:                 JSONArray bl = new JSONArray((String) r[3]);
+1737:                 for (int i = 0; i < bl.length(); i++) {
+1738:                     String ref = bl.getJSONArray(i).getString(0);
+1739:                     if (present.contains(ref)) continue;
+1740:                     byte[] plain = attachmentBytes(bl.getJSONArray(i).getLong(1));

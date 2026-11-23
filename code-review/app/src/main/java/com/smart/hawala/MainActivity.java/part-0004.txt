@@ -1,0 +1,170 @@
+603:                         @Override
+604:                         public void onAuthenticationError(int c, CharSequence m) {
+605:                             // 8.0: القفل لا يُلغى بصمت. 11 و12 و14 = لا بصمة ولا قفل شاشة مهيّأ في الهاتف أصلًا:
+606:                             // يُفتح مع تنبيه دائم دون كتابة biometric=0. أي خطأ آخر (منها 1: المستشعر مشغول) يبقي الشاشة مقفلة.
+607:                             if (c == 11 || c == 12 || c == 14) {
+608:                                 // 10.3: الهاتف بلا بصمة ولا قفل شاشة: كلمة سر التطبيق بدل الفتح دون حماية
+609:                                 appLock.noBiometric();
+610:                             } else {
+611:                                 if (m != null && c != 5 && c != 10 && c != 13) toast(m.toString());
+612:                                 showLock();
+613:                             }
+614:                         }
+615:                     });
+616:         } catch (Throwable e) {
+617:             showLock();
+618:             toast("تعذر فتح شاشة التحقق؛ اضغط «فتح التطبيق» للمحاولة من جديد.");
+619:         }
+620:     }
+621: 
+622:     /**
+623:      * 8.0: يظهر إن فشل الفحص الذاتي للتشفير (ضياع مفتاح Keystore). يمنع الإدخال والنسخ حتى لا تُكتب نسخ تالفة
+624:      * فوق السليمة، ويعرض الاستعادة من نسخة احتياطية فقط.
+625:      */
+626:     void showKeyMissing() {
+627:         base("مفتاح التشفير غير متاح", null);
+628:         onHome = true;
+629:         add(text("تعذر فك البيانات المشفّرة على هذا الهاتف (أسماء المكاتب والبيانات النصية). يحدث هذا إن مُسح مفتاح الأمان من الهاتف: إعادة ضبط، أو نقل بيانات التطبيق بأداة نسخ، أو عطل.", 15, dark, false));
+630:         add(text("لحماية نسخك الاحتياطية السليمة أوقف التطبيق الإدخال والنسخ التلقائي. الحل: استعد آخر نسخة احتياطية سليمة.", 15, red, true));
+631:         button("إعادة المحاولة", primary, v -> {
+632:             Crypto.init(this);
+633:             // 12.6: عاد المفتاح ← تُعاد القاعدة المشفّرة التي نُقلت جانبًا
+634:             if (Db.lockedAside != null && Crypto.healthy(this)) {
+635:                 Db back = Db.restoreLockedAside(this, SmartApp.db);
+636:                 if (back != null) {
+637:                     SmartApp.db = back;
+638:                     db = back;
+639:                 }
+640:             }
+641:             if (Crypto.healthy(this) && Db.lockedAside == null) {
+642:                 keyMissing = false;
+643:                 toast("عاد المفتاح ✓");
+644:                 showHome();
+645:             } else toast("ما زال المفتاح غير متاح.");
+646:         });
+647:         if (can(Auth.Perm.RESTORE)) {
+648:             button("استعادة من نسخة احتياطية", accent, v -> confirm("استعادة من نسخة احتياطية",
+649:                     "سيُنشأ مفتاح أمان جديد، ثم تختار ملف النسخة وتُستبدل البيانات بمحتواها بعد فحصها ومعاينتها. البيانات النصية الحالية غير مقروءة أصلًا.",
+650:                     "متابعة", () -> {
+651:                         Crypto.resetForRestore(this);
+652:                         // 12.6: القاعدة المشفّرة بالمفتاح القديم تُنقل جانبًا (لا تُحذف) وتُفتح قاعدة جديدة بالمفتاح الجديد
+653:                         SmartApp.db = Db.reopenAfterKeyReset(this, SmartApp.db);
+654:                         db = SmartApp.db;
+655:                         keyMissing = false;
+656:                         backupScreen.pickRestoreFile();
+657:                     }));
+658:         } else add(text("الاستعادة للمدير: اطلب منه الدخول.", 14, muted, false));
+659:     }
+660: 
+661:     // ===================================================================================
+662:     // الأخطاء الحرجة
+663:     // ===================================================================================
+664: 
+665:     void showFatal(final Throwable t) {
+666:         try {
+667:             final String trace = CrashGuard.header() + CrashGuard.stack(t);
+668:             CrashGuard.save(this, CrashGuard.stack(t));
+669:             applyColors();
+670:             base("تعذر تشغيل البيانات", null);
+671:             add(text("حدث خطأ أثناء فتح التطبيق. اضغط «مشاركة تفاصيل الخطأ» وأرسلها ليتم إصلاح المشكلة.", 16, ink, false));
+672:             button("إعادة المحاولة", primary, v -> recreate());
+673:             button("مشاركة تفاصيل الخطأ", accent, v -> shareText(trace));
+674:             TextView tv = text(trace, 12, muted, false);
+675:             tv.setTextIsSelectable(true);
+676:             tv.setGravity(Gravity.LEFT);
+677:             tv.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+678:             add(tv);
+679:         } catch (Throwable x) {
+680:             try {
+681:                 Toast.makeText(this, "خطأ: " + t, Toast.LENGTH_LONG).show();
+682:             } catch (Throwable ignored) {
+683:                 // تجاهل
+684:             }
+685:         }
+686:     }
+687: 
+688:     @Override void openLicense() { licenseScreen.show(); }
+689: 
+690:     void shareText(String txt) {
+691:         Intent i = new Intent(Intent.ACTION_SEND);
+692:         i.setType("text/plain");
+693:         i.putExtra(Intent.EXTRA_TEXT, txt);
+694:         startOwn(Intent.createChooser(i, "مشاركة"));
+695:     }
+696: 
+697:     boolean checkPreviousCrash() {
+698:         final String rep = CrashGuard.read(this);
+699:         if (rep == null) return false;
+700:         new AlertDialog.Builder(this).setTitle("أُغلق التطبيق سابقًا بسبب خطأ")
+701:                 .setMessage("يمكنك مشاركة تفاصيل الخطأ ليتم إصلاحه. اضغط «مشاركة» ثم اختر واتساب أو البريد.")
+702:                 .setPositiveButton("مشاركة", (d, w) -> {
+703:                     shareText(rep);
+704:                     CrashGuard.clear(this);
+705:                 })
+706:                 .setNegativeButton("تجاهل", (d, w) -> CrashGuard.clear(this)).show();
+707:         return true;
+708:     }
+709: 
+710:     /** 8.0: ملفات التصدير المؤقتة تُحذف بعد 10 دقائق (عند الفتح وعند مغادرة التطبيق)، لا بعد يومين. */
+711:     void cleanShared() {
+712:         File[] fs = sharedDir().listFiles();
+713:         if (fs == null) return;
+714:         long old = Clock.now() - 10L * 60000L;
+715:         for (File f : fs) if (f.lastModified() < old) f.delete();
+716:     }
+717: 
+718:     /** 8.0: منع لقطات الشاشة ومعاينة «التطبيقات الأخيرة» (مفعّل افتراضيًا، ويستطيع المدير إيقافه). */
+719:     void applySecureScreen() {
+720:         if (db == null || !"0".equals(db.setting("secure_screen", "1"))) getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+721:         else getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+722:     }
+723: 
+724:     @Override
+725:     protected void onStop() {
+726:         super.onStop();
+727:         try {
+728:             cleanShared();
+729:         } catch (Throwable ignored) {
+730:             // غير مهم
+731:         }
+732:     }
+733: 
+734:     // ===================================================================================
+735:     // الصفحة الرئيسية
+736:     // ===================================================================================
+737: 
+738:     static Map<String, String> homeNames() {
+739:         Map<String, String> n = new LinkedHashMap<>();
+740:         n.put("tx", "تسجيل حركة");
+741:         n.put("log", "سجل الحركات");
+742:         n.put("statement", "كشف مكتب");
+743:         n.put("totals", "أرصدة كل المكاتب");
+744:         n.put("daily", "التقرير اليومي");
+745:         n.put("search", "البحث المتقدم");
+746:         n.put("office", "إضافة / تعديل مكتب");
+747:         n.put("currency", "العملات وأسعار الصرف");
+748:         n.put("backup", "نسخة احتياطية الآن");
+749:         n.put("cash", "صندوق المكتب");
+750:         n.put("reports", "مركز التقارير");
+751:         n.put("mine", "مكاتبي");
+752:         n.put("settings", "الإعدادات والتصميم");
+753:         return n;
+754:     }
+755: 
+756:     static List<String> parseOrder(String raw) {
+757:         List<String> out = new ArrayList<>();
+758:         for (String k : (raw == null ? "" : raw).split(",")) {
+759:             k = k.trim();
+760:             if (HOME_KEYS.contains(k) && !out.contains(k)) out.add(k);
+761:         }
+762:         for (String k : HOME_KEYS) {
+763:             if (out.contains(k)) continue;
+764:             int at = out.indexOf("settings");
+765:             if (k.equals("settings") || at < 0) out.add(k);
+766:             else out.add(at, k);
+767:         }
+768:         return out;
+769:     }
+770: 
+771:     static Set<String> parseSet(String raw) {
+772:         Set<String> s = new HashSet<>();

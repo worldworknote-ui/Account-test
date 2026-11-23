@@ -1,0 +1,171 @@
+1: import com.smart.hawala.*;
+2: import java.util.*;
+3: 
+4: /**
+5:  * 9.0: منطق صندوق المكتب وعدّاد واتساب وترتيب المكاتب (بلا قاعدة بيانات).
+6:  * القاعدة: رصيد الصندوق = مجموع أثر الحركات المعدودة، وخلاصة أي فترة: آخرها = أولها + الداخل − الخارج.
+7:  */
+8: public class CashBoxTest {
+9:     static int fails, passes;
+10: 
+11:     static void check(boolean c, String m) {
+12:         if (c) passes++;
+13:         else fails++;
+14:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+15:     }
+16: 
+17:     static long T0 = 1_700_000_000_000L;
+18: 
+19:     static CashBox.Move mv(long id, String kind, String cur, long amount, int dir, long t) {
+20:         CashBox.Move m = new CashBox.Move();
+21:         m.id = id;
+22:         m.kind = kind;
+23:         m.currency = cur;
+24:         m.amount = amount;
+25:         m.dir = dir;
+26:         m.createdAt = t;
+27:         m.uuid = "u" + id;
+28:         return m;
+29:     }
+30: 
+31:     public static void main(String[] a) {
+32:         System.out.println("== الأثر والأرصدة");
+33:         List<CashBox.Move> ms = new ArrayList<>();
+34:         ms.add(mv(1, CashBox.OPENING, "USD", 100000, 1, T0));
+35:         CashBox.Move in = mv(2, CashBox.IN, "USD", 50000, 1, T0 + 1000);
+36:         in.fee = 1000;
+37:         in.feeSide = CashBox.FEE_US;
+38:         in.feeInCash = true;
+39:         ms.add(in);
+40:         CashBox.Move out = mv(3, CashBox.OUT, "USD", 20000, -1, T0 + 2000);
+41:         out.fee = 500;
+42:         out.feeSide = CashBox.FEE_THEM;
+43:         out.feeInCash = true;
+44:         ms.add(out);
+45:         CashBox.Move ex = mv(4, CashBox.EXPENSE, "USD", 3000, -1, T0 + 3000);
+46:         ex.category = "إيجار المحل";
+47:         ms.add(ex);
+48:         CashBox.Move linked = mv(5, CashBox.OUT, "USD", 7000, -1, T0 + 4000);
+49:         linked.officeId = 9L;
+50:         linked.txId = 99L;
+51:         linked.txStatus = "ACTIVE";
+52:         linked.fee = 70;
+53:         linked.feeSide = CashBox.FEE_US;
+54:         linked.feeInCash = false;
+55:         ms.add(linked);
+56:         CashBox.Move pend = mv(6, CashBox.IN, "USD", 99999, 1, T0 + 5000);
+57:         pend.txId = 100L;
+58:         pend.officeId = 9L;
+59:         pend.txStatus = Model.STATUS_PENDING;
+60:         ms.add(pend);
+61:         CashBox.Move canc = mv(7, CashBox.IN, "USD", 88888, 1, T0 + 6000);
+62:         canc.status = CashBox.CANCELLED;
+63:         ms.add(canc);
+64:         CashBox.Move exOut = mv(8, CashBox.EXCHANGE, "USD", 10000, -1, T0 + 7000);
+65:         CashBox.Move exIn = mv(9, CashBox.EXCHANGE, "EUR", 9200, 1, T0 + 7000);
+66:         exOut.pairUuid = exIn.pairUuid = "p";
+67:         ms.add(exOut);
+68:         ms.add(exIn);
+69:         Map<String, Long> b = CashBox.balances(ms, Arrays.asList("USD", "EUR", "TRY"));
+70:         long usd = 100000 + 50000 + 1000 - 20000 - 500 - 3000 - 7000 - 10000;
+71:         check(b.get("USD") == usd && b.get("EUR") == 9200 && b.get("TRY") == 0, "الأرصدة: USD " + b.get("USD") + " = " + usd + "، EUR 92، TRY صفر");
+72:         check(linked.effect() == -7000, "أجرة الحركة المرتبطة على حساب المكتب لا تمس النقد");
+73:         check(pend.effect() == 0 && pend.pending() && "بانتظار الاعتماد".equals(pend.stateText()), "حركة مكتب بانتظار الاعتماد لا تُحسب في الصندوق");
+74:         check(canc.effect() == 0 && "ملغاة".equals(canc.stateText()), "الملغاة لا تُحسب");
+75:         CashBox.Move rej = mv(10, CashBox.OUT, "USD", 5, -1, T0);
+76:         rej.txId = 1L;
+77:         rej.txStatus = Model.STATUS_REJECTED;
+78:         check(rej.effect() == 0 && "مرفوضة".equals(rej.stateText()), "المرفوضة لا تُحسب");
+79: 
+80:         System.out.println("== الخلاصة لفترة");
+81:         Map<String, CashBox.Summary> all = CashBox.summaries(ms, 0, 0, null);
+82:         CashBox.Summary su = all.get("USD");
+83:         check(su.closing == usd && su.computedClosing() == usd, "الخلاصة الكاملة = الرصيد");
+84:         check(su.openingsInPeriod == 100000 && su.in == 50000 && su.out == 27000 && su.feesIn == 1000 && su.feesOut == 500 && su.expenses == 3000
+85:                 && su.exchangeOut == 10000 && su.officeOut == 7000, "تفصيل الداخل والخارج والأجور والمصاريف والصرف");
+86:         check(su.byCategory.get("إيجار المحل") == 3000, "المصاريف حسب البند");
+87:         Map<String, CashBox.Summary> mid = CashBox.summaries(ms, T0 + 2500, T0 + 4500, null);
+88:         CashBox.Summary m2 = mid.get("USD");
+89:         long before = 100000 + 50000 + 1000 - 20000 - 500;
+90:         check(m2.opening == before && m2.closing == before - 3000 - 7000 && m2.count == 2, "فترة وسطى: أولها " + m2.opening + " وآخرها " + m2.closing);
+91:         Map<String, CashBox.Summary> onlyEur = CashBox.summaries(ms, 0, 0, new HashSet<>(Collections.singletonList("EUR")));
+92:         check(onlyEur.size() == 1 && onlyEur.get("EUR").exchangeIn == 9200, "تصفية بالعملة");
+93:         // تحقق عشوائي: لكل نقطة قطع، أول الفترة التالية = آخر السابقة
+94:         Random r = new Random(7);
+95:         List<CashBox.Move> rnd = new ArrayList<>();
+96:         long t = T0;
+97:         for (int i = 0; i < 400; i++) {
+98:             t += 1 + r.nextInt(100000);
+99:             String[] kinds = {CashBox.IN, CashBox.OUT, CashBox.EXPENSE, CashBox.ADJUST};
+100:             String k = kinds[r.nextInt(kinds.length)];
+101:             CashBox.Move x = mv(100 + i, k, r.nextBoolean() ? "USD" : "SYP", 1 + r.nextInt(100000), k.equals(CashBox.IN) ? 1 : k.equals(CashBox.ADJUST) ? (r.nextBoolean() ? 1 : -1) : -1, t);
+102:             if (r.nextInt(5) == 0) {
+103:                 x.fee = r.nextInt(500) + 1;
+104:                 x.feeSide = r.nextBoolean() ? CashBox.FEE_US : CashBox.FEE_THEM;
+105:                 x.feeInCash = r.nextBoolean();
+106:             }
+107:             if (r.nextInt(9) == 0) x.status = CashBox.CANCELLED;
+108:             if (k.equals(CashBox.EXPENSE)) x.category = "بند " + r.nextInt(4);
+109:             rnd.add(x);
+110:         }
+111:         boolean chain = true;
+112:         long cut1 = T0 + (t - T0) / 3, cut2 = T0 + 2 * (t - T0) / 3;
+113:         Map<String, CashBox.Summary> p1 = CashBox.summaries(rnd, 0, cut1, null), p2 = CashBox.summaries(rnd, cut1, cut2, null), p3 = CashBox.summaries(rnd, cut2, 0, null);
+114:         Map<String, Long> fin = CashBox.balances(rnd, null);
+115:         for (String c : fin.keySet()) {
+116:             if (p1.get(c).closing != p2.get(c).opening || p2.get(c).closing != p3.get(c).opening || p3.get(c).closing != fin.get(c)) chain = false;
+117:             long cats = 0;
+118:             for (CashBox.Summary s : new CashBox.Summary[]{p1.get(c), p2.get(c), p3.get(c)}) {
+119:                 long sum = 0;
+120:                 for (long v : s.byCategory.values()) sum += v;
+121:                 if (sum != s.expenses) chain = false;
+122:                 cats += sum;
+123:             }
+124:         }
+125:         check(chain, "400 حركة عشوائية في 3 فترات: آخر كل فترة = أول التالية، وآخر الأخيرة = الرصيد، والبنود = المصاريف");
+126: 
+127:         System.out.println("== التحقق من الإدخال");
+128:         CashBox.Config cfg = new CashBox.Config();
+129:         cfg.on = true;
+130:         cfg.currencies.addAll(Arrays.asList("USD", "EUR"));
+131:         CashBox.Input i1 = new CashBox.Input();
+132:         i1.kind = CashBox.IN;
+133:         i1.currency = "USD";
+134:         i1.amount = 100;
+135:         i1.when = T0;
+136:         i1.category = "أخرى";
+137:         check(CashBox.validate(i1, cfg, T0) == null, "استلام عام صالح");
+138:         i1.currency = "TRY";
+139:         check(CashBox.validate(i1, cfg, T0) != null, "عملة خارج الصندوق مرفوضة");
+140:         i1.currency = "USD";
+141:         i1.when = T0 + 3600000;
+142:         check(CashBox.validate(i1, cfg, T0) != null, "تاريخ في المستقبل مرفوض");
+143:         i1.when = T0;
+144:         cfg.strict = true;
+145:         check(CashBox.validate(i1, cfg, T0).contains("الربط الإلزامي"), "الربط الإلزامي يرفض الاستلام بلا مكتب");
+146:         i1.officeId = 5L;
+147:         check(CashBox.validate(i1, cfg, T0) == null, "ويقبله لحساب مكتب");
+148:         CashBox.Input e1 = new CashBox.Input();
+149:         e1.kind = CashBox.EXPENSE;
+150:         e1.currency = "EUR";
+151:         e1.amount = 5;
+152:         e1.when = T0;
+153:         e1.category = "كهرباء وماء";
+154:         check(CashBox.validate(e1, cfg, T0) == null, "المصروف مسموح مع الربط الإلزامي حين يُسمح بالداخلية");
+155:         cfg.allowInternal = false;
+156:         check(CashBox.validate(e1, cfg, T0) != null, "ومرفوض حين لا يُسمح");
+157:         e1.officeId = 3L;
+158:         cfg.allowInternal = true;
+159:         check(CashBox.validate(e1, cfg, T0) != null, "المصروف لا يُربط بمكتب");
+160:         CashBox.Input x1 = new CashBox.Input();
+161:         x1.kind = CashBox.EXCHANGE;
+162:         x1.currency = "USD";
+163:         x1.toCurrency = "USD";
+164:         x1.amount = 10;
+165:         x1.toAmount = 9;
+166:         x1.when = T0;
+167:         check(CashBox.validate(x1, cfg, T0) != null, "الصرف لعملة نفسها مرفوض");
+168:         x1.toCurrency = "EUR";
+169:         check(CashBox.validate(x1, cfg, T0) == null, "الصرف بين عملتين صالح");
+170:         CashBox.Input f1 = new CashBox.Input();
+171:         f1.kind = CashBox.OUT;

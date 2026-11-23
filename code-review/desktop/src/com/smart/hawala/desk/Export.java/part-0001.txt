@@ -1,0 +1,164 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.io.File;
+6: import java.io.FileOutputStream;
+7: import java.io.OutputStream;
+8: import java.nio.charset.StandardCharsets;
+9: import java.util.List;
+10: import java.util.Map;
+11: import java.util.TimeZone;
+12: import java.util.function.Supplier;
+13: import javax.swing.*;
+14: 
+15: /**
+16:  * تصدير أي تقرير: PDF، Excel، CSV، صور PNG، أو الطباعة. خيارات التصميم نفسها المحفوظة في الإعدادات (st_*) كالهاتف.
+17:  * في النسخة المجانية يُضاف سطر «نسخة مجانية» كما في الهاتف.
+18:  */
+19: final class Export {
+20:     private Export() {}
+21: 
+22:     static final String[] FORMATS = {"PDF", "Excel (.xlsx)", "CSV (للجداول الأخرى)", "صور PNG", "طباعة…"};
+23: 
+24:     static ExportStyle style(Db db) {
+25:         return ExportStyle.from(db.settings(ExportStyle.KEYS));
+26:     }
+27: 
+28:     static Pdf.Opts opts(Db db, ExportStyle st) {
+29:         Pdf.Opts o = new Pdf.Opts();
+30:         o.style = st;
+31:         o.db = db;
+32:         o.developer = db.setting("developer", "برمجة: Ai creative solutions");
+33:         Color c = st.color == null || st.color.trim().isEmpty() ? Ui.primary : Ui.parse(st.color, Ui.primary);
+34:         o.accent = c;
+35:         return o;
+36:     }
+37: 
+38:     /** يعرض خيارات التصدير ثم يبني التقرير في الخلفية ويحفظه. */
+39:     static void dialog(Component parent, App app, String what, Supplier<Report> build) {
+40:         // 10.11 (AUDIT-003): كان الشرط يسمح بالتصدير لمن يملك «العرض» دون «التصدير»؛ كالهاتف: التصدير يحتاج صلاحيته
+41:         if (!app.require(Auth.Perm.EXPORT)) return;
+42:         Db db = app.db;
+43:         ExportStyle st = style(db);
+44:         JPanel c = Ui.column();
+45:         c.add(Ui.label("الصيغة", 13, Ui.muted, true));
+46:         JComboBox<String> fmt = Ui.combo(FORMATS);
+47:         fmt.setSelectedIndex((int) Math.min(FORMATS.length - 1, db.settingLong("last_export_format", 0)));
+48:         c.add(fmt);
+49:         c.add(Ui.gap(10));
+50:         JCheckBox land = Ui.check("عرض الصفحة بالعرض (أفقي) — للجداول العريضة", st.landscape);
+51:         JComboBox<String> size = Ui.combo(new String[]{"خط صغير", "خط عادي", "خط كبير"});
+52:         size.setSelectedIndex("small".equals(st.font) ? 0 : "large".equals(st.font) ? 2 : 1);
+53:         JCheckBox logo = Ui.check("الشعار في رأس الصفحة", st.logo);
+54:         JCheckBox sign = Ui.check("خانات توقيع في آخر التقرير", st.signature);
+55:         JCheckBox colors = Ui.check("لون لكل عملة", st.curColors);
+56:         // 10.16: خيارات تصميم الكشف التي كانت على الهاتف وحده
+57:         final Ui.Field ttl = Ui.field("كشف حساب");
+58:         ttl.setText(st.title);
+59:         final String[][] COLS = {{"لون البرنامج", ""}, {"أخضر", "#1B7846"}, {"أزرق", "#1F5FBF"}, {"كحلي", "#1F3A5F"}, {"بنفسجي", "#7B3FB5"}, {"بني", "#7A4B2A"}, {"رمادي داكن", "#3A3A3A"}, {"أحمر", "#AD2E36"}};
+60:         String[] cn = new String[COLS.length];
+61:         int csel = 0;
+62:         for (int i = 0; i < COLS.length; i++) {
+63:             cn[i] = COLS[i][0];
+64:             if (!COLS[i][1].isEmpty() && COLS[i][1].equalsIgnoreCase(Model.nz(st.color).trim())) csel = i;
+65:         }
+66:         final JComboBox<String> color = Ui.combo(cn);
+67:         color.setSelectedIndex(csel);
+68:         final String customColor = csel == 0 && !Model.nz(st.color).trim().isEmpty() ? st.color : null;   // لون اختير من الهاتف وليس في القائمة: يبقى
+69:         final JComboBox<String> img = Ui.combo(new String[]{"صور صغيرة", "صور متوسطة", "صور كبيرة"});
+70:         img.setSelectedIndex("small".equals(st.imageSize) ? 0 : "large".equals(st.imageSize) ? 2 : 1);
+71:         final JCheckBox running = Ui.check("عمود الرصيد التراكمي", st.showRunning), ref = Ui.check("رقم المرجع", st.showRef),
+72:                 summary = Ui.check("الملخص في أعلى الكشف", st.showSummary);
+73:         JPanel og = new JPanel(new GridLayout(0, 2, 12, 2));
+74:         og.setOpaque(false);
+75:         og.setAlignmentX(Component.RIGHT_ALIGNMENT);
+76:         for (JCheckBox x : new JCheckBox[]{land, logo, sign, colors, running, ref, summary}) og.add(x);
+77:         c.add(og);
+78:         c.add(Ui.gap(6));
+79:         JPanel fg = new JPanel(new GridLayout(0, 2, 12, 6));
+80:         fg.setOpaque(false);
+81:         fg.setAlignmentX(Component.RIGHT_ALIGNMENT);
+82:         fg.add(Ui.labeled("عنوان الكشف", ttl));
+83:         fg.add(Ui.labeled("لون الكشف", color));
+84:         fg.add(Ui.labeled("حجم الخط (PDF والصور والطباعة)", size));
+85:         fg.add(Ui.labeled("حجم الصور المرفقة داخل الكشف", img));
+86:         c.add(fg);
+87:         c.add(Ui.gap(8));
+88:         final Runnable read = () -> {
+89:             st.landscape = land.isSelected();
+90:             st.font = size.getSelectedIndex() == 0 ? "small" : size.getSelectedIndex() == 2 ? "large" : "normal";
+91:             st.logo = logo.isSelected();
+92:             st.signature = sign.isSelected();
+93:             st.curColors = colors.isSelected();
+94:             st.title = ttl.val().isEmpty() ? "كشف حساب" : ttl.val();
+95:             st.color = color.getSelectedIndex() == 0 ? (customColor == null ? "" : customColor) : COLS[color.getSelectedIndex()][1];
+96:             st.imageSize = img.getSelectedIndex() == 0 ? "small" : img.getSelectedIndex() == 2 ? "large" : "medium";
+97:             st.showRunning = running.isSelected();
+98:             st.showRef = ref.isSelected();
+99:             st.showSummary = summary.isSelected();
+100:         };
+101:         c.add(Ui.flow(Ui.ghost("معاينة قبل التصدير", e -> {
+102:             read.run();
+103:             // الخيارات تُحفظ أولًا لأن الكشف يُبنى منها
+104:             for (Map.Entry<String, String> x : st.toMap().entrySet()) db.setSettingQuiet(x.getKey(), x.getValue());
+105:             Ui.busy(parent, "جارٍ تجهيز المعاينة…", p -> Pdf.preview(prepare(build, st), opts(db, st), 760), im -> {
+106:                 JLabel pic = new JLabel(new ImageIcon(im));
+107:                 JScrollPane sp = new JScrollPane(pic);
+108:                 sp.setPreferredSize(new Dimension(Math.min(800, im.getWidth() + 24), 620));
+109:                 sp.getVerticalScrollBar().setUnitIncrement(24);
+110:                 JOptionPane.showMessageDialog(Ui.win(parent), sp, "معاينة: " + what + " (الصفحة الأولى)", JOptionPane.PLAIN_MESSAGE);
+111:             });
+112:         })));
+113:         c.add(Ui.gap(4));
+114:         c.add(Ui.para(License.current.watermark() ? "النسخة المجانية: يُضاف سطر «" + Report.FREE_MARK + "» أسفل الصفحات وفي خصائص Excel." : "", 12, Ui.muted, 380));
+115:         c.setPreferredSize(new Dimension(560, c.getPreferredSize().height));
+116:         if (!Ui.form(parent, "تصدير: " + what, Ui.rtl(c), "تصدير")) return;
+117:         read.run();
+118:         for (Map.Entry<String, String> e : st.toMap().entrySet()) db.setSettingQuiet(e.getKey(), e.getValue());
+119:         int f = fmt.getSelectedIndex();
+120:         db.setSettingQuiet("last_export_format", "" + f);
+121:         run(parent, app, what, build, st, f);
+122:     }
+123: 
+124:     static void run(Component parent, App app, String what, Supplier<Report> build, ExportStyle st, int f) {
+125:         Db db = app.db;
+126:         if (f == 4) {
+127:             Ui.busy(parent, "جارٍ تجهيز التقرير…", p -> prepare(build, st), r -> {
+128:                 try {
+129:                     Pdf.print(r, opts(db, st));
+130:                 } catch (Exception e) {
+131:                     Ui.error(parent, e);
+132:                 }
+133:             });
+134:             return;
+135:         }
+136:         String ext = f == 0 ? ".pdf" : f == 1 ? ".xlsx" : f == 2 ? ".csv" : ".png";
+137:         File target = save(parent, db, what, ext);
+138:         if (target == null) return;
+139:         Ui.busy(parent, "جارٍ التصدير…", p -> {
+140:             Report r = prepare(build, st);
+141:             if (r.dataRows() == 0 && r.sections.isEmpty()) throw new IllegalStateException("لا توجد بيانات للتصدير بهذه الاختيارات.");
+142:             switch (f) {
+143:                 case 0:
+144:                     Pdf.pdf(r, opts(db, st), target);
+145:                     return target;
+146:                 case 1: {
+147:                     String accent = Ui.hex(opts(db, st).accent).substring(1);
+148:                     try (OutputStream o = new FileOutputStream(target)) {
+149:                         XlsxWriter.write(r, o, "FF" + accent, Model.zone());
+150:                     }
+151:                     return target;
+152:                 }
+153:                 case 2:
+154:                     try (OutputStream o = new FileOutputStream(target)) {
+155:                         o.write(ReportBuilder.csv(r).getBytes(StandardCharsets.UTF_8));
+156:                     }
+157:                     return target;
+158:                 default: {
+159:                     String base = target.getName().replaceAll("\\.png$", "");
+160:                     List<File> files = Pdf.png(r, opts(db, st), target.getParentFile(), base);
+161:                     return files.get(0);
+162:                 }
+163:             }
+164:         }, file -> {

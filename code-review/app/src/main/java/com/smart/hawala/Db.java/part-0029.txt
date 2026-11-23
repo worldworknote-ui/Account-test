@@ -1,0 +1,141 @@
+4259:     public void editSpecialType(String name, boolean remove) {
+4260:         require(Auth.Perm.SPECIAL);
+4261:         String n = Model.nz(name).trim().replace('\n', ' ');
+4262:         if (n.isEmpty()) throw new IllegalArgumentException("اكتب اسم النوع");
+4263:         if (n.length() > 40) throw new IllegalArgumentException("الاسم طويل (40 حرفًا على الأكثر)");
+4264:         List<String> l = specialTypes();
+4265:         if (remove) l.remove(n);
+4266:         else if (!l.contains(n)) l.add(n);
+4267:         else throw new IllegalArgumentException("النوع «" + n + "» موجود");
+4268:         if (l.isEmpty()) throw new IllegalArgumentException("يبقى نوع واحد على الأقل");
+4269:         setSettingQuiet("special_types", String.join("\n", l));
+4270:         audit("SPECIAL_TYPES", "settings", 0, (remove ? "حذف: " : "إضافة: ") + n);
+4271:     }
+4272: 
+4273:     /** الحركات الخاصة القائمة لمكتب (null = كل المكاتب): غير المحسوبة، والمحسوبة المعلّقة، والمنتظرة الاعتماد. الأحدث أولًا. */
+4274:     public List<Model.Tx> specials(Long officeId) {
+4275:         List<Model.Tx> out = new ArrayList<>();
+4276:         try (Cursor c = getReadableDatabase().rawQuery("SELECT " + TX_COLS + " FROM tx WHERE special IS NOT NULL AND special<>''"
+4277:                 + " AND status IN ('" + Model.STATUS_SPECIAL + "','ACTIVE','" + Model.STATUS_PENDING + "')"
+4278:                 + (officeId == null ? "" : " AND office_id=" + officeId.longValue()) + " ORDER BY created_at DESC,id DESC", null)) {
+4279:             while (c.moveToNext()) out.add(readTx(c));
+4280:         }
+4281:         return out;
+4282:     }
+4283: 
+4284:     /** نقل الصور الباقية من الحركة القديمة إلى الجديدة. */
+4285:     private void moveAttachments(SQLiteDatabase d, long oldId, long id, Set<Long> removed) {
+4286:         StringBuilder keep = new StringBuilder("UPDATE attachments SET tx_id=" + id + " WHERE tx_id=" + oldId);
+4287:         if (removed != null && !removed.isEmpty()) {
+4288:             keep.append(" AND id NOT IN (");
+4289:             boolean first = true;
+4290:             for (Long x : removed) {
+4291:                 if (!first) keep.append(',');
+4292:                 keep.append(x.longValue());
+4293:                 first = false;
+4294:             }
+4295:             keep.append(')');
+4296:         }
+4297:         d.execSQL(keep.toString());
+4298:     }
+4299: 
+4300:     /**
+4301:      * 12.4: تعديل حركة خاصة أو تحويلها إلى عادية (in.special فارغ)، أو تعليم حركة عادية كخاصة عند تعديلها.
+4302:      * <ul>
+4303:      * <li>الخاصة غير المحسوبة (بلا قيود): تصير CONVERTED وتُسجَّل الجديدة مرتبطة بها (replaces_id)، فلا قيد عكسي لشيء لم يُرحَّل.</li>
+4304:      * <li>المحسوبة في الرصيد إن لم يتغير فيها إلا رفع العلامة (نفس المبالغ والأجرة والتاريخ): تُرفع العلامة وحدها، فلا يتغير الكشف.</li>
+4305:      * <li>غير ذلك: قيد عكسي وحركة مصححة كالتعديل العادي.</li>
+4306:      * </ul>
+4307:      */
+4308:     public long replaceSpecial(long oldId, TxInput in, List<byte[]> newImages, Set<Long> removedAttachments, String reason) throws IOException {
+4309:         require(Auth.Perm.SPECIAL);
+4310:         Model.Tx before = tx(oldId);
+4311:         if (before == null) throw new IllegalArgumentException("الحركة غير موجودة");
+4312:         if (before.isLinked()) throw new IllegalStateException("ساق من عملية مترابطة لا تُعلَّم خاصة ولا تُحوَّل وحدها");
+4313:         if (before.isPending()) throw new IllegalStateException("الحركة بانتظار الاعتماد: اعتمدها أو ارفضها أولًا");
+4314:         if (in.when > 0 && in.when < Model.dayStart(Clock.now()) && in.when != before.createdAt) require(Auth.Perm.BACKDATE);
+4315:         validate(in);
+4316:         boolean toNormal = !special(in);
+4317:         List<File> written = writeImages(newImages);
+4318:         SQLiteDatabase d = getWritableDatabase();
+4319:         long now = Clock.now();
+4320:         d.beginTransaction();
+4321:         try {
+4322:             long id;
+4323:             String how;
+4324:             if (before.isUnposted()) {
+4325:                 checkLock(d, in.when, "تاريخ الحركة يقع داخل فترة محاسبية مقفلة");
+4326:                 ContentValues st = new ContentValues();
+4327:                 st.put("status", Model.STATUS_CONVERTED);
+4328:                 d.update("tx", st, "id=" + oldId + " AND status='" + Model.STATUS_SPECIAL + "'", null);
+4329:                 id = insertTx(d, in, oldId);
+4330:                 moveAttachments(d, oldId, id, removedAttachments);
+4331:                 linkImages(d, id, written, now);
+4332:                 how = toNormal ? "حُوّلت الخاصة (غير المحسوبة) إلى حركة عادية" : "عُدّلت الخاصة";
+4333:             } else if (before.isActive() && (toNormal || in.specialBal) && !keyChanged(before, in) && in.when == before.createdAt && !feeChanged(before, in)
+4334:                     && written.isEmpty() && (removedAttachments == null || removedAttachments.isEmpty()) && sameText(before, in)) {
+4335:                 // المبالغ والتاريخ كما هي والحركة باقية في الرصيد: تتغير العلامة وحدها (لا قيد عكسي ولا حركة جديدة)
+4336:                 checkLock(d, before.createdAt, "الحركة ضمن فترة محاسبية مقفلة");
+4337:                 ContentValues st = new ContentValues();
+4338:                 if (toNormal) {
+4339:                     st.putNull("special");
+4340:                     st.putNull("special_bal");
+4341:                 } else {
+4342:                     st.put("special", in.special.trim());
+4343:                     st.put("special_bal", 1);
+4344:                 }
+4345:                 d.update("tx", st, "id=" + oldId, null);
+4346:                 id = oldId;
+4347:                 how = toNormal ? "رُفعت علامة «" + before.special + "» (الحركة كما هي في الرصيد والكشف)"
+4348:                         : before.isSpecial() ? "تغيّر النوع إلى «" + in.special.trim() + "»" : "عُلّمت حركة خاصة (كما هي في الرصيد والكشف)";
+4349:             } else {
+4350:                 if (!before.isActive()) throw new IllegalStateException("هذه الحركة ملغاة أو معدّلة");
+4351:                 reverseTx(d, oldId, now);
+4352:                 checkLock(d, in.when, "التاريخ الجديد يقع داخل فترة محاسبية مقفلة");
+4353:                 id = insertTx(d, in, oldId);
+4354:                 moveAttachments(d, oldId, id, removedAttachments);
+4355:                 linkImages(d, id, written, now);
+4356:                 String cash = relinkCash(d, oldId, id, in);
+4357:                 if (keyChanged(before, in)) voidChecks(d, oldId, "عُدّلت الحركة: " + keyDiff(before, in));
+4358:                 else carryChecks(d, oldId, id);
+4359:                 how = (toNormal ? "حُوّلت إلى حركة عادية" : before.isSpecial() ? "عُدّلت الخاصة" : "عُلّمت حركة خاصة") + (cash == null ? "" : " — " + cash);
+4360:             }
+4361:             audit(d, toNormal ? "CONVERT_SPECIAL" : "EDIT_SPECIAL", "tx", oldId, "new=" + id + " — " + how
+4362:                     + (toNormal ? "" : " — " + in.special.trim() + (in.specialBal ? " (تُحسب في الرصيد)" : " (لا تُحسب)"))
+4363:                     + (reason == null || reason.isEmpty() ? "" : " — " + reason));
+4364:             d.setTransactionSuccessful();
+4365:             written.clear();
+4366:             return id;
+4367:         } finally {
+4368:             d.endTransaction();
+4369:             for (File f : written) f.delete();
+4370:         }
+4371:     }
+4372: 
+4373:     private static boolean feeChanged(Model.Tx t, TxInput in) {
+4374:         return !Model.nz(t.feeType).equals(Model.nz(in.feeType)) || t.fee != in.fee || !Model.nz(t.feeCurrency).equals(Model.nz(in.feeCurrency));
+4375:     }
+4376: 
+4377:     private static boolean sameText(Model.Tx t, TxInput in) {
+4378:         return Model.nz(t.person).equals(Model.nz(in.person)) && Model.nz(t.description).equals(Model.nz(in.description))
+4379:                 && Model.nz(t.notes).equals(Model.nz(in.notes)) && Model.nz(t.service).equals(Model.nz(in.service)) && Model.nz(t.dest).equals(Model.nz(in.dest));
+4380:     }
+4381: 
+4382:     /** 12.4: إلغاء حركة خاصة غير محسوبة (لا قيد لها ليُعكس). المحسوبة تُلغى كأي حركة (قيد عكسي). */
+4383:     public void voidSpecial(long id, String reason) {
+4384:         require(Auth.Perm.SPECIAL);
+4385:         SQLiteDatabase d = getWritableDatabase();
+4386:         d.beginTransaction();
+4387:         try {
+4388:             ContentValues v = new ContentValues();
+4389:             v.put("status", Model.STATUS_VOIDED);
+4390:             int n = d.update("tx", v, "id=" + id + " AND status='" + Model.STATUS_SPECIAL + "'", null);
+4391:             if (n == 0) throw new IllegalStateException("ليست حركة خاصة غير محسوبة");
+4392:             audit(d, "VOID_SPECIAL", "tx", id, Model.nz(reason));
+4393:             d.setTransactionSuccessful();
+4394:         } finally {
+4395:             d.endTransaction();
+4396:         }
+4397:     }
+4398: 
+4399:     /** فكّ الأمانة أو التجميد (يبقى في السجل بتاريخ الفك ومن فكّه). */

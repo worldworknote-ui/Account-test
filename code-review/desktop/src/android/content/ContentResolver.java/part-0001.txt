@@ -1,0 +1,53 @@
+1: package android.content;
+2: 
+3: import android.database.Cursor;
+4: import android.net.Uri;
+5: import java.io.*;
+6: 
+7: /** المحتوى على الكمبيوتر = ملفات (file://). القوائم والأسماء والأحجام من نظام الملفات. */
+8: public class ContentResolver {
+9:     static final ContentResolver INSTANCE = new ContentResolver();
+10:     public static final String SCHEME_FILE = "file", SCHEME_CONTENT = "content", SCHEME_ANDROID_RESOURCE = "android.resource";
+11: 
+12:     public InputStream openInputStream(Uri u) throws FileNotFoundException {
+13:         if (u == null) throw new FileNotFoundException("null");
+14:         return new FileInputStream(u.file());
+15:     }
+16:     public OutputStream openOutputStream(Uri u) throws FileNotFoundException { return openOutputStream(u, "w"); }
+17:     public OutputStream openOutputStream(Uri u, String mode) throws FileNotFoundException {
+18:         File f = u.file();
+19:         if (f.getParentFile() != null) f.getParentFile().mkdirs();
+20:         return new FileOutputStream(f, mode != null && mode.contains("a"));
+21:     }
+22:     public android.os.ParcelFileDescriptor openFileDescriptor(Uri u, String mode) throws FileNotFoundException {
+23:         return android.os.ParcelFileDescriptor.open(u.file(), mode != null && mode.contains("w") ? android.os.ParcelFileDescriptor.MODE_READ_WRITE : android.os.ParcelFileDescriptor.MODE_READ_ONLY);
+24:     }
+25:     public String getType(Uri u) {
+26:         String n = u.file().getName().toLowerCase();
+27:         if (n.endsWith(".pdf")) return "application/pdf";
+28:         if (n.endsWith(".png")) return "image/png";
+29:         if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
+30:         if (n.endsWith(".csv")) return "text/csv";
+31:         if (n.endsWith(".txt")) return "text/plain";
+32:         if (n.endsWith(".json")) return "application/json";
+33:         if (n.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+34:         if (u.file().isDirectory()) return android.provider.DocumentsContract.Document.MIME_TYPE_DIR;
+35:         return "application/octet-stream";
+36:     }
+37:     public void takePersistableUriPermission(Uri u, int flags) {}
+38:     public void releasePersistableUriPermission(Uri u, int flags) {}
+39:     public java.util.List<UriPermission> getPersistedUriPermissions() { return new java.util.ArrayList<>(); }
+40:     public void registerContentObserver(Uri u, boolean d, android.database.ContentObserver o) {}
+41:     public void unregisterContentObserver(android.database.ContentObserver o) {}
+42:     public void notifyChange(Uri u, android.database.ContentObserver o) {}
+43:     public boolean refresh(Uri u, android.os.Bundle b, android.os.CancellationSignal s) { return true; }
+44:     public int delete(Uri u, String w, String[] a) { return u.file().delete() ? 1 : 0; }
+45: 
+46:     /** أسماء الملفات وأحجامها، ومحتوى المجلدات (لمستندات SAF). */
+47:     public Cursor query(Uri u, String[] proj, String sel, String[] args, String order) {
+48:         return android.provider.DocumentsContract.query(u, proj);
+49:     }
+50:     public Cursor query(Uri u, String[] proj, android.os.Bundle q, android.os.CancellationSignal s) { return query(u, proj, null, null, null); }
+51: 
+52:     public static class UriPermission { public Uri getUri() { return null; } public boolean isReadPermission() { return true; } public boolean isWritePermission() { return true; } }
+53: }

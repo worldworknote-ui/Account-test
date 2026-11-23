@@ -1,0 +1,38 @@
+1: package android.animation;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.List;
+5: 
+6: /** حركة حسب حالة العنصر (الضغط مثلًا). */
+7: public class StateListAnimator {
+8:     private final List<int[]> specs = new ArrayList<>();
+9:     private final List<Animator> anims = new ArrayList<>();
+10:     private Object target;
+11:     private Animator current;
+12:     private int currentIndex = -2;
+13: 
+14:     public void addState(int[] spec, Animator a) { specs.add(spec); anims.add(a); if (target != null) a.setTarget(target); }
+15:     public void setTarget(Object t) { target = t; for (Animator a : anims) a.setTarget(t); }
+16:     public void jumpToCurrentState() { if (current != null) current.end(); }
+17:     public void setState(int[] st) {
+18:         int idx = -1;
+19:         for (int i = 0; i < specs.size(); i++) {
+20:             boolean ok = true;
+21:             for (int s : specs.get(i)) {
+22:                 boolean has = false;
+23:                 for (int x : st) if (x == Math.abs(s)) { has = true; break; }
+24:                 if ((s > 0 && !has) || (s < 0 && has)) { ok = false; break; }
+25:             }
+26:             if (ok) { idx = i; break; }
+27:         }
+28:         if (idx == currentIndex) return;
+29:         if (current != null) current.cancel();
+30:         currentIndex = idx;
+31:         current = idx < 0 ? null : anims.get(idx);
+32:         if (current != null) {
+33:             if (target != null) current.setTarget(target);
+34:             current.start();
+35:         }
+36:     }
+37:     @Override public StateListAnimator clone() { StateListAnimator s = new StateListAnimator(); for (int i = 0; i < specs.size(); i++) s.addState(specs.get(i), anims.get(i).clone()); return s; }
+38: }

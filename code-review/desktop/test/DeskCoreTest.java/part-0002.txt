@@ -1,0 +1,126 @@
+176:         check("سامر خليل".equals(db.tx(id1).person), "الحقول المشفّرة تُقرأ (المستفيد)");
+177:         healthy(db, "بعد العمليات");
+178:         Map<String, Long> opsBalances = namedBalances(db);
+179:         long opsTx = db.txCount();
+180: 
+181:         System.out.println("== 3) نسخة من الماك تُستعاد في جهاز آخر");
+182:         BackupManager.Created cr = BackupManager.createLocal(ctx, db, "Mac-pass-2026".toCharArray(), "8.1-mac", m -> {});
+183:         check(cr.file.exists() && cr.size > 0, "نسخة مشفّرة ومتحقق منها: " + cr.file.getName() + " (" + cr.size + " بايت)");
+184:         File out = new File(tmp("deliver"), "منقولة.sba");
+185:         BackupManager.Delivery dl = BackupManager.copyToFile(cr.file, out);
+186:         check(dl.verified, "النسخ إلى المكان المختار مع إعادة القراءة ومطابقة البصمة");
+187:         Map<String, Long> counts = db.counts();
+188:         db.close();
+189:         Object[] dv2 = device("other");
+190:         Context ctx2 = (Context) dv2[0];
+191:         Db db2 = (Db) dv2[1];
+192:         restore(ctx2, db2, out, "Mac-pass-2026");
+193:         check(namedBalances(db2).equals(opsBalances) && db2.txCount() == opsTx, "الجهاز الآخر: الأرصدة والحركات نفسها " + namedBalances(db2));
+194:         check(db2.counts().equals(counts), "عدد صفوف كل جدول مطابق " + db2.counts());
+195:         check("سامر خليل".equals(db2.tx(id1).person), "الحقول تُفك بمفتاح الجهاز الجديد (أُعيد تشفيرها عند الاستعادة)");
+196:         Model.Tx back2 = db2.tx(id2);
+197:         check(back2 != null && db2.attachmentCounts(null).getOrDefault(id2, 0) == 1, "الصورة المرفقة انتقلت");
+198:         healthy(db2, "بعد الاستعادة");
+199:         // 10.13: الاستعادة مع تفضيلات المظهر أو بدونها
+200:         String lookBackup = db2.setting("primary_color", "∅");
+201:         db2.setSettingQuiet("primary_color", "#123456");
+202:         BackupManager.Prepared pk = BackupManager.prepareRestore(ctx2, out, "Mac-pass-2026".toCharArray(), m -> {});
+203:         pk.keepLook = true;
+204:         BackupManager.applyRestore(ctx2, db2, pk, m -> {});
+205:         check("#123456".equals(db2.setting("primary_color", "")) && namedBalances(db2).equals(opsBalances), "استعادة «بدون التفضيلات»: يبقى المظهر الحالي والبيانات من النسخة");
+206:         BackupManager.Prepared pw2 = BackupManager.prepareRestore(ctx2, out, "Mac-pass-2026".toCharArray(), m -> {});
+207:         BackupManager.applyRestore(ctx2, db2, pw2, m -> {});
+208:         check(lookBackup.equals(db2.setting("primary_color", "∅")) && !db2.restoreKeepLook, "استعادة «مع التفضيلات»: يعود مظهر النسخة");
+209:         // 10.14: رمز استرداد النسخ: نسخة بكلمة مرور منسية تُستعاد بالرمز
+210:         String bcode = BackupRecovery.create(db2);
+211:         BackupManager.Created rcB = BackupManager.createLocal(ctx2, db2, "كلمة-نُسيت-2026".toCharArray(), "10.14", m -> {});
+212:         BackupManager.Prepared byCode = BackupManager.prepareRestore(ctx2, rcB.file, bcode.toLowerCase().toCharArray(), m -> {});
+213:         check(byCode.parsed != null && byCode.report.offices > 0, "نسخة كُتبت بعد تفعيل رمز الاسترداد تُفتح بالرمز وحده (" + byCode.report.offices + " مكتب)");
+214:         BackupManager.clearStaging(ctx2);
+215:         BackupManager.Prepared byPw = BackupManager.prepareRestore(ctx2, rcB.file, "كلمة-نُسيت-2026".toCharArray(), m -> {});
+216:         check(byPw.parsed != null, "وتُفتح بكلمة مرورها أيضًا");
+217:         BackupManager.clearStaging(ctx2);
+218:         boolean rcRefused = false;
+219:         try {
+220:             BackupManager.prepareRestore(ctx2, rcB.file, "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF".toCharArray(), m -> {});
+221:         } catch (Exception ex) {
+222:             rcRefused = true;
+223:         }
+224:         check(rcRefused, "ورمز آخر يُرفض");
+225:         check(!db2.globalSetting("backup_rc_key", "").isEmpty() && !Db.personal("backup_rc_key"), "مفتاح الرمز محفوظ على الجهاز (لا الرمز نفسه)");
+226:         BackupRecovery.disable(db2);
+227:         BackupManager.Created plain = BackupManager.createLocal(ctx2, db2, "كلمة-عادية-2026".toCharArray(), "10.14", m -> {});
+228:         boolean oldOnly = false;
+229:         try {
+230:             BackupManager.prepareRestore(ctx2, plain.file, bcode.toCharArray(), m -> {});
+231:         } catch (Exception ex) {
+232:             oldOnly = true;
+233:         }
+234:         check(oldOnly, "بعد إيقاف الرمز: النسخ الجديدة بكلمة المرور وحدها");
+235:         BackupManager.clearStaging(ctx2);
+236:         boolean wrong = false;
+237:         try {
+238:             BackupManager.prepareRestore(ctx2, out, "wrong-pass".toCharArray(), m -> {});
+239:         } catch (BackupManager.BackupException e) {
+240:             wrong = e.getCause() instanceof SecureStreams.WrongPasswordException;
+241:         }
+242:         check(wrong, "كلمة مرور خاطئة تُرفض بوضوح");
+243:         db2.close();
+244: 
+245:         if (a.length > 2) {
+246:             System.out.println("== 4) ملف حقيقي على الماك");
+247:             Object[] dv3 = device("real");
+248:             Context c3 = (Context) dv3[0];
+249:             Db d3 = (Db) dv3[1];
+250:             // 9.0: المجانية لا تستعيد نسخة فيها أكثر من 9 مكاتب كلها (يختار المستخدم 9)؛ الملف الحقيقي يُستعاد كاملًا بالنسخة الكاملة
+251:             boolean refused = false;
+252:             try {
+253:                 restore(c3, d3, new File(a[1]), a[2]);
+254:             } catch (BackupManager.BackupException e) {
+255:                 refused = e.getCause() instanceof Entitlements.LimitReached;
+256:             }
+257:             check(refused && d3.officeCount() == 0, "المجانية: استعادة الملف الحقيقي كله تُرفض (أكثر من 9 مكاتب) ولا يتغير شيء");
+258:             License.current = Entitlements.of(fullGrant(), BuildInfo.BUILD_DATE);
+259:             long t0 = System.currentTimeMillis();
+260:             restore(c3, d3, new File(a[1]), a[2]);
+261:             long ms = System.currentTimeMillis() - t0;
+262:             JSONObject ex = new JSONObject(new String(Files.readAllBytes(new File(a[3]).toPath()), StandardCharsets.UTF_8)).getJSONObject("REAL");
+263:             Map<String, Long> want = new TreeMap<>();
+264:             JSONArray bs = ex.getJSONArray("balances");
+265:             for (int i = 0; i < bs.length(); i++) {
+266:                 JSONArray b = bs.getJSONArray(i);
+267:                 if (b.getLong(2) != 0) want.merge(b.getString(0) + "|" + b.getString(1), b.getLong(2), Long::sum);
+268:             }
+269:             Map<String, Long> got = namedBalances(d3);
+270:             check(d3.txCount() == ex.getLong("tx") && got.equals(want), "استعادة " + d3.txCount() + " حركة في " + ms + " ms، والأرصدة غير الصفرية (" + got.size() + ") كما هي");
+271:             healthy(d3, "الملف الحقيقي");
+272:             long t1x = System.currentTimeMillis();
+273:             BackupManager.Created c = BackupManager.createLocal(c3, d3, "test-1234".toCharArray(), "9.0-mac", m -> {});
+274:             check(c.size > 0, "نسخة من الملف الحقيقي على الماك في " + (System.currentTimeMillis() - t1x) + " ms");
+275:             d3.close();
+276:             Object[] dv4 = device("real2");
+277:             Db d4 = (Db) dv4[1];
+278:             License.current = Entitlements.of(fullGrant(), BuildInfo.BUILD_DATE);
+279:             restore((Context) dv4[0], d4, c.file, "test-1234");
+280:             check(namedBalances(d4).equals(want), "ونسخة الماك نفسها تُستعاد بالأرصدة نفسها");
+281:             d4.close();
+282:             // 9.0: المجانية تختار 9 مكاتب (الأكثر حركات) من الملف الحقيقي: أرصدتها كما في الملف تمامًا، والقيود متوازنة
+283:             Object[] dv5 = device("real9");
+284:             Db d5 = (Db) dv5[1];
+285:             BackupManager.Prepared pr = BackupManager.prepareRestore((Context) dv5[0], new File(a[1]), a[2].toCharArray(), m -> {});
+286:             List<BackupFormat.OfficeInfo> infos = BackupFormat.officeSummaries(pr.parsed);
+287:             infos.sort((x, y) -> Long.compare(y.txCount, x.txCount));
+288:             Set<Long> keep = new HashSet<>();
+289:             Set<String> keepNames = new HashSet<>();
+290:             long keepTx = 0;
+291:             for (int i = 0; i < 9; i++) {
+292:                 keep.add(infos.get(i).id);
+293:                 keepNames.add(infos.get(i).name);
+294:                 keepTx += infos.get(i).txCount;
+295:             }
+296:             pr.keep = keep;
+297:             BackupManager.applyRestore((Context) dv5[0], d5, pr, m -> {});
+298:             Map<String, Long> want9 = new TreeMap<>();
+299:             for (Map.Entry<String, Long> e : want.entrySet()) if (keepNames.contains(e.getKey().split("\\|")[0])) want9.put(e.getKey(), e.getValue());
+300:             check(d5.officeCount() == 9 && d5.txCount() == keepTx && namedBalances(d5).equals(want9),
+301:                     "المجانية: استعادة 9 مكاتب مختارة من الملف الحقيقي (" + keepTx + " حركة) بأرصدتها كما في الملف (" + want9.size() + " رصيدًا)");

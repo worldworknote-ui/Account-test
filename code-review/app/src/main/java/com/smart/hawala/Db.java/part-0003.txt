@@ -1,0 +1,94 @@
+288:         current.close();
+289:         File fresh = new File(f.getPath() + ".fresh-" + System.currentTimeMillis());
+290:         f.renameTo(fresh);
+291:         new File(f.getPath() + "-wal").delete();
+292:         new File(f.getPath() + "-shm").delete();
+293:         if (!aside.renameTo(f)) {
+294:             fresh.renameTo(f);
+295:             return null;
+296:         }
+297:         new File(aside.getPath() + "-wal").renameTo(new File(f.getPath() + "-wal"));
+298:         DbCipher.deleteDb(fresh);
+299:         lockedAside = null;
+300:         return new Db(c.getApplicationContext());
+301:     }
+302: 
+303:     /** 12.6: بعد «مفتاح جديد قبل الاستعادة»: القاعدة الحالية (مشفّرة بالمفتاح القديم) تُنقل جانبًا وتُفتح قاعدة جديدة بالمفتاح الجديد. */
+304:     public static Db reopenAfterKeyReset(Context c, Db current) {
+305:         current.close();
+306:         Db fresh = new Db(c.getApplicationContext());
+307:         lockedAside = null;   // القديمة تبقى على القرص باسم locked-… ولا تمنع العمل بعد الآن
+308:         return fresh;
+309:     }
+310: 
+311:     // ===================================================================================
+312:     // البنية والترقية الآمنة
+313:     // ===================================================================================
+314: 
+315:     @Override public void onConfigure(SQLiteDatabase d) {
+316:         d.setForeignKeyConstraintsEnabled(true);
+317:         d.enableWriteAheadLogging();
+318:     }
+319: 
+320:     @Override public void onCreate(SQLiteDatabase d) { ensureSchema(d); }
+321: 
+322:     @Override public void onUpgrade(SQLiteDatabase d, int o, int n) { ensureSchema(d); }
+323: 
+324:     /** 10.16: بيانات من إصدار أحدث لا تُفتح بتطبيق أقدم (كان يكمل بصمت فيتجاهل أعمدة وجداول لا يعرفها). */
+325:     @Override public void onDowngrade(SQLiteDatabase d, int o, int n) {
+326:         throw new IllegalStateException("هذه البيانات من إصدار أحدث من هذا التطبيق (مخطط " + o + "، وهذا الإصدار يعرف حتى " + n
+327:                 + "). حدّث التطبيق إلى آخر إصدار ثم افتحه؛ بياناتك لم تُمس.");
+328:     }
+329: 
+330:     @Override public void onOpen(SQLiteDatabase d) {
+331:         // 12.7: ذاكرة صفحات 32 ميغا بدل 2 (القواعد الكبيرة تُقرأ من الذاكرة لا من القرص)
+332:         try {
+333:             d.execSQL("PRAGMA cache_size=-32768");
+334:         } catch (Throwable ignored) {
+335:             // غير حرج
+336:         }
+337:         loadClock(d);
+338:         if (d.isReadOnly()) return;
+339:         d.beginTransaction();
+340:         try {
+341:             ensureSchema(d);
+342:             d.setTransactionSuccessful();
+343:         } finally {
+344:             d.endTransaction();
+345:             try {
+346:                 refreshMetals(d);
+347:             } catch (Exception ignored) {
+348:                 // قاعدة قديمة جدًا قبل الأعمدة: لا معادن
+349:             }
+350:         }
+351:         syncPrefix = SyncStore.prefix(d);
+352:     }
+353: 
+354:     private static final String[] DDL = {
+355:             "CREATE TABLE IF NOT EXISTS currencies(code TEXT PRIMARY KEY,name TEXT NOT NULL,decimals INTEGER NOT NULL,active INTEGER NOT NULL DEFAULT 1)",
+356:             "CREATE TABLE IF NOT EXISTS offices(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,short_name TEXT,phone TEXT,location TEXT,contact TEXT,notes TEXT,active INTEGER NOT NULL DEFAULT 1,usd_limit_minor INTEGER,usd_owe_limit_minor INTEGER,pinned INTEGER NOT NULL DEFAULT 0)",
+357:             "CREATE TABLE IF NOT EXISTS office_currencies(office_id INTEGER,code TEXT,limit_minor INTEGER,limit_owe_minor INTEGER,PRIMARY KEY(office_id,code),FOREIGN KEY(office_id) REFERENCES offices(id),FOREIGN KEY(code) REFERENCES currencies(code))",
+358:             "CREATE TABLE IF NOT EXISTS tx(id INTEGER PRIMARY KEY AUTOINCREMENT,uuid TEXT UNIQUE NOT NULL,office_id INTEGER NOT NULL,type TEXT NOT NULL,person TEXT,amount_minor INTEGER NOT NULL,currency TEXT NOT NULL,fee_type TEXT NOT NULL,fee_minor INTEGER NOT NULL DEFAULT 0,fee_currency TEXT,description TEXT,notes TEXT,created_at INTEGER NOT NULL,user_name TEXT,status TEXT NOT NULL DEFAULT 'ACTIVE',replaces_id INTEGER,FOREIGN KEY(office_id) REFERENCES offices(id))",
+359:             "CREATE TABLE IF NOT EXISTS attachments(id INTEGER PRIMARY KEY AUTOINCREMENT,tx_id INTEGER NOT NULL,path TEXT NOT NULL,mime TEXT,created_at INTEGER,FOREIGN KEY(tx_id) REFERENCES tx(id))",
+360:             "CREATE TABLE IF NOT EXISTS journal_entries(id INTEGER PRIMARY KEY AUTOINCREMENT,tx_id INTEGER,kind TEXT,created_at INTEGER,reverses_id INTEGER,status TEXT DEFAULT 'POSTED')",
+361:             "CREATE TABLE IF NOT EXISTS journal_lines(id INTEGER PRIMARY KEY AUTOINCREMENT,entry_id INTEGER NOT NULL,account TEXT NOT NULL,office_id INTEGER,currency TEXT NOT NULL,debit_minor INTEGER NOT NULL,credit_minor INTEGER NOT NULL,FOREIGN KEY(entry_id) REFERENCES journal_entries(id))",
+362:             "CREATE TABLE IF NOT EXISTS opening_balances(id INTEGER PRIMARY KEY AUTOINCREMENT,office_id INTEGER,currency TEXT,type TEXT,amount_minor INTEGER,entry_id INTEGER)",
+363:             "CREATE TABLE IF NOT EXISTS exchange_rates(code TEXT PRIMARY KEY,usd_rate TEXT NOT NULL,updated_at INTEGER NOT NULL,manual_rate TEXT,manual_at INTEGER)",
+364:             "CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY,v TEXT)",
+365:             "CREATE TABLE IF NOT EXISTS backup_history(id INTEGER PRIMARY KEY AUTOINCREMENT,created_at INTEGER,status TEXT,path TEXT,details TEXT,size_bytes INTEGER,n_offices INTEGER,n_tx INTEGER,n_att INTEGER,verified INTEGER,kind TEXT)",
+366:             "CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,action TEXT,entity TEXT,entity_id INTEGER,user_name TEXT,reason TEXT,created_at INTEGER)",
+367:             "CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,role TEXT NOT NULL,pin_hash TEXT,pin_salt TEXT,active INTEGER NOT NULL DEFAULT 1,created_at INTEGER)",
+368:             "CREATE TABLE IF NOT EXISTS reconciliations(id INTEGER PRIMARY KEY AUTOINCREMENT,uuid TEXT,office_id INTEGER NOT NULL,created_at INTEGER NOT NULL,cutoff_entry INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'SENT',confirmed_at INTEGER,note TEXT,user_name TEXT,FOREIGN KEY(office_id) REFERENCES offices(id))",
+369:             "CREATE TABLE IF NOT EXISTS reconciliation_lines(id INTEGER PRIMARY KEY AUTOINCREMENT,recon_id INTEGER NOT NULL,currency TEXT NOT NULL,balance_minor INTEGER NOT NULL,FOREIGN KEY(recon_id) REFERENCES reconciliations(id))",
+370:             // 8.0: سجل العمليات قبل كل «استبدال الكل» يُحفظ هنا بدل حذفه (خاص بهذا الهاتف، لا يُنقل في النسخة)
+371:             "CREATE TABLE IF NOT EXISTS audit_archive(id INTEGER PRIMARY KEY AUTOINCREMENT,orig_id INTEGER,action TEXT,entity TEXT,entity_id INTEGER,user_name TEXT,reason TEXT,created_at INTEGER,prev_hash TEXT,row_hash TEXT,archived_at INTEGER)",
+372:             // 9.0: صندوق المكتب — حسابات النقد مستقلة عن دفتر قيود المكاتب؛ الحركة المرتبطة بمكتب تحمل رقم حركته (tx_id)
+373:             "CREATE TABLE IF NOT EXISTS cash_moves(id INTEGER PRIMARY KEY AUTOINCREMENT,uuid TEXT UNIQUE NOT NULL,box_id INTEGER NOT NULL DEFAULT 1,kind TEXT NOT NULL,currency TEXT NOT NULL,amount_minor INTEGER NOT NULL,dir INTEGER NOT NULL,fee_minor INTEGER NOT NULL DEFAULT 0,fee_side TEXT,fee_cash INTEGER NOT NULL DEFAULT 1,category TEXT,party TEXT,description TEXT,office_id INTEGER,tx_id INTEGER,pair_uuid TEXT,rate TEXT,status TEXT NOT NULL DEFAULT 'ACTIVE',created_at INTEGER NOT NULL,user_name TEXT,cancel_reason TEXT,cancelled_at INTEGER)",
+374:             // 9.0.1: سجل الجرد: المسجّل والمعدود لكل عملة قبل أي تسوية، وما سُجّل بيعًا من الفروق
+375:             "CREATE TABLE IF NOT EXISTS cash_counts(id INTEGER PRIMARY KEY AUTOINCREMENT,uuid TEXT,box_id INTEGER NOT NULL DEFAULT 1,created_at INTEGER NOT NULL,user_name TEXT,note TEXT,lines TEXT NOT NULL,net_usd TEXT,adjusted INTEGER NOT NULL DEFAULT 0,sales TEXT)",
+376:             // 9.0.1: حسابات العملاء (مستقلة عن المكاتب): العميل وحركات حسابه؛ الحركة النقدية مرتبطة بحركة الصندوق (cash_uuid)
+377:             // 10.0: الصناديق في جدول (لكل صندوق ربطه بالمكاتب)، بعد أن كانت في الإعدادات
+378:             "CREATE TABLE IF NOT EXISTS cash_boxes(id INTEGER PRIMARY KEY AUTOINCREMENT,uuid TEXT,name TEXT NOT NULL,currencies TEXT,strict INTEGER NOT NULL DEFAULT 0,allow_internal INTEGER NOT NULL DEFAULT 1,active INTEGER NOT NULL DEFAULT 1,sort INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL)",
+379:             "CREATE TABLE IF NOT EXISTS cash_clients(id INTEGER PRIMARY KEY AUTOINCREMENT,uuid TEXT,name TEXT NOT NULL,phone TEXT,note TEXT,active INTEGER NOT NULL DEFAULT 1,created_at INTEGER NOT NULL)",
+380:             "CREATE TABLE IF NOT EXISTS client_moves(id INTEGER PRIMARY KEY AUTOINCREMENT,uuid TEXT UNIQUE NOT NULL,client_id INTEGER NOT NULL,kind TEXT NOT NULL,currency TEXT NOT NULL,amount_minor INTEGER NOT NULL,dir INTEGER NOT NULL,cash_uuid TEXT,pair_uuid TEXT,rate TEXT,description TEXT,status TEXT NOT NULL DEFAULT 'ACTIVE',created_at INTEGER NOT NULL,user_name TEXT,cancel_reason TEXT,cancelled_at INTEGER)",
+381:             // 10.5 (§7): مكاتب كل محاسب

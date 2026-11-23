@@ -1,0 +1,171 @@
+4705:         if (target == null) throw new IllegalArgumentException("المستخدم غير موجود");
+4706:         if (target.deleted) return;
+4707:         Model.User me = actor();
+4708:         if (me != null && me.id == id) throw new IllegalStateException("لا تحذف حسابك وأنت داخل به؛ يحذفه مستخدم آخر بصلاحية «المستخدمون».");
+4709:         if (Auth.isAdmin(target)) requireAdmin("حساب المدير يحذفه مدير فقط.");
+4710:         SQLiteDatabase d = getWritableDatabase();
+4711:         d.beginTransaction();
+4712:         try {
+4713:             ContentValues v = new ContentValues();
+4714:             v.put("active", 0);
+4715:             v.put("deleted_at", Clock.now());
+4716:             v.putNull("pin_hash");
+4717:             v.putNull("pin_salt");
+4718:             d.update("users", v, "id=" + id, null);
+4719:             d.delete("user_offices", "user_id=" + id, null);
+4720:             long admins, activeUsers;
+4721:             try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM users WHERE active=1 AND role=?", new String[]{Auth.ADMIN})) {
+4722:                 admins = c.moveToFirst() ? c.getLong(0) : 0;
+4723:             }
+4724:             try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM users WHERE active=1", null)) {
+4725:                 activeUsers = c.moveToFirst() ? c.getLong(0) : 0;
+4726:             }
+4727:             if (activeUsers > 0 && admins == 0) throw new IllegalStateException("يجب أن يبقى مدير واحد نشط على الأقل");
+4728:             audit(d, "DELETE_USER", "user", id, target.name + " — بقيت حركاته وتحققاته كما هي");
+4729:             d.setTransactionSuccessful();
+4730:         } finally {
+4731:             d.endTransaction();
+4732:         }
+4733:     }
+4734: 
+4735:     public void setPin(long id, String pin) {
+4736:         if (!recoveryGrant) {
+4737:             require(Auth.Perm.USERS);
+4738:             Model.User target = user(id);
+4739:             if (target != null && Auth.isAdmin(target)) requireAdmin("رمز المدير يغيّره المدير نفسه («تغيير رمزي السري») أو برمز الاسترداد، لا صلاحية «المستخدمون».");
+4740:             // 10.11 (AUDIT-001): من يعرف رمز حساب يملك صلاحياته؛ فلا يغيّر غير المدير رمز حساب فيه صلاحية لا يملكها هو
+4741:             Model.User me = actor();
+4742:             if (target != null && me != null && !Auth.isAdmin(me) && me.id != id) {
+4743:                 java.util.Set<String> mine = Auth.perms(me);
+4744:                 for (String p : Auth.perms(target)) {
+4745:                     if (!Auth.REVIEW.equals(p) && !mine.contains(p))
+4746:                         throw new SecurityException("لحساب «" + target.name + "» صلاحية لا تملكها («" + permTitle(p) + "»)؛ رمزه يغيّره المدير.");
+4747:                 }
+4748:             }
+4749:         }
+4750:         storePin(id, pin);
+4751:     }
+4752: 
+4753:     /**
+4754:      * 10.5 (AUDIT-027): المستخدم يغيّر رمزه بنفسه بعد إدخال رمزه الحالي، بلا صلاحية «المستخدمون».
+4755:      * الرمز القديم يُتحقق منه هنا في طبقة البيانات (لا في الواجهة وحدها).
+4756:      */
+4757:     public void changeOwnPin(String oldPin, String newPin) {
+4758:         Model.User me = actor();
+4759:         if (me == null || !me.active) throw new SecurityException("سجّل الدخول أولًا.");
+4760:         if (!verifyPin(me.id, oldPin)) throw new SecurityException("الرمز الحالي غير صحيح.");
+4761:         storePin(me.id, newPin);
+4762:     }
+4763: 
+4764:     private void storePin(long id, String pin) {
+4765:         if (!Pin.valid(pin)) throw new IllegalArgumentException("الرمز يجب أن يكون من 4 إلى 8 أرقام");
+4766:         try (Cursor c = getReadableDatabase().rawQuery("SELECT role FROM users WHERE id=" + id, null)) {
+4767:             if (c.moveToFirst() && Auth.ADMIN.equals(c.getString(0)) && !Pin.validAdmin(pin)) {
+4768:                 throw new IllegalArgumentException("رمز المدير يجب أن يكون من 6 إلى 8 أرقام");
+4769:             }
+4770:         }
+4771:         String salt = Pin.newSalt();
+4772:         ContentValues v = new ContentValues();
+4773:         v.put("pin_salt", salt);
+4774:         v.put("pin_hash", Pin.hashV2(pin, salt, pinPepper()));
+4775:         getWritableDatabase().update("users", v, "id=" + id, null);
+4776:         audit("RESET_PIN", "user", id, "");
+4777:     }
+4778: 
+4779:     /** يتحقق من الرمز؛ وعند نجاح رمز بالصيغة القديمة يُعاد حفظه بالصيغة v2 في الدخول نفسه (بلا أي خطوة من المستخدم). */
+4780:     public boolean verifyPin(long id, String pin) {
+4781:         // 10.16: حد المحاولات في طبقة البيانات أيضًا (كان في الواجهة وحدها): بعد 5 أخطاء متتالية يُرفض التحقق مدة تتضاعف
+4782:         long[] st;
+4783:         synchronized (PIN_TRIES) {
+4784:             st = PIN_TRIES.get(id);
+4785:             if (st == null) PIN_TRIES.put(id, st = new long[2]);
+4786:             long wait = st[1] - System.nanoTime();
+4787:             if (st[0] >= 5 && wait > 0) throw new SecurityException("محاولات خاطئة كثيرة. انتظر " + Math.max(1, wait / 1_000_000_000L) + " ثانية ثم حاول.");
+4788:         }
+4789:         boolean ok = verifyPin0(id, pin);
+4790:         synchronized (PIN_TRIES) {
+4791:             if (ok) st[0] = 0;
+4792:             else {
+4793:                 st[0]++;
+4794:                 st[1] = System.nanoTime() + Pin.lockoutMillis((int) st[0]) * 1_000_000L;
+4795:             }
+4796:         }
+4797:         return ok;
+4798:     }
+4799: 
+4800:     /** محاولات الرمز الخاطئة المتتالية لكل مستخدم في هذه الجلسة: {العدد، متى يُسمح بالمحاولة التالية (nanoTime)}. */
+4801:     private static final Map<Long, long[]> PIN_TRIES = new HashMap<>();
+4802: 
+4803:     /** للاختبارات. */
+4804:     static void resetPinTries() {
+4805:         synchronized (PIN_TRIES) {
+4806:             PIN_TRIES.clear();
+4807:         }
+4808:     }
+4809: 
+4810:     private boolean verifyPin0(long id, String pin) {
+4811:         String salt, hash;
+4812:         try (Cursor c = getReadableDatabase().rawQuery("SELECT pin_salt,pin_hash FROM users WHERE active=1 AND id=" + id, null)) {
+4813:             if (!c.moveToFirst()) return false;
+4814:             salt = c.getString(0);
+4815:             hash = c.getString(1);
+4816:         }
+4817:         byte[] pepper = Pin.needsUpgrade(hash) ? null : pinPepper();
+4818:         if (!Pin.verifyAny(pin, salt, hash, pepper)) return false;
+4819:         if (Pin.needsUpgrade(hash)) {
+4820:             try {
+4821:                 String ns = Pin.newSalt();
+4822:                 ContentValues v = new ContentValues();
+4823:                 v.put("pin_salt", ns);
+4824:                 v.put("pin_hash", Pin.hashV2(pin, ns, pinPepper()));
+4825:                 getWritableDatabase().update("users", v, "id=" + id, null);
+4826:             } catch (Exception ignored) {
+4827:                 // يبقى بالصيغة القديمة ويُعاد في الدخول التالي
+4828:             }
+4829:         }
+4830:         return true;
+4831:     }
+4832: 
+4833:     /** إعدادات تُحفظ مشفّرة بمفتاح الهاتف، وتُصدَّر في النسخة بنصها (داخل تشفير النسخة) ثم تُشفَّر عند الاستعادة. */
+4834:     static final Set<String> ENCRYPTED_SETTINGS = new HashSet<>(Arrays.asList("pin_pepper", "day_close_key"));
+4835: 
+4836:     /** 8.0 (ت5): سرّ بصمة اليوم؛ ينتقل مع النسخة فتبقى بصمات التقارير القديمة قابلة للتحقق على هاتف جديد. */
+4837:     synchronized byte[] dayCloseKey() {
+4838:         String enc = setting("day_close_key", "");
+4839:         if (!enc.isEmpty()) {
+4840:             try {
+4841:                 String hex = Crypto.decStrict(enc);
+4842:                 if (hex.matches("[0-9a-f]{64}")) {
+4843:                     byte[] b = new byte[32];
+4844:                     for (int i = 0; i < 32; i++) b[i] = (byte) Integer.parseInt(hex.substring(2 * i, 2 * i + 2), 16);
+4845:                     return b;
+4846:                 }
+4847:             } catch (Exception ignored) {
+4848:                 // يُرفض أدناه
+4849:             }
+4850:             throw new IllegalStateException("تعذر فك سرّ بصمة اليوم على هذا الهاتف");
+4851:         }
+4852:         byte[] k = Pin.newPepper();
+4853:         setSettingQuiet("day_close_key", Crypto.enc(BackupFormat.hex(k)));
+4854:         return k;
+4855:     }
+4856: 
+4857:     /** بصمة حركات يوم [from، to) بحالتها الآن. */
+4858:     public String dayCode(long from, long to) {
+4859:         TxFilter f = new TxFilter();
+4860:         f.from = from;
+4861:         f.to = to;
+4862:         f.includeCancelled = true;
+4863:         return DayClose.code(dayCloseKey(), DayClose.canonical(Model.day(from), txLog(f)));
+4864:     }
+4865: 
+4866:     /** سرّ رموز المستخدمين (يُنشأ مرة واحدة). */
+4867:     synchronized byte[] pinPepper() {
+4868:         String enc = setting("pin_pepper", "");
+4869:         if (!enc.isEmpty()) {
+4870:             String hex;
+4871:             try {
+4872:                 hex = Crypto.decStrict(enc);
+4873:             } catch (Exception e) {
+4874:                 hex = null;
+4875:             }

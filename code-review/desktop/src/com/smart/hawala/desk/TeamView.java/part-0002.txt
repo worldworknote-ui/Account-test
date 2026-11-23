@@ -1,0 +1,30 @@
+146:                 if ("توزيع".equals(v)) for (Db.TeamPlan p : fresh) {
+147:                     db.applyTeamPlan(p);
+148:                     done++;
+149:                 }
+150:             }
+151:             int n = 0;
+152:             for (Db.TeamPlan p : old) {
+153:                 n++;
+154:                 String msg = "المكتب: " + p.office.name + "\n\nالحالي:\n  يسجّل: " + Db.names(p.curOwners) + "\n  يتحقق: " + (p.curCheckers.isEmpty() ? "لا أحد" : Db.names(p.curCheckers))
+155:                         + "\n\nالمقترح:\n  يسجّل: " + Db.names(p.owners) + " (كما هو)\n  يتحقق: " + (p.checkers.isEmpty() ? "لا أحد" : Db.names(p.checkers));
+156:                 JOptionPane op = new JOptionPane(Ui.para(msg, 14, Ui.ink, 440), JOptionPane.QUESTION_MESSAGE, JOptionPane.DEFAULT_OPTION, null,
+157:                         new Object[]{"اعتماد المقترح", "إبقاء كما هو", "تعديل يدوي…", "إيقاف"}, "اعتماد المقترح");
+158:                 Ui.show(this, op, "مكتب موزّع (" + n + " من " + old.size() + ")");
+159:                 Object v = op.getValue();
+160:                 if (v == null || "إيقاف".equals(v)) break;
+161:                 if ("اعتماد المقترح".equals(v)) {
+162:                     db.applyTeamPlan(p);
+163:                     done++;
+164:                 } else if ("تعديل يدوي…".equals(v)) {
+165:                     for (Db.Team t : db.teams()) if (t.office.id == p.office.id) edit(this, db, t, () -> { });
+166:                 }
+167:             }
+168:             app.changed();
+169:             Ui.toast(done == 0 ? "لم يتغير شيء" : "وُزّع " + done + " مكتب");
+170:             refresh();
+171:         } catch (Exception ex) {
+172:             Ui.error(this, ex);
+173:         }
+174:     }
+175: }

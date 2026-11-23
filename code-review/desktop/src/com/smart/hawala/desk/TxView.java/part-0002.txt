@@ -1,0 +1,204 @@
+195:         // 10.7: نوع الحركة فوق المكتب (عادية، قص عملات، بين مكتبين)
+196:         kinds = RecordView.kinds(app, RecordMenu.TX, () -> (Model.Office) office.getSelectedItem());
+197:         form.add(kinds);
+198:         form.add(Ui.gap(12));
+199:         form.add(Ui.labeled("المكتب", Ui.row(office, officeSearch)));
+200:         form.add(recentOffices);   // 10.16: آخر المكاتب المستعملة للاختيار السريع
+201:         officeSearch.setMaximumSize(new Dimension(220, 40));
+202:         form.add(Ui.gap(12));
+203:         form.add(Ui.labeled("الاتجاه (إلزامي)", type));
+204:         form.add(Ui.gap(12));
+205:         JPanel amt = Ui.row(amount, currency);
+206:         currency.setMaximumSize(new Dimension(170, 40));
+207:         form.add(Ui.labeled("المبلغ والعملة", amt));
+208:         form.add(Ui.gap(12));
+209:         form.add(Ui.labeled("الأجرة", feeMode));
+210:         feeBox.add(Ui.gap(8));
+211:         feeBox.add(feeSide);
+212:         feeBox.add(Ui.gap(8));
+213:         feeBox.add(feeKind);
+214:         feeBox.add(Ui.gap(8));
+215:         rateBox.add(Ui.row(rate, ratePer));
+216:         rateBox.add(rateChips);   // 10.16: آخر النسب المستعملة
+217:         rate.setMaximumSize(new Dimension(140, 40));
+218:         rateBox.add(rateResult);
+219:         feeBox.add(rateBox);
+220:         feeBox.add(Ui.gap(6));
+221:         feeBox.add(Ui.row(fee, feeCur));
+222:         feeCur.setMaximumSize(new Dimension(170, 40));
+223:         form.add(feeBox);
+224:         form.add(Ui.gap(12));
+225:         form.add(Ui.labeled("المستفيد", person));
+226:         form.add(Ui.gap(12));
+227:         // 10.10: الحقول الاختيارية في «تفاصيل إضافية» (كل الميزات باقية، والنموذج أبسط). تُفتح تلقائيًا إن كان فيها شيء
+228:         JPanel sd = new JPanel(new GridLayout(1, 2, 10, 0));
+229:         sd.setOpaque(false);
+230:         sd.setAlignmentX(Component.RIGHT_ALIGNMENT);
+231:         sd.add(Ui.labeled("الخدمة (اعتماد، سويفت، USDT…)", service));
+232:         sd.add(Ui.labeled("الوجهة", dest));
+233:         more.add(sd);
+234:         more.add(Ui.gap(12));
+235:         more.add(Ui.labeled("ملاحظات", notes));
+236:         more.add(Ui.gap(12));
+237:         more.add(Ui.labeled("التاريخ", date));
+238:         more.add(Ui.gap(12));
+239:         more.add(Ui.labeled("صور الوصل (اختياري)", Ui.row(Ui.ghost("إرفاق صورة…", e -> attach()), images)));
+240:         moreToggle = Ui.ghost("", e -> showMore(!more.isVisible()));
+241:         form.add(Ui.flow(moreToggle));
+242:         form.add(Ui.gap(6));
+243:         form.add(more);
+244:         showMore(false);
+245: 
+246:         JPanel right = Ui.column();
+247:         Ui.Card fc = Ui.card();
+248:         fc.add(form);
+249:         right.add(fc);
+250: 
+251:         JPanel left = Ui.column();
+252:         Ui.Card mc = Ui.card();
+253:         mc.add(Ui.label("الرسالة / البيان", 15, Ui.primaryInk, true));
+254:         mc.add(Ui.label("الصق رسالة واتساب (أو عدة رسائل منسوخة معًا) فتُستخرج المعلومات.", 12.5f, Ui.muted, false));
+255:         mc.add(Ui.gap(6));
+256:         JScrollPane ds = Ui.areaBox(desc);
+257:         ds.setPreferredSize(new Dimension(380, 170));
+258:         ds.setMaximumSize(new Dimension(Integer.MAX_VALUE, 220));
+259:         mc.add(ds);
+260:         mc.add(Ui.gap(6));
+261:         mc.add(Ui.flow(Ui.ghost("لصق من الحافظة", e -> pasteClipboard()), Ui.ghost("مسح", e -> {
+262:             desc.setText("");
+263:             queue.clear();
+264:             updateQueue();
+265:         })));
+266:         mc.add(queueLabel);
+267:         mc.add(pinLabel);
+268:         mc.add(parseBox);
+269:         left.add(mc);
+270:         left.add(Ui.gap(12));
+271:         Ui.Card sc = Ui.tinted(Ui.primarySoft, null);
+272:         sc.add(Ui.label("الملخص", 15, Ui.primaryInk, true));
+273:         sc.add(Ui.gap(4));
+274:         sc.add(summary);
+275:         sc.add(Ui.gap(10));
+276:         save = Ui.holdToConfirm(Ui.primary("تسجيل الحركة", e -> save()));
+277:         save.setFont(Ui.font(15, true));
+278:         sc.add(Ui.flow(save, Ui.ghost("تفريغ النموذج", e -> reset(true))));
+279:         left.add(sc);
+280: 
+281:         JPanel cols = new JPanel(new GridLayout(1, 2, 18, 0));
+282:         cols.setOpaque(false);
+283:         cols.add(right);
+284:         JPanel lw = new JPanel(new BorderLayout());
+285:         lw.setOpaque(false);
+286:         lw.add(left, BorderLayout.NORTH);
+287:         cols.add(lw);
+288:         cols.setAlignmentX(Component.RIGHT_ALIGNMENT);
+289:         body.add(cols);
+290:         scroll = Ui.scroll(body);
+291:         add(scroll, BorderLayout.CENTER);
+292: 
+293:         // الأحداث
+294:         officeSearch.getDocument().addDocumentListener(doc(this::filterOffices));
+295:         office.addActionListener(e -> {
+296:             if (!building) officeChanged();
+297:         });
+298:         type.listener = i -> updateSummary();
+299:         currency.addActionListener(e -> {
+300:             if (building) return;
+301:             if (feeCur.getItemCount() > 0 && currency.getSelectedIndex() >= 0) feeCur.setSelectedItem(currency.getSelectedItem());
+302:             recalcFee();
+303:         });
+304:         amount.getDocument().addDocumentListener(doc(this::recalcFee));
+305:         fee.getDocument().addDocumentListener(doc(this::updateSummary));
+306:         rate.getDocument().addDocumentListener(doc(this::recalcFee));
+307:         feeMode.listener = i -> applyFee();
+308:         feeSide.listener = i -> updateSummary();
+309:         feeKind.listener = i -> applyFee();
+310:         ratePer.listener = i -> recalcFee();
+311:         feeCur.addActionListener(e -> updateSummary());
+312:         person.getDocument().addDocumentListener(doc(this::updateSummary));
+313:         desc.getDocument().addDocumentListener(doc(this::scheduleParse));
+314:         date.onChange = this::updateSummary;
+315:         parseTimer = new javax.swing.Timer(450, e -> previewParse());
+316:         parseTimer.setRepeats(false);
+317:         InputMap im = getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
+318:         im.put(Ui.key(KeyEvent.VK_S), "save");
+319:         getActionMap().put("save", new AbstractAction() {
+320:             @Override public void actionPerformed(java.awt.event.ActionEvent e) {
+321:                 if (isShowing()) save();
+322:             }
+323:         });
+324:         applyFee();
+325:     }
+326: 
+327:     static DocumentListener doc(Runnable r) {
+328:         return new DocumentListener() {
+329:             @Override public void insertUpdate(DocumentEvent e) { SwingUtilities.invokeLater(r); }
+330: 
+331:             @Override public void removeUpdate(DocumentEvent e) { SwingUtilities.invokeLater(r); }
+332: 
+333:             @Override public void changedUpdate(DocumentEvent e) {}
+334:         };
+335:     }
+336: 
+337:     @Override void refresh() {
+338:         if (editing != null) {
+339:             done();
+340:             return;
+341:         }
+342:         titleLabel.setText("تسجيل حركة");
+343:         subtitle.setText(quotaText());
+344:         building = true;
+345:         loadOffices(db.settingLong("last_office", 0));
+346:         loadServices();
+347:         building = false;
+348:         officeChanged();
+349:         if (db.setting("draft_tx_mac", "").length() > 0 && desc.getText().isEmpty()) restoreDraft();
+350:         done();
+351:     }
+352: 
+353:     @Override void open(Object arg) {
+354:         if (arg instanceof Prefill) {
+355:             editing = null;
+356:             reset(false);
+357:             building = true;
+358:             loadOffices(((Prefill) arg).office);
+359:             loadServices();
+360:             building = false;
+361:             officeChanged();
+362:             titleLabel.setText("تسجيل حركة");
+363:             subtitle.setText(quotaText());
+364:         } else if (arg instanceof Edit) {
+365:             Model.Tx t = db.tx(((Edit) arg).txId);
+366:             approving = ((Edit) arg).approve;
+367:             if (approving && t != null && t.isPending()) {
+368:                 fillEdit(t);
+369:                 titleLabel.setText("تصحيح ثم اعتماد");
+370:                 subtitle.setText("اقترحها: " + (t.userName.isEmpty() ? "موظف" : t.userName) + " — تدخل الأرصدة بالقيم المصححة، ويُحفظ ما قبل التصحيح في السجل");
+371:                 done();
+372:                 return;
+373:             }
+374:             if (t == null || !t.isActive()) {
+375:                 Ui.toast("الحركة غير موجودة أو ملغاة");
+376:                 return;
+377:             }
+378:             if (t.isFx()) {
+379:                 // 10.18: القص يُعدَّل بساقيه من شاشته
+380:                 app.go("fx", new FxView.Edit(t.id));
+381:                 return;
+382:             }
+383:             if (t.isLinked()) {
+384:                 Ui.toast(t.isTransfer() ? "ساقا التحويل بين مكتبين لا تُعدَّلان منفردتين؛ ألغِ التحويل وسجّله من جديد."
+385:                         : "ساقا تبديل العملة لا تُعدَّلان منفردتين؛ ألغِ التبديل وسجّله من جديد.");
+386:                 return;
+387:             }
+388:             fillEdit(t);
+389:         } else if (arg instanceof String) {
+390:             refresh();
+391:             desc.setText((String) arg);
+392:         } else refresh();
+393:         done();
+394:     }
+395: 
+396:     String quotaText() {
+397:         Entitlements e = License.current;
+398:         if (e.pro) return "";

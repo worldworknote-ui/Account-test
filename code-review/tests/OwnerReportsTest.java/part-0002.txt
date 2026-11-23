@@ -1,0 +1,104 @@
+156:         OwnerReports.Fees fr = OwnerReports.fees(in, now - 365 * DAY);
+157:         long[] ke = fr.raje.get("2|EUR");
+158:         check(fr.fromRaje == 4 && ke[0] == 45100 && ke[1] == 6000 && ke[2] == 3, "الراجع مع «النور» باليورو: قبضت 451 ودفعت 60 في 3 حركات");
+159:         check(fr.perCurrency.get("EUR")[0] == 45100 && fr.perCurrency.get("USD")[0] == 5000 + 34000, "الراجع داخل ربح الأجور لكل عملة");
+160:         in.txs.remove(r1);
+161:         in.txs.remove(r2);
+162:         in.txs.remove(r3);
+163:         in.txs.remove(r4);
+164:         OwnerReports.Quality q = OwnerReports.quality(in);
+165:         check(q.similarNames.size() == 1 && q.similarNames.get(0)[0].equals("الريان") && q.numericNames == 1, "أسماء متشابهة («الريان»/«الريان التجاري») واسم رقمي «12»");
+166:         OwnerReports.Concentration c = OwnerReports.concentration(in, 0);
+167:         check(c.ranked.get(0)[0] == 3 && c.total == in.txs.size() - 1, "ترتيب المكاتب بعدد العمليات النشطة");
+168:         check(OwnerReports.norm("أُجورٌ  الإمارات").equals("اجور الامارات"), "توحيد الكتابة للمقارنة");
+169: 
+170:         Report r = OwnerReports.build(in, "مكتب الاختبار", false);
+171:         check(r.sections.size() >= 12 && r.dataRows() > 10, "التقرير الكامل: " + r.sections.size() + " قسمًا");
+172:         ByteArrayOutputStream bo = new ByteArrayOutputStream();
+173:         XlsxWriter.write(r, bo, null, TimeZone.getTimeZone("UTC"));
+174:         check(bo.size() > 3000, "يُكتب Excel بكل الأقسام (" + bo.size() + " بايت)");
+175:         if (a.length > 0) Files.write(Paths.get(a[0], "owner-reports.xlsx"), bo.toByteArray());
+176: 
+177:         if (a.length > 1 && Files.exists(Paths.get(a[1]))) real(Paths.get(a[1]), a[0]);
+178:         System.out.println(fails == 0 ? "ALL " + passes + " PASSED" : fails + " FAILED of " + (passes + fails));
+179:         if (fails > 0) System.exit(1);
+180:     }
+181: 
+182:     /**
+183:      * ملف جداول حقيقي \u200e*.tables.json (يبقى خارج المشروع): تُبنى كل التقارير عليه ويُتحقق من اتساقها الداخلي
+184:      * (أعمار الديون مجموعها = الرصيد، وما لنا وما علينا = أرصدة المكاتب)، ويُكتب Excel.
+185:      */
+186:     static OwnerReports.Input load(Path p) throws Exception {
+187:         TimeZone.setDefault(TimeZone.getTimeZone("Asia/Damascus"));   // تواريخ الملف بتوقيت المكتب
+188:         JSONObject j = new JSONObject(new String(Files.readAllBytes(p), StandardCharsets.UTF_8));
+189:         OwnerReports.Input in = new OwnerReports.Input();
+190:         in.now = 1791838800000L;   // 2026-10-13 00:00 بتوقيت دمشق
+191:         JSONArray cs = j.getJSONArray("currencies");
+192:         for (int i = 0; i < cs.length(); i++) in.decimals.put(cs.getJSONObject(i).getString("code"), cs.getJSONObject(i).getInt("decimals"));
+193:         JSONArray os = j.getJSONArray("offices");
+194:         for (int i = 0; i < os.length(); i++) in.names.put(os.getJSONObject(i).getLong("id"), os.getJSONObject(i).getString("name"));
+195:         JSONArray ts = j.getJSONArray("tx");
+196:         for (int i = 0; i < ts.length(); i++) {
+197:             JSONObject o = ts.getJSONObject(i);
+198:             Model.Tx t = new Model.Tx();
+199:             t.id = o.getLong("id");
+200:             t.uuid = o.optString("uuid");
+201:             t.officeId = o.getLong("office_id");
+202:             t.type = o.getString("type");
+203:             t.amount = o.getLong("amount_minor");
+204:             t.currency = o.getString("currency");
+205:             t.feeType = o.optString("fee_type", Model.FEE_NONE);
+206:             t.fee = o.optLong("fee_minor", 0);
+207:             t.feeCurrency = o.optString("fee_currency", t.currency);
+208:             t.description = o.optString("description", "");
+209:             t.person = o.optString("person", "");
+210:             t.notes = "";
+211:             t.createdAt = o.getLong("created_at");
+212:             t.status = o.optString("status", "ACTIVE");
+213:             t.replacesId = o.isNull("replaces_id") ? null : o.getLong("replaces_id");
+214:             in.txs.add(t);
+215:         }
+216:         JSONArray ob = j.optJSONArray("opening_balances");
+217:         for (int i = 0; ob != null && i < ob.length(); i++) {
+218:             JSONObject o = ob.getJSONObject(i);
+219:             long v = o.getLong("amount_minor");
+220:             in.openings.add(new OwnerReports.Opening(o.getLong("office_id"), o.getString("currency"), "لنا".equals(o.getString("type")) ? v : -v, 0));
+221:         }
+222:         lastFile = j;
+223:         return in;
+224:     }
+225: 
+226:     static void real(Path p, String out) throws Exception {
+227:         System.out.println("== بيانات حقيقية: " + p.getFileName());
+228:         OwnerReports.Input in = load(p);
+229:         long t0 = System.currentTimeMillis();
+230:         Report r = OwnerReports.build(in, "", true);
+231:         long ms = System.currentTimeMillis() - t0;
+232:         for (String h : OwnerReports.headlines(in)) System.out.println("    " + h);
+233:         check(ms < 5000, "كل التقارير على " + in.txs.size() + " حركة في " + ms + " ms");
+234:         boolean sums = true;
+235:         for (boolean us : new boolean[]{true, false})
+236:             for (OwnerReports.Aging x : OwnerReports.aging(in, us)) {
+237:                 long s = 0;
+238:                 for (long b : x.buckets) s += b;
+239:                 sums &= s == x.balance && x.balance > 0;
+240:             }
+241:         check(sums, "أعمار الديون: مجموع الفئات = الرصيد لكل مكتب وعملة");
+242:         // ما لنا وما علينا في التقرير = رصيد حساب المكتب في دفتر القيود نفسه (journal_lines) لكل مكتب وعملة
+243:         Map<String, Long> ledger = new HashMap<>();
+244:         JSONArray jl = lastFile.getJSONArray("journal_lines");
+245:         for (int i = 0; i < jl.length(); i++) {
+246:             JSONObject l = jl.getJSONObject(i);
+247:             if (!"OFFICE".equals(l.optString("account"))) continue;
+248:             ledger.merge(l.getLong("office_id") + "|" + l.getString("currency"), l.optLong("debit_minor") - l.optLong("credit_minor"), Long::sum);
+249:         }
+250:         ledger.values().removeIf(v -> v == 0);
+251:         Map<String, Long> fromAging = new HashMap<>();
+252:         for (OwnerReports.Aging x : OwnerReports.aging(in, true)) fromAging.put(x.office + "|" + x.currency, x.balance);
+253:         for (OwnerReports.Aging x : OwnerReports.aging(in, false)) fromAging.put(x.office + "|" + x.currency, -x.balance);
+254:         check(ledger.equals(fromAging), "أرصدة التقرير = أرصدة المكاتب في دفتر القيود (عدد الأرصدة " + ledger.size() + ")");
+255:         ByteArrayOutputStream bo = new ByteArrayOutputStream();
+256:         XlsxWriter.write(r, bo, null, TimeZone.getTimeZone("UTC"));
+257:         Files.write(Paths.get(out, "owner-reports-real.xlsx"), bo.toByteArray());
+258:     }
+259: }

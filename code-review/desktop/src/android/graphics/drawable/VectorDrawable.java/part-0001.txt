@@ -1,0 +1,177 @@
+1: package android.graphics.drawable;
+2: 
+3: import android.graphics.*;
+4: import java.awt.geom.*;
+5: import java.util.*;
+6: import org.w3c.dom.*;
+7: 
+8: /** أيقونات أندرويد الخطية (res/drawable/*.xml) تُقرأ وتُرسم مباشرة: المسارات نفسها والألوان والتلوين. */
+9: public class VectorDrawable extends Drawable {
+10:     static final class P {
+11:         Path2D.Float path; int fill, stroke; float sw, fillAlpha = 1, strokeAlpha = 1; int cap, join; AffineTransform t; boolean evenOdd;
+12:         /** 12.3: تدرج لوني (aapt:attr) بدل اللون الواحد، كما في شعار التطبيق. */
+13:         Grad fillGrad, strokeGrad;
+14:     }
+15:     /** 12.3: تدرج <gradient> خطي أو دائري بإحداثيات الأيقونة. */
+16:     static final class Grad {
+17:         boolean radial;
+18:         float x1, y1, x2, y2, cx, cy, r;
+19:         float[] stops;
+20:         int[] colors;
+21: 
+22:         java.awt.Paint paint(float a) {
+23:             java.awt.Color[] cs = new java.awt.Color[colors.length];
+24:             for (int i = 0; i < colors.length; i++)
+25:                 cs[i] = new java.awt.Color(Color.red(colors[i]), Color.green(colors[i]), Color.blue(colors[i]), Math.max(0, Math.min(255, Math.round(Color.alpha(colors[i]) * a))));
+26:             if (radial) return new java.awt.RadialGradientPaint(cx, cy, Math.max(0.01f, r), stops, cs);
+27:             if (x1 == x2 && y1 == y2) return cs[0];
+28:             return new java.awt.LinearGradientPaint(x1, y1, x2, y2, stops, cs);
+29:         }
+30:     }
+31: 
+32:     private static Grad grad(Element attr) {
+33:         NodeList gl = attr.getElementsByTagName("gradient");
+34:         if (gl.getLength() == 0) return null;
+35:         Element g = (Element) gl.item(0);
+36:         Grad d = new Grad();
+37:         d.radial = "radial".equals(g.getAttribute("android:type"));
+38:         d.x1 = num(g.getAttribute("android:startX"), 0);
+39:         d.y1 = num(g.getAttribute("android:startY"), 0);
+40:         d.x2 = num(g.getAttribute("android:endX"), 0);
+41:         d.y2 = num(g.getAttribute("android:endY"), 0);
+42:         d.cx = num(g.getAttribute("android:centerX"), 0);
+43:         d.cy = num(g.getAttribute("android:centerY"), 0);
+44:         d.r = num(g.getAttribute("android:gradientRadius"), 1);
+45:         List<float[]> st = new ArrayList<>();
+46:         List<Integer> cl = new ArrayList<>();
+47:         NodeList items = g.getElementsByTagName("item");
+48:         for (int i = 0; i < items.getLength(); i++) {
+49:             Element it = (Element) items.item(i);
+50:             st.add(new float[]{num(it.getAttribute("android:offset"), i / (float) Math.max(1, items.getLength() - 1))});
+51:             cl.add(color(it.getAttribute("android:color")));
+52:         }
+53:         if (cl.isEmpty()) {
+54:             if (g.hasAttribute("android:startColor")) { st.add(new float[]{0}); cl.add(color(g.getAttribute("android:startColor"))); }
+55:             if (g.hasAttribute("android:centerColor")) { st.add(new float[]{0.5f}); cl.add(color(g.getAttribute("android:centerColor"))); }
+56:             if (g.hasAttribute("android:endColor")) { st.add(new float[]{1}); cl.add(color(g.getAttribute("android:endColor"))); }
+57:         }
+58:         if (cl.isEmpty()) return null;
+59:         if (cl.size() == 1) { st.add(new float[]{1}); cl.add(cl.get(0)); }
+60:         d.stops = new float[st.size()];
+61:         d.colors = new int[cl.size()];
+62:         float last = -1;
+63:         for (int i = 0; i < st.size(); i++) {
+64:             // الإيقافات يجب أن تزيد زيادة صارمة في جافا
+65:             float o = Math.max(0, Math.min(1, st.get(i)[0]));
+66:             if (o <= last) o = Math.min(1, last + 0.0001f);
+67:             d.stops[i] = o;
+68:             last = o;
+69:             d.colors[i] = cl.get(i);
+70:         }
+71:         for (int i = 1; i < d.stops.length; i++) if (d.stops[i] <= d.stops[i - 1]) return null;
+72:         return d;
+73:     }
+74: 
+75:     private final List<P> paths = new ArrayList<>();
+76:     private float vw = 24, vh = 24;
+77:     private int iw, ih;
+78:     private int alpha = 255;
+79:     private int tintAttr; // تلوين من الملف نفسه
+80:     private final String name;
+81: 
+82:     private VectorDrawable(String name) { this.name = name; }
+83: 
+84:     public static float density = 1f;
+85:     private static final Map<String, VectorDrawable> cache = new HashMap<>();
+86: 
+87:     /** يقرأ الأيقونة من الموارد (أو null). */
+88:     public static VectorDrawable load(String name) {
+89:         VectorDrawable proto;
+90:         synchronized (cache) {
+91:             proto = cache.get(name);
+92:             if (proto == null) {
+93:                 proto = parse(name);
+94:                 if (proto == null) return null;
+95:                 cache.put(name, proto);
+96:             }
+97:         }
+98:         VectorDrawable v = new VectorDrawable(name);
+99:         v.paths.addAll(proto.paths);
+100:         v.vw = proto.vw; v.vh = proto.vh; v.iw = proto.iw; v.ih = proto.ih; v.tintAttr = proto.tintAttr;
+101:         return v;
+102:     }
+103: 
+104:     private static VectorDrawable parse(String name) {
+105:         try (java.io.InputStream in = VectorDrawable.class.getResourceAsStream("/res/drawable/" + name + ".xml")) {
+106:             if (in == null) return null;
+107:             javax.xml.parsers.DocumentBuilderFactory f = javax.xml.parsers.DocumentBuilderFactory.newInstance();
+108:             f.setNamespaceAware(false);
+109:             Document d = f.newDocumentBuilder().parse(in);
+110:             Element root = d.getDocumentElement();
+111:             VectorDrawable v = new VectorDrawable(name);
+112:             if (!"vector".equals(root.getTagName())) return null;
+113:             v.vw = num(root.getAttribute("android:viewportWidth"), 24);
+114:             v.vh = num(root.getAttribute("android:viewportHeight"), 24);
+115:             v.iw = Math.round(num(root.getAttribute("android:width"), 24));
+116:             v.ih = Math.round(num(root.getAttribute("android:height"), 24));
+117:             String tint = root.getAttribute("android:tint");
+118:             if (tint.startsWith("#")) v.tintAttr = color(tint);
+119:             walk(v, root, new AffineTransform());
+120:             return v;
+121:         } catch (Exception e) {
+122:             return null;
+123:         }
+124:     }
+125: 
+126:     private static void walk(VectorDrawable v, Element e, AffineTransform at) {
+127:         NodeList ch = e.getChildNodes();
+128:         for (int i = 0; i < ch.getLength(); i++) {
+129:             if (!(ch.item(i) instanceof Element)) continue;
+130:             Element c = (Element) ch.item(i);
+131:             if ("group".equals(c.getTagName())) {
+132:                 AffineTransform t = new AffineTransform(at);
+133:                 float px = num(c.getAttribute("android:pivotX"), 0), py = num(c.getAttribute("android:pivotY"), 0);
+134:                 float tx = num(c.getAttribute("android:translateX"), 0), ty = num(c.getAttribute("android:translateY"), 0);
+135:                 float sx = num(c.getAttribute("android:scaleX"), 1), sy = num(c.getAttribute("android:scaleY"), 1);
+136:                 float rot = num(c.getAttribute("android:rotation"), 0);
+137:                 t.translate(tx + px, ty + py);
+138:                 t.rotate(Math.toRadians(rot));
+139:                 t.scale(sx, sy);
+140:                 t.translate(-px, -py);
+141:                 walk(v, c, t);
+142:             } else if ("path".equals(c.getTagName())) {
+143:                 P p = new P();
+144:                 p.path = SvgPath.parse(c.getAttribute("android:pathData"));
+145:                 p.fill = c.hasAttribute("android:fillColor") ? color(c.getAttribute("android:fillColor")) : 0;
+146:                 p.stroke = c.hasAttribute("android:strokeColor") ? color(c.getAttribute("android:strokeColor")) : 0;
+147:                 p.sw = num(c.getAttribute("android:strokeWidth"), 0);
+148:                 p.fillAlpha = num(c.getAttribute("android:fillAlpha"), 1);
+149:                 p.strokeAlpha = num(c.getAttribute("android:strokeAlpha"), 1);
+150:                 String cap = c.getAttribute("android:strokeLineCap"), join = c.getAttribute("android:strokeLineJoin");
+151:                 p.cap = "round".equals(cap) ? java.awt.BasicStroke.CAP_ROUND : "square".equals(cap) ? java.awt.BasicStroke.CAP_SQUARE : java.awt.BasicStroke.CAP_BUTT;
+152:                 p.join = "round".equals(join) ? java.awt.BasicStroke.JOIN_ROUND : "bevel".equals(join) ? java.awt.BasicStroke.JOIN_BEVEL : java.awt.BasicStroke.JOIN_MITER;
+153:                 p.evenOdd = "evenOdd".equals(c.getAttribute("android:fillType"));
+154:                 NodeList kids = c.getChildNodes();
+155:                 for (int k = 0; k < kids.getLength(); k++) {
+156:                     if (!(kids.item(k) instanceof Element)) continue;
+157:                     Element ka = (Element) kids.item(k);
+158:                     if (!"aapt:attr".equals(ka.getTagName())) continue;
+159:                     String an = ka.getAttribute("name");
+160:                     if ("android:fillColor".equals(an)) p.fillGrad = grad(ka);
+161:                     else if ("android:strokeColor".equals(an)) p.strokeGrad = grad(ka);
+162:                 }
+163:                 if (p.evenOdd) p.path.setWindingRule(Path2D.WIND_EVEN_ODD);
+164:                 p.t = at;
+165:                 v.paths.add(p);
+166:             }
+167:         }
+168:     }
+169: 
+170:     static float num(String s, float d) {
+171:         if (s == null || s.isEmpty()) return d;
+172:         s = s.replace("dp", "").replace("dip", "").replace("px", "").trim();
+173:         try { return Float.parseFloat(s); } catch (Exception e) { return d; }
+174:     }
+175: 
+176:     static int color(String s) {
+177:         s = s.trim();

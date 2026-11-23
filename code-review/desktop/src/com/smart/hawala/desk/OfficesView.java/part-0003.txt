@@ -1,0 +1,116 @@
+342:         if (old != null) {
+343:             name.setText(Model.nz(old.name));
+344:             sh.setText(Model.nz(old.shortName));
+345:             phone.setText(Model.nz(old.phone));
+346:             loc.setText(Model.nz(old.location));
+347:             contact.setText(Model.nz(old.contact));
+348:             notes.setText(Model.nz(old.notes));
+349:         }
+350:         JPanel grid = new JPanel(new GridLayout(0, 2, 10, 8));
+351:         grid.setOpaque(false);
+352:         grid.add(Ui.labeled("الاسم *", name));
+353:         grid.add(Ui.labeled("اسم مختصر", sh));
+354:         grid.add(Ui.labeled("الهاتف", phone));
+355:         grid.add(Ui.labeled("المدينة", loc));
+356:         grid.add(Ui.labeled("المسؤول", contact));
+357:         grid.add(Ui.labeled("ملاحظات", notes));
+358:         grid.setAlignmentX(Component.RIGHT_ALIGNMENT);
+359:         c.add(grid);
+360:         c.add(Ui.gap(12));
+361:         c.add(Ui.label("العملات المتعامل بها، وحد التنبيه لكل عملة (اختياري)", 13, Ui.muted, true));
+362:         List<Model.Currency> currencies = db.currencies(false);
+363:         List<String> current = old == null ? new ArrayList<>() : db.officeCurrencies(old.id);
+364:         Map<String, Db.Limit> limits = old == null ? new HashMap<>() : db.officeLimits(old.id);
+365:         Map<String, JCheckBox> on = new LinkedHashMap<>();
+366:         Map<String, Ui.Field[]> lim = new LinkedHashMap<>();
+367:         Map<String, Ui.Field> open = new LinkedHashMap<>();
+368:         Map<String, JComboBox<String>> openSide = new LinkedHashMap<>();
+369:         JPanel cg = new JPanel(new GridLayout(0, old == null ? 5 : 3, 8, 6));
+370:         cg.setOpaque(false);
+371:         cg.setAlignmentX(Component.RIGHT_ALIGNMENT);
+372:         cg.add(Ui.label("العملة", 12, Ui.muted, true));
+373:         cg.add(Ui.label("حد ما لنا", 12, Ui.muted, true));
+374:         cg.add(Ui.label("حد ما علينا", 12, Ui.muted, true));
+375:         if (old == null) {
+376:             cg.add(Ui.label("رصيد سابق", 12, Ui.muted, true));
+377:             cg.add(Ui.label("اتجاهه", 12, Ui.muted, true));
+378:         }
+379:         for (Model.Currency cur : currencies) {
+380:             int d = cur.decimals;
+381:             JCheckBox cb = Ui.check(cur.code + " — " + cur.name, old == null ? currencies.indexOf(cur) < 2 : current.contains(cur.code));
+382:             Db.Limit l = limits.get(cur.code);
+383:             Ui.Field a = Ui.numeric(""), b = Ui.numeric("");
+384:             if (l != null && l.receivable != null) a.setText(Model.plain(l.receivable, d));
+385:             if (l != null && l.payable != null) b.setText(Model.plain(l.payable, d));
+386:             on.put(cur.code, cb);
+387:             lim.put(cur.code, new Ui.Field[]{a, b});
+388:             cg.add(cb);
+389:             cg.add(a);
+390:             cg.add(b);
+391:             if (old == null) {
+392:                 Ui.Field ob = Ui.numeric("0");
+393:                 JComboBox<String> side = Ui.combo(new String[]{"لنا", "علينا"});
+394:                 open.put(cur.code, ob);
+395:                 openSide.put(cur.code, side);
+396:                 cg.add(ob);
+397:                 cg.add(side);
+398:             }
+399:         }
+400:         c.add(cg);
+401:         if (old == null) {
+402:             c.add(Ui.gap(6));
+403:             c.add(Ui.para("«رصيد سابق»: ما كان بينك وبين المكتب قبل البدء بالبرنامج، ويُسجَّل قيدًا مستقلًا يظهر في الكشف.", 12, Ui.muted, 560));
+404:         }
+405:         // 10.16: حدود مجموع الأرصدة مقوّمة بالدولار (كانت تُحفظ ولا تُرى على الكمبيوتر)
+406:         final Ui.Field usdUs = Ui.numeric("بلا حد"), usdThem = Ui.numeric("بلا حد");
+407:         if (old != null && old.usdLimit != null) usdUs.setText(Db.money(old.usdLimit, 2));
+408:         if (old != null && old.usdOweLimit != null) usdThem.setText(Db.money(old.usdOweLimit, 2));
+409:         c.add(Ui.gap(8));
+410:         c.add(Ui.label("حدود مجموع الأرصدة مقوّمة بالدولار (اختياري)", 13, Ui.muted, true));
+411:         JPanel ug = new JPanel(new GridLayout(0, 2, 12, 6));
+412:         ug.setOpaque(false);
+413:         ug.setAlignmentX(Component.RIGHT_ALIGNMENT);
+414:         ug.add(Ui.labeled("حد ما لنا (USD)", usdUs));
+415:         ug.add(Ui.labeled("حد ما علينا (USD)", usdThem));
+416:         c.add(ug);
+417:         c.setPreferredSize(new Dimension(old == null ? 760 : 600, Math.min(620, c.getPreferredSize().height + 20)));
+418:         JScrollPane sp = new JScrollPane(Ui.rtl(c));
+419:         sp.setBorder(null);
+420:         sp.setPreferredSize(new Dimension(old == null ? 790 : 630, Math.min(640, c.getPreferredSize().height + 10)));
+421:         while (Ui.form(parent, old == null ? "مكتب جديد" : "تعديل «" + old.name + "»", sp, "حفظ")) {
+422:             try {
+423:                 String n = name.val();
+424:                 if (n.isEmpty()) throw new IllegalArgumentException("اكتب اسم المكتب");
+425:                 for (Model.Office o : db.offices()) if ((old == null || o.id != old.id) && OwnerReports.norm(o.name).equals(OwnerReports.norm(n)))
+426:                     throw new IllegalArgumentException("يوجد مكتب بالاسم نفسه: «" + o.name + "»");
+427:                 List<String> codes = new ArrayList<>();
+428:                 Map<String, Db.Limit> lm = new HashMap<>();
+429:                 List<Db.Opening> openings = new ArrayList<>();
+430:                 for (Model.Currency cur : currencies) {
+431:                     if (!on.get(cur.code).isSelected()) continue;
+432:                     codes.add(cur.code);
+433:                     Ui.Field[] f = lim.get(cur.code);
+434:                     Long ra = f[0].val().isEmpty() ? null : Db.minor(f[0].val(), cur.decimals), pa = f[1].val().isEmpty() ? null : Db.minor(f[1].val(), cur.decimals);
+435:                     if (ra != null || pa != null) lm.put(cur.code, new Db.Limit(ra, pa));
+436:                     if (old == null) {
+437:                         String ov = open.get(cur.code).val();
+438:                         if (!ov.isEmpty()) {
+439:                             long amt = Db.minor(ov, cur.decimals);
+440:                             if (amt > 0) openings.add(new Db.Opening(cur.code, openSide.get(cur.code).getSelectedIndex() == 0 ? "لنا" : "علينا", amt));
+441:                         }
+442:                     }
+443:                 }
+444:                 if (codes.isEmpty()) throw new IllegalArgumentException("اختر عملة واحدة على الأقل");
+445:                 Long uu = usdUs.val().isEmpty() ? null : Long.valueOf(Db.minor(usdUs.val(), 2)), ut = usdThem.val().isEmpty() ? null : Long.valueOf(Db.minor(usdThem.val(), 2));
+446:                 if (old == null) db.addOffice(n, sh.val(), phone.val(), loc.val(), contact.val(), notes.val(), uu, ut, codes, lm, openings);
+447:                 else db.updateOffice(old.id, n, sh.val(), phone.val(), loc.val(), contact.val(), notes.val(), old.active, uu, ut, codes, lm);
+448:                 app.changed();
+449:                 if (after != null) after.run();
+450:                 Ui.toast(old == null ? "أُضيف المكتب «" + n + "»" : "حُفظ التعديل");
+451:                 return;
+452:             } catch (Exception e) {
+453:                 Ui.error(parent, e);
+454:             }
+455:         }
+456:     }
+457: }

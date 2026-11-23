@@ -1,0 +1,154 @@
+760:         // 10.4: صور اللقطة ملفات مستقلة: تُنزَّل كلها قبل أن تُستبدل بيانات هذا الجهاز (إن نقص شيء لا يتغير شيء)
+761:         List<Object[]> blobs = fetchSnapshotBlobs(keys, snap.optJSONArray("atts"), (i, n) -> l.on(25 + (n == 0 ? 25 : 25 * i / n), "تنزيل الصور " + i + " من " + n + "…"));
+762:         l.on(52, "حفظ البيانات على هذا الجهاز…");
+763:         restore(Base64.getDecoder().decode(snap.getString("zip")));
+764:         l.on(82, "ترتيب الصور…");
+765:         insertBlobs(blobs);
+766:         register(vid, vk, p.optString("name"), snap.getJSONObject("cursors"), snap.getJSONObject("hashes"));
+767:         SyncStore.setMeta(db.getWritableDatabase(), "header_copy", h.toString());
+768:         if (!h.optString("founder").isEmpty()) SyncStore.setMeta(db.getWritableDatabase(), "founder", h.optString("founder"));
+769:         else SyncStore.setMeta(db.getWritableDatabase(), "founder", snap.optString("dev"));
+770:         pf.delete();
+771:         db.audit("SYNC_JOIN_DONE", "sync", 0, p.optString("name"));
+772:         l.on(90, "أول مزامنة…");
+773:         firstRound();
+774:         l.on(100, "اكتمل");
+775:     }
+776: 
+777:     /**
+778:      * 10.18: الانضمام تمّ عند هذه النقطة (البيانات استُبدلت والجهاز سُجّل). تعثّر الشبكة في كتابة البطاقة أو في أول جولة
+779:      * كان يُظهر «خطأ» مع أن الجهاز انضم، فيحاول المستخدم ثانية ويُرفض «في مزامنة من قبل». الآن: ينجح الانضمام وتُكمل الجولة التالية ما بقي
+780:      */
+781:     private void firstRound() {
+782:         try {
+783:             writeMember();
+784:             syncLocked();
+785:         } catch (Exception e) {
+786:             String msg = e.getMessage() == null ? e.toString() : e.getMessage();
+787:             SyncStore.setMeta(db.getWritableDatabase(), "last_error", "انضم الجهاز، وتعثّرت أول مزامنة: " + msg + " — ستُعاد تلقائيًا، أو اضغط «مزامنة الآن».");
+788:             db.audit("SYNC_JOIN_PARTIAL", "sync", 0, msg);
+789:         }
+790:     }
+791: 
+792:     /** يستعيد لقطة الخزنة فوق بيانات هذا الجهاز (بالمسار نفسه للاستعادة العادية وفحوصها). */
+793:     void restore(byte[] zip) throws Exception {
+794:         final File staging = new File(db.evidenceDir().getParentFile(), "sync-staging");
+795:         if (!staging.exists() && !staging.mkdirs()) throw new IOException("تعذر تجهيز مجلد مؤقت");
+796:         BackupFormat.AttachmentStore store = new BackupFormat.AttachmentStore() {
+797:             @Override public Object store(long id, InputStream data) throws Exception {
+798:                 ByteArrayOutputStream o = new ByteArrayOutputStream();
+799:                 byte[] buf = new byte[8192];
+800:                 int n;
+801:                 while ((n = data.read(buf)) > 0) o.write(buf, 0, n);
+802:                 File f = new File(staging, UUID.randomUUID() + ".evd");
+803:                 try (FileOutputStream out = new FileOutputStream(f)) {
+804:                     out.write(Crypto.encBytes(o.toByteArray()));
+805:                 }
+806:                 return f;
+807:             }
+808: 
+809:             @Override public void discard(Object handle) {
+810:                 if (handle instanceof File) ((File) handle).delete();
+811:             }
+812:         };
+813:         BackupFormat.Parsed p = BackupFormat.readV5(new ByteArrayInputStream(zip), store);
+814:         BackupFormat.Report r = BackupFormat.validate(p);
+815:         if (!r.errors.isEmpty()) throw new IOException("لقطة الخزنة لم تجتز الفحص: " + r.errors.get(0));
+816:         boolean sys = db.isSystem();
+817:         db.setSystem(true);
+818:         db.restoringForSync = true;
+819:         try {
+820:             db.importBackup(p, null);
+821:         } finally {
+822:             db.restoringForSync = false;
+823:             db.setSystem(sys);
+824:         }
+825:     }
+826: 
+827:     /** 10.4: اسم ملف الصورة في الخزنة (مشتق من بصمة محتواها؛ الصورة نفسها = الملف نفسه مهما تكررت). */
+828:     static String blobName(SyncCrypto.Keys keys, String sha) { return keys.fileName("a-", "att:" + sha); }
+829: 
+830:     /** 10.4: ينزّل صور اللقطة إلى مجلد مؤقت مشفّرة كما تُحفظ الصور محليًا: [id, tx_id, mime, created_at, sha, ملف]. */
+831:     interface Count {
+832:         void at(int i, int n);
+833:     }
+834: 
+835:     List<Object[]> fetchSnapshotBlobs(SyncCrypto.Keys keys, JSONArray atts) throws Exception { return fetchSnapshotBlobs(keys, atts, (i, n) -> { }); }
+836: 
+837:     List<Object[]> fetchSnapshotBlobs(SyncCrypto.Keys keys, JSONArray atts, Count count) throws Exception {
+838:         List<Object[]> out = new ArrayList<>();
+839:         if (atts == null || atts.length() == 0) return out;
+840:         File staging = new File(db.evidenceDir().getParentFile(), "sync-blobs");
+841:         if (!staging.exists() && !staging.mkdirs()) throw new IOException("تعذر تجهيز مجلد مؤقت للصور");
+842:         int missing = 0;
+843:         try {
+844:             for (int i = 0; i < atts.length(); i++) {
+845:                 if (i % 5 == 0) count.at(i, atts.length());
+846:                 JSONObject x = atts.getJSONObject(i);
+847:                 String ref = x.getString("ref"), sha = x.getString("sha");
+848:                 byte[] sealed = folder.read(ref);
+849:                 if (sealed == null) {
+850:                     missing++;
+851:                     continue;
+852:                 }
+853:                 byte[] plain = keys.openFile("a", ref, sealed);
+854:                 if (!sha.equals(SyncCrypto.hex(SyncCrypto.sha256(plain)))) throw new IOException("صورة تالفة في الخزنة (رقم " + x.optLong("id") + ")");
+855:                 File f = new File(staging, UUID.randomUUID() + ".evd");
+856:                 try (FileOutputStream o = new FileOutputStream(f)) {
+857:                     o.write(Crypto.encBytes(plain));
+858:                 }
+859:                 out.add(new Object[]{x.getLong("id"), x.getLong("tx"), x.optString("mime", "image/jpeg"), x.optLong("at"), sha, f});
+860:             }
+861:             if (missing > 0)
+862:                 throw new IllegalStateException("لم تصل " + missing + " من " + atts.length() + " صورة من صور الخزنة إلى هذا الجهاز بعد. انتظر حتى تكتمل مزامنة المكان ثم أعد المحاولة؛ بياناتك لم تتغير.");
+863:             return out;
+864:         } catch (Exception e) {
+865:             for (Object[] b : out) ((File) b[5]).delete();
+866:             throw e;
+867:         }
+868:     }
+869: 
+870:     /** 10.4: بعد استعادة لقطة بلا صور: تُنقل الصور المنزّلة إلى مكانها وتُسجَّل (قبل تفعيل الالتقاط، فلا تُرسل من جديد). */
+871:     void insertBlobs(List<Object[]> blobs) throws IOException {
+872:         if (blobs.isEmpty()) return;
+873:         File dir = db.evidenceDir();
+874:         if (!dir.exists() && !dir.mkdirs()) throw new IOException("تعذر إنشاء مجلد الصور");
+875:         SQLiteDatabase d = db.getWritableDatabase();
+876:         d.beginTransaction();
+877:         try {
+878:             for (Object[] b : blobs) {
+879:                 File src = (File) b[5], dst = new File(dir, src.getName());
+880:                 if (!src.renameTo(dst)) {
+881:                     java.nio.file.Files.copy(src.toPath(), dst.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+882:                     src.delete();
+883:                 }
+884:                 d.execSQL("INSERT OR REPLACE INTO attachments(id,tx_id,path,mime,created_at) VALUES(?,?,?,?,?)",
+885:                         new Object[]{b[0], b[1], dst.getAbsolutePath(), b[2], b[3]});
+886:                 d.execSQL("INSERT OR REPLACE INTO sync_blobs(att_id,sha) VALUES(?,?)", new Object[]{b[0], b[4]});
+887:             }
+888:             d.setTransactionSuccessful();
+889:         } finally {
+890:             d.endTransaction();
+891:         }
+892:     }
+893: 
+894:     /** يسجّل هذا الجهاز في الخزنة: معرّف جديد، وبادئة أرقام لا يستخدمها غيره، والمؤشرات التي بدأ منها. */
+895:     void register(String vid, byte[] vk, String deviceName, JSONObject cursors, JSONObject hashes) throws Exception {
+896:         SyncCrypto.Keys keys = new SyncCrypto.Keys(vid, vk);
+897:         Set<Long> used = new HashSet<>();
+898:         // 10.4: بادئات الأجهزة المُزالة محجوزة أيضًا (صفوفها باقية في الدفتر)
+899:         for (JSONObject m : readMembersRaw(keys).values()) {
+900:             used.add(m.optLong("prefix"));
+901:             JSONArray r = m.optJSONArray("removed");
+902:             if (r != null) for (int i = 0; i < r.length(); i++) used.add(r.optJSONObject(i) == null ? 0 : r.optJSONObject(i).optLong("prefix"));
+903:         }
+904:         SecureRandom rnd = new SecureRandom();
+905:         long prefix;
+906:         do {
+907:             prefix = 1 + rnd.nextInt((1 << 20) - 2);
+908:         } while (used.contains(prefix));
+909:         String dev = SyncCrypto.hex(SyncCrypto.random(8));
+910:         SQLiteDatabase d = db.getWritableDatabase();
+911:         d.beginTransaction();
+912:         try {
+913:             for (String t : new String[]{"sync_meta", "sync_chg", "sync_clock", "sync_ids", "sync_outbox", "sync_cursor"}) d.execSQL("DELETE FROM " + t);

@@ -1,0 +1,128 @@
+1428:                 LinearLayout k = a.card();
+1429:                 k.setBackground(a.round(a.goldSoft, a.accent, 16));
+1430:                 k.addView(a.text("زيادة " + iso(Model.fmt(s.got, dec(dec, s.gotCur)) + " " + s.gotCur) + " (≈ " + iso(s.gotUsd + " $") + ") وعجز "
+1431:                         + iso(Model.fmt(s.sold, dec(dec, s.soldCur)) + " " + s.soldCur) + " (≈ " + iso(s.soldUsd + " $") + ")", 14, a.goldInk, true));
+1432:                 k.addView(a.text("قيمتاهما متقاربتان (الفرق ≈ " + iso(s.gapUsd().abs().setScale(2, RoundingMode.HALF_EVEN) + " $") + "): الأرجح أنك بعت "
+1433:                         + iso(Model.fmt(s.sold, dec(dec, s.soldCur)) + " " + s.soldCur) + " بـ " + iso(Model.fmt(s.got, dec(dec, s.gotCur)) + " " + s.gotCur)
+1434:                         + " بسعر " + iso("1 " + s.soldCur + " = " + s.rate.toPlainString() + " " + s.gotCur) + " ولم تسجّل العملية.", 13, a.ink, false));
+1435:                 CheckBox cb = new CheckBox(a);
+1436:                 cb.setText("سجّلها عملية بيع (بدل تسويتي عجز وزيادة)");
+1437:                 cb.setEnabled(internal);
+1438:                 picks.add(cb);
+1439:                 k.addView(cb);
+1440:             }
+1441:             if (!internal) a.hint("الربط الإلزامي لا يسمح بالبيع والشراء داخل الصندوق؛ تُسجَّل الفروق تسويات جرد.");
+1442:         } else if (up.signum() > 0 && down.signum() > 0) {
+1443:             a.notice(R.drawable.ic_info, "في الجرد زيادة وعجز بعملات مختلفة لكن قيمتيهما غير متقاربتين، فلا تبدو عملية بيع واحدة. راجع الحركات قبل الحفظ.", false, null, null);
+1444:         }
+1445:         a.hint("عند الحفظ: يُحفظ الجرد في «سجل الجرد» كما هو (المسجّل والمعدود لكل عملة)، وما بقي من فروق يُسجَّل «تسوية جرد» فيطابق الصندوق المعدود.");
+1446:         a.footer(a.makeButton("حفظ الجرد", a.primary, v -> {
+1447:             final List<CashBox.Suggestion> chosen = new ArrayList<>();
+1448:             for (int i = 0; i < sugg.size(); i++) if (picks.get(i).isChecked()) chosen.add(sugg.get(i));
+1449:             a.busy("جارٍ حفظ الجرد…", p -> a.db.cashCount(cfg.id, counted, note, chosen), res -> {
+1450:                 CashBox.Count r = (CashBox.Count) res;
+1451:                 a.toast(r.adjusted == 0 && r.sales.isEmpty() ? "الصندوق مطابق للمعدود ✓"
+1452:                         : (r.sales.isEmpty() ? "" : "سُجّل البيع، ") + (r.adjusted > 0 ? r.adjusted + " تسوية جرد، " : "") + "والصندوق الآن مطابق للمعدود");
+1453:                 countLog();
+1454:             });
+1455:         }));
+1456:     }
+1457: 
+1458:     void countLog() {
+1459:         final CashBox.Config cfg = a.db.cashConfig();
+1460:         screen("سجل الجرد — " + cfg.name, this::home);
+1461:         if (a.can(Auth.Perm.CASH) && a.can(Auth.Perm.CASH_COUNT)) a.headerAction(R.drawable.ic_plus, "جرد جديد", v -> count());
+1462:         final Map<String, Integer> dec = a.db.decimalsMap();
+1463:         List<CashBox.Count> log = a.db.cashCounts(cfg.id);
+1464:         if (log.isEmpty()) {
+1465:             LinearLayout c = a.card();
+1466:             c.addView(a.text("لم يُسجَّل أي جرد بعد", 16, a.ink, true));
+1467:             c.addView(a.text("كل جرد تحفظه يظهر هنا بالمسجّل والمعدود والعجز والزيادة لكل عملة.", 13, a.muted, false));
+1468:             if (a.can(Auth.Perm.CASH) && a.can(Auth.Perm.CASH_COUNT)) c.addView(a.makeButton("جرد الآن", a.primary, v -> count()), a.lp(-1, 48, 6));
+1469:             return;
+1470:         }
+1471:         for (final CashBox.Count k : log) {
+1472:             LinearLayout c = a.card();
+1473:             c.addView(a.text(Model.date(k.createdAt) + (k.userName.isEmpty() ? "" : "  •  " + k.userName), 14, a.ink, true));
+1474:             Ui.Flow f = a.flow();
+1475:             for (CashBox.CountLine l : k.lines) {
+1476:                 long df = l.diff();
+1477:                 int d = dec(dec, l.currency);
+1478:                 f.addView(df == 0 ? a.chip(l.currency + " مطابق", a.green, a.creditBg)
+1479:                         : a.chip(iso((df > 0 ? "زيادة " : "عجز ") + Model.fmt(Math.abs(df), d) + " " + l.currency), df > 0 ? a.primaryInk : a.red, df > 0 ? a.primarySoft : a.debitBg));
+1480:             }
+1481:             c.addView(f);
+1482:             String net = Model.nz(k.netUsd);
+1483:             if (!net.isEmpty()) {
+1484:                 BigDecimal n = new BigDecimal(net);
+1485:                 c.addView(a.text(n.signum() == 0 ? "الصافي بالدولار: صفر" : "الصافي بالدولار: " + (n.signum() > 0 ? "زيادة ≈ " : "عجز ≈ ") + iso(n.abs().setScale(2, RoundingMode.HALF_EVEN) + " $"),
+1486:                         12, n.signum() < 0 ? a.red : a.muted, true));
+1487:             }
+1488:             if (!k.sales.isEmpty()) c.addView(a.text("سُجّل بيعًا: " + k.sales, 12, a.goldInk, false));
+1489:             if (!k.note.isEmpty()) c.addView(a.text("ملاحظة: " + k.note, 12, a.muted, false));
+1490:             c.setOnClickListener(v -> {
+1491:                 List<String[]> rows = new ArrayList<>();
+1492:                 rows.add(new String[]{"التاريخ", Model.date(k.createdAt)});
+1493:                 rows.add(new String[]{"بواسطة", k.userName});
+1494:                 for (CashBox.CountLine l : k.lines) {
+1495:                     int d = dec(dec, l.currency);
+1496:                     rows.add(new String[]{null, l.currency});
+1497:                     rows.add(new String[]{"المسجّل", iso(Model.fmt(l.recorded, d))});
+1498:                     rows.add(new String[]{"المعدود", iso(Model.fmt(l.counted, d))});
+1499:                     rows.add(new String[]{"الفرق", l.diff() == 0 ? "مطابق" : (l.diff() > 0 ? "زيادة " : "عجز ") + iso(Model.fmt(Math.abs(l.diff()), d))});
+1500:                 }
+1501:                 if (!k.sales.isEmpty()) rows.add(new String[]{"سُجّل بيعًا", k.sales});
+1502:                 rows.add(new String[]{"تسويات الجرد", "" + k.adjusted});
+1503:                 if (!k.note.isEmpty()) rows.add(new String[]{"ملاحظة", k.note});
+1504:                 new AlertDialog.Builder(a).setView(detailView("جرد", rows, null)).setPositiveButton("إغلاق", null).show();
+1505:             });
+1506:         }
+1507:     }
+1508: 
+1509:     // ===================================================================================
+1510:     // الإعداد: العملات (كلها، مع أسعار الإنترنت)، الصناديق، القفل، الربط
+1511:     // ===================================================================================
+1512: 
+1513:     /** مسودة الإعداد تبقى عند إعادة رسم الشاشة (تحديث الأسعار أو إضافة عملة). */
+1514:     private Set<String> draftChecks;
+1515:     private Map<String, String> draftOpen;
+1516:     private String draftName;
+1517: 
+1518:     void setup(final boolean first) {
+1519:         if (first && !a.can(Auth.Perm.SETTINGS)) {
+1520:             tabbed("صندوق المكتب", null);
+1521:             a.notice(R.drawable.ic_info, "الصندوق لم يُعَد بعد. يعدّه المدير من هذه الشاشة.", false, null, null);
+1522:             return;
+1523:         }
+1524:         if (!a.require(Auth.Perm.SETTINGS)) return;
+1525:         final CashBox.Config cfg = a.db.cashConfig();
+1526:         if (first) tabbed("إعداد صندوق المكتب", null);
+1527:         else screen("إعدادات «" + cfg.name + "»", () -> {
+1528:             draftChecks = null;
+1529:             home();
+1530:         });
+1531:         if (first) {
+1532:             LinearLayout intro = a.card();
+1533:             intro.addView(a.text("صندوقك: النقد الموجود لديك فعلًا", 17, a.primaryInk, true));
+1534:             intro.addView(a.text("حسابات الصندوق مستقلة عن أرصدة المكاتب ولا تؤثر عليها. تسجّل فيه ما يدخل ويخرج من النقد بكل عملة، "
+1535:                     + "مع خانة للأجور. وحين تسلّم أو تستلم لحساب مكتب أو عميل يُسجَّل على حسابه في الوقت نفسه. "
+1536:                     + "وتبيع وتشتري العملات، وتضيف المصاريف، وتجرد الصندوق متى شئت.", 14, a.ink, false));
+1537:         }
+1538:         a.title("اسم الصندوق");
+1539:         final EditText name = a.input(CashBox.DEFAULT_NAME);
+1540:         name.setText(draftName != null ? draftName : cfg.on ? cfg.name : "");
+1541:         final Map<String, CheckBox> checks = new LinkedHashMap<>();
+1542:         final Map<String, EditText> opens = new LinkedHashMap<>();
+1543:         currencyPicker(cfg.on ? new TreeSet<>(cfg.currencies) : null, cfg.on ? a.db.cashBalances(cfg.id) : new HashMap<>(), checks, opens, first,
+1544:                 () -> {
+1545:                     draftName = name.getText().toString();
+1546:                     setup(first);
+1547:                 });
+1548: 
+1549:         final Switch[] link = linkSection(cfg.strict, cfg.allowInternal);
+1550:         final Switch strict = link[0], internal = link[1];
+1551:         if (!first) {
+1552:             lockSection();
+1553:             boxesSection();
+1554:             a.title("بنود المصاريف");
+1555:             a.hint(Model.join(cfg.expenseCats, " • "));

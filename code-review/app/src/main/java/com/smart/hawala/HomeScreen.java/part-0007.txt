@@ -1,0 +1,166 @@
+923:         if (g.getChildCount() == 0) a.groupRow(g, R.drawable.ic_info, a.muted, "لا توجد أسعار بعد", "حدّثها من «أسعار الصرف»", null, v -> a.officesScreen.showRates(a::showHome));
+924:     }
+925: 
+926:     // ===================================================================================
+927:     // المستخدم الحالي
+928:     // ===================================================================================
+929: 
+930:     private void userMenu(final Model.User u) {
+931:         new AlertDialog.Builder(a).setTitle(u.name + " — " + Auth.shortLabel(u.role))
+932:                 .setItems(new String[]{"تغيير رمزي السري", "اسمي الظاهر للآخرين", "تسجيل الخروج"}, (d, w) -> {
+933:                     if (w == 0) a.usersScreen.changeOwnPin();
+934:                     else if (w == 1) a.usersScreen.changeOwnNick();
+935:                     else {
+936:                         a.usersScreen.logout();
+937:                     }
+938:                 }).show();
+939:     }
+940: 
+941:     // ===================================================================================
+942:     // تخصيص الصفحة الرئيسية
+943:     // ===================================================================================
+944: 
+945:     void editor() {
+946:         // 10.12: الصفحة الرئيسية لكل مستخدم وحده، فيخصّصها كل مستخدم
+947:         a.here(this::editor);
+948:         a.tabbedScreen("تخصيص الصفحة الرئيسية", a::showHome, "home");
+949:         a.hint("اختر ما يظهر في صفحتك الرئيسية، ورتّبه بسحب «≡» أو بالأسهم. التغييرات تُحفظ فورًا.");
+950:         final LinearLayout box = new LinearLayout(a);
+951:         box.setOrientation(LinearLayout.VERTICAL);
+952:         a.body.addView(box);
+953:         final Runnable[] draw = new Runnable[1];
+954:         final List<List<String[]>> cur = new ArrayList<>();
+955:         // 10.13: الترتيب بالسحب «≡» إلى جانب الأسهم
+956:         final Ui.DragSort ds = a.new DragSort(box, keys -> {
+957:             List<String[]> l = cur.get(0), out = new ArrayList<>();
+958:             for (Object k : keys) for (String[] it : l) if (it[0].equals(k)) out.add(it);
+959:             for (String[] it : l) if (!out.contains(it)) out.add(it);
+960:             saveLayout(a.db, out);
+961:             draw[0].run();
+962:         });
+963:         draw[0] = () -> {
+964:             box.removeAllViews();
+965:             final List<String[]> l = layout(a.db);
+966:             cur.clear();
+967:             cur.add(l);
+968:             for (int i = 0; i < l.size(); i++) {
+969:                 final int idx = i;
+970:                 final String[] item = l.get(i);
+971:                 final Widget w = widget(item[0]);
+972:                 boolean on = "1".equals(item[1]);
+973:                 LinearLayout r = a.row();
+974:                 r.setPadding(a.dp(4), a.dp(6), a.dp(4), a.dp(6));
+975:                 r.setBackground(a.round(on ? a.surface : Ui.mix(a.surface, a.bg, 0.6f), a.line, 14));
+976:                 r.setGravity(Gravity.CENTER_VERTICAL);
+977:                 TextView hd = ds.handle();
+978:                 r.addView(hd, new LinearLayout.LayoutParams(a.dp(30), a.dp(44)));
+979:                 ds.bind(r, hd, item[0]);
+980:                 Switch sw = new Switch(a);
+981:                 sw.setChecked(on);
+982:                 int[][] st = {{android.R.attr.state_checked}, {}};
+983:                 sw.setThumbTintList(new android.content.res.ColorStateList(st, new int[]{a.night ? a.green : a.primary, a.night ? Color.rgb(150, 160, 156) : Color.rgb(250, 250, 250)}));
+984:                 sw.setTrackTintList(new android.content.res.ColorStateList(st, new int[]{Ui.mix(a.surface, a.primary, 0.5f), Ui.mix(a.surface, a.muted, 0.45f)}));
+985:                 sw.setOnCheckedChangeListener((b, c) -> {
+986:                     item[1] = c ? "1" : "0";
+987:                     saveLayout(a.db, l);
+988:                     draw[0].run();
+989:                 });
+990:                 r.addView(sw, new LinearLayout.LayoutParams(-2, -2));
+991:                 LinearLayout col = new LinearLayout(a);
+992:                 col.setOrientation(LinearLayout.VERTICAL);
+993:                 col.addView(small(w.title, 15, on ? a.ink : a.muted, true));
+994:                 col.addView(small(w.desc, 12, a.muted, false));
+995:                 r.addView(col, new LinearLayout.LayoutParams(0, -2, 1));
+996:                 if (w.hasOptions) r.addView(a.iconButton(R.drawable.ic_sliders, a.primaryInk, "خيارات", v -> options(w.key, draw[0])), new LinearLayout.LayoutParams(a.dp(40), a.dp(44)));
+997:                 TextView up = moveButton("▲", idx > 0, v -> {
+998:                     Collections.swap(l, idx, idx - 1);
+999:                     saveLayout(a.db, l);
+1000:                     draw[0].run();
+1001:                 });
+1002:                 TextView down = moveButton("▼", idx < l.size() - 1, v -> {
+1003:                     Collections.swap(l, idx, idx + 1);
+1004:                     saveLayout(a.db, l);
+1005:                     draw[0].run();
+1006:                 });
+1007:                 r.addView(up, new LinearLayout.LayoutParams(a.dp(36), a.dp(44)));
+1008:                 r.addView(down, new LinearLayout.LayoutParams(a.dp(36), a.dp(44)));
+1009:                 box.addView(r, a.lp(-1, -2, 3));
+1010:             }
+1011:         };
+1012:         draw[0].run();
+1013:         LinearLayout foot = a.row();
+1014:         foot.addView(a.makeButton("عرض الصفحة الرئيسية", a.primary, v -> a.showHome()), new LinearLayout.LayoutParams(0, a.dp(50), 1));
+1015:         android.widget.Button reset = a.makeButton("الافتراضي", Color.rgb(120, 120, 120), v -> a.confirm("الترتيب الافتراضي",
+1016:                 "تعود عناصر الصفحة الرئيسية وترتيبها إلى الشكل الأصلي.", "استعادة", () -> {
+1017:                     a.db.deleteSetting("home_widgets");
+1018:                     editor();
+1019:                 }));
+1020:         LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-2, a.dp(50));
+1021:         rp.setMargins(a.dp(8), 0, 0, 0);
+1022:         foot.addView(reset, rp);
+1023:         a.footer(foot);
+1024:     }
+1025: 
+1026:     private TextView moveButton(String s, boolean enabled, View.OnClickListener l) {
+1027:         TextView t = a.text(s, 15, enabled ? a.primaryInk : Ui.mix(a.muted, a.surface, 0.6f), true);
+1028:         t.setGravity(Gravity.CENTER);
+1029:         t.setPadding(0, 0, 0, 0);
+1030:         if (enabled) {
+1031:             t.setBackground(a.ripple(null, 10));
+1032:             t.setOnClickListener(l);
+1033:         }
+1034:         return t;
+1035:     }
+1036: 
+1037:     /** خيارات العنصر: العملات المعروضة، طريقة اختيار المكاتب، العدد. */
+1038:     private void options(String key, final Runnable after) {
+1039:         switch (key) {
+1040:             case "net":
+1041:             case "totals":
+1042:             case "daily":
+1043:                 currencyChooser("hw_net_curs", "العملات في الأرصدة وملخص اليوم", after);
+1044:                 break;
+1045:             case "rates":
+1046:                 currencyChooser("hw_rates_curs", "العملات في أسعار الصرف", after);
+1047:                 break;
+1048:             case "offices": {
+1049:                 final String[] modes = {"pinned", "top_us", "top_them", "all"};
+1050:                 final String[] labels = {"المكاتب المثبّتة", "أكبر الأرصدة لنا (بالدولار التقريبي)", "أكبر الأرصدة علينا (بالدولار التقريبي)", "كل المكاتب التي لها رصيد"};
+1051:                 int cur = java.util.Arrays.asList(modes).indexOf(a.db.setting("hw_offices_mode", "pinned"));
+1052:                 new AlertDialog.Builder(a).setTitle("أي المكاتب تظهر؟").setSingleChoiceItems(labels, Math.max(0, cur), (d, w) -> {
+1053:                     a.db.setSettingQuiet("hw_offices_mode", modes[w]);
+1054:                     d.dismiss();
+1055:                     countChooser("hw_offices_n", "كم مكتبًا يظهر؟", 5, after);
+1056:                 }).show();
+1057:                 break;
+1058:             }
+1059:             case "recent_tx":
+1060:                 countChooser("hw_tx_n", "كم حركة تظهر؟", 5, after);
+1061:                 break;
+1062:             default:
+1063:                 break;
+1064:         }
+1065:     }
+1066: 
+1067:     private void countChooser(final String key, String title, long def, final Runnable after) {
+1068:         final int[] counts = {3, 5, 10, 15, 20};
+1069:         String[] labels = new String[counts.length];
+1070:         long cur = a.db.settingLong(key, def);
+1071:         int sel = 1;
+1072:         for (int i = 0; i < counts.length; i++) {
+1073:             labels[i] = String.valueOf(counts[i]);
+1074:             if (counts[i] == cur) sel = i;
+1075:         }
+1076:         new AlertDialog.Builder(a).setTitle(title).setSingleChoiceItems(labels, sel, (d, w) -> {
+1077:             a.db.setSettingQuiet(key, String.valueOf(counts[w]));
+1078:             d.dismiss();
+1079:             if (after != null) after.run();
+1080:         }).show();
+1081:     }
+1082: 
+1083:     private void currencyChooser(final String key, String title, final Runnable after) {
+1084:         final List<Model.Currency> cs = a.db.currencies(true);
+1085:         final String[] labels = new String[cs.size()];
+1086:         final boolean[] checked = new boolean[cs.size()];
+1087:         Set<String> chosen = chosenCurrencies(key);
+1088:         for (int i = 0; i < cs.size(); i++) {

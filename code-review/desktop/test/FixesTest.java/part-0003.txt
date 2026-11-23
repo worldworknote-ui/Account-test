@@ -1,0 +1,118 @@
+276:         Db.TransferInput same = new Db.TransferInput();
+277:         same.from = A;
+278:         same.to = A;
+279:         same.currency = "USD";
+280:         same.amount = 100;
+281:         same.when = System.currentTimeMillis();
+282:         check(throwsMsg(() -> db.addTransfer(same), "مختلفين"), "المكتب نفسه في الطرفين مرفوض");
+283:         db.cancelTx(ids[1], "خطأ");
+284:         check(!db.tx(ids[0]).isActive() && !db.tx(ids[1]).isActive() && b(db.balances(A), "USD") == aU && b(db.balances(B), "USD") == bU, "إلغاء ساق يلغي العملية كلها وتعود الأرصدة");
+285:         as(db, clerk);
+286:         long[] pids = db.addTransfer(tr);
+287:         check(db.tx(pids[0]).isPending() && db.tx(pids[1]).isPending() && b(db.balances(A), "USD") == aU, "تحويل الموظف معلّق بساقيه ولا أثر له قبل الاعتماد");
+288:         TxConfirm.View cv = TxConfirm.build(db, Arrays.asList(db.transferLegs(tr)), null, null);
+289:         boolean expected2 = false, officeRows = false;
+290:         for (TxConfirm.Row r : cv.rows) {
+291:             if (r.label.startsWith("الرصيد المتوقع بعد اعتماد الحركة")) expected2 = true;
+292:             if (r.kind == TxConfirm.OFFICE && r.label.equals("المكتب")) officeRows = true;
+293:         }
+294:         check(cv.pending && expected2 && officeRows, "التأكيد: «الرصيد المتوقع بعد اعتماد الحركة» واسم المكتب مع كلمة «المكتب»");
+295:         as(db, acct);
+296:         db.approveTx(pids[0]);
+297:         check(db.tx(pids[1]).isActive() && b(db.balances(B), "USD") == bU - 51000 && b(db.balances(A), "USD") == aU + 50700, "اعتماد ساق يعتمد العملية كلها");
+298:         healthy(db, "بعد التحويلات");
+299:         // 10.7: حركة سُجّلت بالاتجاه القديم المعكوس (10.5–10.6) يكشفها فحص الصحة، ولا يعدّلها شيء تلقائيًا
+300:         db.getWritableDatabase().execSQL("UPDATE tx SET type=CASE WHEN type=? THEN ? ELSE ? END WHERE pair_uuid=?",
+301:                 new Object[]{Model.TYPE_DEBIT, Model.TYPE_CREDIT, Model.TYPE_DEBIT, db.tx(pids[0]).pairUuid});
+302:         boolean flagged = false;
+303:         for (Db.Check hc : db.healthCheck(true)) if (hc.title.startsWith("الحركات بين مكتبين باتجاهها الصحيح") && !hc.ok && hc.detail.contains("" + pids[0])) flagged = true;
+304:         check(flagged, "فحص الصحة يكشف حركة بين مكتبين سُجّلت بالاتجاه القديم");
+305:         db.getWritableDatabase().execSQL("UPDATE tx SET type=CASE WHEN type=? THEN ? ELSE ? END WHERE pair_uuid=?",
+306:                 new Object[]{Model.TYPE_DEBIT, Model.TYPE_CREDIT, Model.TYPE_DEBIT, db.tx(pids[0]).pairUuid});
+307:         healthy(db, "بعد إعادة الاتجاه");
+308: 
+309:         System.out.println("== §11: معاينة الرصيد بقواعد الترحيل نفسها");
+310:         long t1 = db.addTx(txIn(A, Model.TYPE_DEBIT, 70000, "USD"), null);
+311:         Db.TxInput moved = txIn(B, Model.TYPE_CREDIT, 30000, "EUR");
+312:         moved.feeType = Model.FEE_US;
+313:         moved.fee = 500;
+314:         moved.feeCurrency = "USD";
+315:         List<Db.Preview> ep = db.preview(moved, t1);
+316:         Map<Long, Db.Preview> byOffice = new HashMap<>();
+317:         for (Db.Preview p : ep) byOffice.put(p.office, p);
+318:         db.editTx(t1, moved, null, null, "مكتب خاطئ");
+319:         check(byOffice.get(A).after.get("USD") == b(db.balances(A), "USD") && byOffice.get(B).after.get("EUR") == b(db.balances(B), "EUR")
+320:                         && byOffice.get(B).after.get("USD") == b(db.balances(B), "USD"),
+321:                 "تعديل نقل الحركة إلى مكتب وعملة أخرى وأجرة بعملة ثالثة: المعاينة = الفعلي للمكتبين والعملات كلها");
+322:         TxConfirm.View ev = TxConfirm.build(db, txIn(A, Model.TYPE_CREDIT, 100, "USD"), null);
+323:         check(TxConfirm.changed(db, ev, Collections.singletonList(txIn(A, Model.TYPE_CREDIT, 100, "USD")), null) == false, "البصمة ثابتة ما لم يتغير الرصيد");
+324:         db.addTx(txIn(A, Model.TYPE_DEBIT, 1, "USD"), null);
+325:         check(TxConfirm.changed(db, ev, Collections.singletonList(txIn(A, Model.TYPE_CREDIT, 100, "USD")), null), "حركة جديدة أثناء التأكيد تُكتشف قبل الحفظ");
+326: 
+327:         System.out.println("== §8: حساب تبديل العملة");
+328:         FxDeal fd = new FxDeal();
+329:         fd.sell = "USD";
+330:         fd.buy = "EUR";
+331:         fd.sellAmount = 100000;
+332:         fd.rate = FxDeal.parseRate("1.12");
+333:         check(fd.buyAmount() == 112000 && "0.892857".equals(FxDeal.invert(fd.rate)), "1,000 USD × 1.12 = 1,120 EUR، وعكس 1.12 = 0.892857");
+334:         fd.rate = FxDeal.parseRate("0.9");
+335:         fd.buyPerSell = false;
+336:         check(fd.buyAmount() == 111111, "«1 EUR = 0.9 USD» سعر جديد: 1,000 ÷ 0.9 = 1,111.11 EUR (ليس 1/1.12)");
+337:         FxDeal rv = fd.reversed();
+338:         check("EUR".equals(rv.sell) && rv.sellAmount == 111111 && rv.buyAmount() == 100000, "قلب العملية يعيد المبلغ الأصلي (1,111.11 EUR ← 1,000 USD)");
+339:         check(FxDeal.parseRate("1.120").compareTo(new java.math.BigDecimal("1.12")) == 0 && FxDeal.parseRate("١٫١٢").compareTo(new java.math.BigDecimal("1.12")) == 0,
+340:                 "السعر 1.120 = 1.12 (النقطة عشرية لا فاصل آلاف) والأرقام العربية مقبولة");
+341:         check(fd.meaning().contains("1 EUR = 0.9 USD"), "المعنى مكتوب: " + fd.meaning());
+342: 
+343:         System.out.println("== §7: المحاسبون — من أدخل ومن اعتمد ومن تحقق، والمكاتب، و«بانتظار تحققي»");
+344:         as(db, admin);
+345:         long v1 = db.addUser("وسيم", Auth.CUSTOM, "VIEW,VERIFY", "4545");
+346:         long v2 = db.addUser("هالة", Auth.CUSTOM, "VIEW,VERIFY,TX_ADD", "4646");
+347:         as(db, acct);
+348:         long vt = db.addTx(txIn(B, Model.TYPE_DEBIT, 12300, "USD"), null);
+349:         Model.Tx vtx = db.tx(vt);
+350:         check(vtx.userId != null && vtx.userId == acct && db.txPeople(vtx).get(0).startsWith("أدخلها: رنا"), "الحركة تحمل رقم من أدخلها الثابت: " + db.txPeople(vtx).get(0));
+351:         as(db, v2);
+352:         long own = db.addTx(txIn(B, Model.TYPE_CREDIT, 500, "USD"), null);
+353:         check(throwsMsg(() -> db.verifyTx(own), "أدخلتها أنت"), "التحقق من حركته هو لا يُحتسب (يُرفض حتى مع صلاحية التحقق)");
+354:         as(db, mgr);
+355:         check(throwsMsg(() -> db.verifyTx(vt), "صلاحية"), "بلا صلاحية التحقق يُرفض");
+356:         as(db, v1);
+357:         db.verifyTx(vt);
+358:         db.verifyTx(vt);
+359:         check(db.checks(vt).size() == 1 && db.checks(vt).get(0).valid() && db.verified(db.tx(vt)), "تحقق وسيم سُجّل مرة واحدة (التكرار لا يضاعفه)");
+360:         long jBefore;
+361:         try (android.database.Cursor c = db.getReadableDatabase().rawQuery("SELECT COUNT(*) FROM journal_entries", null)) {
+362:             c.moveToFirst();
+363:             jBefore = c.getLong(0);
+364:         }
+365:         as(db, v2);
+366:         db.verifyTx(vt);
+367:         long jAfter;
+368:         try (android.database.Cursor c = db.getReadableDatabase().rawQuery("SELECT COUNT(*) FROM journal_entries", null)) {
+369:             c.moveToFirst();
+370:             jAfter = c.getLong(0);
+371:         }
+372:         check(jAfter == jBefore && db.checks(vt).size() == 2, "«تم التحقق» لا يُنشئ أي قيد، وتحقق مستخدمين اثنين صفّان");
+373:         as(db, clerk);
+374:         long pend = db.addTx(txIn(B, Model.TYPE_CREDIT, 4000, "USD"), null);
+375:         as(db, v1);
+376:         check(throwsMsg(() -> db.verifyTx(pend), "بانتظار الاعتماد"), "المعلّقة لا يُتحقق منها قبل اعتمادها");
+377:         as(db, acct);
+378:         db.approveTx(pend);
+379:         Model.Tx ap = db.tx(pend);
+380:         check(ap.approvedBy != null && ap.approvedBy == acct && ap.approvedAt > 0 && db.txPeople(ap).get(1).startsWith("اعتمدها: رنا"), "من اعتمدها ومتى: " + db.txPeople(ap).get(1));
+381:         // المكاتب
+382:         as(db, mgr);
+383:         db.setUserOffices(v1, new HashSet<>(Collections.singletonList(B)));
+384:         check(db.userOffices(v1).equals(new HashSet<>(Collections.singletonList(B))), "مدير الموظفين خصص «النور» لوسيم");
+385:         // 10.7: المكتب نفسه يجوز أن يكون عند محاسبَين، والواجهة تعرف عند من هو لتنبّه
+386:         db.setUserOffices(v2, new HashSet<>(Arrays.asList(A, B)));
+387:         Map<Long, List<String>> holders = db.officeHolders(v1);
+388:         check(holders.containsKey(B) && holders.get(B).size() == 1 && !holders.get(B).contains(db.user(v1).name) && holders.containsKey(A),
+389:                 "مكتب عند محاسبَين: officeHolders يعطي الآخرين (عدا المستخدم نفسه): " + holders);
+390:         db.setUserOffices(v2, new HashSet<>());
+391:         check(throwsMsg(() -> db.setUserOffices(mgr, new HashSet<>(Collections.singletonList(A))), "بنفسك"), "لا يخصص مكاتبه لنفسه");
+392:         check(throwsMsg(() -> db.setUserOffices(admin, new HashSet<>(Collections.singletonList(A))), "المدير"), "ولا مكاتب المدير");
+393:         as(db, acct);

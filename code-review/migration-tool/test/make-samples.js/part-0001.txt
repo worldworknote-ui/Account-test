@@ -1,0 +1,45 @@
+1: // ينشئ ملفات Excel نموذجية لاختبار الأداة في المتصفح
+2: const XLSX = require("../vendor/xlsx.full.min.js");
+3: const out = process.argv[2];
+4: const fs = require("fs");
+5: const save = (wb, f) => fs.writeFileSync(out + "/" + f, Buffer.from(XLSX.write(wb, { type: "array", bookType: "xlsx" })));
+6: const wbA = XLSX.utils.book_new();
+7: XLSX.utils.book_append_sheet(wbA, XLSX.utils.aoa_to_sheet([
+8:   ["كشف أرصدة المكاتب"], [],
+9:   ["المكتب", "الهاتف", "USD", "SYP", "EUR"],
+10:   ["كاش شام", "0933123456", 1000.5, -250000, null],
+11:   ["الأمين للصرافة", null, -300, null, 50],
+12:   ["الامين للصرافه", null, 10, null, null],
+13:   ["المجموع", null, 710.5, -250000, 50]
+14: ]), "الأرصدة");
+15: XLSX.utils.book_append_sheet(wbA, XLSX.utils.aoa_to_sheet([
+16:   ["التاريخ", "الحساب", "البيان", "مدين", "دائن", "العملة", "الأجرة", "الرصيد"],
+17:   ["2024/05/01", "كاش شام", "حوالة لأحمد", 500, null, "دولار", 5, null],
+18:   ["02/05/2024", "كاشْ  شام", "تسليم", null, "200.25", "USD", null, null],
+19:   ["2024-05-03 10:15", "الأمين للصرافة", "قبض", "100", null, "$", null, null],
+20:   ["03/05/2024", "كاش شام", "ليرات", null, "1,000,000", "ل.س", null, null],
+21:   [null, null, null, null, null, null, null, null],
+22:   [null, "المجموع", null, 600, "1,000,200.25", null, null, null]
+23: ]), "الحركات");
+24: save(wbA, "sample-A.xlsx");
+25: const wbB = XLSX.utils.book_new();
+26: XLSX.utils.book_append_sheet(wbB, XLSX.utils.aoa_to_sheet([
+27:   ["التاريخ", "البيان", "له", "عليه", "الرصيد"],
+28:   [null, "رصيد سابق", null, 1000, 1000],
+29:   ["2024/06/01", "حوالة", null, 250, 1250],
+30:   [null, "تتمة", 50, null, 1200],
+31:   ["2024/06/02", "استلام", 300, null, 900],
+32:   [null, "المجموع", 350, 1250, 900]
+33: ]), "كاش شام");
+34: XLSX.utils.book_append_sheet(wbB, XLSX.utils.aoa_to_sheet([
+35:   ["التاريخ", "البيان", "له", "عليه", "الرصيد"],
+36:   ["2024/06/03", "قبض", 100, null, -100]
+37: ]), "الأمين");
+38: save(wbB, "sample-B-ledger.xlsx");
+39: console.log("ok");
+40: // كشوفات حساب: ملف لكل حساب وعملة، وكشف معدّل يدويًا
+41: const SS = require("./stmt-samples.js");
+42: fs.mkdirSync(out + "/statements", { recursive: true });
+43: Object.keys(SS.SPECS).forEach((f) => save(SS.statementBook(XLSX, SS.SPECS[f]), "statements/" + f));
+44: save(SS.statementBook(XLSX, SS.TAMPERED), "statements-bad-fajr.xlsx");
+45: console.log("statements ok");

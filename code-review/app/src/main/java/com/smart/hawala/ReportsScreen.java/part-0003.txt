@@ -1,0 +1,194 @@
+337:         a.body.addView(curs);
+338:         a.hint("بلا تحديد عملة = كل العملات.");
+339: 
+340:         a.title("ماذا يدخل التقرير");
+341:         a.seg(ReportBuilder.DIR_NAMES, s.direction, i -> s.direction = i);
+342:         a.add(a.label("نوع الحركة"));
+343:         // 11.6: لا خيار «الراجع» منفصلًا (هو من الأجور): القائمة بلا البند 3، والمحفوظ عليه يظهر «حركات الأجور»
+344:         final String[] kinds = new String[ReportBuilder.KIND_NAMES.length - 1];
+345:         for (int i = 0, j = 0; i < ReportBuilder.KIND_NAMES.length; i++) if (i != ReportBuilder.K_RAJE) kinds[j++] = ReportBuilder.KIND_NAMES[i];
+346:         final Spinner kind = a.spinner(kinds);
+347:         int kk = s.kind == ReportBuilder.K_RAJE ? ReportBuilder.K_FEE_ROWS : s.kind;
+348:         kind.setSelection(kk > ReportBuilder.K_RAJE ? kk - 1 : kk);
+349:         a.body.addView(kind, a.lp(-1, 48, 2));
+350:         a.add(a.label("الحالة"));
+351:         final Spinner status = a.spinner(ReportBuilder.STATUS_NAMES);
+352:         status.setSelection(s.status);
+353:         a.body.addView(status, a.lp(-1, 48, 2));
+354:         final EditText text = a.input("بحث في المستفيد والبيان");
+355:         text.setText(s.text);
+356:         LinearLayout mm = a.row();
+357:         final EditText min = a.field("المبلغ من");
+358:         final EditText max = a.field("إلى");
+359:         Ui.numeric(min);
+360:         Ui.numeric(max);
+361:         if (s.minAmount != null) min.setText(s.minAmount.toPlainString());
+362:         if (s.maxAmount != null) max.setText(s.maxAmount.toPlainString());
+363:         mm.addView(min, a.weight(50, 1, 2));
+364:         mm.addView(max, a.weight(50, 1, 2));
+365:         a.body.addView(mm);
+366:         final EditText service = a.input("الخدمة (اختياري)");
+367:         service.setText(s.service);
+368:         final EditText dest = a.input("الوجهة (اختياري)");
+369:         dest.setText(s.dest);
+370:         final EditText user = a.input("المستخدم (اختياري)");
+371:         user.setText(s.user);
+372: 
+373:         a.title("الشكل");
+374:         a.add(a.label("جمّع حسب"));
+375:         final Spinner group = a.spinner(ReportBuilder.GROUP_NAMES);
+376:         group.setSelection(s.group);
+377:         a.body.addView(group, a.lp(-1, 48, 2));
+378:         a.add(a.label("جدول متقاطع: الأعمدة حسب"));
+379:         String[] g2 = ReportBuilder.GROUP_NAMES.clone();
+380:         g2[0] = "بلا جدول متقاطع";
+381:         final Spinner group2 = a.spinner(g2);
+382:         group2.setSelection(s.group2);
+383:         a.body.addView(group2, a.lp(-1, 48, 2));
+384:         a.add(a.label("قيمة الجدول المتقاطع"));
+385:         final Spinner measure = a.spinner(ReportBuilder.MEASURE_NAMES);
+386:         measure.setSelection(s.measure);
+387:         a.body.addView(measure, a.lp(-1, 48, 2));
+388:         a.add(a.label("الترتيب"));
+389:         final Spinner sort = a.spinner(ReportBuilder.SORT_NAMES);
+390:         sort.setSelection(s.sort);
+391:         a.body.addView(sort, a.lp(-1, 48, 2));
+392:         final EditText top = a.input("أعلى عدد (فارغ = الكل)");
+393:         top.setInputType(InputType.TYPE_CLASS_NUMBER);
+394:         if (s.top > 0) top.setText("" + s.top);
+395:         final CheckBox compare = check("قارن بالفترة السابقة (بالطول نفسه)", s.compare);
+396:         final CheckBox details = check("أضف الكشف التفصيلي تحت المجاميع", s.details);
+397:         final CheckBox running = check("رصيد متراكم (عند اختيار مكتب واحد)", s.runningBalance);
+398: 
+399:         final Runnable collect = () -> {
+400:             s.title = title.getText().toString().trim();
+401:             long[] r = range();
+402:             s.from = r[0];
+403:             s.to = r[1];
+404:             int kp = kind.getSelectedItemPosition();
+405:             s.kind = kp >= ReportBuilder.K_RAJE ? kp + 1 : kp;
+406:             s.status = status.getSelectedItemPosition();
+407:             s.text = text.getText().toString().trim();
+408:             s.service = service.getText().toString().trim();
+409:             s.dest = dest.getText().toString().trim();
+410:             s.user = user.getText().toString().trim();
+411:             s.minAmount = num(min);
+412:             s.maxAmount = num(max);
+413:             s.group = group.getSelectedItemPosition();
+414:             s.group2 = group2.getSelectedItemPosition();
+415:             s.measure = measure.getSelectedItemPosition();
+416:             s.sort = sort.getSelectedItemPosition();
+417:             try {
+418:                 s.top = top.getText().toString().trim().isEmpty() ? 0 : Integer.parseInt(Db.normalizeNumber(top.getText().toString().trim()));
+419:             } catch (Exception e) {
+420:                 s.top = 0;
+421:             }
+422:             s.compare = compare.isChecked();
+423:             s.details = details.isChecked();
+424:             s.runningBalance = running.isChecked();
+425:         };
+426:         LinearLayout foot = a.row();
+427:         foot.addView(a.makeButton("عرض التقرير", a.primary, v -> {
+428:             collect.run();
+429:             run(ReportBuilder.Spec.fromJson(s.toJson()), () -> builder(null));
+430:         }), new LinearLayout.LayoutParams(0, a.dp(50), 1.4f));
+431:         LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(0, a.dp(50), 1);
+432:         sp.setMargins(a.dp(8), 0, 0, 0);
+433:         foot.addView(a.makeButton("حفظ كقالب", Color.rgb(130, 130, 130), v -> {
+434:             collect.run();
+435:             save(s);
+436:         }), sp);
+437:         a.footer(foot);
+438:         LinearLayout r2 = a.row();
+439:         r2.addView(a.smallButton("مسح الخيارات", Color.rgb(130, 130, 130), v -> {
+440:             draft = new ReportBuilder.Spec();
+441:             builder(null);
+442:         }), a.weight(42, 1, 2));
+443:         a.body.addView(r2, a.lp(-1, -2, 6));
+444:     }
+445: 
+446:     private CheckBox check(String label, boolean on) {
+447:         CheckBox c = new CheckBox(a);
+448:         c.setText(label);
+449:         c.setChecked(on);
+450:         a.body.addView(c);
+451:         return c;
+452:     }
+453: 
+454:     private static BigDecimal num(EditText e) {
+455:         String t = e.getText().toString().trim();
+456:         if (t.isEmpty()) return null;
+457:         try {
+458:             return new BigDecimal(Db.normalizeNumber(t));
+459:         } catch (Exception ex) {
+460:             return null;
+461:         }
+462:     }
+463: 
+464:     // ===================================================================================
+465:     // القوالب المحفوظة (الصيغة نفسها على الماك)
+466:     // ===================================================================================
+467: 
+468:     JSONObject stored() {
+469:         try {
+470:             String s = a.db.setting(KEY, "");
+471:             return s.isEmpty() ? new JSONObject() : new JSONObject(s);
+472:         } catch (Exception e) {
+473:             return new JSONObject();
+474:         }
+475:     }
+476: 
+477:     private void save(final ReportBuilder.Spec s) {
+478:         final EditText name = new EditText(a);
+479:         name.setText(s.title);
+480:         name.setHint("اسم القالب");
+481:         LinearLayout l = new LinearLayout(a);
+482:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+483:         l.addView(name, new LinearLayout.LayoutParams(-1, -2));
+484:         new AlertDialog.Builder(a).setTitle("حفظ كقالب").setMessage("يُحفظ القالب بفترته السريعة («هذا الشهر» يبقى هذا الشهر دائمًا).").setView(l)
+485:                 .setPositiveButton("حفظ", (d, w) -> {
+486:                     String n = name.getText().toString().trim();
+487:                     if (n.isEmpty()) {
+488:                         a.toast("اكتب اسمًا للقالب");
+489:                         return;
+490:                     }
+491:                     try {
+492:                         JSONObject j = s.toJson();
+493:                         j.put("p", period);
+494:                         if (period != ReportBuilder.P_CUSTOM) {
+495:                             j.put("from", 0);
+496:                             j.put("to", 0);
+497:                         }
+498:                         JSONObject st = stored();
+499:                         st.put(n, j);
+500:                         a.db.setSetting(KEY, st.toString());
+501:                         a.toast("حُفظ القالب «" + n + "»");
+502:                     } catch (Exception e) {
+503:                         a.error(e);
+504:                     }
+505:                 }).setNegativeButton("إلغاء", null).show();
+506:     }
+507: 
+508:     private ReportBuilder.Spec loadSaved(String n) {
+509:         JSONObject j = stored().optJSONObject(n);
+510:         if (j == null) return null;
+511:         ReportBuilder.Spec s = ReportBuilder.Spec.fromJson(j);
+512:         int p = j.optInt("p", -1);
+513:         if (p >= 0 && p < ReportBuilder.P_CUSTOM) {
+514:             period = p;
+515:             long[] r = ReportBuilder.period(p, Clock.now());
+516:             s.from = r[0];
+517:             s.to = r[1];
+518:         }
+519:         return s;
+520:     }
+521: 
+522:     private void runSaved(String n) {
+523:         ReportBuilder.Spec s = loadSaved(n);
+524:         if (s != null) run(s, this::show);
+525:     }
+526: 
+527:     private void savedMenu(final String n) {
+528:         new AlertDialog.Builder(a).setTitle(n).setItems(new String[]{"تشغيل", "تعديل", "حذف"}, (d, w) -> {
+529:             if (w == 0) runSaved(n);
+530:             else if (w == 1) {

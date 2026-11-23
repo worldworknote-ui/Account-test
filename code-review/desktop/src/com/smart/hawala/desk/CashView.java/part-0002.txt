@@ -1,0 +1,147 @@
+170:                 action(Ui.ghost("مصروف", e -> expense()));
+171:                 action(Ui.button("بيع", NAVY, e -> trade(CashBox.SELL)));
+172:                 action(Ui.button("شراء", new Color(18, 110, 120), e -> trade(CashBox.BUY)));
+173:             }
+174:             if (boxes.size() > 1) action(Ui.ghost("تحويل", e -> transfer()));
+175:             action(Ui.ghost("جرد", e -> count()));
+176:         }
+177:         action(Ui.ghost("سجل الجرد", e -> countLog()));
+178:         action(Ui.ghost("التقرير…", e -> report()));
+179:         if (can(Auth.Perm.SETTINGS)) action(Ui.ghost("الإعدادات", e -> setup(false)));
+180:         if (can(Auth.Perm.SETTINGS)) action(Ui.ghost(lockOn() ? "قفل الصندوق ✓" : "قفل الصندوق…", e -> lockSetup()));
+181: 
+182:         // الصناديق
+183:         JPanel boxRow = Ui.row();
+184:         boxRow.add(Ui.label("الصندوق:", 13, Ui.muted, true));
+185:         for (CashBox.Config b : boxes) {
+186:             JButton bt = b.id == cfg.id ? Ui.primary(b.name, null) : Ui.ghost(b.name, e -> {
+187:                 db.setCurrentBox(b.id);
+188:                 refresh();
+189:             });
+190:             boxRow.add(Box.createHorizontalStrut(6));
+191:             boxRow.add(bt);
+192:         }
+193:         if (can(Auth.Perm.SETTINGS)) {
+194:             boxRow.add(Box.createHorizontalStrut(6));
+195:             boxRow.add(Ui.ghost("+ صندوق", e -> boxForm()));
+196:             boxRow.add(Box.createHorizontalStrut(6));
+197:             boxRow.add(Ui.ghost("إدارة الصناديق", e -> boxes()));
+198:         }
+199:         boxRow.add(Box.createHorizontalStrut(6));
+200:         boxRow.add(Ui.ghost(app.hidden() ? "إظهار المبالغ" : "إخفاء المبالغ", e -> {
+201:             app.toggleHidden();
+202:             refresh();
+203:         }));
+204:         boxRow.add(Box.createHorizontalGlue());
+205:         head.add(boxRow);
+206:         head.add(Ui.gap(8));
+207: 
+208:         Map<String, Long> bal = db.cashBalances(cfg.id);
+209:         Map<String, Integer> dec = db.decimalsMap();
+210:         Ui.Card hero = Ui.tinted(NAVY, NAVY);
+211:         JPanel row = Ui.row();
+212:         Ledger.Valuation val = Ledger.valueOffice(bal, db.usdRates(), dec);
+213:         JLabel tot = Ui.label("≈ " + m(Ui.ltr(Model.fmt(val.netUsd().setScale(0, RoundingMode.HALF_EVEN).longValue(), 0) + " USD")), 24, Color.WHITE, true);
+214:         JPanel left = Ui.column();
+215:         left.add(Ui.label("النقد في الصندوق (مقوّمًا بالدولار)", 13, new Color(196, 210, 232), false));
+216:         left.add(tot);
+217:         if (!val.missingRates.isEmpty())
+218:             left.add(Ui.label("بلا سعر صرف: " + String.join("، ", val.missingRates) + " — حدّثها من إعدادات الصندوق", 12, new Color(255, 214, 140), false));
+219:         List<CashBox.Count> counts = db.cashCounts(cfg.id);
+220:         left.add(Ui.label(counts.isEmpty() ? "لم يُجرد الصندوق بعد" : "آخر جرد: " + Model.date(counts.get(0).createdAt), 12, new Color(170, 186, 212), false));
+221:         row.add(left);
+222:         row.add(Box.createHorizontalGlue());
+223:         for (Map.Entry<String, Long> e : bal.entrySet()) {
+224:             JPanel c = Ui.column();
+225:             c.add(Ui.label(e.getKey(), 12, GOLD, true));
+226:             long v = e.getValue();
+227:             c.add(Ui.label(m(Ui.ltr((v < 0 ? "عجز " : "") + Model.fmt(Math.abs(v), dec.getOrDefault(e.getKey(), 2)))), 19, v < 0 ? new Color(255, 170, 170) : Color.WHITE, true));
+228:             c.setBorder(new EmptyBorder(0, 18, 0, 0));
+229:             row.add(c);
+230:         }
+231:         hero.add(row);
+232:         head.add(hero);
+233:         head.add(Ui.gap(10));
+234:         head.add(Ui.row(Ui.label("الفترة", 13, Ui.muted, true), period, Ui.label("النوع", 13, Ui.muted, true), kindFilter, Box.createHorizontalGlue()));
+235:         period.setMaximumSize(new Dimension(200, 38));
+236:         kindFilter.setMaximumSize(new Dimension(200, 38));
+237:         Ui.rtl(head);
+238:         fill();
+239:         done();
+240:     }
+241: 
+242:     boolean passes(CashBox.Move m) {
+243:         switch (kindFilter.getSelectedIndex()) {
+244:             case 1: return CashBox.IN.equals(m.kind) && !m.cancelled();
+245:             case 2: return CashBox.OUT.equals(m.kind) && !m.cancelled();
+246:             case 3: return CashBox.EXPENSE.equals(m.kind) && !m.cancelled();
+247:             case 4: return CashBox.EXCHANGE.equals(m.kind) && !m.cancelled();
+248:             case 5: return m.clientId != null;
+249:             case 6: return m.officeId != null;
+250:             case 7: return CashBox.TRANSFER.equals(m.kind);
+251:             case 8: return m.cancelled();
+252:             default: return true;
+253:         }
+254:     }
+255: 
+256:     String title(CashBox.Move m, Map<Long, String> names) {
+257:         if (m.officeId != null) return (m.dir > 0 ? "استلام لحساب " : "تسليم لحساب ") + names.getOrDefault(m.officeId, "مكتب");
+258:         if (m.clientId != null) return (m.dir > 0 ? "استلام من العميل " : "تسليم للعميل ") + m.party;
+259:         if (CashBox.EXCHANGE.equals(m.kind)) {
+260:             if (CashBox.CAT_SELL.equals(m.category) || CashBox.CAT_BUY.equals(m.category))
+261:                 return (m.mainLeg() ? m.category : (CashBox.CAT_SELL.equals(m.category) ? "مقابل البيع" : "مقابل الشراء")) + (Model.nz(m.rate).isEmpty() ? "" : " بسعر " + m.rate);
+262:             return m.dir > 0 ? "صرف عملة — داخل" : "صرف عملة — خارج";
+263:         }
+264:         if (CashBox.TRANSFER.equals(m.kind)) return m.dir > 0 ? "تحويل وارد" : "تحويل إلى صندوق آخر";
+265:         if (CashBox.ADJUST.equals(m.kind)) return m.dir > 0 ? "جرد — زيادة" : "جرد — عجز";
+266:         if (CashBox.OPENING.equals(m.kind)) return "رصيد افتتاحي";
+267:         return CashBox.kindName(m.kind) + (m.category.isEmpty() ? "" : " — " + m.category);
+268:     }
+269: 
+270:     void fill() {
+271:         if (table == null || !db.cashConfig().on) return;
+272:         long[] r = ReportBuilder.period(period.getSelectedIndex(), Clock.now());
+273:         Map<String, Integer> dec = db.decimalsMap();
+274:         Map<Long, String> names = db.officeNames();
+275:         boolean hide = app.hidden();
+276:         DefaultTableModel mdl = new DefaultTableModel(new Object[]{"التاريخ", "الحركة", "الشخص / البيان", "داخل", "خارج", "العملة", "أجور نقدًا", "الحالة"}, 0) {
+277:             @Override public boolean isCellEditable(int a, int b) { return false; }
+278: 
+279:             @Override public Class<?> getColumnClass(int c) { return !hide && (c == 3 || c == 4) ? Ui.Money.class : String.class; }
+280:         };
+281:         Ui.Keep keep = Ui.Keep.of(table, shown, x -> x.id);   // 10.5 (§6)
+282:         shown = new ArrayList<>();
+283:         List<CashBox.Move> all = db.cashMoves(db.currentBox());
+284:         for (int i = all.size() - 1; i >= 0; i--) {
+285:             CashBox.Move x = all.get(i);
+286:             if (x.createdAt < r[0] || (r[1] > 0 && x.createdAt >= r[1]) || !passes(x)) continue;
+287:             shown.add(x);
+288:             int d = dec.getOrDefault(x.currency, 2);
+289:             String who = x.clientId != null ? "" : x.party;
+290:             if (!x.description.isEmpty()) who = who.isEmpty() ? x.description : who + " — " + x.description;
+291:             long fc = x.feeCash();
+292:             Object in = hide ? (x.dir > 0 ? "••••" : "") : new Ui.Money(x.dir > 0 ? x.amount : 0, d, false);
+293:             Object out = hide ? (x.dir < 0 ? "••••" : "") : new Ui.Money(x.dir < 0 ? x.amount : 0, d, false);
+294:             mdl.addRow(new Object[]{Model.date(x.createdAt), title(x, names), who, in, out, x.currency,
+295:                     fc == 0 || hide ? "" : (fc > 0 ? "لنا " : "علينا ") + Model.fmt(Math.abs(fc), d), x.stateText()});
+296:         }
+297:         table.setModel(mdl);
+298:         table.setDefaultRenderer(Ui.Money.class, new Ui.Cell(SwingConstants.CENTER));
+299:         Ui.widths(table, 130, 240, 240, 110, 110, 60, 100, 110);
+300:         keep.restore(table, shown, x -> x.id);
+301:         table.applyComponentOrientation(Ui.RTL);
+302:     }
+303: 
+304:     void details(CashBox.Move m) {
+305:         int d = db.decimals(m.currency);
+306:         StringBuilder b = new StringBuilder(title(m, db.officeNames())).append("\n");
+307:         b.append(m.dir > 0 ? "دخل الصندوق: " : "خرج من الصندوق: ").append(money(m.amount, m.currency)).append("\n");
+308:         if (m.fee > 0) b.append("الأجور: ").append(Model.fmt(m.fee, d)).append(CashBox.FEE_US.equals(m.feeSide) ? " لنا" : " علينا")
+309:                 .append(m.feeInCash ? " — نقدًا في الصندوق" : " — على حساب المكتب").append("\n");
+310:         if (!Model.nz(m.rate).isEmpty()) b.append("السعر: ").append(m.rate).append("\n");
+311:         if (m.pairUuid != null && CashBox.EXCHANGE.equals(m.kind))
+312:             for (CashBox.Move o : db.cashMoves(m.boxId))
+313:                 if (m.pairUuid.equals(o.pairUuid) && o.id != m.id) b.append(o.dir > 0 ? "ودخل مقابلها: " : "وخرج مقابلها: ").append(money(o.amount, o.currency)).append("\n");
+314:         if (!m.party.isEmpty()) b.append(m.clientId != null ? "العميل: " : "الشخص: ").append(m.party).append("\n");
+315:         if (!m.description.isEmpty()) b.append("البيان: ").append(m.description).append("\n");
+316:         if (m.officeId != null) b.append("مسجّلة أيضًا على المكتب (").append(m.dir > 0 ? "علينا" : "لنا").append(") برقم ").append(m.txId).append("\n");

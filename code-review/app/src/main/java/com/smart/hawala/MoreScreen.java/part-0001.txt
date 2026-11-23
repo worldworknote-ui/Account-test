@@ -1,0 +1,111 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.content.Intent;
+5: import android.content.res.ColorStateList;
+6: import android.graphics.Color;
+7: import android.widget.LinearLayout;
+8: import android.widget.ScrollView;
+9: import android.widget.Switch;
+10: import android.widget.TextView;
+11: import java.io.InputStream;
+12: 
+13: /**
+14:  * تبويب «المزيد»: كل ما ليس عملًا يوميًا مجمّعًا في مجموعات واضحة
+15:  * (التقارير، البيانات، تسجيل الحركات، الإدارة والأمان، المظهر). يحل محل شاشة الإعدادات الطويلة.
+16:  */
+17: final class MoreScreen {
+18:     private final MainActivity a;
+19: 
+20:     MoreScreen(MainActivity a) { this.a = a; }
+21: 
+22:     /**
+23:      * 10.2: «المزيد» مرتّب بمجموعات لا تتكرر: حسابي، التقارير، الصندوق والعملاء، العملات، البيانات والمزامنة، تسجيل الحركات،
+24:      * الإشعارات، الأمان والإدارة، المظهر والتخصيص، حول التطبيق. ما لا يملك المستخدم صلاحيته لا يظهر له.
+25:      */
+26:     void show() {
+27:         a.here(this::show);
+28:         a.rootScreen("المزيد", "more");
+29:         Model.User u = SmartApp.currentUser;
+30:         int ic = a.primaryInk;
+31: 
+32:         // 10.3: لكل مستخدم ما يخصه وجهازه، دون أي صلاحية إضافية
+33:         a.section(u != null ? "حسابي وجهازي" : "هذا الجهاز", null, null);
+34:         LinearLayout me = a.group();
+35:         if (u != null) {
+36:             a.groupRow(me, R.drawable.ic_user, ic, u.name, Auth.describe(a.db.user(u.id)), null, null);
+37:             a.groupRow(me, R.drawable.ic_key, ic, "تغيير رمزي السري", null, null, v -> a.usersScreen.changeOwnPin());
+38:             // 10.5 (§7): مكاتب المحاسب و«بانتظار تحققي»
+39:             if (a.mineScreen.available()) {
+40:                 int waiting = a.db.awaitingMyCheck(60, 200).size();
+41:                 a.groupRow(me, R.drawable.ic_check2, ic, "مكاتبي والتحقق", "مكاتبك، وآخر رسالة نُقلت لكل منها، والحركات بانتظار تحققك",
+42:                         waiting > 0 ? waiting + " بانتظارك" : null, v -> a.mineScreen.show());
+43:             }
+44:         }
+45:         a.groupRow(me, R.drawable.ic_lock, a.appLock.on() ? ic : a.red, "قفل التطبيق", "بصمة أو كلمة سر للتطبيق، ومتى يُطلب", AppLock.label(a), v -> a.appLock.settings());
+46:         a.groupRow(me, R.drawable.ic_bell, ic, "الإشعارات", "حركات تحتاج اعتمادك، النسخ التلقائي، تذكيرات المكاتب", Notifier.on(a.db) ? "مفعّلة" : "متوقفة",
+47:                 v -> a.notifScreen.show());
+48:         a.groupRow(me, R.drawable.ic_more, ic, "الشريط السفلي", "النمط والألوان والأزرار وقائمة «+»", null, v -> a.tabsScreen.show());
+49:         if (u != null) a.groupRow(me, R.drawable.ic_logout, a.red, "تسجيل الخروج", a.db.rememberedUser() != null ? "ويُنسى «تذكرني» على هذا الجهاز" : null, null, v -> a.usersScreen.logout());
+50: 
+51:         if (a.can(Auth.Perm.VIEW)) {
+52:             a.section("التقارير", null, null);
+53:             LinearLayout g = a.group();
+54:             if (a.can(Auth.Perm.REPORTS)) a.groupRow(g, R.drawable.ic_report, ic, "مركز التقارير", "جاهزة ومخصصة بالفترة التي تختارها، مع التصدير PDF و Excel", null, v -> a.reportsScreen.show());
+55:             a.groupRow(g, R.drawable.ic_scale, ic, "أرصدة كل المكاتب", "لنا وعلينا لكل عملة، مع التقويم بالدولار", null, v -> a.balancesScreen.show());
+56:             if (a.can(Auth.Perm.REPORTS)) a.groupRow(g, R.drawable.ic_calendar, ic, "التقرير اليومي", "حركات يوم وأجوره ومجاميعه", null, v -> a.dailyScreen.show(Clock.now()));
+57:         }
+58: 
+59:         if (a.can(Auth.Perm.CASH)) {
+60:             a.section("الصندوق والعملاء", null, null);
+61:             LinearLayout cg = a.group();
+62:             CashBox.Config cc = a.db.cashConfig();
+63:             a.groupRow(cg, R.drawable.ic_cash, a.goldInk, cc.on ? cc.name : "صندوق المكتب", cc.on ? "النقد بكل عملة: استلام وتسليم وبيع وشراء ومصاريف وجرد"
+64:                     : "اضبط النقد الموجود لديك بعيدًا عن أرصدة المكاتب", cc.on ? null : "إعداد", v -> a.cashScreen.show());
+65:             if (cc.on) a.groupRow(cg, R.drawable.ic_users, ic, "حسابات العملاء", "رصيد كل عميل بكل عملة وكشفه", null, v -> a.cashScreen.clients.list());
+66:         }
+67: 
+68:         if (a.can(Auth.Perm.VIEW) || a.can(Auth.Perm.CURRENCIES) || a.can(Auth.Perm.METALS)) {
+69:             a.section("العملات والمعادن والأسعار", null, null);
+70:             LinearLayout cu = a.group();
+71:             if (a.can(Auth.Perm.CURRENCIES) || a.can(Auth.Perm.METALS))
+72:                 a.groupRow(cu, R.drawable.ic_coins, ic, "العملات والمعادن", "إضافة عملة أو معدن (ذهب، فضة…) وتفعيلها", null, v -> a.officesScreen.showCurrencies());
+73:             a.groupRow(cu, R.drawable.ic_rates, ic, "أسعار الصرف", "للتقويم التقريبي بالدولار فقط — لا تغيّر الأرصدة", null, v -> a.officesScreen.showRates(this::show));
+74:             if (a.can(Auth.Perm.SETTINGS)) a.groupRow(cu, R.drawable.ic_tag, ic, "كلمات العملات", "مثل: يوز = USDT", null, v -> CurrencyWords.screen(a, this::show));
+75:         }
+76: 
+77:         boolean sync = a.can(Auth.Perm.SYNC) || SyncEngine.enabled(a.db);
+78:         if (sync || a.can(Auth.Perm.BACKUP) || a.can(Auth.Perm.RESTORE)) {
+79:             a.section("البيانات والمزامنة", null, null);
+80:             LinearLayout d = a.group();
+81:             if (sync) {
+82:                 SyncEngine.Status ss = SyncEngine.status(a.db);
+83:                 a.groupRow(d, R.drawable.ic_sync, ic, "المزامنة بين الأجهزة", ss.enabled ? "مفعّلة (" + SyncScreen.kindName(a.db) + ") — آخر مزامنة " + MainActivity.ago(ss.lastSync)
+84:                         : "بياناتك واحدة على الهاتف والماك والويندوز", ss.enabled ? null : (License.current.sync() ? "تفعيل" : "مدفوعة"), v -> a.syncScreen.show());
+85:             }
+86:             if (a.can(Auth.Perm.BACKUP)) {
+87:                 long last = a.db.settingLong("last_backup", 0);
+88:                 a.groupRow(d, R.drawable.ic_shield, ic, "النسخ الاحتياطي والاستعادة", "آخر نسخة: " + MainActivity.ago(last), null, v -> a.backupScreen.show());
+89:             }
+90:             if (a.can(Auth.Perm.RESTORE)) a.groupRow(d, R.drawable.ic_migrate, ic, "مساعد النقل من برنامج آخر", "انقل مكاتبك وأرصدتك من Excel أو برنامج الميزان بيست ريت", null, v -> migration());
+91:         }
+92: 
+93:         if (a.can(Auth.Perm.SETTINGS)) {
+94:             a.section("تسجيل الحركات", null, null);
+95:             LinearLayout t = a.group();
+96:             toggle(t, R.drawable.ic_chat, "استخراج معلومات رسائل واتساب", "البيان أول النموذج مع زر «إضافة المعلومات للحقول»", "wa_parse", "1",
+97:                     on -> a.toast(on ? "مفعّلة: البيان أول النموذج، وزر «إضافة المعلومات للحقول»." : "متوقفة: نموذج التسجيل بالترتيب العادي والبيان حقل اختياري."));
+98:             // 12.1: نقل الرسائل من واتساب على الكمبيوتر
+99:             if (WaMove.desktop()) toggle(t, R.drawable.ic_paste, "مراقبة الحافظة", "حين تنسخ رسائل من واتساب تظهر بطاقة «نقل N رسائل» في الرئيسية", "clip_watch", "1",
+100:                     on -> { if (on) a.waMove.startWatch(); else a.waMove.stopWatch(); });
+101:             // 12.4: على أندرويد زرا التجميع والقص اختياريان (الافتراضي بدونهما)
+102:             if (!WaMove.desktop()) {
+103:                 toggle(t, R.drawable.ic_collect, "زر «وضع التجميع»", "في الرئيسية: انسخ الرسائل واحدة تلو الأخرى ثم «نقل»", "wa_btn_collect", "0", null);
+104:                 toggle(t, R.drawable.ic_cut, "زر «قص الرسائل»", "في الرئيسية ونموذج التسجيل: قطع نص فيه عدة رسائل ملزوقة", "wa_btn_cut", "0", null);
+105:             }
+106:             a.groupRow(t, R.drawable.ic_search, ic, "فحص الحافظة", "شكل ما نسخته دون محتواه، لإرساله للدعم إن لم تنفصل الرسائل", null, v -> a.waMove.inspect());
+107:             toggle(t, R.drawable.ic_check, "ملخص للتأكيد قبل حفظ كل حركة", "نافذة تعرض ما سيُسجَّل قبل الحفظ", "confirm_tx", "1", null);
+108:             a.groupRow(t, R.drawable.ic_sparkle, ic, AiExtract.NAME, "ذكاء اصطناعي عبر الإنترنت بمفتاحك (اختياري)", !License.current.ai() ? "النسخة الكاملة" : AiSettings.on(a.db) ? "مفعّل" : "متوقف", v -> AiSettings.screen(a, this::show));
+109:         }
+110: 
+111:         if (a.can(Auth.Perm.USERS) || a.can(Auth.Perm.SETTINGS) || a.can(Auth.Perm.AUDIT)) {

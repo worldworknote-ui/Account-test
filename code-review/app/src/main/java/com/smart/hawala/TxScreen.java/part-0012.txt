@@ -1,0 +1,159 @@
+1795:         x.setBackground(a.round(Color.argb(200, 170, 40, 40), Color.TRANSPARENT, 12));
+1796:         FrameLayout.LayoutParams xp = new FrameLayout.LayoutParams(a.dp(28), a.dp(28));
+1797:         xp.gravity = Gravity.TOP | Gravity.START;
+1798:         box.addView(x, xp);
+1799:         x.setOnClickListener(v -> remove.run());
+1800:         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(a.dp(84), a.dp(84));
+1801:         p.setMargins(a.dp(4), a.dp(6), a.dp(4), a.dp(6));
+1802:         f.thumbs.addView(box, p);
+1803:     }
+1804: 
+1805:     // ===================================================================================
+1806:     // الحفظ
+1807:     // ===================================================================================
+1808: 
+1809:     private Db.TxInput collect() throws Exception {
+1810:         if (f.office == null) throw new Exception("اختر المكتب");
+1811:         if (f.type.none()) {
+1812:             f.type.flagMissing(true);
+1813:             throw new Exception("اختر نوع الحركة: «لنا» أو «علينا». لا يُختار النوع تلقائيًا حتى لا تُسجَّل حركة بالاتجاه الخطأ.");
+1814:         }
+1815:         if (f.cur == null) throw new Exception("هذا المكتب ليس له عملات. افتح «إضافة / تعديل مكتب» وفعّل عملة واحدة على الأقل.");
+1816:         if (f.cur.none()) {
+1817:             f.cur.flagMissing(true);
+1818:             throw new Exception("اختر عملة الحركة. لا تُحدَّد العملة تلقائيًا حتى لا تُسجَّل حركة بعملة خاطئة.");
+1819:         }
+1820:         Db.TxInput in = new Db.TxInput();
+1821:         in.office = f.office.id;
+1822:         in.type = f.type.selected == 0 ? Model.TYPE_DEBIT : Model.TYPE_CREDIT;
+1823:         in.currency = f.cur.label();
+1824:         if (f.amount.getText().toString().trim().isEmpty()) throw new Exception("اكتب المبلغ");
+1825:         in.amount = Db.minor(f.amount.getText().toString(), a.db.decimals(in.currency));
+1826:         if (in.amount <= 0) throw new Exception("المبلغ يجب أن يكون أكبر من صفر");
+1827:         in.person = f.person.getText().toString().trim();
+1828:         in.description = f.desc.getText().toString().trim();
+1829:         in.notes = f.notes.getText().toString().trim();
+1830:         in.service = f.service.getText().toString().trim();
+1831:         in.dest = f.dest.getText().toString().trim();
+1832:         in.when = f.when == 0 ? Clock.now() : f.when;
+1833:         if (f.feeMode.selected == 1 && f.feeKind != null && f.feeKind.selected == 1) {
+1834:             // نسبة من المبلغ: تُحسب هنا من المبلغ المسجَّل نفسه (لا من النص المعروض) وبعملته
+1835:             java.math.BigDecimal r = Model.parseRate(f.rate.getText().toString());
+1836:             int per = ratePer(f);
+1837:             if (r == null) throw new Exception("اكتب نسبة الأجرة (مثل 1 أو 1.5) أو اختر «مبلغ محدد» أو «بدون أجرة»");
+1838:             if (r.compareTo(java.math.BigDecimal.valueOf(per)) > 0) throw new Exception("نسبة الأجرة أكبر من المبلغ نفسه");
+1839:             in.feeType = f.feeSide.selected == 0 ? Model.FEE_US : Model.FEE_THEM;
+1840:             in.feeCurrency = in.currency;
+1841:             in.fee = Model.feeFromRate(in.amount, r, per);
+1842:             if (in.fee <= 0) throw new Exception("الأجرة المحسوبة أصغر من أصغر وحدة في " + in.currency + ". اكتبها كمبلغ محدد أو اختر «بدون أجرة».");
+1843:         } else if (f.feeMode.selected == 1) {
+1844:             if (f.feeCur == null || f.feeCur.none()) {
+1845:                 if (f.feeCur != null) f.feeCur.flagMissing(true);
+1846:                 throw new Exception("اختر عملة الأجرة");
+1847:             }
+1848:             in.feeType = f.feeSide.selected == 0 ? Model.FEE_US : Model.FEE_THEM;
+1849:             in.feeCurrency = f.feeCur.label();
+1850:             if (f.fee.getText().toString().trim().isEmpty()) throw new Exception("اكتب مبلغ الأجرة أو اختر «بدون أجرة»");
+1851:             in.fee = Db.minor(f.fee.getText().toString(), a.db.decimals(in.feeCurrency));
+1852:             if (in.fee <= 0) throw new Exception("مبلغ الأجرة يجب أن يكون أكبر من صفر");
+1853:         } else in.feeType = Model.FEE_NONE;
+1854:         // 12.4: الحركة الخاصة
+1855:         if (f.specialOn) {
+1856:             if (f.specialType.isEmpty()) throw new Exception("اختر نوع الحركة الخاصة (ناقصة أجور، تحتاج مراجعة…) أو أطفئ «حركة خاصة»");
+1857:             if (f.specialBal == null || f.specialBal.none()) {
+1858:                 if (f.specialBal != null) f.specialBal.flagMissing(true);
+1859:                 throw new Exception("اختر: تُحسب الحركة الخاصة في الرصيد أو لا تُحسب");
+1860:             }
+1861:             in.special = f.specialType;
+1862:             in.specialBal = f.specialBal.selected == 0;
+1863:         }
+1864:         return in;
+1865:     }
+1866: 
+1867:     /** 10.5: يمنع الحفظ المزدوج (ضغطتان سريعتان). */
+1868:     private boolean saving;
+1869: 
+1870:     /**
+1871:      * 10.5 (§5): قبل حفظ رسالة من واتساب: جلسة جديدة تؤكد المكتب أولًا، وتغيير المكتب المثبّت يمر بالتحذير المطلوب.
+1872:      * ثم الحفظ العادي بتأكيده.
+1873:      */
+1874:     private void save() {
+1875:         if (f == null || f.office == null || !f.external || editing != null) {
+1876:             saveChecked();
+1877:             return;
+1878:         }
+1879:         final Model.Office chosen = f.office;
+1880:         WaPin.Need need = WaPin.before(a.db, chosen.id);
+1881:         if (need == WaPin.Need.NOTHING) {
+1882:             saveChecked();
+1883:             return;
+1884:         }
+1885:         if (need == WaPin.Need.CONFIRM_SESSION) {
+1886:             new AlertDialog.Builder(a).setTitle("تأكيد المكتب: «" + chosen.name + "»").setMessage(WaPin.sessionQuestion(chosen.name))
+1887:                     .setPositiveButton("نعم، ثبّته", (d, w) -> {
+1888:                         WaPin.pin(a.db, chosen.id);
+1889:                         a.waQueue.repin(chosen.id);
+1890:                         saveChecked();
+1891:                     }).setNegativeButton("سأختار مكتبًا آخر", null).show();
+1892:             return;
+1893:         }
+1894:         final Model.Office was = WaPin.current(a.db);
+1895:         new AlertDialog.Builder(a).setTitle("تغيير المكتب").setMessage(WaPin.changeWarning(was == null ? "" : was.name, chosen.name))
+1896:                 .setPositiveButton("تغيير إلى «" + chosen.name + "»", (d, w) -> {
+1897:                     WaPin.pin(a.db, chosen.id);
+1898:                     a.waQueue.repin(chosen.id);
+1899:                     saveChecked();
+1900:                 })
+1901:                 .setNegativeButton("إبقاء «" + (was == null ? "" : was.name) + "»", (d, w) -> {
+1902:                     if (was != null) selectOffice(was);
+1903:                     updateSummary();
+1904:                 }).show();
+1905:     }
+1906: 
+1907:     private void saveChecked() {
+1908:         final Db.TxInput in;
+1909:         try {
+1910:             in = collect();
+1911:         } catch (Exception e) {
+1912:             a.error(e);
+1913:             return;
+1914:         }
+1915:         final Model.Office office = f.office;
+1916:         final List<byte[]> images = new ArrayList<>(a.pendingImages);
+1917:         final Set<Long> removed = new HashSet<>(removedAtt);
+1918:         final Model.Tx old = editing;
+1919:         final boolean approve = approving && old != null;
+1920:         final boolean external = f.external, queued = f.queued;
+1921:         final boolean withFee = f.feeMode.selected == 1, byRate = feeByRate();
+1922:         final String rateText = f.rate == null ? "" : f.rate.getText().toString();
+1923:         final int ratePer = ratePer(f);
+1924:         final String holdUuid = old == null ? fromHold : null;
+1925:         final Runnable back = afterEdit;
+1926:         final boolean conv = converting;
+1927:         final Model.Tx dup = old == null && holdUuid == null ? duplicateOf(in.description) : null;
+1928:         final List<String> warns = old == null ? sanity(in) : new ArrayList<String>();
+1929:         final String warnText = warns.isEmpty() ? "" : "⚠ " + Model.join(warns, "\n⚠ ") + "\n\n";
+1930:         if (saving) return;
+1931:         Runnable doSave = () -> {
+1932:             if (saving) return;
+1933:             saving = true;
+1934:             a.busy(old == null ? "جارٍ تسجيل الحركة…" : "جارٍ حفظ التعديل…", p -> {
+1935:             try {
+1936:                 if (old == null) return a.db.addTx(in, images, holdUuid);
+1937:                 if (approve) {
+1938:                     a.db.approveEdited(old.id, in, images, removed);
+1939:                     return old.id;
+1940:                 }
+1941:                 return a.db.editTx(old.id, in, images, removed, "");
+1942:             } finally {
+1943:                 saving = false;
+1944:             }
+1945:         }, res -> {
+1946:             a.pendingImages.clear();
+1947:             f = null;
+1948:             recent = null;
+1949:             if (old == null && !external) a.db.deleteSetting("draft_tx");
+1950:             a.db.setSettingQuiet("last_office", "" + office.id);
+1951:             if (external) WaPin.touch(a.db);
+1952:             if (withFee) rememberFee(byRate, rateText, ratePer);
+1953:             OfficeHub.touch(a.db, office.id);

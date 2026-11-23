@@ -1,0 +1,171 @@
+1: package android.view;
+2: 
+3: import android.animation.Animator;
+4: import android.animation.TimeInterpolator;
+5: import android.animation.ValueAnimator;
+6: import java.util.*;
+7: 
+8: /**
+9:  * view.animate() كما في أندرويد: المدة والتأخير ومنحنى الحركة والمستمع تبقى للمرات التالية، والحركة تبدأ تلقائيًا
+10:  * في الإطار التالي إن لم يُستدعَ start()، وحركة جديدة لخاصية تلغي القديمة لها فقط.
+11:  */
+12: public class ViewPropertyAnimator {
+13:     static final int ALPHA = 0, TX = 1, TY = 2, TZ = 3, SX = 4, SY = 5, ROT = 6, X = 7, Y = 8, Z = 9, RX = 10, RY = 11;
+14: 
+15:     private final View view;
+16:     private long duration = 300, delay;
+17:     private boolean durationSet;
+18:     private TimeInterpolator interp;
+19:     private Animator.AnimatorListener listener;
+20:     private ValueAnimator.AnimatorUpdateListener update;
+21:     private final Map<Integer, Float> pending = new LinkedHashMap<>();
+22:     private Runnable startAction, endAction;
+23:     private boolean scheduled;
+24:     private final List<Run> runs = new ArrayList<>();
+25: 
+26:     private final class Run {
+27:         final Map<Integer, float[]> props = new LinkedHashMap<>();
+28:         ValueAnimator anim;
+29:         Runnable start, end;
+30:         Animator.AnimatorListener listener;
+31:     }
+32: 
+33:     ViewPropertyAnimator(View v) { view = v; }
+34: 
+35:     public ViewPropertyAnimator setDuration(long d) { duration = Math.max(0, d); durationSet = true; return this; }
+36:     public long getDuration() { return duration; }
+37:     public ViewPropertyAnimator setStartDelay(long d) { delay = Math.max(0, d); return this; }
+38:     public long getStartDelay() { return delay; }
+39:     public ViewPropertyAnimator setInterpolator(TimeInterpolator i) { interp = i; return this; }
+40:     public TimeInterpolator getInterpolator() { return interp; }
+41:     public ViewPropertyAnimator setListener(Animator.AnimatorListener l) { listener = l; return this; }
+42:     public ViewPropertyAnimator setUpdateListener(ValueAnimator.AnimatorUpdateListener l) { update = l; return this; }
+43:     public ViewPropertyAnimator withStartAction(Runnable r) { startAction = r; schedule(); return this; }
+44:     public ViewPropertyAnimator withEndAction(Runnable r) { endAction = r; schedule(); return this; }
+45:     public ViewPropertyAnimator withLayer() { return this; }
+46: 
+47:     private ViewPropertyAnimator to(int p, float v) { pending.put(p, v); schedule(); return this; }
+48:     private ViewPropertyAnimator by(int p, float v) { pending.put(p, get(p) + v); schedule(); return this; }
+49:     public ViewPropertyAnimator alpha(float v) { return to(ALPHA, v); }
+50:     public ViewPropertyAnimator alphaBy(float v) { return by(ALPHA, v); }
+51:     public ViewPropertyAnimator translationX(float v) { return to(TX, v); }
+52:     public ViewPropertyAnimator translationXBy(float v) { return by(TX, v); }
+53:     public ViewPropertyAnimator translationY(float v) { return to(TY, v); }
+54:     public ViewPropertyAnimator translationYBy(float v) { return by(TY, v); }
+55:     public ViewPropertyAnimator translationZ(float v) { return to(TZ, v); }
+56:     public ViewPropertyAnimator scaleX(float v) { return to(SX, v); }
+57:     public ViewPropertyAnimator scaleXBy(float v) { return by(SX, v); }
+58:     public ViewPropertyAnimator scaleY(float v) { return to(SY, v); }
+59:     public ViewPropertyAnimator scaleYBy(float v) { return by(SY, v); }
+60:     public ViewPropertyAnimator rotation(float v) { return to(ROT, v); }
+61:     public ViewPropertyAnimator rotationBy(float v) { return by(ROT, v); }
+62:     public ViewPropertyAnimator rotationX(float v) { return to(RX, v); }
+63:     public ViewPropertyAnimator rotationY(float v) { return to(RY, v); }
+64:     public ViewPropertyAnimator x(float v) { return to(X, v); }
+65:     public ViewPropertyAnimator xBy(float v) { return by(X, v); }
+66:     public ViewPropertyAnimator y(float v) { return to(Y, v); }
+67:     public ViewPropertyAnimator yBy(float v) { return by(Y, v); }
+68:     public ViewPropertyAnimator z(float v) { return to(Z, v); }
+69: 
+70:     private float get(int p) {
+71:         switch (p) {
+72:             case ALPHA: return view.getAlpha();
+73:             case TX: return view.getTranslationX();
+74:             case TY: return view.getTranslationY();
+75:             case TZ: return view.getTranslationZ();
+76:             case SX: return view.getScaleX();
+77:             case SY: return view.getScaleY();
+78:             case ROT: return view.getRotation();
+79:             case RX: return view.getRotationX();
+80:             case RY: return view.getRotationY();
+81:             case X: return view.getX();
+82:             case Y: return view.getY();
+83:             default: return view.getZ();
+84:         }
+85:     }
+86:     private void set(int p, float v) {
+87:         switch (p) {
+88:             case ALPHA: view.setAlpha(v); break;
+89:             case TX: view.setTranslationX(v); break;
+90:             case TY: view.setTranslationY(v); break;
+91:             case TZ: view.setTranslationZ(v); break;
+92:             case SX: view.setScaleX(v); break;
+93:             case SY: view.setScaleY(v); break;
+94:             case ROT: view.setRotation(v); break;
+95:             case RX: view.setRotationX(v); break;
+96:             case RY: view.setRotationY(v); break;
+97:             case X: view.setX(v); break;
+98:             case Y: view.setY(v); break;
+99:             default: view.setZ(v); break;
+100:         }
+101:     }
+102: 
+103:     private void schedule() {
+104:         if (scheduled) return;
+105:         scheduled = true;
+106:         AttachInfo.MAIN.post(() -> { if (scheduled) start(); });
+107:     }
+108: 
+109:     public void start() {
+110:         scheduled = false;
+111:         if (pending.isEmpty() && startAction == null && endAction == null) return;
+112:         final Run run = new Run();
+113:         for (Map.Entry<Integer, Float> e : pending.entrySet()) {
+114:             int p = e.getKey();
+115:             // خاصية جديدة تلغي حركتها السابقة فقط
+116:             for (Run r : new ArrayList<>(runs)) {
+117:                 r.props.remove(p);
+118:                 if (r.props.isEmpty() && r.anim != null && r.end == null && r.listener == null) { r.anim.cancel(); runs.remove(r); }
+119:             }
+120:             run.props.put(p, new float[]{get(p), e.getValue()});
+121:         }
+122:         pending.clear();
+123:         run.start = startAction;
+124:         run.end = endAction;
+125:         run.listener = listener;
+126:         startAction = null;
+127:         endAction = null;
+128:         final ValueAnimator a = ValueAnimator.ofFloat(0f, 1f);
+129:         a.setDuration(duration);
+130:         a.setStartDelay(delay);
+131:         if (interp != null) a.setInterpolator(interp);
+132:         run.anim = a;
+133:         final ValueAnimator.AnimatorUpdateListener ul = update;
+134:         a.addUpdateListener(x -> {
+135:             float f = (float) x.getAnimatedValue();
+136:             for (Map.Entry<Integer, float[]> e : run.props.entrySet()) {
+137:                 float[] v = e.getValue();
+138:                 set(e.getKey(), v[0] + (v[1] - v[0]) * f);
+139:             }
+140:             if (ul != null) ul.onAnimationUpdate(x);
+141:         });
+142:         a.addListener(new Animator.AnimatorListener() {
+143:             boolean cancelled;
+144:             @Override public void onAnimationStart(Animator x) {
+145:                 if (run.start != null) run.start.run();
+146:                 if (run.listener != null) run.listener.onAnimationStart(x);
+147:             }
+148:             @Override public void onAnimationEnd(Animator x) {
+149:                 runs.remove(run);
+150:                 if (run.listener != null) run.listener.onAnimationEnd(x);
+151:                 if (!cancelled && run.end != null) run.end.run();
+152:             }
+153:             @Override public void onAnimationCancel(Animator x) {
+154:                 cancelled = true;
+155:                 if (run.listener != null) run.listener.onAnimationCancel(x);
+156:             }
+157:             @Override public void onAnimationRepeat(Animator x) {}
+158:         });
+159:         runs.add(run);
+160:         a.start();
+161:     }
+162: 
+163:     public void cancel() {
+164:         scheduled = false;
+165:         pending.clear();
+166:         startAction = null;
+167:         endAction = null;
+168:         for (Run r : new ArrayList<>(runs)) if (r.anim != null) r.anim.cancel();
+169:         runs.clear();
+170:     }
+171: }

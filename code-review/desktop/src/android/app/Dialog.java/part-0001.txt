@@ -1,0 +1,113 @@
+1: package android.app;
+2: 
+3: import android.content.Context;
+4: import android.content.DialogInterface;
+5: import android.graphics.drawable.ColorDrawable;
+6: import android.view.*;
+7: import android.widget.FrameLayout;
+8: 
+9: /** نافذة حوار فوق الشاشة: خلفية معتمة، والمحتوى في الوسط، والرجوع (Esc) أو اللمس خارجها يلغيها إن سُمح. */
+10: public class Dialog implements DialogInterface {
+11:     protected final Context ctx;
+12:     protected final FrameLayout scrim;
+13:     protected final FrameLayout content;
+14:     private final Window window;
+15:     private ViewRootImpl root;
+16:     private boolean showing, cancelable = true, outside = true;
+17:     private OnDismissListener onDismiss;
+18:     private OnCancelListener onCancel;
+19:     private OnShowListener onShow;
+20:     private OnKeyListener onKey;
+21:     private boolean created;
+22: 
+23:     public Dialog(Context c) { this(c, 0); }
+24:     public Dialog(Context c, int theme) {
+25:         ctx = c;
+26:         scrim = new FrameLayout(c);
+27:         content = new FrameLayout(c);
+28:         scrim.addView(content, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+29:         window = new Window(scrim);
+30:         window.onChange = this::applyWindow;
+31:         scrim.setClickable(true);
+32:         scrim.setOnClickListener(v -> { if (cancelable && outside) cancel(); });
+33:         content.setClickable(true);
+34:     }
+35: 
+36:     public Context getContext() { return ctx; }
+37:     public Window getWindow() { return window; }
+38:     protected void onCreate(android.os.Bundle b) {}
+39:     protected void onStart() {}
+40:     protected void onStop() {}
+41:     public void create() { if (!created) { created = true; onCreate(null); } }
+42:     public void setContentView(View v) { content.removeAllViews(); content.addView(v, new FrameLayout.LayoutParams(-2, -2)); }
+43:     public void setContentView(View v, ViewGroup.LayoutParams p) { content.removeAllViews(); content.addView(v, p); }
+44:     public <T extends View> T findViewById(int id) { return content.findViewById(id); }
+45:     public void setTitle(CharSequence t) {}
+46:     public void setTitle(int res) {}
+47:     public void setCancelable(boolean c) { cancelable = c; }
+48:     public void setCanceledOnTouchOutside(boolean c) { if (c) cancelable = true; outside = c; }
+49:     public boolean isCancelable() { return cancelable; }
+50:     public boolean isShowing() { return showing; }
+51:     public void setOnDismissListener(OnDismissListener l) { onDismiss = l; }
+52:     public void setOnCancelListener(OnCancelListener l) { onCancel = l; }
+53:     public void setOnShowListener(OnShowListener l) { onShow = l; }
+54:     public void setOnKeyListener(OnKeyListener l) { onKey = l; }
+55:     public void setOwnerActivity(Activity a) {}
+56:     public Activity getOwnerActivity() { return ctx instanceof Activity ? (Activity) ctx : null; }
+57:     public View getCurrentFocus() { return root == null ? null : root.getFocused(); }
+58:     public void onBackPressed() { if (cancelable) cancel(); }
+59:     void backPressed() {
+60:         if (onKey != null && onKey.onKey(this, KeyEvent.KEYCODE_BACK, new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK))) return;
+61:         onBackPressed();
+62:     }
+63: 
+64:     private void applyWindow() {
+65:         WindowManager.LayoutParams a = window.getAttributes();
+66:         int dim = Math.round(255 * Math.max(0, Math.min(1, a.dimAmount)));
+67:         if ((a.flags & WindowManager.LayoutParams.FLAG_DIM_BEHIND) == 0 && a.dimAmount != 0.6f) dim = 0;
+68:         scrim.setBackground(new ColorDrawable(dim << 24));
+69:         FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) content.getLayoutParams();
+70:         if (a.width != -1 && a.width != 0 || a.gravity != 0) {
+71:             if (a.gravity != 0) p.gravity = a.gravity;
+72:             content.setLayoutParams(p);
+73:         }
+74:     }
+75: 
+76:     public void show() {
+77:         if (showing) return;
+78:         create();
+79:         showing = true;
+80:         scrim.setBackground(new ColorDrawable(0x99000000));
+81:         root = WindowStack.add(scrim, ViewRootImpl.LAYER_DIALOG);
+82:         root.onBack = this::backPressed;
+83:         if (ctx instanceof Activity) ((Activity) ctx).dialogs.add(this);
+84:         onStart();
+85:         if (!android.animation.Choreo.instant) {
+86:             scrim.setAlpha(0f);
+87:             scrim.animate().alpha(1f).setDuration(150).start();
+88:             content.setScaleX(0.94f);
+89:             content.setScaleY(0.94f);
+90:             content.animate().scaleX(1f).scaleY(1f).setDuration(180).setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
+91:         }
+92:         if (onShow != null) {
+93:             final OnShowListener l = onShow;
+94:             AttachInfo.MAIN.post(() -> { if (showing) l.onShow(this); });
+95:         }
+96:     }
+97:     public void hide() { if (root != null) root.pane.setVisible(false); }
+98:     @Override public void dismiss() {
+99:         if (!showing) return;
+100:         showing = false;
+101:         if (ctx instanceof Activity) ((Activity) ctx).dialogs.remove(this);
+102:         final ViewRootImpl r = root;
+103:         root = null;
+104:         WindowStack.remove(r);
+105:         onStop();
+106:         if (onDismiss != null) onDismiss.onDismiss(this);
+107:     }
+108:     @Override public void cancel() {
+109:         if (!showing) return;
+110:         if (onCancel != null) onCancel.onCancel(this);
+111:         dismiss();
+112:     }
+113: }

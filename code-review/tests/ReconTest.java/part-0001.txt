@@ -1,0 +1,80 @@
+1: import com.smart.hawala.*;
+2: import java.util.*;
+3: public class ReconTest {
+4:   static int fails = 0;
+5:   static void check(boolean c, String m) { System.out.println((c ? "  PASS " : "  FAIL ") + m); if (!c) fails++; }
+6:   static Model.Line line(String kind, String cur, long t, long d, long c, long tx, String status) {
+7:     Model.Line l = new Model.Line(); l.kind = kind; l.currency = cur; l.createdAt = t; l.debit = d; l.credit = c; l.txId = tx; l.status = status;
+8:     l.person = "شخص " + tx; l.description = "بيان"; l.txUuid = "uuid-" + tx; l.txType = d > 0 ? Model.TYPE_DEBIT : Model.TYPE_CREDIT; l.feeType = Model.FEE_NONE; return l; }
+9:   public static void main(String[] a) throws Exception {
+10:     System.out.println("1) balance message text");
+11:     Map<String, Long> bal = new TreeMap<>(); bal.put("SYP", 5945000L); bal.put("USD", -781900L); bal.put("EUR", 875000L); bal.put("TRY", 0L);
+12:     Map<String, String> names = new HashMap<>(); names.put("SYP", "ليرة سورية ( جديد )"); names.put("USD", "دولار امريكي"); names.put("EUR", "يورو اوربي");
+13:     Map<String, Integer> dec = new HashMap<>(); dec.put("SYP", 2); dec.put("USD", 2); dec.put("EUR", 2); dec.put("TRY", 2);
+14:     Reconcile.Template t = new Reconcile.Template();
+15:     List<Reconcile.Row> rows = Reconcile.rows(bal, names, dec, null, false);
+16:     check(rows.size() == 3, "zero balance hidden by default: " + rows.size());
+17:     String txt = Reconcile.text(t, "كاش شام", "مكتب أبو عمر", 1760090449000L, rows);
+18:     System.out.println("------\n" + txt + "\n------");
+19:     check(txt.startsWith("السلام عليكم ورحمة الله وبركاته"), "greeting first");
+20:     check(txt.contains("*مطابقة رصيد*"), "bold title");
+21:     check(txt.contains("السادة: *كاش شام* المحترمين"), "office salutation");
+22:     // 10.16: الافتراضي: الرقم قبل اسم العملة، بلا أصفار عشرية، وسطر فارغ بين كل عملة
+23:     check(txt.contains("🟢 *59,450* ليرة سورية ( جديد ) لنا"), "10.16 الافتراضي: المبلغ قبل اسم العملة وبلا أصفار عشرية");
+24:     check(txt.contains("🔴 *7,819* دولار امريكي لكم"), "USD 7,819 لكم (السالب = لكم)");
+25:     check(txt.contains("لنا\n\n🔴") || txt.contains("لنا\n\n🟢"), "سطر فارغ بين كل عملة وأخرى");
+26:     check(!txt.contains(".00"), "لا أصفار عشرية في الرسالة");
+27:     Reconcile.Template old = new Reconcile.Template(); old.lineFormat = Reconcile.LINE_NAME_FIRST; old.trimZeros = false; old.gap = false;
+28:     String ot = Reconcile.text(old, "كاش شام", "مكتب أبو عمر", 1760090449000L, rows);
+29:     check(ot.contains("🟢 ليرة سورية ( جديد ): *59,450.00* لنا\n🔴 دولار امريكي: *7,819.00* لكم") || ot.contains("🟢 يورو اوربي: *8,750.00* لنا\n"), "الشكل القديم ما زال متاحًا كما كان");
+30:     check(ot.contains("دولار امريكي: *7,819.00* لكم") && ot.contains("يورو اوربي: *8,750.00* لنا"), "الشكل القديم: الاسم ثم المبلغ بالأصفار");
+31:     check(Reconcile.trimZeros("12.50").equals("12.5") && Reconcile.trimZeros("1,000.00").equals("1,000") && Reconcile.trimZeros("0.00").equals("0")
+32:         && Reconcile.trimZeros("100").equals("100") && Reconcile.trimZeros("1,200").equals("1,200") && Reconcile.trimZeros("0.05").equals("0.05"), "حذف الأصفار لا يمس الكسور الحقيقية ولا الأعداد الصحيحة");
+33:     List<Reconcile.Row> frac = new ArrayList<>(); frac.add(new Reconcile.Row("USD", "دولار", 123450L, 2)); frac.add(new Reconcile.Row("JOD", "دينار", -1500L, 3));
+34:     String ft = Reconcile.text(new Reconcile.Template(), "م", "", 0, frac);
+35:     check(ft.contains("*1,234.5* دولار لنا") && ft.contains("*1.5* دينار لكم"), "كسر حقيقي يبقى: 1,234.5 و1.5");
+36:     Reconcile.Template cu = new Reconcile.Template(); cu.lineFormat = "{كلمة}: {مبلغ} {رمز} — {عملة}"; cu.markPlus = ""; cu.bold = false;
+37:     check(Reconcile.line(cu, frac.get(0)).equals("لنا: 1,234.5 USD — دولار"), "شكل حر يكتبه المستخدم: " + Reconcile.line(cu, frac.get(0)));
+38:     cu.lineFormat = "{علامة} {عملة}\\n{مبلغ} {كلمة}"; cu.markPlus = "";
+39:     check(Reconcile.line(cu, frac.get(0)).equals("دولار\n1,234.5 لنا"), "سطران لكل عملة، والعلامة المحذوفة لا تترك فراغًا");
+40:     cu.lineFormat = "{عملة} {كلمة}";
+41:     check(Reconcile.line(cu, frac.get(0)).contains("1,234.5"), "شكل بلا خانة المبلغ يُرفض ويعود الافتراضي (لا رسالة بلا أرقام)");
+42:     Map<String, String> bad = new HashMap<>(); bad.put("rc_line", "بلا مبلغ");
+43:     check(Reconcile.Template.from(bad).lineFormat.equals(Reconcile.LINE_AMOUNT_FIRST), "قالب محفوظ بلا خانة المبلغ يُصحَّح عند القراءة");
+44:     Reconcile.Template hid = new Reconcile.Template(); hid.showDate = false; hid.showOffice = false; hid.showSeparator = false; hid.markMinus = "⬇️"; hid.zeroWord = "متعادل";
+45:     String ht = Reconcile.text(hid, "كاش شام", "", 1760090449000L, rows);
+46:     check(!ht.contains("التاريخ") && !ht.contains("كاش شام") && !ht.contains(Reconcile.LINE) && ht.contains("⬇️ *7,819*"), "إخفاء التاريخ والمكتب والخط، وعلامة مخصصة");
+47:     hid.separator = "••••"; hid.showSeparator = true; hid.dateLabel = "بتاريخ"; hid.showDate = true;
+48:     ht = Reconcile.text(hid, "كاش شام", "", 1760090449000L, rows);
+49:     check(ht.contains("••••") && ht.contains("بتاريخ " + Model.date(1760090449000L)), "خط فاصل ونص تاريخ مخصصان");
+50:     Reconcile.Template rt = Reconcile.Template.from(hid.toMap());
+51:     check(rt.separator.equals("••••") && !rt.showOffice && rt.markMinus.equals("⬇️") && rt.zeroWord.equals("متعادل") && rt.trimZeros && rt.gap, "الخيارات الجديدة تُحفظ وتُقرأ");
+52:     // موضع «لنا/لكم» من الرقم، واللون
+53:     check(Reconcile.wordPos(Reconcile.LINE_AMOUNT_FIRST) == 2 && Reconcile.wordPos(Reconcile.LINE_WORD_FIRST) == 0 && Reconcile.wordPos(Reconcile.LINE_NAME_FIRST) == 1, "اكتشاف موضع الكلمة في الأشكال الجاهزة");
+54:     String wb = Reconcile.withWordPos(Reconcile.LINE_AMOUNT_FIRST, 0), wa = Reconcile.withWordPos(Reconcile.LINE_AMOUNT_FIRST, 1), we = Reconcile.withWordPos(wb, 2);
+55:     check(wb.equals("{علامة} {كلمة} {مبلغ} {عملة}") && wa.equals("{علامة} {مبلغ} {كلمة} {عملة}") && we.equals(Reconcile.LINE_AMOUNT_FIRST), "نقل «لنا/لكم» قبل الرقم وبعده وآخر السطر: " + wb + " | " + wa);
+56:     Reconcile.Template wp = new Reconcile.Template(); wp.lineFormat = wb; wp.bold = false;
+57:     check(Reconcile.line(wp, frac.get(0)).equals("🟢 لنا 1,234.5 دولار") && wp.wordBefore(), "الكلمة قبل الرقم في النص: " + Reconcile.line(wp, frac.get(0)));
+58:     wp.lineFormat = wa;
+59:     check(Reconcile.line(wp, frac.get(1)).equals("🔴 1.5 لكم دينار") && !wp.wordBefore(), "الكلمة بعد الرقم مباشرة: " + Reconcile.line(wp, frac.get(1)));
+60:     check(Reconcile.withWordPos("{عملة} {مبلغ}", 0).equals("{عملة} {كلمة} {مبلغ}"), "شكل بلا كلمة: تُضاف في الموضع المطلوب");
+61:     Reconcile.Template col = new Reconcile.Template();
+62:     check(col.color(1) == 0xFF1B7846 && col.color(-1) == 0xFFAD2E36, "اللونان الافتراضيان أخضر وأحمر");
+63:     col.colorPlus = "#1F5FBF"; col.colorMinus = "خطأ";
+64:     check(col.color(1) == 0xFF1F5FBF && col.color(-1) == 0xFFAD2E36, "لون مختار يُطبَّق، ولون غير صالح يعود للافتراضي");
+65:     col.colored = false;
+66:     check(col.color(1) == col.color(-1), "بلا تلوين: لون واحد");
+67:     Reconcile.Template cr = Reconcile.Template.from(col.toMap());
+68:     check(cr.colorPlus.equals("#1F5FBF") && !cr.colored, "اللون وخيار التلوين يُحفظان");
+69:     Reconcile.Template legacy = Reconcile.Template.from(new HashMap<String, String>() {{ put("rc_title", "كشف"); put("rc_bold", "0"); }});
+70:     check(legacy.title.equals("كشف") && !legacy.bold && legacy.gap && legacy.trimZeros && legacy.lineFormat.equals(Reconcile.LINE_AMOUNT_FIRST), "قالب محفوظ من إصدار أقدم: نصوصه تبقى والجديد بقيمه الافتراضية");
+71:     check(txt.contains("يرجى المطابقة على الأرصدة مع المحاسب بشكل دائم 🔍"), "footer");
+72:     check(txt.trim().endsWith("مكتب أبو عمر"), "issuer last");
+73:     check(!txt.contains("TRY"), "zero currency not listed");
+74:     Set<String> only = new HashSet<>(Arrays.asList("USD", "TRY"));
+75:     List<Reconcile.Row> r2 = Reconcile.rows(bal, names, dec, only, true);
+76:     check(r2.size() == 2 && r2.get(0).code.equals("TRY") && r2.get(0).sign() == 0, "selected currencies incl. zero when asked");
+77:     t.bold = false; t.showIssuer = false; t.greeting = ""; t.ornament = "";
+78:     String plain = Reconcile.text(t, "كاش شام", "مكتب", 1760090449000L, rows);
+79:     check(!plain.contains("*") && plain.startsWith("مطابقة رصيد") && !plain.contains("مكتب\n") && !plain.trim().endsWith("مكتب"), "plain variant: no bold, no greeting, no issuer");
+80:     String empty = Reconcile.text(new Reconcile.Template(), "x", "", 0, new ArrayList<Reconcile.Row>());

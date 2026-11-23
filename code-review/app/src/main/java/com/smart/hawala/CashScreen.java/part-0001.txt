@@ -1,0 +1,188 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.app.DatePickerDialog;
+5: import android.app.TimePickerDialog;
+6: import android.graphics.Color;
+7: import android.graphics.drawable.GradientDrawable;
+8: import android.os.Build;
+9: import android.os.SystemClock;
+10: import android.view.Gravity;
+11: import android.view.View;
+12: import android.widget.Button;
+13: import android.widget.CheckBox;
+14: import android.widget.EditText;
+15: import android.widget.LinearLayout;
+16: import android.widget.ScrollView;
+17: import android.widget.Spinner;
+18: import android.widget.Switch;
+19: import android.widget.TextView;
+20: import java.math.BigDecimal;
+21: import java.math.RoundingMode;
+22: import java.util.ArrayList;
+23: import java.util.Calendar;
+24: import java.util.Collections;
+25: import java.util.HashMap;
+26: import java.util.LinkedHashMap;
+27: import java.util.List;
+28: import java.util.Map;
+29: import java.util.Set;
+30: import java.util.TreeSet;
+31: 
+32: /**
+33:  * 9.0: «صندوق المكتب» — قسم بشكل وألوان خاصة (كأنه برنامج مستقل) لضبط النقد الموجود لدى صاحب المكتب بكل عملة.
+34:  * 9.0.1: تبويب خاص في الشريط السفلي، وقفل بالبصمة أو بكلمة سر، وعدة صناديق والتحويل بينها، وبيع وشراء العملات بالسعر
+35:  * والمقابل المحسوب، وتفاصيل كاملة قبل كل تسجيل، وسجل للجرد يقارن زيادة عملة بعجز أخرى، وحسابات العملاء (ClientScreen).
+36:  * الحساب كله في CashBox وClientBook (مشتركة)، والكتابة في Db التي تسجّل الحركات المرتبطة في المعاملة نفسها.
+37:  */
+38: final class CashScreen {
+39:     final MainActivity a;
+40:     final ClientScreen clients;
+41:     private int filter = 0;
+42:     static final String[] FILTERS = {"الكل", "اليوم", "استلام", "تسليم", "مصاريف", "بيع وشراء", "عملاء", "لحساب مكاتب", "تحويل", "الملغاة"};
+43: 
+44:     CashScreen(MainActivity a) {
+45:         this.a = a;
+46:         this.clients = new ClientScreen(this);
+47:     }
+48: 
+49:     // ===================================================================================
+50:     // الألوان الخاصة بالصندوق
+51:     // ===================================================================================
+52: 
+53:     static final int NAVY = Color.rgb(22, 42, 74), NAVY2 = Color.rgb(12, 27, 52), GOLD = Color.rgb(201, 162, 39);
+54: 
+55:     void enter() {
+56:         a.applyColors();
+57:         if (!a.night) {
+58:             a.primary = Color.rgb(30, 64, 110);
+59:             a.bg = Color.rgb(237, 241, 247);
+60:             a.surface = Color.WHITE;
+61:             a.line = Color.rgb(214, 222, 234);
+62:             a.primarySoft = Color.rgb(226, 234, 246);
+63:             a.primaryInk = Color.rgb(22, 50, 92);
+64:             a.accent = GOLD;
+65:             a.goldSoft = Color.rgb(250, 241, 210);
+66:             a.goldInk = Color.rgb(110, 82, 6);
+67:         } else {
+68:             a.primary = Color.rgb(74, 118, 178);
+69:             a.bg = Color.rgb(13, 19, 31);
+70:             a.surface = Color.rgb(22, 31, 48);
+71:             a.line = Color.rgb(38, 51, 74);
+72:             a.primarySoft = Color.rgb(28, 42, 66);
+73:             a.primaryInk = Color.rgb(150, 186, 236);
+74:             a.accent = Color.rgb(214, 178, 72);
+75:             a.goldSoft = Color.rgb(56, 46, 18);
+76:             a.goldInk = Color.rgb(236, 205, 120);
+77:         }
+78:         a.header = a.night ? Color.rgb(9, 15, 27) : NAVY;
+79:         a.headerInk = Color.WHITE;
+80:         a.flatHeader = false;
+81:         a.themeOwner = "cash";
+82:         a.themeKeep = true;
+83:     }
+84: 
+85:     void screen(String title, Runnable back) {
+86:         enter();
+87:         a.base(title, back);
+88:     }
+89: 
+90:     /** شاشة رئيسية في تبويب الصندوق (مع الشريط السفلي). */
+91:     void tabbed(String title, Runnable back) {
+92:         enter();
+93:         a.tabbedScreen(title, back, "cash");
+94:     }
+95: 
+96:     static int dec(Map<String, Integer> m, String c) {
+97:         Integer v = m.get(c);
+98:         return v == null ? 2 : v;
+99:     }
+100: 
+101:     /** مبلغ معزول الاتجاه داخل النص العربي: «1,250.00 USD». */
+102:     String money(long v, String cur) { return "\u2066" + Model.fmt(v, a.db.decimals(cur)) + " " + cur + "\u2069"; }
+103: 
+104:     static String iso(String s) { return "\u2066" + s + "\u2069"; }
+105: 
+106:     // ===================================================================================
+107:     // 9.0.1: قفل الصندوق (بصمة أو قفل الشاشة، أو كلمة سر خاصة بالصندوق)
+108:     // ===================================================================================
+109: 
+110:     static final String LOCK_OFF = "0", LOCK_BIO = "bio", LOCK_PIN = "pin";
+111:     /** فُتح الصندوق في هذه الزيارة؛ يُقفل عند مغادرة شاشاته أو بعد خروج من التطبيق أطول من المهلة. */
+112:     private boolean open;
+113:     private long authAt;
+114:     static final long GRACE_MS = 30000;
+115: 
+116:     String lockMode() {
+117:         String m = a.db.setting("cash_lock", LOCK_OFF);
+118:         if (LOCK_PIN.equals(m) && a.db.setting("cash_pin_hash", "").isEmpty()) return LOCK_OFF;
+119:         return m;
+120:     }
+121: 
+122:     void leave() { open = false; }
+123: 
+124:     void onResume(long pausedAt) {
+125:         if (!open || LOCK_OFF.equals(lockMode()) || pausedAt == 0 || pausedAt <= authAt) return;
+126:         if (SystemClock.elapsedRealtime() - pausedAt < GRACE_MS) return;
+127:         open = false;
+128:         if ("cash".equals(a.themeOwner)) show();
+129:     }
+130: 
+131:     /** يشغّل r إن كان الصندوق مفتوحًا أو بلا قفل، وإلا يطلب البصمة أو كلمة السر أولًا. */
+132:     void guard(final Runnable r) {
+133:         if (open || LOCK_OFF.equals(lockMode())) {
+134:             open = true;
+135:             r.run();
+136:             return;
+137:         }
+138:         tabbed("الصندوق مقفل", null);
+139:         LinearLayout c = a.card();
+140:         c.setGravity(Gravity.CENTER_HORIZONTAL);
+141:         c.addView(a.icon(R.drawable.ic_lock, a.primaryInk, 48), new LinearLayout.LayoutParams(a.dp(48), a.dp(48)));
+142:         TextView t = a.text(LOCK_BIO.equals(lockMode()) ? "افتح الصندوق بالبصمة أو بقفل الشاشة." : "اكتب كلمة سر الصندوق لفتحه.", 16, a.ink, true);
+143:         t.setGravity(Gravity.CENTER);
+144:         c.addView(t);
+145:         TextView s = a.text("الصندوق محمي بقفل خاص لأن فيه النقد وحسابات العملاء.", 13, a.muted, false);
+146:         s.setGravity(Gravity.CENTER);
+147:         c.addView(s);
+148:         final Runnable ask = () -> unlock(() -> {
+149:             open = true;
+150:             authAt = SystemClock.elapsedRealtime();
+151:             r.run();
+152:         });
+153:         c.addView(a.makeButton("فتح الصندوق", a.primary, v -> ask.run()), a.lp(-1, 52, 8));
+154:         ask.run();
+155:     }
+156: 
+157:     private void unlock(final Runnable ok) {
+158:         if (LOCK_BIO.equals(lockMode())) bio("فتح الصندوق", ok);
+159:         else pinDialog(ok);
+160:     }
+161: 
+162:     /** البصمة أو قفل الشاشة. لا قفل مهيّأ في الهاتف أصلًا (11/12/14): يُفتح مع تنبيه، كقفل التطبيق. */
+163:     void bio(String title, final Runnable ok) {
+164:         try {
+165:             android.hardware.biometrics.BiometricPrompt.Builder b = new android.hardware.biometrics.BiometricPrompt.Builder(a)
+166:                     .setTitle(title).setSubtitle("بالبصمة أو بقفل الشاشة");
+167:             if (Build.VERSION.SDK_INT >= 30) b.setAllowedAuthenticators(android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG | android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL);
+168:             else b.setNegativeButton("إلغاء", a.getMainExecutor(), (d, w) -> { });
+169:             // شاشة رمز القفل تُوقف النشاط مؤقتًا: لا يُعدّ ذلك خروجًا من التطبيق (فلا يُقفل التطبيق نفسه بعدها)
+170:             a.markOwn();
+171:             final Runnable clear = () -> a.getWindow().getDecorView().postDelayed(() -> a.ownActivity = false, 1500);
+172:             b.build().authenticate(new android.os.CancellationSignal(), a.getMainExecutor(),
+173:                     new android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
+174:                         @Override
+175:                         public void onAuthenticationSucceeded(android.hardware.biometrics.BiometricPrompt.AuthenticationResult r) {
+176:                             clear.run();
+177:                             ok.run();
+178:                         }
+179: 
+180:                         @Override
+181:                         public void onAuthenticationError(int c, CharSequence m) {
+182:                             clear.run();
+183:                             if (c == 11 || c == 12 || c == 14) {
+184:                                 a.toast("لا توجد بصمة ولا قفل شاشة على هذا الهاتف: الصندوق غير محمي. اضبط قفل الشاشة أو اختر كلمة سر للصندوق.");
+185:                                 ok.run();
+186:                             } else if (m != null && c != 5 && c != 10 && c != 13) a.toast(m.toString());
+187:                         }
+188:                     });

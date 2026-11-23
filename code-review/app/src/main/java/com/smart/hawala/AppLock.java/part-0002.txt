@@ -1,0 +1,67 @@
+192:             a.db.setSettingQuiet("app_pin_hash", Pin.hash(s1, salt));
+193:             a.db.setSettingQuiet("app_fails", "0");
+194:             d.dismiss();
+195:             after.run();
+196:         }));
+197:         d.show();
+198:     }
+199: 
+200:     // ===================================================================================
+201:     // الإعداد (لكل مستخدم، بلا صلاحية الإعدادات)
+202:     // ===================================================================================
+203: 
+204:     void settings() {
+205:         a.here(this::settings);
+206:         a.tabbedScreen("قفل التطبيق على هذا الجهاز", a.moreScreen::show, "more");
+207:         final String m = mode();
+208:         final boolean secure = deviceSecure();
+209:         a.hint("يحمي التطبيق إن وصل هاتفك إلى يد غيرك. خاص بهذا الجهاز، ولا يغيّر أي صلاحية.");
+210:         LinearLayout g = a.group();
+211:         a.groupRow(g, R.drawable.ic_lock, BIO.equals(m) ? a.green : a.primaryInk, "البصمة أو قفل شاشة الهاتف",
+212:                 secure ? "الأسرع: يُفتح ببصمتك أو برمز قفل الهاتف" : "هذا الهاتف بلا بصمة ولا قفل شاشة: اضبطهما من إعدادات الهاتف، أو اختر كلمة سر للتطبيق",
+213:                 BIO.equals(m) ? "✓" : secure ? "اختيار" : null, secure ? v -> {
+214:                     setMode(BIO);
+215:                     a.unlocked = true;
+216:                     a.toast("القفل بالبصمة ✓");
+217:                     settings();
+218:                 } : null);
+219:         a.groupRow(g, R.drawable.ic_key, PIN.equals(m) ? a.green : a.primaryInk, "كلمة سر خاصة بالتطبيق",
+220:                 hasPin() ? "مضبوطة — تُطلب عند الفتح" : "لمن لا يريد البصمة أو هاتفه بلا بصمة", PIN.equals(m) ? "✓" : "اختيار", v -> newPin(() -> {
+221:                     setMode(PIN);
+222:                     a.toast("قُفل التطبيق بكلمة سر ✓");
+223:                     settings();
+224:                 }));
+225:         if (hasPin() && !PIN.equals(m)) a.groupRow(g, R.drawable.ic_key, a.primaryInk, "كلمة السر احتياط للبصمة", "تُطلب إن تعذرت البصمة على هذا الهاتف", null, null);
+226:         a.groupRow(g, R.drawable.ic_close, OFF.equals(m) ? a.red : a.muted, "بلا قفل", "أي شخص يفتح الهاتف يرى الحسابات", OFF.equals(m) ? "✓" : "اختيار", v -> a.confirm("بلا قفل",
+227:                 "يعمل التطبيق على هذا الجهاز دون قفل. متأكد؟", "بلا قفل", () -> {
+228:                     setMode(OFF);
+229:                     settings();
+230:                 }));
+231: 
+232:         a.section("متى يُطلب القفل؟", null, null);
+233:         final String[] lockLabels = {"عند فتح التطبيق فقط", "فورًا عند كل عودة", "بعد دقيقة", "بعد 5 دقائق", "بعد 15 دقيقة"};
+234:         final long[] lockValues = {-1, 0, 1, 5, 15};
+235:         final Spinner lock = a.spinner(lockLabels);
+236:         long cur = a.db.settingLong("lock_timeout", -1);
+237:         for (int i = 0; i < lockValues.length; i++) if (lockValues[i] == cur) lock.setSelection(i);
+238:         lock.setBackground(a.round(a.surface, a.line, 12));
+239:         a.body.addView(lock, a.lp(-1, 54, 4));
+240:         lock.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+241:             @Override public void onItemSelected(android.widget.AdapterView<?> p, View v, int pos, long id) {
+242:                 if (lockValues[pos] != a.db.settingLong("lock_timeout", -1)) a.db.setSettingQuiet("lock_timeout", "" + lockValues[pos]);
+243:             }
+244: 
+245:             @Override public void onNothingSelected(android.widget.AdapterView<?> p) {}
+246:         });
+247:         if (a.db.usersEnabled()) {
+248:             a.hint(a.db.rememberedUser() != null
+249:                     ? "حسابك محفوظ على هذا الجهاز («تذكرني»): القفل هنا هو ما يمنع غيرك من الدخول بحسابك."
+250:                     : "نظام المستخدمين مفعّل: يُطلب اسمك ورمزك عند الفتح أيضًا (أو فعّل «تذكرني» عند الدخول واعتمد على هذا القفل).");
+251:         }
+252:     }
+253: 
+254:     static String label(MainActivity a) {
+255:         String m = a.appLock.mode();
+256:         return BIO.equals(m) ? "بالبصمة" : PIN.equals(m) ? "بكلمة سر التطبيق" : "بلا قفل";
+257:     }
+258: }

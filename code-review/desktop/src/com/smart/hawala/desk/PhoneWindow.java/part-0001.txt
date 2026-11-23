@@ -1,0 +1,178 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import android.app.Activity;
+4: import android.app.Platform;
+5: import android.app.WindowStack;
+6: import android.content.Context;
+7: import android.view.ViewRootImpl;
+8: import com.smart.hawala.*;
+9: import java.awt.*;
+10: import java.awt.event.*;
+11: import javax.swing.*;
+12: 
+13: /**
+14:  * 11.0: نافذة البرنامج على الماك والويندوز = شاشات الهاتف نفسها.
+15:  * <p>
+16:  * الحجم (desk_column):
+17:  * <ul>
+18:  * <li>auto (الافتراضي): الشاشة تملأ النافذة؛ الحجم يصغر مع النافذة الصغيرة ولا يكبر فوق الحجم الطبيعي (11.6)،
+19:  * والأزرار والخانات بعرض أقصى في الشاشة العريضة.</li>
+20:  * <li>480 / 600: عمود ثابت وسط النافذة؛ full: بعرض النافذة كلها. في هذه الثلاثة الحجم ثابت.</li>
+21:  * </ul>
+22:  * desk_zoom (70…170٪) يكبّر أو يصغّر فوق ذلك. التكبير مقياس رسم عام (لا إعادة بناء للشاشات) فيبقى السحب سلسًا والنص حادًا.
+23:  */
+24: public final class PhoneWindow {
+25:     private PhoneWindow() {}
+26: 
+27:     static JFrame frame;
+28:     static DeskActivity activity;
+29:     private static JPanel shell;
+30:     /** مرجع الحجم التلقائي: شاشة هاتف منطقية بهذا العرض والارتفاع تملأ النافذة. */
+31:     static final float REF_W = 430f, REF_H = 860f;
+32:     /** أعرض ما تصل إليه الشاشة (بوحدات الهاتف) في الوضع التلقائي قبل أن تتوسط النافذة. */
+33:     static final float MAX_W = 900f;
+34:     /** 11.2: أقل ارتفاع منطقي ظاهر في الوضع التلقائي (التكبير لا يتجاوزه). */
+35:     static final float FIT_H = 800f;
+36: 
+37:     public static boolean isOpen() { return frame != null; }
+38: 
+39:     public static void open(Context ctx, Db db) {
+40:         applyMetrics();
+41:         android.hardware.biometrics.SystemAuth.warmUp();
+42:         frame = new JFrame("المحاسب الذكي");
+43:         frame.setIconImages(java.util.Arrays.asList(Main.appIcon(16), Main.appIcon(32), Main.appIcon(64), Main.appIcon(128), Main.appIcon(256)));
+44:         frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
+45:         Platform.frame = frame;
+46:         Platform.onFinish = () -> { };
+47:         Platform.onRecreate = a -> { if (a instanceof DeskActivity) activity = (DeskActivity) a; if (shell != null) shell.repaint(); };
+48:         Activity.onBarsChanged = () -> { if (shell != null) shell.repaint(); };
+49:         DeskLook.install();
+50:         // 11.5: السحب بإصبعين وزر الرجوع في الفأرة = رجوع للصفحة السابقة
+51:         ViewRootImpl.swipeBack = () -> { if (activity != null) activity.onBackPressed(); };
+52:         android.app.NotificationManager.onOpen = i -> { if (activity != null) activity.deliverNewIntent(i); };
+53:         shell = new JPanel(null) {
+54:             @Override protected void paintComponent(Graphics g) {
+55:                 int c = activity == null ? 0xFFF3F5F4 : activity.bgColor();
+56:                 g.setColor(new Color(c));
+57:                 g.fillRect(0, 0, getWidth(), getHeight());
+58:                 Rectangle b = WindowStack.host().getBounds();
+59:                 if (b.x > 0) {
+60:                     // حد خفيف حول الشاشة حين تتوسط النافذة
+61:                     boolean night = activity != null && activity.isNight();
+62:                     g.setColor(night ? new Color(255, 255, 255, 18) : new Color(0, 0, 0, 16));
+63:                     g.drawLine(b.x - 1, 0, b.x - 1, getHeight());
+64:                     g.drawLine(b.x + b.width, 0, b.x + b.width, getHeight());
+65:                 }
+66:             }
+67:             @Override public void doLayout() { layout(); }
+68:         };
+69:         // سحب طرف النافذة: المقياس والتخطيط يتبعان الحجم فورًا
+70:         shell.addComponentListener(new ComponentAdapter() {
+71:             @Override public void componentResized(ComponentEvent e) { layout(); }
+72:         });
+73:         shell.add(WindowStack.host());
+74:         frame.setContentPane(shell);
+75:         frame.setMinimumSize(new Dimension(340, 480));
+76:         if (!restoreBounds(db)) {
+77:             Dimension scr = Toolkit.getDefaultToolkit().getScreenSize();
+78:             String col = column(db);
+79:             int h = Math.min(scr.height - 60, 1000);
+80:             int w;
+81:             if ("full".equals(col)) w = Math.min(scr.width - 80, 1200);
+82:             else if ("auto".equals(col)) w = Math.min(scr.width - 80, Math.round(h * REF_W / REF_H) + 40);
+83:             else w = Math.min(scr.width - 80, Math.round(Integer.parseInt(col) * zoom(db)) + 160);
+84:             frame.setSize(w, h);
+85:             frame.setLocationRelativeTo(null);
+86:         }
+87:         hookUsage();
+88:         frame.addWindowListener(new WindowAdapter() {
+89:             @Override public void windowClosing(WindowEvent e) { quit(); }
+90:             @Override public void windowIconified(WindowEvent e) { if (activity != null) activity.pauseFromWindow(); }
+91:             @Override public void windowDeiconified(WindowEvent e) {
+92:                 if (activity != null) activity.resumeFromWindow();
+93:                 wake();
+94:             }
+95:             @Override public void windowActivated(WindowEvent e) { wake(); }
+96:         });
+97:         Timer save = new Timer(700, e -> persistBounds());
+98:         save.setRepeats(false);
+99:         frame.addComponentListener(new ComponentAdapter() {
+100:             @Override public void componentResized(ComponentEvent e) { save.restart(); }
+101:             @Override public void componentMoved(ComponentEvent e) { save.restart(); }
+102:         });
+103:         frame.setVisible(true);
+104:         layout();
+105:         activity = Activity.launch(DeskActivity.class, null);
+106:     }
+107: 
+108:     /** للتجارب: حدود النافذة على الشاشة. */
+109:     public static Rectangle frameBounds() { return frame.getBounds(); }
+110:     public static JFrame frame() { return frame; }
+111:     public static DeskActivity activityForTests() { return activity; }
+112: 
+113:     // 12.7: وقت العمل: أي فأرة أو لوحة مفاتيح = نشاط؛ وحين لا تكون أي نافذة للبرنامج في المقدمة تتوقف الجلسة
+114:     private static boolean usageHooked, away;
+115:     private static final javax.swing.Timer focusCheck = new javax.swing.Timer(400, e -> checkFocus());
+116: 
+117:     private static void hookUsage() {
+118:         if (usageHooked) return;
+119:         usageHooked = true;
+120:         focusCheck.setRepeats(false);
+121:         Toolkit.getDefaultToolkit().addAWTEventListener(ev -> {
+122:             int id = ev.getID();
+123:             if (id == WindowEvent.WINDOW_ACTIVATED || id == WindowEvent.WINDOW_DEACTIVATED || id == WindowEvent.WINDOW_LOST_FOCUS || id == WindowEvent.WINDOW_GAINED_FOCUS) {
+124:                 focusCheck.restart();
+125:                 return;
+126:             }
+127:             if (id == java.awt.event.MouseEvent.MOUSE_PRESSED || id == java.awt.event.MouseEvent.MOUSE_WHEEL || id == java.awt.event.KeyEvent.KEY_PRESSED
+128:                     || id == java.awt.event.MouseEvent.MOUSE_MOVED) {
+129:                 if (activity != null) activity.onUserInteraction();
+130:             }
+131:         }, AWTEvent.WINDOW_EVENT_MASK | AWTEvent.WINDOW_FOCUS_EVENT_MASK | AWTEvent.MOUSE_EVENT_MASK | AWTEvent.MOUSE_MOTION_EVENT_MASK
+132:                 | AWTEvent.MOUSE_WHEEL_EVENT_MASK | AWTEvent.KEY_EVENT_MASK);
+133:     }
+134: 
+135:     private static void checkFocus() {
+136:         if (activity == null) return;
+137:         boolean front = KeyboardFocusManager.getCurrentKeyboardFocusManager().getActiveWindow() != null;
+138:         if (!front && !away) {
+139:             away = true;
+140:             activity.usageAway();
+141:         } else if (front && away) {
+142:             away = false;
+143:             activity.usageBack();
+144:         }
+145:     }
+146: 
+147:     static String column(Db db) {
+148:         String c = db == null ? "auto" : db.setting("desk_column", "auto");
+149:         return "480".equals(c) || "600".equals(c) || "full".equals(c) ? c : "auto";
+150:     }
+151: 
+152:     public static float zoom(Db db) {
+153:         try { return Math.max(0.7f, Math.min(1.7f, Integer.parseInt(db.setting("desk_zoom", "100")) / 100f)); } catch (Exception e) { return 1f; }
+154:     }
+155: 
+156:     /** الكثافة ثابتة 1 (وحدات الهاتف)؛ التكبير كله من مقياس الرسم العام. */
+157:     static void applyMetrics() {
+158:         android.util.DisplayMetrics m = Context.RES.getDisplayMetrics();
+159:         m.density = 1f;
+160:         m.scaledDensity = 1f;
+161:         m.densityDpi = 160;
+162:         Context.RES.getConfiguration().densityDpi = 160;
+163:         android.graphics.drawable.VectorDrawable.density = 1f;
+164:     }
+165: 
+166:     /** بعد تغيير الحجم أو التكبير من الإعدادات أو المعالج. */
+167:     public static void refresh() {
+168:         if (shell == null) return;
+169:         SwingUtilities.invokeLater(PhoneWindow::layout);
+170:     }
+171: 
+172:     /** المقياس وعرض الشاشة (بنقاط النافذة) لحجم نافذة معيّن. */
+173:     static float[] metrics(Db db, int W, int H) {
+174:         String col = column(db);
+175:         float z = zoom(db);
+176:         float s;
+177:         int cw;
+178:         if ("auto".equals(col)) {

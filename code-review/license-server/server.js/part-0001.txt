@@ -1,0 +1,144 @@
+1: #!/usr/bin/env node
+2: /*
+3:  * خادم الترخيص المرجعي لـ«المحاسب الذكي» 8 — اختياري. Node 18+ بلا أي مكتبات خارجية.
+4:  *
+5:  *   POST /v1/check   فحص دوري من التطبيق (كل 7 أيام): الطلب موقّع بمفتاح الهاتف؛ الرد قائمة الرخص الملغاة.
+6:  *   GET  /v1/rates   أسعار الصرف التي تحددها أنت (data/rates.json) بصيغة {"rates": {"SYP": 13000}}.
+7:  *   GET  /v1/health  للتأكد أن الخادم يعمل.
+8:  *
+9:  * البيانات: data/licenses.json (نزّله من أداة البائع ← سجل المبيعات ← «سجل الخادم»)، وdata/rates.json (اختياري).
+10:  * يعمل خلف HTTPS (Caddy أو nginx) لأن التطبيق لا يقبل إلا https. التشغيل: PORT=8080 node server.js
+11:  * الخادم لا يستطيع إصدار رخص (لا يحمل المفتاح الخاص) ولا يرى أي بيانات حسابات: رقم الرخصة وبصمة الهاتف فقط.
+12:  */
+13: "use strict";
+14: var http = require("http"), fs = require("fs"), path = require("path"), crypto = require("crypto");
+15: 
+16: var DATA = process.env.DATA_DIR || path.join(__dirname, "data");
+17: var MAX_BODY = 8 * 1024, SKEW = 2 * 86400000;
+18: // 10.11 (AUDIT-012): خلف Caddy/nginx فقط: عنوان العميل آخر ما أضافه الوكيل؛ بدونه عنوان الاتصال (لا ترويسة يكتبها العميل)
+19: var TRUST_PROXY = process.env.TRUST_PROXY === "1";
+20: 
+21: function clientIp(rq) {
+22:   if (TRUST_PROXY) {
+23:     var xs = String(rq.headers["x-forwarded-for"] || "").split(",").map(function (x) { return x.trim(); }).filter(Boolean);
+24:     if (xs.length) return xs[xs.length - 1];
+25:   }
+26:   return rq.socket.remoteAddress || "";
+27: }
+28: 
+29: function readJson(name, def) {
+30:   try {
+31:     return JSON.parse(fs.readFileSync(path.join(DATA, name), "utf8"));
+32:   } catch (e) {
+33:     return def;
+34:   }
+35: }
+36: 
+37: function b64url(buf) { return Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+38: 
+39: function fields(s) {
+40:   var m = {};
+41:   String(s).split(";").forEach(function (kv) {
+42:     var i = kv.indexOf("=");
+43:     if (i > 0) {
+44:       if (Object.prototype.hasOwnProperty.call(m, kv.substring(0, i))) throw new Error("dup");
+45:       m[kv.substring(0, i)] = kv.substring(i + 1);
+46:     }
+47:   });
+48:   return m;
+49: }
+50: 
+51: /** يتحقق من طلب الفحص كما يرسله License.checkOnline في التطبيق. يرجع {status, json}. */
+52: function check(req, now, nonces) {
+53:   var lic = readJson("licenses.json", { licenses: {}, revoked: [] });
+54:   var revoked = lic.revoked || [];
+55:   if (!req || typeof req.body !== "string" || typeof req.sig !== "string" || typeof req.pub !== "string") return { status: 400, json: { message: "طلب ناقص" } };
+56:   var pubDer = Buffer.from(req.pub, "base64"), f;
+57:   try {
+58:     var key = crypto.createPublicKey({ key: pubDer, format: "der", type: "spki" });
+59:     var ok = crypto.verify("sha256", Buffer.from(req.body, "utf8"), { key: key, dsaEncoding: "der" }, Buffer.from(req.sig.replace(/-/g, "+").replace(/_/g, "/"), "base64"));
+60:     if (!ok) return { status: 401, json: { message: "توقيع غير صالح" } };
+61:     f = fields(req.body);
+62:   } catch (e) {
+63:     return { status: 400, json: { message: "طلب غير مقروء" } };
+64:   }
+65:   if (f.v !== "1" || f.t !== "check" || !f.lid || !f.n) return { status: 400, json: { message: "صيغة غير معروفة" } };
+66:   var dk = b64url(crypto.createHash("sha256").update(pubDer).digest());
+67:   if (f.dk !== dk) return { status: 401, json: { message: "بصمة الهاتف لا تطابق مفتاحه" } };
+68:   var at = Number(f.at);
+69:   if (!(Math.abs(now - at) <= SKEW)) return { status: 400, json: { message: "ساعة الهاتف بعيدة عن الوقت الصحيح؛ صحّحها ثم أعد الفحص" } };
+70:   if (nonces.has(f.n)) return { status: 409, json: { message: "طلب مكرر" } };
+71:   nonces.add(f.n);
+72:   if (nonces.size > 50000) nonces.clear();
+73:   var entry = (lic.licenses || {})[f.lid];
+74:   var msg, mine = false;
+75:   if (!entry) msg = "الرخصة " + f.lid + " غير مسجّلة في الخادم بعد. لا يتعطل شيء.";
+76:   else if (entry.dk !== dk) {
+77:     msg = "الرخصة " + f.lid + " مسجّلة لهاتف آخر.";
+78:     mine = true;
+79:   } else if (revoked.indexOf(f.lid) >= 0 || entry.status === "moved" || entry.status === "revoked") {
+80:     msg = "أُلغيت هذه الرخصة (نُقلت أو أُبلغ عن فقد الهاتف). تواصل مع البائع.";
+81:     mine = true;
+82:   } else msg = "الرخصة " + f.lid + " سليمة ✓";
+83:   // 10.11 (AUDIT-012): الرد لا يكشف قائمة الرخص الملغاة كلها لأي طالب (يكفي توقيعه بمفتاح يولّده بنفسه)؛
+84:   // التطبيق يقارن رخصته وحدها بالقائمة، فيكفيه أن يعرف إن كانت رخصته ملغاة
+85:   return { status: 200, json: { revoked: mine ? [f.lid] : [], message: msg, at: now } };
+86: }
+87: 
+88: function makeServer() {
+89:   var nonces = new Set(), hits = new Map();
+90:   return http.createServer(function (rq, rs) {
+91:     var ip = clientIp(rq);
+92:     var now = Date.now(), h = hits.get(ip) || { n: 0, t: now };
+93:     if (now - h.t > 60000) h = { n: 0, t: now };
+94:     h.n++;
+95:     hits.set(ip, h);
+96:     if (hits.size > 100000) hits.clear();
+97:     function send(status, obj) {
+98:       var body = JSON.stringify(obj);
+99:       rs.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+100:       rs.end(body);
+101:     }
+102:     if (h.n > 60) return send(429, { message: "طلبات كثيرة؛ أعد المحاولة بعد دقيقة" });
+103:     var url = rq.url.split("?")[0];
+104:     if (rq.method === "GET" && url === "/v1/health") return send(200, { ok: true, at: now });
+105:     if (rq.method === "GET" && url === "/v1/rates") {
+106:       var r = readJson("rates.json", null);
+107:       if (!r || !r.rates) return send(404, { result: "error", message: "لا توجد أسعار" });
+108:       return send(200, { result: "success", rates: r.rates, time_last_update_unix: Math.floor((r.updatedAt ? Date.parse(r.updatedAt) : fs.statSync(path.join(DATA, "rates.json")).mtimeMs) / 1000) });
+109:     }
+110:     if (rq.method === "POST" && url === "/v1/check") {
+111:       var chunks = [], size = 0;
+112:       var refused = false;
+113:       rq.on("data", function (c) {
+114:         size += c.length;
+115:         if (size > MAX_BODY) {
+116:           if (!refused) {
+117:             refused = true;
+118:             rs.setHeader("Connection", "close");
+119:             send(413, { message: "طلب كبير" });
+120:           }
+121:         } else chunks.push(c);
+122:       });
+123:       rq.on("end", function () {
+124:         if (size > MAX_BODY) return;
+125:         var j;
+126:         try {
+127:           j = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+128:         } catch (e) {
+129:           return send(400, { message: "JSON غير صالح" });
+130:         }
+131:         var res = check(j, Date.now(), nonces);
+132:         send(res.status, res.json);
+133:       });
+134:       return;
+135:     }
+136:     send(404, { message: "غير موجود" });
+137:   });
+138: }
+139: 
+140: if (require.main === module) {
+141:   var port = Number(process.env.PORT || 8080);
+142:   makeServer().listen(port, process.env.HOST || "127.0.0.1", function () { console.log("license server on " + port + " (data: " + DATA + ")"); });
+143: }
+144: module.exports = { makeServer: makeServer, check: check };

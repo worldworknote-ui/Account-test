@@ -1,0 +1,1 @@
+Reading copies only. Original source is unchanged. Index files identify source paths, hashes, line counts, parts, and skipped files. Number.fragmentN denotes portions of a long original line. No application or tests executed. Source commit: 8127697bb031edf6c01ac88a0315d0b7ad7ec09c

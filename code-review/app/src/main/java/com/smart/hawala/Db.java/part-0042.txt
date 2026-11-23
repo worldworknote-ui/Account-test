@@ -1,0 +1,169 @@
+6302:         v.put("amount_minor", m.amount);
+6303:         v.put("dir", m.dir);
+6304:         if (m.cashUuid != null) v.put("cash_uuid", m.cashUuid);
+6305:         if (m.pairUuid != null) v.put("pair_uuid", m.pairUuid);
+6306:         if (m.rate != null && !m.rate.isEmpty()) v.put("rate", m.rate);
+6307:         v.put("description", Crypto.enc(Model.nz(m.description)));
+6308:         v.put("status", CashBox.ACTIVE);
+6309:         v.put("created_at", m.createdAt);
+6310:         v.put("user_name", Crypto.enc(currentUserName));
+6311:         ins(d, "client_moves", v);
+6312:     }
+6313: 
+6314:     private static ClientBook.Client readClient(Cursor c) {
+6315:         ClientBook.Client x = new ClientBook.Client();
+6316:         x.id = c.getLong(0);
+6317:         x.name = Model.nz(Crypto.dec(c.getString(1)));
+6318:         x.phone = Model.nz(Crypto.dec(c.getString(2)));
+6319:         x.note = Model.nz(Crypto.dec(c.getString(3)));
+6320:         x.active = c.getInt(4) == 1;
+6321:         x.createdAt = c.getLong(5);
+6322:         return x;
+6323:     }
+6324: 
+6325:     /** كل العملاء (النشطون أولًا ثم أبجديًا). */
+6326:     public List<ClientBook.Client> clients() {
+6327:         List<ClientBook.Client> out = new ArrayList<>();
+6328:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id,name,phone,note,active,created_at FROM cash_clients", null)) {
+6329:             while (c.moveToNext()) out.add(readClient(c));
+6330:         }
+6331:         final java.text.Collator col = java.text.Collator.getInstance(new Locale("ar"));
+6332:         Collections.sort(out, (x, y) -> x.active != y.active ? (x.active ? -1 : 1) : col.compare(x.name, y.name));
+6333:         return out;
+6334:     }
+6335: 
+6336:     public ClientBook.Client client(long id) {
+6337:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id,name,phone,note,active,created_at FROM cash_clients WHERE id=" + id, null)) {
+6338:             return c.moveToFirst() ? readClient(c) : null;
+6339:         }
+6340:     }
+6341: 
+6342:     /** إضافة عميل أو تعديل بياناته. يرجع رقمه. */
+6343:     public long saveClient(ClientBook.Client x) {
+6344:         require(Auth.Perm.CLIENTS);   // 12.0
+6345:         String n = Model.nz(x.name).trim();
+6346:         if (n.isEmpty()) throw new IllegalArgumentException("اكتب اسم العميل");
+6347:         for (ClientBook.Client o : clients())
+6348:             if (o.id != x.id && o.name.trim().equalsIgnoreCase(n)) throw new IllegalArgumentException("يوجد عميل بالاسم نفسه: «" + o.name + "»");
+6349:         if (x.id <= 0) checkClientSlot();   // 12.6
+6350:         SQLiteDatabase d = getWritableDatabase();
+6351:         ContentValues v = new ContentValues();
+6352:         v.put("name", Crypto.enc(n));
+6353:         v.put("phone", Crypto.enc(Model.nz(x.phone).trim()));
+6354:         v.put("note", Crypto.enc(Model.nz(x.note).trim()));
+6355:         d.beginTransaction();
+6356:         try {
+6357:             long id = x.id;
+6358:             if (id > 0) {
+6359:                 if (d.update("cash_clients", v, "id=" + id, null) == 0) throw new IllegalArgumentException("العميل غير موجود");
+6360:             } else {
+6361:                 v.put("uuid", UUID.randomUUID().toString());
+6362:                 v.put("active", 1);
+6363:                 v.put("created_at", Clock.now());
+6364:                 id = ins(d, "cash_clients", v);
+6365:             }
+6366:             audit(d, x.id > 0 ? "CLIENT_EDIT" : "CLIENT_ADD", "client", id, n);
+6367:             d.setTransactionSuccessful();
+6368:             return id;
+6369:         } finally {
+6370:             d.endTransaction();
+6371:         }
+6372:     }
+6373: 
+6374:     /** أرشفة حساب عميل (رصيده صفر بكل العملات) أو إعادته. */
+6375:     public void setClientActive(long id, boolean active) {
+6376:         require(Auth.Perm.CLIENTS);   // 12.0
+6377:         ClientBook.Client c = client(id);
+6378:         if (c == null) throw new IllegalArgumentException("العميل غير موجود");
+6379:         if (active && !c.active) checkClientSlot();   // 12.6
+6380:         if (!active && !ClientBook.balances(clientMoves(id)).isEmpty())
+6381:             throw new IllegalStateException("رصيد العميل ليس صفرًا. سدّد حسابه أولًا ثم أرشفه.");
+6382:         SQLiteDatabase d = getWritableDatabase();
+6383:         d.beginTransaction();
+6384:         try {
+6385:             d.execSQL("UPDATE cash_clients SET active=" + (active ? 1 : 0) + " WHERE id=" + id);
+6386:             audit(d, active ? "CLIENT_RESTORE" : "CLIENT_ARCHIVE", "client", id, c.name);
+6387:             d.setTransactionSuccessful();
+6388:         } finally {
+6389:             d.endTransaction();
+6390:         }
+6391:     }
+6392: 
+6393:     private static final String CLIENT_COLS = "m.id,m.uuid,m.client_id,m.kind,m.currency,m.amount_minor,m.dir,m.cash_uuid,m.pair_uuid,m.rate,m.description,m.status,"
+6394:             + "m.created_at,m.user_name,m.cancel_reason,x.currency,x.amount_minor,x.dir";
+6395: 
+6396:     private List<ClientBook.Move> readClientMoves(String where) {
+6397:         List<ClientBook.Move> out = new ArrayList<>();
+6398:         try (Cursor c = getReadableDatabase().rawQuery("SELECT " + CLIENT_COLS + " FROM client_moves m LEFT JOIN cash_moves x ON x.uuid=m.cash_uuid"
+6399:                 + where + " ORDER BY m.created_at,m.id", null)) {
+6400:             while (c.moveToNext()) {
+6401:                 ClientBook.Move m = new ClientBook.Move();
+6402:                 m.id = c.getLong(0);
+6403:                 m.uuid = c.getString(1);
+6404:                 m.clientId = c.getLong(2);
+6405:                 m.kind = c.getString(3);
+6406:                 m.currency = c.getString(4);
+6407:                 m.amount = c.getLong(5);
+6408:                 m.dir = c.getInt(6);
+6409:                 m.cashUuid = c.isNull(7) ? null : c.getString(7);
+6410:                 m.pairUuid = c.isNull(8) ? null : c.getString(8);
+6411:                 m.rate = c.isNull(9) ? null : c.getString(9);
+6412:                 m.description = Model.nz(Crypto.dec(c.getString(10)));
+6413:                 m.status = c.getString(11);
+6414:                 m.createdAt = c.getLong(12);
+6415:                 m.userName = shown(Model.nz(Crypto.dec(c.getString(13))));
+6416:                 m.cancelReason = Model.nz(Crypto.dec(c.getString(14)));
+6417:                 m.cashCurrency = c.isNull(15) ? null : c.getString(15);
+6418:                 m.cashAmount = c.isNull(16) ? 0 : c.getLong(16);
+6419:                 m.cashDir = c.isNull(17) ? 0 : c.getInt(17);
+6420:                 out.add(m);
+6421:             }
+6422:         }
+6423:         return out;
+6424:     }
+6425: 
+6426:     public List<ClientBook.Move> clientMoves(long clientId) { return readClientMoves(" WHERE m.client_id=" + clientId); }
+6427: 
+6428:     public List<ClientBook.Move> allClientMoves() { return readClientMoves(""); }
+6429: 
+6430:     /** رصيد كل عميل بكل عملة. */
+6431:     public Map<Long, Map<String, Long>> clientBalances() { return ClientBook.allBalances(allClientMoves()); }
+6432: 
+6433:     /** قيد على حساب العميل بلا نقد (رصيد سابق أو تسوية متفق عليها): dir +1 لنا عليه، −1 علينا له. */
+6434:     public void addClientEntry(long clientId, String currency, long amount, int dir, String description, long when) {
+6435:         require(Auth.Perm.CLIENTS);   // 12.0
+6436:         ClientBook.Client c = client(clientId);
+6437:         if (c == null) throw new IllegalArgumentException("العميل غير موجود");
+6438:         if (!c.active) throw new IllegalStateException("حساب العميل مؤرشف");
+6439:         if (decimalsMap().get(currency) == null) throw new IllegalArgumentException("العملة غير معرّفة");
+6440:         if (amount <= 0) throw new IllegalArgumentException("المبلغ يجب أن يكون أكبر من صفر");
+6441:         if (dir != 1 && dir != -1) throw new IllegalArgumentException("حدّد: لنا أم علينا");
+6442:         if (when <= 0 || when > Clock.now() + 10 * 60000L) throw new IllegalArgumentException("تاريخ غير صالح");
+6443:         SQLiteDatabase d = getWritableDatabase();
+6444:         d.beginTransaction();
+6445:         try {
+6446:             checkLock(d, when, "تاريخ الحركة يقع داخل فترة محاسبية مقفلة");
+6447:             ClientBook.Move m = new ClientBook.Move();
+6448:             m.clientId = clientId;
+6449:             m.kind = ClientBook.ENTRY;
+6450:             m.currency = currency;
+6451:             m.amount = amount;
+6452:             m.dir = dir;
+6453:             m.description = description;
+6454:             m.createdAt = when;
+6455:             insertClientMove(d, m);
+6456:             audit(d, "CLIENT_ENTRY", "client", clientId, c.name + " — " + ClientBook.side(dir) + " " + Model.fmt(amount, decimals(currency)) + " " + currency);
+6457:             d.setTransactionSuccessful();
+6458:         } finally {
+6459:             d.endTransaction();
+6460:         }
+6461:     }
+6462: 
+6463:     /**
+6464:      * تبديل عملة الرصيد بلا نقد: يُطفأ amount من رصيد العميل بعملة from ويُنشأ مقابله toAmount بعملة to، بالجهة نفسها
+6465:      * (إن كان له عندنا يبقى له، وإن كان علينا يبقى علينا).
+6466:      */
+6467:     public void addClientSwap(long clientId, String from, long amount, String to, long toAmount, String description, long when) {
+6468:         require(Auth.Perm.CLIENTS);   // 12.0
+6469:         ClientBook.Client c = client(clientId);
+6470:         if (c == null) throw new IllegalArgumentException("العميل غير موجود");

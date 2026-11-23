@@ -1,0 +1,33 @@
+356:             String text = "العميل: " + current.name + "\nيُطفأ من رصيده: " + Ui.ltr(Model.fmt(am, d1) + " " + f) + "\nويُضاف مقابله: " + Ui.ltr(Model.fmt(ta, d2) + " " + t)
+357:                     + "\nالسعر: " + Ui.ltr("1 " + f + " = " + ClientBook.rateOf(am, d1, ta, d2) + " " + t)
+358:                     + "\nرصيده " + f + ": " + bal(bf, f) + " ← " + bal(bf - sideNow * am, f) + "\nرصيده " + t + ": " + bal(bt, t) + " ← " + bal(bt + sideNow * ta, t);
+359:             if (!Ui.confirm(this, "راجع قبل التسجيل", text, "تسجيل")) return;
+360:             db.addClientSwap(current.id, f, am, t, ta, desc.val(), Clock.now());
+361:             app.changed();
+362:             refresh();
+363:         } catch (Exception e) {
+364:             Ui.error(this, e);
+365:         }
+366:     }
+367: 
+368:     Report makeReport() {
+369:         Report r = ClientBook.statement(current, db.clientMoves(current.id), 0, 0, db.decimalsMap(), db.setting("office_name", ""));
+370:         Entitlements e = License.current;
+371:         r.stamp(e.watermark(), e.lid);
+372:         return r;
+373:     }
+374: 
+375:     void statement() {
+376:         if (current == null) {
+377:             Ui.info(this, "كشف الحساب", "اختر العميل من القائمة أولًا.");
+378:             return;
+379:         }
+380:         Report r = makeReport();
+381:         JPanel p = ReportPanel.render(r, 900);
+382:         JScrollPane sp = Ui.scroll(p);
+383:         sp.setPreferredSize(new Dimension(960, 600));
+384:         if (Ui.form(this, r.title, sp, "تصدير / طباعة…")) Export.dialog(this, app, r.title, this::makeReport);
+385:     }
+386: 
+387:     static BigDecimal zero() { return BigDecimal.ZERO; }
+388: }

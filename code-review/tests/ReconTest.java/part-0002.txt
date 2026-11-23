@@ -1,0 +1,35 @@
+81:     check(empty.contains("مسدَّد بالكامل"), "no balances -> settled line");
+82:     Reconcile.Template t2 = Reconcile.Template.from(new Reconcile.Template().toMap());
+83:     check(t2.plusWord.equals("لنا") && t2.minusWord.equals("لكم") && t2.bold, "template round-trips via settings map");
+84:     Map<String, String> m = new HashMap<>(); m.put("rc_plus", " "); m.put("rc_title", "");
+85:     Reconcile.Template t3 = Reconcile.Template.from(m);
+86:     check(t3.plusWord.equals("لنا") && t3.title.equals("مطابقة رصيد"), "blank words fall back to defaults");
+87: 
+88:     System.out.println("2) statement after reconciliation (opening = reconciled balance)");
+89:     Reports.StatementInput in = new Reports.StatementInput();
+90:     in.officeName = "كاش شام"; in.decimals = dec; in.currencyNames = names; in.periodHasStart = true; in.periodLabel = "بعد مطابقة";
+91:     in.opening.put("USD", 100000L); in.opening.put("SYP", 500000L);
+92:     in.lines.add(line("PRINCIPAL", "USD", 2000, 20000, 0, 7, "ACTIVE"));
+93:     in.lines.add(line("REVERSAL", "USD", 3000, 0, 5000, 3, "CANCELLED"));   // إلغاء حركة قديمة
+94:     in.lines.add(line("PRINCIPAL", "SYP", 2500, 0, 100000, 8, "ACTIVE"));
+95:     in.fullBalance.put("USD", 115000L); in.fullBalance.put("SYP", 400000L);
+96:     in.openingLabel = "رصيد المطابقة بتاريخ X"; in.openingKv = "رصيد آخر مطابقة"; in.openingCol = "رصيد المطابقة";
+97:     ExportStyle st = new ExportStyle(); st.hideCancelled = false;
+98:     Report r = Reports.statement(in, st);
+99:     Report.Section usd = null, syp = null, sum = null;
+100:     for (Report.Section s : r.sections) { if ("USD".equals(s.sheetName)) usd = s; if ("SYP".equals(s.sheetName)) syp = s; if ("ملخص".equals(s.sheetName)) sum = s; }
+101:     check(usd != null && syp != null, "both currencies present");
+102:     check(usd.rows.get(0).cells[1].equals("رصيد المطابقة بتاريخ X"), "opening row labelled with reconciliation");
+103:     Object closing = usd.rows.get(usd.rows.size() - 1).cells[4];
+104:     check(closing.toString().contains("1,150"), "USD closing = 1000 + 200 - 50 = 1,150.00 -> " + closing);
+105:     check(sum.cols.get(1).title.equals("رصيد المطابقة"), "summary column renamed");
+106:     System.out.println("3) one currency only");
+107:     in.onlyCurrencies = Collections.singleton("USD");
+108:     Report r1 = Reports.statement(in, st);
+109:     boolean hasSyp = false; for (Report.Section s : r1.sections) if ("SYP".equals(s.sheetName)) hasSyp = true;
+110:     check(!hasSyp, "SYP excluded");
+111:     check(r1.fileBase.endsWith("-USD"), "file name carries currency: " + r1.fileBase);
+112:     check(r1.sections.get(0).rows.size() == 1, "summary has one row");
+113:     System.out.println(fails == 0 ? "ALL PASS" : fails + " FAILED"); System.exit(fails == 0 ? 0 : 1);
+114:   }
+115: }

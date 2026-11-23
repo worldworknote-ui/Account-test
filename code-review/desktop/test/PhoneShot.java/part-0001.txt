@@ -1,0 +1,176 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.Activity;
+4: import android.app.WindowStack;
+5: import android.content.Context;
+6: import java.awt.*;
+7: import java.awt.image.BufferedImage;
+8: import java.io.File;
+9: import java.util.*;
+10: import java.util.List;
+11: import javax.imageio.ImageIO;
+12: import javax.swing.*;
+13: 
+14: /**
+15:  * 11.0: يشغّل شاشات الهاتف نفسها (MainActivity) على الكمبيوتر بلا شاشة، ويفتح كل شاشة ويحفظ صورتها، ويفشل إن رمت شاشة استثناءً.
+16:  * وسائط: مجلد الصور، ملف .sba للتجربة، كلمة مروره، [العرض] [night].
+17:  */
+18: public final class PhoneShot {
+19:     static int fails;
+20:     static final List<String> errors = new ArrayList<>();
+21: 
+22:     public static void main(String[] a) throws Exception {
+23:         File out = new File(a[0]);
+24:         out.mkdirs();
+25:         final int W = a.length > 3 ? Integer.parseInt(a[3]) : 480, H = 960;
+26:         final boolean night = a.length > 4 && a[4].equals("night");
+27:         File home = java.nio.file.Files.createTempDirectory("sa-phone").toFile();
+28:         System.setProperty("sa.home", home.getAbsolutePath());
+29:         System.setProperty("sa.secrets", "file");
+30:         System.setProperty("sa.noanim", "true");
+31:         android.animation.Choreo.instant = true;
+32:         SecretStore.fallback(new File(home, "keys"));
+33:         Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+34:             fails++;
+35:             StringWriter sw = new StringWriter();
+36:             e.printStackTrace(new java.io.PrintWriter(sw));
+37:             errors.add(sw.toString());
+38:             e.printStackTrace();
+39:         });
+40:         Context ctx = new Context(home);
+41:         Crypto.init(ctx);
+42:         Db db = new Db(ctx);
+43:         SmartApp.db = db;
+44:         SmartApp.ctx = ctx;
+45:         License.load(ctx, db);
+46:         if (a.length > 2 && !a[1].isEmpty()) {
+47:             BackupManager.Prepared p = BackupManager.prepareRestore(ctx, new File(a[1]), a[2].toCharArray(), m -> {});
+48:             BackupManager.applyRestore(ctx, db, p, m -> {});
+49:         }
+50:         if (night) db.setSetting("theme_mode", "dark");
+51:         // 11.3: تجربة الثيمات الجاهزة (sa.preset=رقم الثيم) على شاشات مختارة (sa.only=اسم,اسم)
+52:         String pre = System.getProperty("sa.preset", "");
+53:         if (!pre.isEmpty()) {
+54:             String[] pz = DesignScreen.PRESETS[Integer.parseInt(pre)];
+55:             db.setSetting("primary_color", pz[1]);
+56:             db.setSetting("accent_color", pz[2]);
+57:             db.setSetting("header_color", pz[3]);
+58:             db.setSetting("bg_color", pz[4]);
+59:             db.setSetting("night_bg", pz[5]);
+60:         }
+61:         db.setSetting("office_name", "مكتب التجربة للصرافة");
+62:         final MainActivity[] act = {null};
+63:         SwingUtilities.invokeAndWait(() -> {
+64:             JLayeredPane h = WindowStack.host();
+65:             h.setSize(W, H);
+66:             act[0] = Activity.launch(MainActivity.class, null);
+67:         });
+68:         settle();
+69:         final MainActivity m = act[0];
+70:         Map<String, Runnable> screens = new LinkedHashMap<>();
+71:         screens.put("01-home", m::showHome);
+72:         screens.put("02-offices", m.officeHub::showList);
+73:         screens.put("03-office", () -> m.officeHub.showOffice(db.offices().get(0)));
+74:         screens.put("04-tx-new", m.txScreen::showNew);
+75:         screens.put("05-fx", () -> m.fxScreen.show(null));
+76:         screens.put("06-between", () -> m.fxScreen.transfer(null, null));
+77:         screens.put("07-log", () -> m.logScreen.show(false));
+78:         screens.put("08-log-search", () -> m.logScreen.show(true));
+79:         screens.put("09-statement", () -> m.statementScreen.show(db.offices().get(0)));
+80:         screens.put("10-balances", m.balancesScreen::show);
+81:         screens.put("11-daily", () -> m.dailyScreen.show(Clock.now()));
+82:         screens.put("12-cash", m.cashScreen::show);
+83:         screens.put("13-reports", m.reportsScreen::show);
+84:         screens.put("14-more", m.moreScreen::show);
+85:         screens.put("15-design", m.designScreen::show);
+86:         screens.put("16-sync", m.syncScreen::show);
+87:         screens.put("17-backup", m.backupScreen::show);
+88:         screens.put("18-users", m.usersScreen::showManager);
+89:         screens.put("19-mine", m.mineScreen::show);
+90:         screens.put("20-team", m.teamScreen::show);
+91:         screens.put("21-clients", m.cashScreen.clients::list);
+92:         screens.put("22-notif", m.notifScreen::show);
+93:         screens.put("23-license", m.licenseScreen::show);
+94:         screens.put("24-security", m.settingsScreen::showSecurity);
+95:         screens.put("25-audit", m.settingsScreen::showAudit);
+96:         screens.put("26-health", m.settingsScreen::showHealth);
+97:         screens.put("27-tabs", m.tabsScreen::show);
+98:         screens.put("28-owner", m.ownerScreen::show);
+99:         screens.put("29-currencies", m.officesScreen::showCurrencies);
+100:         screens.put("30-pending", m.logScreen::showPending);
+101:         screens.put("31-recon", () -> m.reconScreen.showOffice(db.offices().get(0)));
+102:         screens.put("32-picker", () -> m.officePicker(o -> {}));
+103:         String only = System.getProperty("only");
+104:         String onlyShots = System.getProperty("sa.only", "");
+105:         if (!onlyShots.isEmpty()) screens.keySet().retainAll(java.util.Arrays.asList(onlyShots.split(",")));
+106:         for (Map.Entry<String, Runnable> e : screens.entrySet()) {
+107:             if (only != null && !e.getKey().contains(only)) continue;
+108:             int before = fails;
+109:             SwingUtilities.invokeAndWait(() -> {
+110:                 try {
+111:                     for (android.view.ViewRootImpl r : WindowStack.roots()) if (r.layer() >= android.view.ViewRootImpl.LAYER_DIALOG) WindowStack.remove(r);
+112:                     e.getValue().run();
+113:                 } catch (Throwable t) {
+114:                     fails++;
+115:                     t.printStackTrace();
+116:                     errors.add(e.getKey() + ": " + t);
+117:                 }
+118:             });
+119:             settle();
+120:             shot(new File(out, e.getKey() + ".png"), W, H);
+121:             System.out.println((fails > before ? "FAIL " : "ok   ") + e.getKey());
+122:         }
+123:         // 11.3: الأمانات والمجمّد في المطابقة (نص وصورة) وفي الكشف
+124:         SwingUtilities.invokeAndWait(() -> {
+125:             try {
+126:                 Model.Office o = null;
+127:                 for (Model.Office x : db.offices()) if (o == null && !db.balances(x.id).isEmpty()) o = x;
+128:                 String cur = db.balances(o.id).keySet().iterator().next();
+129:                 db.addHold(o.id, cur, Db.HOLD_TRUST, Db.SIDE_OURS, 50000, "تجربة أمانة");
+130:                 java.util.List<String> lines = m.reconScreen.holdLines(o, null);
+131:                 String txt = Reconcile.text(ReconScreen.withHolds(m.reconScreen.template(), lines), o.name, "مكتب", Clock.now(),
+132:                         Reconcile.rows(db.balances(o.id), db.currencyNames(), db.decimalsMap(), null, false));
+133:                 boolean inText = txt.contains("الأمانات والمبالغ المجمّدة") && txt.contains("أمانة لنا عند المكتب");
+134:                 Report r = new Report();
+135:                 m.exportUi.addHolds(r, o, null);
+136:                 boolean inStatement = !r.sections.isEmpty() && r.sections.get(0).rows.size() == 1;
+137:                 String plain = Reconcile.text(ReconScreen.withHolds(m.reconScreen.template(), null), o.name, "مكتب", Clock.now(),
+138:                         Reconcile.rows(db.balances(o.id), db.currencyNames(), db.decimalsMap(), null, false));
+139:                 boolean offByDefault = !plain.contains("الأمانات");
+140:                 System.out.println((inText ? "ok   " : "FAIL ") + "holds in reconciliation text");
+141:                 System.out.println((inStatement ? "ok   " : "FAIL ") + "holds section in statement");
+142:                 System.out.println((offByDefault ? "ok   " : "FAIL ") + "holds hidden when not chosen");
+143:                 if (!inText || !inStatement || !offByDefault) fails++;
+144:             } catch (Exception ex) {
+145:                 fails++;
+146:                 ex.printStackTrace();
+147:             }
+148:         });
+149:         System.out.println(fails == 0 ? "ALL SCREENS OK" : "FAILURES: " + fails);
+150:         System.exit(fails == 0 ? 0 : 1);
+151:     }
+152: 
+153:     static void settle() throws Exception {
+154:         for (int i = 0; i < 6; i++) {
+155:             SwingUtilities.invokeAndWait(() -> { for (android.view.ViewRootImpl r : WindowStack.roots()) r.traversal(); });
+156:             Thread.sleep(40);
+157:         }
+158:     }
+159: 
+160:     static void shot(File f, int w, int h) throws Exception {
+161:         final BufferedImage[] im = {null};
+162:         SwingUtilities.invokeAndWait(() -> {
+163:             BufferedImage b = new BufferedImage(w * 2, h * 2, BufferedImage.TYPE_INT_ARGB);
+164:             Graphics2D g = b.createGraphics();
+165:             g.scale(2, 2);
+166:             g.setColor(Color.WHITE);
+167:             g.fillRect(0, 0, w, h);
+168:             WindowStack.host().printAll(g);
+169:             g.dispose();
+170:             im[0] = b;
+171:         });
+172:         ImageIO.write(im[0], "png", f);
+173:     }
+174: 
+175:     static final class StringWriter extends java.io.StringWriter {}
+176: }

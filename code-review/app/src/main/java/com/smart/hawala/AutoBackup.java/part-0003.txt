@@ -1,0 +1,36 @@
+317:                 if (n != null && n.startsWith(prefix) && n.endsWith(".sba")) found.add(new String[]{n, c.getString(0)});
+318:             }
+319:         } catch (Exception e) {
+320:             return;
+321:         }
+322:         Collections.sort(found, (a, b) -> b[0].compareTo(a[0]));
+323:         for (int i = keep; i < found.size(); i++) {
+324:             try {
+325:                 DocumentsContract.deleteDocument(cr, DocumentsContract.buildDocumentUriUsingTree(tree, found.get(i)[1]));
+326:             } catch (Exception ignored) {
+327:                 // نتركه
+328:             }
+329:         }
+330:     }
+331: 
+332:     static void notifyFailure(Context ctx, String msg) {
+333:         try {
+334:             NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+335:             if (nm == null) return;
+336:             nm.createNotificationChannel(new NotificationChannel(CHANNEL, "النسخ الاحتياطي", NotificationManager.IMPORTANCE_DEFAULT));
+337:             Intent open = new Intent(ctx, MainActivity.class);
+338:             PendingIntent pi = PendingIntent.getActivity(ctx, 0, open, PendingIntent.FLAG_IMMUTABLE);
+339:             Notification n = new Notification.Builder(ctx, CHANNEL)
+340:                     .setSmallIcon(R.drawable.ic_launcher_monochrome)
+341:                     .setContentTitle("فشل النسخ الاحتياطي التلقائي")
+342:                     .setContentText(msg)
+343:                     .setStyle(new Notification.BigTextStyle().bigText(msg))
+344:                     .setContentIntent(pi)
+345:                     .setAutoCancel(true)
+346:                     .build();
+347:             nm.notify(JOB_ID, n);
+348:         } catch (Throwable ignored) {
+349:             // بدون صلاحية إشعارات لا يظهر شيء، والخطأ مسجل في شاشة النسخ
+350:         }
+351:     }
+352: }

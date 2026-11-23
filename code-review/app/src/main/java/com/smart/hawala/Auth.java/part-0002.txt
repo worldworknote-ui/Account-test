@@ -1,0 +1,151 @@
+116:             case AUDIT: return "سجل العمليات (من فعل ماذا ومتى)";
+117:             default: return p.name();
+118:         }
+119:     }
+120: 
+121:     /** شرح قصير يظهر تحت الصلاحية. */
+122:     public static String hint(Perm p) {
+123:         switch (p) {
+124:             case VIEW: return "بدونها يرى حركاته التي سجّلها هو فقط";
+125:             case TX_ADD: return "حوالات المكاتب وحركاتها";
+126:             case APPROVE: return "يعتمد أو يصحح أو يرفض حركات غيره المعلّقة";
+127:             case CASH: return "يفتح الصندوق ويستلم ويسلّم نقدًا (لحساب مكتب أو عميل أو بدونه). المصاريف والبيع والشراء والجرد صلاحيات منفصلة تحتها";
+128:             case CASH_COUNT: return "الجرد يسجّل العجز أو الزيادة حركة تصحيح";
+129:             case DELETE: return "عملية خطرة: امنحها بحذر";
+130:             case RESTORE: return "تستبدل كل البيانات: للمدير غالبًا";
+131:             case USERS: return "يدير حسابات الموظفين ويمنح من صلاحياته هو فقط؛ حساب المدير ورمزه للمدير وحده";
+132:             case VERIFY: return "يؤكد أن حركة غيره تطابق رسالتها؛ لا قيد له ولا أثر في الأرصدة، وتحققه من حركته هو لا يُحتسب";
+133:             case BACKDATE: return "بدونها تُسجَّل الحركة بتاريخ اليوم فقط";
+134:             case OWNER: return "النمو والتركّز وعمر الديون والأجور: أرقام حساسة";
+135:             case CLIENTS: return "دفتر العملاء الأفراد وحركاتهم";
+136:             case NOTIFS: return "تنبيهات حساسة (تغيّر الصلاحيات، الأجهزة، التعارضات): بدونها لا يرى السجل ولا قسم «للمراجعة»";
+137:             case AUDIT: return "كل ما فعله كل مستخدم: للمدير غالبًا";
+138:             case CURRENCIES: return "رمز العملة واسمها ومنازلها، والتفعيل والتعطيل";
+139:             case METALS: return "ذهب وفضة… بعياراتها ووحداتها وهل تدخل الميزان بالدولار";
+140:             case RATES: return "السعر اليدوي يتقدم على الأونلاين ويغيّر التقويم بالدولار فقط، لا المبالغ المسجلة";
+141:             case RATES_ONLINE: return "جلب الأسعار الآن ومصدرها (عنوان الخادم)";
+142:             case DEVICES: return "قائمة الأجهزة وآخر ظهورها وسجل كل جهاز وأخطاء المزامنة. بدونها يرى حالة المزامنة فقط. (صلاحية «إدارة المزامنة» تشملها)";
+143:             default: return "";
+144:         }
+145:     }
+146: 
+147:     public static String label(String role) {
+148:         switch (role == null ? "" : role) {
+149:             case ADMIN: return "مدير (كل الصلاحيات)";
+150:             case ACCOUNTANT: return "محاسب (حركات وتعديل وإلغاء واعتماد ومكاتب وتصدير)";
+151:             case EMPLOYEE: return "موظف (تسجيل حركات وحركات الصندوق، وعرض)";
+152:             case VIEWER: return "مشاهد (عرض فقط)";
+153:             case CUSTOM: return "صلاحيات مخصّصة";
+154:             default: return role;
+155:         }
+156:     }
+157: 
+158:     public static String shortLabel(String role) {
+159:         switch (role == null ? "" : role) {
+160:             case ADMIN: return "مدير";
+161:             case ACCOUNTANT: return "محاسب";
+162:             case EMPLOYEE: return "موظف";
+163:             case VIEWER: return "مشاهد";
+164:             default: return "مستخدم";
+165:         }
+166:     }
+167: 
+168:     /** وصف المستخدم: «مدير» أو عدد صلاحياته. */
+169:     public static String describe(Model.User u) {
+170:         if (u == null) return "";
+171:         if (isAdmin(u)) return "مدير — كل الصلاحيات";
+172:         Set<String> p = perms(u);
+173:         if (p.isEmpty()) return "بلا صلاحيات";
+174:         List<String> names = new ArrayList<>();
+175:         for (Perm x : ORDER) if (p.contains(x.name())) names.add(shortTitle(x));
+176:         if (p.contains(REVIEW)) names.add("حركاته تحتاج اعتماد");
+177:         return String.join("، ", names);
+178:     }
+179: 
+180:     static String shortTitle(Perm p) {
+181:         switch (p) {
+182:             case VIEW: return "عرض";
+183:             case TX_ADD: return "تسجيل";
+184:             case TX_EDIT: return "تعديل";
+185:             case TX_CANCEL: return "إلغاء";
+186:             case APPROVE: return "اعتماد";
+187:             case CASH: return "صندوق";
+188:             case CASH_EXPENSE: return "مصاريف";
+189:             case CASH_FX: return "بيع وشراء";
+190:             case CASH_COUNT: return "جرد";
+191:             case OFFICES: return "مكاتب";
+192:             case DELETE: return "حذف مكاتب";
+193:             case CURRENCIES: return "عملات";
+194:             case METALS: return "معادن";
+195:             case RATES_ONLINE: return "أسعار أونلاين";
+196:             case EXPORT: return "تصدير";
+197:             case DESIGN: return "تصميم";
+198:             case SETTINGS: return "إعدادات";
+199:             case BACKUP: return "نسخ";
+200:             case RESTORE: return "استعادة";
+201:             case SYNC: return "مزامنة";
+202:             case USERS: return "مستخدمون";
+203:             case VERIFY: return "تحقق";
+204:             case DEVICES: return "أجهزة المزامنة";
+205:             case NOTIFS: return "سجل الإشعارات";
+206:             case AUDIT: return "سجل العمليات";
+207:             case FX: return "قص";
+208:             case XFER: return "بين مكتبين";
+209:             case TX_WA: return "واتساب";
+210:             case BACKDATE: return "تاريخ سابق";
+211:             case STATEMENT: return "كشف";
+212:             case RECON: return "مطابقة";
+213:             case HOLDS: return "أمانات";
+214:             case SPECIAL: return "خاصة";
+215:             case CLIENTS: return "عملاء";
+216:             case REPORTS: return "تقارير";
+217:             case OWNER: return "تقارير المالك";
+218:             case RATES: return "أسعار يدوية";
+219:             case LICENSE: return "ترخيص";
+220:             default: return p.name();
+221:         }
+222:     }
+223: 
+224:     public static boolean isAdmin(Model.User u) { return u != null && ADMIN.equals(u.role); }
+225: 
+226:     /** صلاحيات المستخدم: المحفوظة له، أو (لحساب قديم بلا قائمة) صلاحيات دوره القديم. */
+227:     public static Set<String> perms(Model.User u) {
+228:         return expand(u.perms != null ? parse(u.perms) : parse(legacyPerms(u.role)));
+229:     }
+230: 
+231:     /**
+232:      * 12.0: قائمة بلا علامة {@link #DETAILED} (من إصدار أقدم أو من جهاز لم يُحدَّث): تُشتق الصلاحيات التفصيلية الجديدة
+233:      * من القديمة كما كانت تعمل، فلا يفقد مستخدم شيئًا. ومع العلامة تُؤخذ كما اختارها المدير.
+234:      */
+235:     public static Set<String> expand(Set<String> s) {
+236:         if (s.contains(DETAILED)) {
+237:             if (s.contains(DETAILED126)) return s;
+238:             // 12.0–12.5: «العملات» كانت تشمل المعادن، و«أسعار الصرف» كانت تشمل التحديث أونلاين
+239:             Set<String> o = new LinkedHashSet<>(s);
+240:             if (s.contains("CURRENCIES")) o.add(Perm.METALS.name());
+241:             if (s.contains("RATES")) o.add(Perm.RATES_ONLINE.name());
+242:             if (s.contains("CASH")) for (Perm p : new Perm[]{Perm.CASH_EXPENSE, Perm.CASH_FX, Perm.CASH_COUNT}) o.add(p.name());
+243:             return o;
+244:         }
+245:         Set<String> o = new LinkedHashSet<>(s);
+246:         if (s.contains("TX_ADD")) for (Perm p : new Perm[]{Perm.XFER, Perm.TX_WA, Perm.BACKDATE, Perm.HOLDS, Perm.SPECIAL}) o.add(p.name());
+247:         if (s.contains("TX_ADD") && s.contains("TX_EDIT")) o.add(Perm.FX.name());   // كان القص يحتاج التسجيل والتعديل
+248:         if (s.contains("VIEW")) for (Perm p : new Perm[]{Perm.STATEMENT, Perm.RECON, Perm.REPORTS, Perm.OWNER}) o.add(p.name());
+249:         if (s.contains("CASH")) for (Perm p : new Perm[]{Perm.CLIENTS, Perm.CASH_EXPENSE, Perm.CASH_FX, Perm.CASH_COUNT}) o.add(p.name());
+250:         if (s.contains("CURRENCIES")) for (Perm p : new Perm[]{Perm.RATES, Perm.METALS, Perm.RATES_ONLINE}) o.add(p.name());
+251:         if (s.contains("SETTINGS")) o.add(Perm.LICENSE.name());
+252:         return o;
+253:     }
+254: 
+255:     public static Set<String> parse(String csv) {
+256:         Set<String> s = new LinkedHashSet<>();
+257:         if (csv != null) for (String x : csv.split(",")) if (!x.trim().isEmpty()) s.add(x.trim());
+258:         return s;
+259:     }
+260: 
+261:     public static String csv(Set<String> s) {
+262:         List<String> out = new ArrayList<>();
+263:         for (Perm p : ORDER) if (s.contains(p.name())) out.add(p.name());
+264:         if (s.contains(REVIEW)) out.add(REVIEW);
+265:         if (s.contains(DETAILED)) out.add(DETAILED);
+266:         if (s.contains(DETAILED126)) out.add(DETAILED126);

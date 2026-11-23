@@ -1,0 +1,121 @@
+129: const mBad2 = Core.build(Object.assign({}, cfgA, { openings: { enabled: false }, currencyMap: {} }), { txSheets: [{ name: "الحركات", rows: bookA["الحركات"] }] }, serial);
+130: check("unmapped currency is an error", mBad2.errors.length === 4 && mBad2.txs.length === 0, mBad2.errors.length);
+131: // عكس الاتجاه
+132: const mRev = Core.build(Object.assign({}, cfgA, { reverse: true }), inputA, serial);
+133: const TRev = Core.tables(mRev, cfgA, rand);
+134: const repRev = Core.report(mRev, TRev, cfgA);
+135: check("reverse flips every balance", repRev.rows.every((r) => r.balance === -byA[r.office + "|" + r.code]));
+136: // دمج الأسماء المتشابهة
+137: const mMerge = Core.build(Object.assign({}, cfgA, { mergeSimilar: true }), inputA, serial);
+138: check("merge similar → 2 offices", mMerge.offices.length === 2, mMerge.offices.map((o) => o.name));
+139: 
+140: // ---------------------------------------------------------------------------------- السيناريو ب
+141: console.log("== scenario B: Excel ledger, one sheet per office, opening row + running balance");
+142: const wbB = XLSX.utils.book_new();
+143: XLSX.utils.book_append_sheet(wbB, XLSX.utils.aoa_to_sheet([
+144:   ["التاريخ", "البيان", "له", "عليه", "الرصيد"],
+145:   [null, "رصيد سابق", null, 1000, 1000],
+146:   ["2024/06/01", "حوالة", null, 250, 1250],
+147:   [null, "تتمة", 50, null, 1200],
+148:   ["2024/06/02", "استلام", 300, null, 900],
+149:   [null, "المجموع", 350, 1250, 900]
+150: ]), "كاش شام");
+151: XLSX.utils.book_append_sheet(wbB, XLSX.utils.aoa_to_sheet([
+152:   ["التاريخ", "البيان", "له", "عليه", "الرصيد"],
+153:   ["2024/06/03", "قبض", 100, null, -100]
+154: ]), "الأمين");
+155: const bookB = readBook(roundTrip(wbB));
+156: const colsB = Core.guessColumns(bookB["كاش شام"][0]);
+157: check("B columns له=credit عليه=debit", colsB.credit === 2 && colsB.debit === 3 && colsB.balance === 4 && colsB.description === 1, colsB);
+158: const cfgB = {
+159:   now, reverse: false, mergeSimilar: false, currencyMap: {}, typeMap: {}, currencies: {}, sourceName: "ledger.xlsx",
+160:   openings: { enabled: false },
+161:   txs: { enabled: true, headerRow: 0, officeFrom: "sheet", layout: "split", currencyFrom: "fixed", fixedCurrency: "USD", dateOrder: "dmy",
+162:     feeDir: "D", cols: colsB, descCols: [1], fillDate: true, balancePositiveIs: "D" }
+163: };
+164: const mB = Core.build(cfgB, { txSheets: ["كاش شام", "الأمين"].map((n) => ({ name: n, rows: bookB[n] })) }, serial);
+165: check("B no errors", mB.errors.length === 0, mB.errors);
+166: check("B one inline opening", mB.openings.length === 1 && mB.openings[0].minor === 100000n);
+167: check("B opening dated before first tx", mB.openings[0].when < new Date(2024, 5, 1, 12).getTime());
+168: check("B 4 transactions", mB.txs.length === 4, mB.txs.length);
+169: check("B filled date used for تتمة", mB.txs.some((t) => t.desc === "تتمة" && t.when === new Date(2024, 5, 1, 12).getTime()));
+170: const TB = Core.tables(mB, cfgB, rand);
+171: const repB = Core.report(mB, TB, cfgB);
+172: const rB = {};
+173: repB.rows.forEach((r) => { rB[r.office] = r; });
+174: check("B كاش شام = +900 and matches balance column", rB["كاش شام"].balance === 90000n && rB["كاش شام"].match === true, rB["كاش شام"]);
+175: check("B الأمين = -100 and matches", rB["الأمين"].balance === -10000n && rB["الأمين"].match === true, rB["الأمين"]);
+176: check("B balanced", Core.checkBalanced(TB).length === 0);
+177: // تعمّد قلب إشارة عمود الرصيد يجب أن يظهر عدم مطابقة
+178: const mB2 = Core.build(Object.assign({}, cfgB, { txs: Object.assign({}, cfgB.txs, { balancePositiveIs: "C" }) }), { txSheets: ["كاش شام"].map((n) => ({ name: n, rows: bookB[n] })) }, serial);
+179: const rep2 = Core.report(mB2, Core.tables(mB2, cfgB, rand), cfgB);
+180: check("B wrong balance sign → mismatch shown", rep2.rows[0].match === false);
+181: 
+182: // ---------------------------------------------------------------------------------- CSV بترميز عربي
+183: console.log("== scenario C: CSV with type column");
+184: const csv = "التاريخ,المكتب,النوع,المبلغ,العملة,المستفيد\n2024/07/01,النور,لنا,150,USD,سامر\n2024/07/02,النور,علينا,40,USD,\n2024/07/02,النور,تحويل داخلي,10,USD,\n";
+185: const wbC = XLSX.read(csv, { type: "string", raw: true });
+186: const rowsC = Core.sheetRows(wbC.Sheets[wbC.SheetNames[0]], XLSX);
+187: const colsC = Core.guessColumns(rowsC[0]);
+188: check("C columns", colsC.type === 2 && colsC.amount === 3 && colsC.person === 5, colsC);
+189: const typeMap = {};
+190: typeMap[Core.officeKey("لنا")] = "D";
+191: typeMap[Core.officeKey("علينا")] = "C";
+192: typeMap[Core.officeKey("تحويل داخلي")] = "X";
+193: const cfgC = { now, currencyMap: { usd: "USD" }, typeMap, currencies: {}, openings: { enabled: false },
+194:   txs: { enabled: true, headerRow: 0, officeFrom: "column", layout: "typed", currencyFrom: "column", dateOrder: "dmy", cols: colsC, descCols: [] } };
+195: const mC = Core.build(cfgC, { txSheets: [{ name: "csv", rows: rowsC }] }, serial);
+196: check("C no errors", mC.errors.length === 0, mC.errors);
+197: check("C 2 tx + 1 excluded", mC.txs.length === 2 && mC.skipped.some((x) => x.reason.indexOf("مستبعد") >= 0));
+198: const TC = Core.tables(mC, cfgC, rand);
+199: check("C balance +110", Core.report(mC, TC, cfgC).rows[0].balance === 11000n);
+200: check("C person kept", TC.tx[0].person === "سامر");
+201: 
+202: // ---------------------------------------------------------------------------------- كشوفات حساب متعددة
+203: console.log("== scenario D: many statement files (one account + currency each)");
+204: const SS = require("./stmt-samples.js");
+205: function stmtFrom(name, wb) {
+206:   const rt = roundTrip(wb);
+207:   const book = readBook(rt);
+208:   return Core.parseStatements(name, rt.SheetNames.map((n) => ({ name: n, rows: book[n] })));
+209: }
+210: let stD = [];
+211: Object.keys(SS.SPECS).forEach((f) => { stD = stD.concat(stmtFrom(f, SS.statementBook(XLSX, SS.SPECS[f]))); });
+212: check("D 4 statements read", stD.length === 4, stD.length);
+213: const khal = stD[0];
+214: check("D account split into code + name", khal.account.code === "1410100092" && khal.account.name === "الخال", khal.account);
+215: check("D currency text read", khal.curText === "دولار امريكي");
+216: check("D period read", khal.from && khal.from.m === 8 && khal.to && khal.to.d === 13);
+217: check("D repeated page headers skipped", khal.rows.length === 3, khal.rows.length);
+218: check("D Pre Balance kept apart", khal.pre && Core.text({ s: khal.pre.desc }) === "Pre Balance");
+219: check("D footer read with side", khal.footer && khal.footer.side === "D");
+220: check("D two-sheet statement read as one", stD[3].rows.length === 3 && stD[3].footer && stD[3].footer.side === "C", stD[3].rows.length);
+221: const cfgD = { now: new Date(2026, 9, 14, 9, 0, 0).getTime(), currencyMap: {}, currencies: {}, rename: {}, statements: {} };
+222: const mD = Core.buildStatements(cfgD, stD, serial);
+223: check("D no errors", mD.errors.length === 0, mD.errors);
+224: check("D 3 offices (two currencies of الخال merged by code)", mD.offices.length === 3, mD.offices.map((o) => o.name));
+225: check("D office note keeps old account code", mD.offices[0].notes.indexOf("1410100092") >= 0);
+226: check("D 8 movements + 2 openings", mD.txs.length === 8 && mD.openings.length === 2, [mD.txs.length, mD.openings.length]);
+227: check("D opening dated just before the period", mD.openings[0].when === new Date(2026, 7, 1, 0, 0, 0).getTime() - 60000);
+228: check("D every balance cell checked", mD.files.every((f) => f.ok) && mD.files[0].checked === 3, mD.files);
+229: check("D balance-column direction detected per file (النور: مدين − دائن)", mD.files[2].ok && mD.files[2].final === 35000n, mD.files[2]);
+230: const TD = Core.tables(mD, cfgD, rand);
+231: const repD = Core.report(mD, TD, cfgD);
+232: const rD = {};
+233: repD.rows.forEach((r) => { rD[r.office + "|" + r.code] = r; });
+234: check("D الخال USD = لنا 495 and matches footer", rD["الخال|USD"].balance === 49500n && rD["الخال|USD"].match === true, rD["الخال|USD"]);
+235: check("D الخال EUR = علينا 100", rD["الخال|EUR"].balance === -10000n && rD["الخال|EUR"].match === true);
+236: check("D النور USD = لنا 350", rD["النور|USD"].balance === 35000n && rD["النور|USD"].match === true);
+237: check("D الأمل TRY = علينا 1,010.00", rD["الأمل|TRY"].balance === -101000n && rD["الأمل|TRY"].match === true);
+238: check("D balanced", Core.checkBalanced(TD).length === 0);
+239: // دمج سطور العمولة: الأرصدة نفسها
+240: const mDc = Core.buildStatements(Object.assign({}, cfgD, { statements: { mergeCom: true } }), stD, serial);
+241: const TDc = Core.tables(mDc, cfgD, rand);
+242: const fee = TDc.tx.filter((t) => t.fee_minor > 0);
+243: check("D Com row merged as fee (5.00, علينا)", fee.length === 1 && fee[0].fee_minor === 500 && fee[0].fee_type === "الأجرة علينا" && TDc.tx.length === TD.tx.length - 1, fee);
+244: const bal1 = Core.balancesFromTables(TD), bal2 = Core.balancesFromTables(TDc);
+245: check("D same balances with Com merged", Object.keys(bal1).every((k) => bal1[k] === bal2[k]) && Object.keys(bal1).length === Object.keys(bal2).length);
+246: // الأرصدة فقط
+247: const mDb = Core.buildStatements(Object.assign({}, cfgD, { statements: { balancesOnly: true } }), stD, serial);
+248: const TDb = Core.tables(mDb, cfgD, rand);
+249: const bal3 = Core.balancesFromTables(TDb);

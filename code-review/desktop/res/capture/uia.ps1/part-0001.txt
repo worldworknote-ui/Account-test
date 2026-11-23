@@ -1,0 +1,127 @@
+1: # 12.1 المحاسب الذكي — «إطار الالتقاط» على ويندوز: يقرأ نصوص النافذة التي تحت الإطار بميزة «إمكانية الوصول»
+2: # المدمجة في ويندوز (UI Automation)، كما تفعل قارئات الشاشة. يقرأ فقط: لا يضغط ولا يكتب في أي برنامج، ولا يتصل بأي شبكة.
+3: # المخرجات سطر لكل عنصر: النوع، x، y، العرض، الارتفاع، النص بـBase64.
+4: #   F نافذة الإطار نفسها (لمعايرة الإحداثيات)، W النافذة التي تحته، R فقاعة/صف، T نص.
+5: # 12.2: الإطار صار شريطًا وحوافّ منفصلة (حتى يمر الماوس إلى واتساب)، فيُعطى داخله بإحداثيات جافا (-Ix…) مع مكان الشريط
+6: #   بإحداثيات جافا (-Jx…) ليُحوَّل إلى بكسل الشاشة بمعايرة الشريط نفسه. -List 1: كل النوافذ الظاهرة (W) من الأعلى للأسفل.
+7: param([int]$SelfPid = 0, [int]$Whole = 0, [int]$List = 0,
+8:       [double]$Ix = 0, [double]$Iy = 0, [double]$Iw = 0, [double]$Ih = 0,
+9:       [double]$Jx = 0, [double]$Jy = 0, [double]$Jw = 0, [double]$Jh = 0)
+10: $ErrorActionPreference = 'SilentlyContinue'
+11: try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
+12: Add-Type -AssemblyName UIAutomationClient
+13: Add-Type -AssemblyName UIAutomationTypes
+14: $A = [System.Windows.Automation.AutomationElement]
+15: $CT = [System.Windows.Automation.ControlType]
+16: $TS = [System.Windows.Automation.TreeScope]
+17: $ALL = [System.Windows.Automation.Condition]::TrueCondition
+18: 
+19: function B64([string]$s) {
+20:     if ($null -eq $s) { $s = '' }
+21:     return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($s))
+22: }
+23: function Emit([string]$k, $r, [string]$t) {
+24:     if ($null -eq $r -or $r.IsEmpty) { return }
+25:     "{0}`t{1}`t{2}`t{3}`t{4}`t{5}" -f $k, [int]$r.X, [int]$r.Y, [int]$r.Width, [int]$r.Height, (B64 $t)
+26: }
+27: 
+28: $root = $A::RootElement
+29: $wins = $root.FindAll($TS::Children, $ALL)
+30: $self = $null
+31: foreach ($w in $wins) {
+32:     try {
+33:         $c = $w.Current
+34:         if ($c.ProcessId -eq $SelfPid -and $c.Name -eq 'SA-CAPTURE') { $self = $w; break }
+35:     } catch {}
+36: }
+37: if ($null -ne $self) { Emit 'F' $self.Current.BoundingRectangle '' }
+38: $fr = $null
+39: if ($null -ne $self) {
+40:     $sr = $self.Current.BoundingRectangle
+41:     if ($Iw -gt 0 -and $Jw -gt 0 -and $Jh -gt 0) {
+42:         $sx = $sr.Width / $Jw; $sy = $sr.Height / $Jh
+43:         $fr = New-Object System.Windows.Rect(($sr.X + ($Ix - $Jx) * $sx), ($sr.Y + ($Iy - $Jy) * $sy), ($Iw * $sx), ($Ih * $sy))
+44:     } else { $fr = $sr }
+45: }
+46: if ($List -eq 1) {
+47:     foreach ($w in $wins) {
+48:         try {
+49:             $c = $w.Current
+50:             if ($c.ProcessId -eq $SelfPid -or $c.IsOffscreen) { continue }
+51:             $r = $c.BoundingRectangle
+52:             if ($r.IsEmpty -or $r.Width -lt 80 -or $r.Height -lt 80) { continue }
+53:             Emit 'W' $r $c.Name
+54:         } catch {}
+55:     }
+56:     exit 0
+57: }
+58: 
+59: # النافذة المقصودة: واتساب بالاسم، أو أعلى نافذة (غير نافذتنا) تحت وسط الإطار
+60: $target = $null
+61: if ($Whole -eq 1 -or $null -eq $fr) {
+62:     foreach ($w in $wins) {
+63:         try {
+64:             $c = $w.Current
+65:             if ($c.ProcessId -eq $SelfPid) { continue }
+66:             if ($c.Name -match 'WhatsApp|واتساب') { $target = $w; break }
+67:         } catch {}
+68:     }
+69: } else {
+70:     $cx = $fr.X + $fr.Width / 2
+71:     $cy = $fr.Y + $fr.Height / 2
+72:     foreach ($w in $wins) {
+73:         try {
+74:             $c = $w.Current
+75:             if ($c.ProcessId -eq $SelfPid -or $c.IsOffscreen) { continue }
+76:             $r = $c.BoundingRectangle
+77:             if ($r.IsEmpty -or $r.Width -lt 50 -or $r.Height -lt 50) { continue }
+78:             if ($cx -ge $r.X -and $cx -le ($r.X + $r.Width) -and $cy -ge $r.Y -and $cy -le ($r.Y + $r.Height)) { $target = $w; break }
+79:         } catch {}
+80:     }
+81: }
+82: if ($null -eq $target) { exit 0 }
+83: $tc = $target.Current
+84: $wr = $tc.BoundingRectangle
+85: Emit 'W' $wr $tc.Name
+86: if ($Whole -eq 1) { exit 0 }
+87: 
+88: $or = [System.Windows.Automation.OrCondition]::new([System.Windows.Automation.Condition[]]@(
+89:     [System.Windows.Automation.PropertyCondition]::new($A::ControlTypeProperty, $CT::ListItem),
+90:     [System.Windows.Automation.PropertyCondition]::new($A::ControlTypeProperty, $CT::DataItem),
+91:     [System.Windows.Automation.PropertyCondition]::new($A::ControlTypeProperty, $CT::Text)))
+92: 
+93: function Collect() {
+94:     $cr = New-Object System.Windows.Automation.CacheRequest
+95:     $cr.Add($A::NameProperty)
+96:     $cr.Add($A::ControlTypeProperty)
+97:     $cr.Add($A::BoundingRectangleProperty)
+98:     $cr.TreeScope = $TS::Element
+99:     $act = $cr.Activate()
+100:     try { return $target.FindAll($TS::Descendants, $or) } finally { $act.Dispose() }
+101: }
+102: 
+103: $els = Collect
+104: # المتصفحات وواتساب ديسكتوب تبني شجرة إمكانية الوصول عند أول طلب: نعيد مرة إن جاءت شبه فارغة
+105: if ($null -eq $els -or $els.Count -lt 3) { Start-Sleep -Milliseconds 800; $els = Collect }
+106: if ($null -eq $els) { exit 0 }
+107: 
+108: $top = $wr.Y + [Math]::Max(60, $wr.Height / 7)
+109: $n = 0
+110: foreach ($e in $els) {
+111:     if ($n -ge 4000) { break }
+112:     try {
+113:         $r = $e.Cached.BoundingRectangle
+114:         if ($r.IsEmpty) { continue }
+115:         $mx = $r.X + $r.Width / 2
+116:         $my = $r.Y + $r.Height / 2
+117:         $inside = $false
+118:         if ($null -ne $fr) { $inside = ($mx -ge $fr.X -and $mx -le ($fr.X + $fr.Width) -and $my -ge $fr.Y -and $my -le ($fr.Y + $fr.Height)) }
+119:         $head = ($r.Y -le $top)
+120:         if (-not ($inside -or $head)) { continue }
+121:         $ct = $e.Cached.ControlType
+122:         $k = 'T'
+123:         if ($ct -eq $CT::ListItem -or $ct -eq $CT::DataItem) { $k = 'R' }
+124:         Emit $k $r $e.Cached.Name
+125:         $n++
+126:     } catch {}
+127: }

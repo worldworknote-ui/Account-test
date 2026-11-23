@@ -1,0 +1,70 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.Locale;
+4: 
+5: /**
+6:  * 10.0: ساعة منطقية هجينة (Hybrid Logical Clock) للمزامنة: الوقت الفعلي بالمللي ثانية + عدّاد + رقم الجهاز.
+7:  * تُكتب نصًا يُرتَّب أبجديًا كما يُرتَّب زمنيًا: «0001734567890123-0000-<device>». لا تتراجع أبدًا حتى لو رجعت ساعة
+8:  * الجهاز، وتتقدم فوق أي ساعة وصلت من جهاز آخر، فيكون ترتيب الأحداث واحدًا على كل الأجهزة.
+9:  */
+10: public final class Hlc {
+11:     public long wall;
+12:     public int counter;
+13:     public final String device;
+14: 
+15:     public Hlc(String device) { this.device = device; }
+16: 
+17:     public static String format(long wall, int counter, String device) {
+18:         return String.format(Locale.US, "%016d-%04x-%s", wall, counter & 0xffff, device);
+19:     }
+20: 
+21:     public String now(long physical) {
+22:         if (physical > wall) {
+23:             wall = physical;
+24:             counter = 0;
+25:         } else counter++;
+26:         if (counter > 0xffff) {
+27:             wall++;
+28:             counter = 0;
+29:         }
+30:         return format(wall, counter, device);
+31:     }
+32: 
+33:     /** يتقدم فوق ساعة وصلت من جهاز آخر. */
+34:     public void observe(String remote, long physical) {
+35:         long rw;
+36:         int rc;
+37:         try {
+38:             rw = Long.parseLong(remote.substring(0, 16));
+39:             rc = Integer.parseInt(remote.substring(17, 21), 16);
+40:         } catch (Exception e) {
+41:             return;
+42:         }
+43:         long m = Math.max(Math.max(wall, rw), physical);
+44:         if (m == wall && m == rw) counter = Math.max(counter, rc) + 1;
+45:         else if (m == wall) counter++;
+46:         else if (m == rw) counter = rc + 1;
+47:         else counter = 0;
+48:         wall = m;
+49:     }
+50: 
+51:     public static String load(String saved) { return saved == null ? "" : saved; }
+52: 
+53:     public void restore(String saved) {
+54:         if (saved == null || saved.length() < 21) return;
+55:         try {
+56:             wall = Long.parseLong(saved.substring(0, 16));
+57:             counter = Integer.parseInt(saved.substring(17, 21), 16);
+58:         } catch (Exception ignored) {
+59:             // يبدأ من الصفر
+60:         }
+61:     }
+62: 
+63:     public static long wallOf(String h) {
+64:         try {
+65:             return Long.parseLong(h.substring(0, 16));
+66:         } catch (Exception e) {
+67:             return 0;
+68:         }
+69:     }
+70: }

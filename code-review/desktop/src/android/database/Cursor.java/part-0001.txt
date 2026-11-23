@@ -1,0 +1,153 @@
+1: package android.database;
+2: 
+3: import java.io.Closeable;
+4: import java.util.ArrayList;
+5: import java.util.List;
+6: 
+7: /**
+8:  * مؤشر نتائج كما في أندرويد، فوق نتائج مقروءة كاملة من JDBC. القيم تُقرأ بالتحويل نفسه الذي يفعله أندرويد:
+9:  * getLong على نص رقمي يرجع الرقم، وgetString على رقم يرجع نصه، وnull يرجع 0 أو null.
+10:  */
+11: public class Cursor implements Closeable {
+12:     public static final int FIELD_TYPE_NULL = 0, FIELD_TYPE_INTEGER = 1, FIELD_TYPE_FLOAT = 2, FIELD_TYPE_STRING = 3, FIELD_TYPE_BLOB = 4;
+13: 
+14:     private final String[] cols;
+15:     private final List<Object[]> rows;
+16:     private int pos = -1;
+17:     private boolean closed;
+18: 
+19:     public Cursor(String[] cols, List<Object[]> rows) {
+20:         this.cols = cols;
+21:         this.rows = rows == null ? new ArrayList<>() : rows;
+22:     }
+23: 
+24:     public android.os.Bundle getExtras() { return null; }
+25:     public android.net.Uri getNotificationUri() { return null; }
+26:     public void setNotificationUri(Object r, android.net.Uri u) {}
+27:     public int getCount() { return rows.size(); }
+28: 
+29:     public int getPosition() { return pos; }
+30: 
+31:     public boolean moveToFirst() {
+32:         pos = 0;
+33:         return !rows.isEmpty();
+34:     }
+35: 
+36:     public boolean moveToNext() {
+37:         if (pos < rows.size()) pos++;
+38:         return pos < rows.size();
+39:     }
+40: 
+41:     public boolean moveToPosition(int p) {
+42:         if (p < 0 || p >= rows.size()) {
+43:             pos = p < 0 ? -1 : rows.size();
+44:             return false;
+45:         }
+46:         pos = p;
+47:         return true;
+48:     }
+49: 
+50:     public boolean isAfterLast() { return pos >= rows.size(); }
+51: 
+52:     public int getColumnCount() { return cols.length; }
+53: 
+54:     public String getColumnName(int i) { return cols[i]; }
+55: 
+56:     public String[] getColumnNames() { return cols.clone(); }
+57: 
+58:     public int getColumnIndex(String name) {
+59:         for (int i = 0; i < cols.length; i++) if (cols[i].equalsIgnoreCase(name)) return i;
+60:         return -1;
+61:     }
+62: 
+63:     public int getColumnIndexOrThrow(String name) {
+64:         int i = getColumnIndex(name);
+65:         if (i < 0) throw new IllegalArgumentException("column '" + name + "' does not exist");
+66:         return i;
+67:     }
+68: 
+69:     private Object v(int i) {
+70:         if (pos < 0 || pos >= rows.size()) throw new IllegalStateException("Cursor index out of bounds: " + pos + " of " + rows.size());
+71:         return rows.get(pos)[i];
+72:     }
+73: 
+74:     public boolean isNull(int i) { return v(i) == null; }
+75: 
+76:     public int getType(int i) {
+77:         Object o = v(i);
+78:         if (o == null) return FIELD_TYPE_NULL;
+79:         if (o instanceof Long || o instanceof Integer || o instanceof Short || o instanceof Byte || o instanceof Boolean) return FIELD_TYPE_INTEGER;
+80:         if (o instanceof Double || o instanceof Float) return FIELD_TYPE_FLOAT;
+81:         if (o instanceof byte[]) return FIELD_TYPE_BLOB;
+82:         return FIELD_TYPE_STRING;
+83:     }
+84: 
+85:     public String getString(int i) {
+86:         Object o = v(i);
+87:         if (o == null) return null;
+88:         if (o instanceof byte[]) return new String((byte[]) o, java.nio.charset.StandardCharsets.UTF_8);
+89:         if (o instanceof Double) {
+90:             double d = (Double) o;
+91:             if (d == Math.rint(d) && !Double.isInfinite(d) && Math.abs(d) < 1e15) return Long.toString((long) d) + ".0";
+92:             return Double.toString(d);
+93:         }
+94:         return o.toString();
+95:     }
+96: 
+97:     public long getLong(int i) {
+98:         Object o = v(i);
+99:         if (o == null) return 0;
+100:         if (o instanceof Number) return ((Number) o).longValue();
+101:         if (o instanceof Boolean) return (Boolean) o ? 1 : 0;
+102:         return parseLong(o.toString());
+103:     }
+104: 
+105:     /** كما يفعل SQLite: يقرأ أطول بادئة رقمية (نص غير رقمي = 0). */
+106:     static long parseLong(String s) {
+107:         s = s.trim();
+108:         try {
+109:             return Long.parseLong(s);
+110:         } catch (NumberFormatException e) {
+111:             try {
+112:                 return (long) Double.parseDouble(s);
+113:             } catch (NumberFormatException e2) {
+114:                 int n = 0;
+115:                 if (n < s.length() && (s.charAt(n) == '-' || s.charAt(n) == '+')) n++;
+116:                 while (n < s.length() && Character.isDigit(s.charAt(n))) n++;
+117:                 try {
+118:                     return n == 0 ? 0 : Long.parseLong(s.substring(0, n));
+119:                 } catch (NumberFormatException e3) {
+120:                     return 0;
+121:                 }
+122:             }
+123:         }
+124:     }
+125: 
+126:     public int getInt(int i) { return (int) getLong(i); }
+127: 
+128:     public short getShort(int i) { return (short) getLong(i); }
+129: 
+130:     public double getDouble(int i) {
+131:         Object o = v(i);
+132:         if (o == null) return 0;
+133:         if (o instanceof Number) return ((Number) o).doubleValue();
+134:         try {
+135:             return Double.parseDouble(o.toString().trim());
+136:         } catch (NumberFormatException e) {
+137:             return 0;
+138:         }
+139:     }
+140: 
+141:     public float getFloat(int i) { return (float) getDouble(i); }
+142: 
+143:     public byte[] getBlob(int i) {
+144:         Object o = v(i);
+145:         if (o == null) return null;
+146:         if (o instanceof byte[]) return (byte[]) o;
+147:         return o.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+148:     }
+149: 
+150:     public boolean isClosed() { return closed; }
+151: 
+152:     @Override public void close() { closed = true; }
+153: }

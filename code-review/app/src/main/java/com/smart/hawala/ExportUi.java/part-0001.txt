@@ -1,0 +1,178 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.Activity;
+4: import android.app.AlertDialog;
+5: import android.content.Intent;
+6: import android.graphics.Bitmap;
+7: import android.graphics.Color;
+8: import android.net.Uri;
+9: import android.view.View;
+10: import android.widget.CheckBox;
+11: import android.widget.EditText;
+12: import android.widget.ImageView;
+13: import android.widget.LinearLayout;
+14: import android.widget.ScrollView;
+15: import android.widget.TextView;
+16: import java.io.File;
+17: import java.io.FileOutputStream;
+18: import java.io.OutputStream;
+19: import java.text.SimpleDateFormat;
+20: import java.util.ArrayList;
+21: import java.util.Collections;
+22: import java.util.Date;
+23: import java.util.HashMap;
+24: import java.util.List;
+25: import java.util.Locale;
+26: import java.util.Map;
+27: import java.util.Set;
+28: import java.util.TimeZone;
+29: 
+30: /**
+31:  * نافذة التصدير الموحّدة لكل التقارير (كشف مكتب، أرصدة كل المكاتب، التقرير اليومي، سجل الحركات/نتائج البحث):
+32:  * اختيار الصيغة (PDF / صور / Excel)، النطاق (المحدد فقط أو كامل الفترة)، تضمين الصور، ثم المشاركة
+33:  * (واتساب أو غيره من قائمة المشاركة) أو الحفظ في الهاتف. وفيها شاشة «خيارات تصميم الكشوفات» مع معاينة حيّة.
+34:  */
+35: final class ExportUi {
+36:     static final int PDF = 0, PNG = 1, XLSX = 2;
+37:     static final int SHARE = 0, SAVE = 2;
+38:     static final String XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+39: 
+40:     private final MainActivity a;
+41:     private File pendingSave;
+42: 
+43:     ExportUi(MainActivity a) { this.a = a; }
+44: 
+45:     interface Build { List<Report> build(boolean images, ExportStyle st) throws Exception; }
+46: 
+47:     static final int SCOPE_PERIOD = 0, SCOPE_SELECTED = 1, SCOPE_SINCE = 2;
+48: 
+49:     ExportStyle style() { return ExportStyle.from(a.db.settings(ExportStyle.KEYS)); }
+50: 
+51:     private int lastFormat() {
+52:         long f = a.db.settingLong("export_format", PDF);
+53:         return f < 0 || f > 2 ? PDF : (int) f;
+54:     }
+55: 
+56:     // ===================================================================================
+57:     // نوافذ التصدير لكل تقرير
+58:     // ===================================================================================
+59: 
+60:     void statementDialog(final Model.Office o, final StatementScreen.Period p, final Set<Long> selected) {
+61:         statementDialog(o, p, selected, -1, null);
+62:     }
+63: 
+64:     /**
+65:      * تصدير كشف المكتب. النطاق: الفترة، أو الحركات المحددة، أو ما سُجّل بعد مطابقة (آخر مطابقة مؤكدة إن وُجدت).
+66:      * العملات: كلها أو بعضها، في ملف واحد أو ملف لكل عملة.
+67:      */
+68:     void statementDialog(final Model.Office o, final StatementScreen.Period p, final Set<Long> selected, final int wantScope, final Model.Recon given) {
+69:         final boolean hasSel = selected != null && !selected.isEmpty();
+70:         Model.Recon b = given;
+71:         if (b == null) {
+72:             b = a.db.lastRecon(o.id, true);
+73:             if (b == null) b = a.db.lastRecon(o.id, false);
+74:         }
+75:         final Model.Recon base = b;
+76:         if (wantScope == SCOPE_SINCE && base == null) {
+77:             a.toast("لا توجد مطابقة لهذا المكتب بعد. أنشئ «مطابقة رصيد» أولًا.");
+78:             return;
+79:         }
+80:         final List<String> labels = new ArrayList<>();
+81:         final List<Integer> kinds = new ArrayList<>();
+82:         labels.add(p.hasStart() || p.to != Long.MAX_VALUE ? "الفترة: " + p.label : "كل الفترات");
+83:         kinds.add(SCOPE_PERIOD);
+84:         if (hasSel) {
+85:             labels.add("المحددة فقط (" + selected.size() + ")");
+86:             kinds.add(SCOPE_SELECTED);
+87:         }
+88:         if (base != null) {
+89:             labels.add("بعد مطابقة " + Model.day(base.createdAt) + (Model.RECON_CONFIRMED.equals(base.status) ? " ✓" : ""));
+90:             kinds.add(SCOPE_SINCE);
+91:         }
+92:         int init = kinds.indexOf(wantScope);
+93:         if (init < 0) init = hasSel ? kinds.indexOf(SCOPE_SELECTED) : 0;
+94: 
+95:         List<View> extras = new ArrayList<>();
+96:         final Ui.Seg scope;
+97:         if (labels.size() > 1) {
+98:             extras.add(a.label("النطاق"));
+99:             scope = a.new Seg(labels.toArray(new String[0]), null, init, true);
+100:             extras.add(scope.view);
+101:             if (base != null) {
+102:                 extras.add(a.text("«بعد مطابقة»: يبدأ برصيد المطابقة (" + Model.date(base.createdAt) + " — " + base.statusLabel()
+103:                         + ") ويضم كل ما سُجّل بعدها حتى الآن.", 12, a.muted, false));
+104:             }
+105:         } else scope = null;
+106: 
+107:         final Set<String> codeSet = new java.util.TreeSet<>(a.db.officeCurrencies(o.id));
+108:         for (Map.Entry<String, Long> e : a.db.balances(o.id).entrySet()) if (e.getValue() != 0) codeSet.add(e.getKey());
+109:         final List<String> codes = new ArrayList<>(codeSet);
+110:         final Map<String, CheckBox> curChecks = new java.util.LinkedHashMap<>();
+111:         final CheckBox separate = new CheckBox(a);
+112:         if (codes.size() > 1) {
+113:             extras.add(a.label("العملات"));
+114:             // 12.5: يلتف بدل التمرير الأفقي حتى لا تُقصّ العملات
+115:             Ui.Flow cr = a.flow();
+116:             View hs = cr;
+117:             Map<String, String> names = a.db.currencyNames();
+118:             for (String c : codes) {
+119:                 CheckBox ck = new CheckBox(a);
+120:                 ck.setText(c);
+121:                 ck.setChecked(true);
+122:                 String nm = names.get(c);
+123:                 if (nm != null) ck.setContentDescription(nm);
+124:                 cr.addView(ck);
+125:                 curChecks.put(c, ck);
+126:             }
+127:             extras.add(hs);
+128:             separate.setText("كل عملة في ملف منفصل");
+129:             separate.setChecked("1".equals(a.db.setting("export_separate", "0")));
+130:             extras.add(separate);
+131:         }
+132:         // 11.3: الأمانات والمبالغ المجمّدة في الكشف (اختيارية، ويُحفظ آخر اختيار)
+133:         final CheckBox holdsCk = new CheckBox(a);
+134:         final boolean hasHolds = !a.db.holds(o.id, true).isEmpty();
+135:         if (hasHolds) {
+136:             holdsCk.setText("إظهار الأمانات والمبالغ المجمّدة (قسم مستقل، لا تدخل في الرصيد)");
+137:             holdsCk.setChecked("1".equals(a.db.setting("st_holds", "0")));
+138:             extras.add(holdsCk);
+139:         }
+140:         String info = "المكتب: " + o.name;
+141:         open("تصدير كشف المكتب", info, extras, true, "كشف حساب — " + o.name,
+142:                 () -> {
+143:                     a.statementScreen.show(o, p, false);
+144:                     statementDialog(o, p, selected, wantScope, given);
+145:                 },
+146:                 (images, st) -> {
+147:                     int kind = scope == null ? SCOPE_PERIOD : kinds.get(Math.max(0, scope.selected));
+148:                     Set<String> chosen = new java.util.LinkedHashSet<>();
+149:                     if (curChecks.isEmpty()) chosen.addAll(codes);
+150:                     else for (Map.Entry<String, CheckBox> e : curChecks.entrySet()) if (e.getValue().isChecked()) chosen.add(e.getKey());
+151:                     if (chosen.isEmpty()) throw new Exception("اختر عملة واحدة على الأقل.");
+152:                     a.db.setSettingQuiet("export_separate", separate.isChecked() ? "1" : "0");
+153:                     ExportStyle use = st;
+154:                     if (kind != SCOPE_PERIOD) {
+155:                         // المحدد يظهر كما هو حتى لو ملغى؛ و«بعد المطابقة» يصفّي الملغاة بنفسه حتى لا يختل رصيد المطابقة
+156:                         use = ExportStyle.from(st.toMap());
+157:                         use.hideCancelled = false;
+158:                     }
+159:                     Set<Long> sel = kind == SCOPE_SELECTED ? selected : null;
+160:                     Model.Recon since = kind == SCOPE_SINCE ? base : null;
+161:                     List<Report> out = new ArrayList<>();
+162:                     if (separate.isChecked() && chosen.size() > 1) {
+163:                         for (String c : chosen) {
+164:                             Reports.StatementInput in = a.statementScreen.input(o, p, sel, images, st, since, Collections.singleton(c));
+165:                             out.add(Reports.statement(in, use));
+166:                         }
+167:                     } else {
+168:                         Set<String> only = chosen.size() == codes.size() ? null : chosen;
+169:                         out.add(Reports.statement(a.statementScreen.input(o, p, sel, images, st, since, only), use));
+170:                     }
+171:                     if (hasHolds) {
+172:                         a.db.setSettingQuiet("st_holds", holdsCk.isChecked() ? "1" : "0");
+173:                         if (holdsCk.isChecked()) for (Report r : out) addHolds(r, o, chosen);
+174:                     }
+175:                     return out;
+176:                 });
+177:     }
+178: 

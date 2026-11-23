@@ -1,0 +1,113 @@
+670:         for (int i = 0; i < g.steps.length; i++) s.addView(rtl(a.text((i + 1) + ") " + g.steps[i], 15, a.ink, false)));
+671:         a.section("إن واجهتك مشكلة", null, null);
+672:         LinearLayout n = a.card();
+673:         for (String x : g.notes) n.addView(rtl(a.text("• " + x, 14, a.dark, false)));
+674:         a.section("قبل أي طريقة", null, null);
+675:         LinearLayout b = a.card();
+676:         for (String x : SyncHelp.BASICS) b.addView(rtl(a.text("• " + x, 14, a.dark, false)));
+677:     }
+678: 
+679:     private TextView rtl(TextView t) {
+680:         t.setTextDirection(android.view.View.TEXT_DIRECTION_RTL);
+681:         t.setPadding(0, a.dp(3), 0, a.dp(3));
+682:         return t;
+683:     }
+684: 
+685:     private void repairDialog() {
+686:         if (!a.require(Auth.Perm.SYNC)) return;
+687:         final boolean pw = SyncEngine.repairNeedsPassword(a.db);
+688:         LinearLayout l = new LinearLayout(a);
+689:         l.setOrientation(LinearLayout.VERTICAL);
+690:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+691:         l.addView(a.text("يكتب هذا الجهاز ملفات المزامنة المشفّرة في المكان المختار الآن (" + SyncEngine.status(a.db).folder + "): رأس الخزنة ولقطة كاملة وحزمه. "
+692:                 + "بياناتك لا تتغير. بعدها اختر المكان نفسه على الأجهزة الأخرى (أو «الطريقة: تغيير» عليها).", 14, a.ink, false));
+693:         final EditText p = pw ? secret(l, "كلمة سر المزامنة (8 محارف على الأقل)") : null;
+694:         if (pw) l.addView(a.text("يُكتب رأس جديد بكلمة السر هذه، ويظهر رمز استرداد جديد (القديم لا يعمل هنا).", 12, a.muted, false));
+695:         new AlertDialog.Builder(a).setTitle("إصلاح مكان المزامنة").setView(l).setPositiveButton("إصلاح", (d, w) -> {
+696:             final char[] s = p == null ? null : p.getText().toString().toCharArray();
+697:             a.busy("جارٍ كتابة ملفات المزامنة…", x -> new SyncEngine(a.db, folder(a, a.db)).repair(s), res -> {
+698:                 String rc = (String) res;
+699:                 if (!rc.isEmpty()) recoveryDialog(rc);
+700:                 else {
+701:                     a.toast("أُصلح مكان المزامنة ✓");
+702:                     now(this::show);
+703:                 }
+704:             });
+705:         }).setNegativeButton("إلغاء", null).show();
+706:     }
+707: 
+708:     /** 11.6: رؤية الأجهزة وسجلاتها وأخطائها: صلاحية يختارها المدير («إدارة المزامنة» تشملها). */
+709:     boolean seesDevices() { return a.can(Auth.Perm.DEVICES) || a.can(Auth.Perm.SYNC); }
+710: 
+711:     private void status(SyncEngine.Status st) {
+712:         final boolean devs = seesDevices();
+713:         if (SyncEngine.headerMissing(a.db)) {
+714:             a.notice(R.drawable.ic_warn, "ملفات المزامنة غير موجودة في المكان المختار (" + st.folder + "). إن نقلت المزامنة إلى هنا فاضغط «إصلاح»، أو اختر المكان الصحيح من «الطريقة: تغيير».",
+715:                     true, "إصلاح", v -> repairDialog());
+716:         }
+717:         if (!st.digestAlert.isEmpty()) a.notice(R.drawable.ic_warn, st.digestAlert, true, null, null);
+718:         if (!st.movedTo.isEmpty()) movedNotice(st);
+719:         else if (!st.lastError.isEmpty()) {
+720:             // 11.3: خطأ دخول Google: زر «دخول» في الرسالة نفسها لأي مستخدم
+721:             boolean auth = "drive".equals(transport(a.db)) && authError(st.lastError);
+722:             String when = st.lastErrorAt > 0 ? MainActivity.agoAt(st.lastErrorAt) : "";
+723:             String with = st.lastErrorWith.isEmpty() || !devs ? "" : "مع " + st.lastErrorWith;
+724:             String head = when.isEmpty() && with.isEmpty() ? "آخر خطأ: " : "آخر خطأ (" + when + (when.isEmpty() || with.isEmpty() ? "" : " • ") + with + "): ";
+725:             a.notice(R.drawable.ic_warn, head + Ui.netFriendly(st.lastError), true, auth ? "دخول" : null,
+726:                     auth ? v -> reLogin(a.db.setting("drive_account", "")) : null);
+727:         }
+728:         if (st.paused) a.notice(R.drawable.ic_info, "المزامنة التلقائية موقوفة مؤقتًا على هذا الجهاز. تغييراتك محفوظة وتُرسل عند الاستئناف أو بزر «مزامنة الآن».", false, "استئناف", v -> {
+729:             a.db.setSettingQuiet("sync_paused", "0");
+730:             SyncJob.schedule(a, true, "1".equals(a.db.setting("sync_wifi", "0")));
+731:             show();
+732:         });
+733:         for (final JSONObject m : devs ? st.stale : new java.util.ArrayList<JSONObject>()) {
+734:             long days = (Clock.now() - m.optLong("at")) / 86_400_000L;
+735:             boolean canRemove = a.can(Auth.Perm.SYNC) && !m.optString("dev").equals(st.founderDev);
+736:             a.notice(R.drawable.ic_warn, "«" + m.optString("name") + "» لم يتزامن منذ " + days + " يومًا. ما لم يستلمه من الملفات لا يُحذف حتى يعود."
+737:                     + (canRemove ? " إن ضاع أو لم يعد يُستخدم فأزله من المزامنة." : ""), true, canRemove ? "إزالة" : null, canRemove ? v -> removeDevice(m) : null);
+738:         }
+739:         LinearLayout g = a.group();
+740:         a.groupRow(g, R.drawable.ic_check2, a.green, "المزامنة مفعّلة", "هذا الجهاز: " + st.deviceName + (st.founder ? " (الجهاز الرئيسي)" : " • الرئيسي: " + st.founderName()),
+741:                 "تغيير الاسم", v -> renameDialog(st.deviceName));
+742:         if (!st.founder && a.can(Auth.Perm.SYNC))
+743:             a.groupRow(g, R.drawable.ic_key, a.primaryInk, "الجهاز الرئيسي: " + st.founderName(), "إن ضاع أو تعطل يمكن لهذا الجهاز استلام دوره برمز الاسترداد",
+744:                     "ضاع؟", v -> claimFounder(st));
+745:         a.groupRow(g, R.drawable.ic_clock, a.primaryInk, "آخر مزامنة", st.lastSync > 0 ? MainActivity.ago(st.lastSync) : "لم تتم بعد", null, null);
+746:         a.groupRow(g, R.drawable.ic_upload, a.primaryInk, "بانتظار الإرسال", st.pending + st.unsent == 0 ? "لا شيء — كل تغييراتك أُرسلت" : (st.pending + st.unsent) + " تغييرًا/حزمة", null, null);
+747:         String k = transport(a.db);
+748:         a.groupRow(g, R.drawable.ic_db, a.primaryInk, "الطريقة: " + kindName(a.db), st.folder, a.can(Auth.Perm.SYNC) ? "تغيير" : null,
+749:                 a.can(Auth.Perm.SYNC) ? v -> changeTransport() : null);
+750:         if ("server".equals(k)) {
+751:             final String link = HttpSyncFolder.link(a.db.setting("sync_server", ""), st.vaultId);
+752:             a.groupRow(g, R.drawable.ic_key, a.primaryInk, "رابط الانضمام للأجهزة الأخرى", link, "نسخ", v -> {
+753:                 ClipboardManager cm = (ClipboardManager) a.getSystemService(Context.CLIPBOARD_SERVICE);
+754:                 if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("رابط الانضمام", link));
+755:                 a.toast("نُسخ رابط الانضمام. أرسله لجهازك الآخر مع كلمة سر المزامنة.");
+756:             });
+757:         }
+758:         // 12.7: الجولة نفسها التي يستخدمها زر الشريط: تكمل إن تُرك التطبيق، ولا تُظهر خطأ عابرًا عند العودة
+759:         a.button("مزامنة الآن", a.primary, v -> now(this::show));
+760: 
+761:         a.button("شرح مفصّل لهذه الطريقة", Color.rgb(120, 120, 120), v -> help(transport(a.db), this::show));
+762: 
+763:         if (!devs) a.hint("قائمة أجهزة المزامنة وسجلاتها تظهر لمن أعطاه المدير صلاحية «رؤية أجهزة المزامنة» (المستخدمون ← الصلاحيات).");
+764:         else a.section("الأجهزة", null, null);
+765:         LinearLayout dg = a.group();
+766:         String prov = "";
+767:         SyncFolder fo = folder(a, a.db);
+768:         if (fo instanceof SafSyncFolder) prov = ((SafSyncFolder) fo).provider();
+769:         for (JSONObject m : devs ? st.members : new java.util.ArrayList<JSONObject>()) {
+770:             String dev = m.optString("dev");
+771:             boolean me = dev.equals(st.device);
+772:             String role = dev.equals(st.founderDev) || (me && st.founder) ? " • الرئيسي" : "";
+773:             String line = m.optString("platform") + " • الإصدار " + m.optString("app") + role + " • آخر ظهور " + MainActivity.agoAt(m.optLong("at"));
+774:             if (me) line += "\nأرسل " + st.mySeq + " حزمة" + (st.unsent > 0 ? " (" + st.unsent + " لم تُرفع بعد)" : " — كلها في المجلد");
+775:             else if (st.peers.containsKey(dev)) line += "\n" + SyncEngine.peerText(st.peers.get(dev), prov);
+776:             JSONObject pr = st.peers.get(dev);
+777:             boolean late = pr != null && pr.optLong("have") < pr.optLong("announced");
+778:             final JSONObject mm = m;
+779:             boolean removable = !me && a.can(Auth.Perm.SYNC) && !dev.equals(st.founderDev);
+780:             // 10.5: الجهاز الرئيسي ينقل دوره من هنا («إجراءات»: اجعله الرئيسي / إزالة)
+781:             boolean actions = removable && st.founder;
+782:             // 10.17: المدير يعيد تسمية أي جهاز (من غير الجهاز الرئيسي أيضًا)

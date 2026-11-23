@@ -1,0 +1,24 @@
+170:         String out = "", err = "";
+171:     }
+172: 
+173:     static Res run(String... cmd) throws Exception {
+174:         Process p = new ProcessBuilder(cmd).start();
+175:         Res r = new Res();
+176:         r.out = read(p.getInputStream());
+177:         r.err = read(p.getErrorStream());
+178:         if (!p.waitFor(20, TimeUnit.SECONDS)) {
+179:             p.destroyForcibly();
+180:             throw new IllegalStateException("انتهت مهلة سلسلة المفاتيح");
+181:         }
+182:         r.code = p.exitValue();
+183:         return r;
+184:     }
+185: 
+186:     private static String read(InputStream in) throws Exception {
+187:         ByteArrayOutputStream o = new ByteArrayOutputStream();
+188:         byte[] b = new byte[4096];
+189:         int n;
+190:         while ((n = in.read(b)) > 0) o.write(b, 0, n);
+191:         return new String(o.toByteArray(), StandardCharsets.UTF_8);
+192:     }
+193: }

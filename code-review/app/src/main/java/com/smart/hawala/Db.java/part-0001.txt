@@ -1,0 +1,155 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.ContentValues;
+4: import android.content.Context;
+5: import android.database.Cursor;
+6: import net.zetetic.database.sqlcipher.SQLiteDatabase;
+7: import net.zetetic.database.sqlcipher.SQLiteOpenHelper;
+8: import java.io.ByteArrayOutputStream;
+9: import java.io.File;
+10: import java.io.FileInputStream;
+11: import java.io.FileOutputStream;
+12: import java.io.IOException;
+13: import java.io.InputStream;
+14: import java.math.BigDecimal;
+15: import java.math.RoundingMode;
+16: import java.text.Collator;
+17: import java.util.ArrayList;
+18: import java.util.Arrays;
+19: import java.util.Collections;
+20: import java.util.Comparator;
+21: import java.util.HashMap;
+22: import java.util.HashSet;
+23: import java.util.Iterator;
+24: import java.util.LinkedHashMap;
+25: import java.util.List;
+26: import java.util.Locale;
+27: import java.util.Map;
+28: import java.util.Set;
+29: import java.util.TreeMap;
+30: import java.util.UUID;
+31: import org.json.JSONObject;
+32: 
+33: /**
+34:  * قاعدة البيانات: البنية، الحركات والقيود، الأرصدة، الإعدادات، المستخدمون، وتصدير/استيراد النسخة الاحتياطية.
+35:  * كل تعديل مالي داخل معاملة واحدة: إما أن يُحفظ كاملًا أو لا يُحفظ شيء.
+36:  *
+37:  * <p>قاعدة مهمة (سبب خطأ الكشوفات الفارغة في 5.0): أندرويد يمرّر معاملات الاستعلام نصوصًا،
+38:  * ومقارنة تعبير رقمي بنص لا تطابق شيئًا. لذلك الأرقام (تواريخ، معرّفات) تُكتب في الاستعلام كأرقام مباشرة
+39:  * (قيم long من Java، فلا خطر حقن)، والنصوص فقط تُمرَّر كمعاملات.
+40:  */
+41: public class Db extends SQLiteOpenHelper {
+42:     /** 7 = 8.0: خانات الخدمة والوجهة وساقي تبديل العملة. 8 = 9.0: صندوق المكتب. */
+43:     /** 9 (10.16): جدول audit_feed (سجل العمليات المشترك بين الأجهزة). */
+44:     /** 10 (10.17): عمود users.nick (الاسم الظاهر)، وجدولا رسائل المدير admin_msgs وadmin_msg_state. */
+45:     /** 11 (10.18): الأمانات والمبالغ المجمّدة office_holds (متزامن)، وسجل الإشعارات notif_log (محلي). */
+46:     /**
+47:      * 12 (12.4): tx.special وtx.special_bal (الحركات الخاصة)، وoffice_holds.to_tx (الأمانة التي حُوّلت إلى حركة).
+48:      * 13 (12.5): currencies.kind/metal/unit/fineness/valued (المعادن الثمينة بالوزن).
+49:      */
+50:     public static final int VER = 13;
+51:     public static final String NAME = "smart_accountant.db";
+52: 
+53:     public static final String TYPE_DEBIT = Model.TYPE_DEBIT;
+54:     public static final String TYPE_CREDIT = Model.TYPE_CREDIT;
+55:     public static final String FEE_NONE = Model.FEE_NONE;
+56:     public static final String FEE_US = Model.FEE_US;
+57:     public static final String FEE_THEM = Model.FEE_THEM;
+58: 
+59:     /** اسم المستخدم الحالي (يُسجَّل مع كل حركة وفي سجل التدقيق). */
+60:     public static volatile String currentUserName = "المستخدم المحلي";
+61: 
+62:     /**
+63:      * 10.0: عمليات يجريها التطبيق نفسه (حل تعارض المزامنة): بلا فحص صلاحيات المستخدم الحالي.
+64:      * 10.5 (AUDIT-003): الإذن خاص بالخيط الذي يجري المزامنة وحده؛ كان علمًا عامًا فتمر خلاله عمليات المستخدم من الواجهة
+65:      * في الوقت نفسه دون فحص صلاحياته.
+66:      */
+67:     private final ThreadLocal<Boolean> systemTl = new ThreadLocal<>();
+68: 
+69:     boolean isSystem() { return Boolean.TRUE.equals(systemTl.get()); }
+70: 
+71:     void setSystem(boolean on) {
+72:         if (on) systemTl.set(Boolean.TRUE);
+73:         else systemTl.remove();
+74:     }
+75: 
+76:     /** 10.0: استعادة لقطة الخزنة عند الانضمام (لا تُخرج الجهاز من المزامنة). */
+77:     volatile boolean restoringForSync;
+78: 
+79:     /** 10.0: بادئة أرقام هذا الجهاز في المزامنة (0 = المزامنة غير مفعّلة: ترقيم SQLite العادي). */
+80:     volatile long syncPrefix;
+81: 
+82:     /** إدراج صف: مع المزامنة يأخذ الصف رقمًا من نطاق هذا الجهاز، فلا يتكرر رقم بين جهازين أبدًا. */
+83:     long ins(SQLiteDatabase d, String table, ContentValues v) {
+84:         if (syncPrefix > 0 && v.get("id") == null && SyncStore.ID_TABLES.contains(table)) v.put("id", SyncStore.nextId(d, table, syncPrefix));
+85:         return d.insertOrThrow(table, null, v);
+86:     }
+87: 
+88:     /** بعد رمز استرداد صحيح فقط: يُسمح بتغيير رمز المدير قبل الدخول. */
+89:     static volatile boolean recoveryGrant;
+90: 
+91:     /**
+92:      * 8.0: فحص صلاحية ثانٍ داخل طبقة البيانات، فلا يتجاوز العمليات الخطرة مسار واجهة منسيّ.
+93:      * بلا نظام مستخدمين يعمل التطبيق بصلاحيات كاملة كما كان. النسخ التلقائي المجدول لا يمر بهذه العمليات.
+94:      */
+95:     void require(Auth.Perm p) {
+96:         if (isSystem() || !usersEnabled()) return;
+97:         Model.User u = SmartApp.currentUser;
+98:         // 10.1: الصلاحيات تُقرأ من قاعدة البيانات كل مرة (قد يغيّرها المدير من جهاز آخر عبر المزامنة)
+99:         Model.User now = u == null ? null : user(u.id);
+100:         if (now == null || !now.active) throw new SecurityException("حسابك موقوف أو غير موجود. سجّل الدخول من جديد.");
+101:         if (!Auth.can(now, p)) throw new SecurityException("ليست لديك صلاحية لهذه العملية");
+102:     }
+103: 
+104:     /**
+105:      * 10.5 (AUDIT-023): عمليات تخص المدير وحده مهما كانت صلاحيات المستخدم: إنشاء مدير أو ترقيته، تعديل حساب مدير
+106:      * أو تغيير رمزه، إيقاف نظام المستخدمين، ورمز الاسترداد. صلاحية «المستخدمون» تدير حسابات الموظفين فقط.
+107:      */
+108:     void requireAdmin(String why) {
+109:         if (isSystem() || !usersEnabled()) return;
+110:         Model.User u = SmartApp.currentUser;
+111:         Model.User now = u == null ? null : user(u.id);
+112:         if (now == null || !now.active) throw new SecurityException("حسابك موقوف أو غير موجود. سجّل الدخول من جديد.");
+113:         if (!Auth.isAdmin(now)) throw new SecurityException(why);
+114:     }
+115: 
+116:     /** المستخدم الحالي بحالته الآن (null بلا نظام مستخدمين أو بلا دخول). */
+117:     Model.User actor() {
+118:         Model.User u = SmartApp.currentUser;
+119:         return u == null || !usersEnabled() ? null : user(u.id);
+120:     }
+121: 
+122:     /** هل يملك المستخدم الحالي الصلاحية الآن (بلا مستخدمين: نعم). */
+123:     public boolean allowed(Auth.Perm p) {
+124:         if (!usersEnabled()) return true;
+125:         Model.User u = SmartApp.currentUser;
+126:         Model.User now = u == null ? null : user(u.id);
+127:         return now != null && now.active && Auth.can(now, p);
+128:     }
+129: 
+130:     static final Map<String, List<String>> SENSITIVE = new HashMap<>();
+131:     static {
+132:         SENSITIVE.put("offices", Arrays.asList("name", "short_name", "phone", "location", "contact", "notes"));
+133:         SENSITIVE.put("tx", Arrays.asList("person", "description", "notes", "user_name", "dest"));
+134:         SENSITIVE.put("audit_logs", Arrays.asList("user_name", "reason"));
+135:         SENSITIVE.put("audit_archive", Arrays.asList("user_name", "reason"));
+136:         SENSITIVE.put("reconciliations", Arrays.asList("note", "user_name"));
+137:         SENSITIVE.put("cash_moves", Arrays.asList("party", "description", "user_name", "cancel_reason"));
+138:         SENSITIVE.put("cash_counts", Arrays.asList("user_name", "note", "sales"));
+139:         SENSITIVE.put("cash_clients", Arrays.asList("name", "phone", "note"));
+140:         SENSITIVE.put("client_moves", Arrays.asList("description", "user_name", "cancel_reason"));
+141:         SENSITIVE.put("tx_checks", Arrays.asList("user_name", "void_reason"));
+142:         SENSITIVE.put("wa_marks", Arrays.asList("text", "msg_time", "user_name"));
+143:         SENSITIVE.put("office_work", Arrays.asList("user_name"));
+144:         SENSITIVE.put("audit_feed", Arrays.asList("user_name", "reason"));
+145:         SENSITIVE.put("admin_msgs", Arrays.asList("from_name", "body"));
+146:         SENSITIVE.put("office_holds", Arrays.asList("note", "user_name", "released_by"));
+147:     }
+148: 
+149:     /** إعدادات خاصة بهذا الهاتف: لا تُنقل في النسخة ولا تُستبدل عند الاستعادة. */
+150:     static final Set<String> DEVICE_SETTINGS = new HashSet<>(Arrays.asList(
+151:             // 10.14: رمز استرداد النسخ (مفتاحه مشفّر بمفتاح هذا الجهاز) وحساب Google لهذا الجهاز
+152:             "backup_rc_key", "backup_rc_salt", "backup_rc_iter", "backup_rc_at", "drive_account",
+153:             // 11.0: نافذة الكمبيوتر (عرض العمود والتكبير) تخص الجهاز
+154:             "sync_usage_open", "sync_audit_ok",
+155:             "desk_column", "desk_zoom", "desk_ui", "desk_wizard", "desk_phone_bounds",

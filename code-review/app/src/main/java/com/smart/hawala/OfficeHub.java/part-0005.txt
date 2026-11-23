@@ -1,0 +1,132 @@
+640:             hd.addView(a.chip("⏳ " + t.special, a.warnInk, a.warnBg));
+641:             View fill = new View(a);
+642:             hd.addView(fill, new LinearLayout.LayoutParams(0, 1, 1));
+643:             hd.addView(t.isPending() ? a.chip("بانتظار الاعتماد", a.muted, a.surface)
+644:                     : t.isUnposted() ? a.chip("لا تُحسب في الرصيد", a.muted, a.surface) : a.chip("تُحسب في الرصيد", a.green, a.creditBg));
+645:             c.addView(hd);
+646:             boolean debit = Model.TYPE_DEBIT.equals(t.type);
+647:             c.addView(a.text((debit ? "لنا " : "علينا ") + a.mf(t.amount, a.db.decimals(t.currency)) + " " + t.currency
+648:                     + (t.hasFee() ? "  •  أجرة " + a.mf(t.fee, a.db.decimals(t.feeCurrency)) + " " + t.feeCurrency : "  •  بلا أجرة"), 16, debit ? a.green : a.red, true));
+649:             String desc = Model.nz(t.person).isEmpty() ? MessageParser.compact(t.description, null) : t.person;
+650:             c.addView(a.text(Model.date(t.createdAt) + (t.userName.isEmpty() ? "" : " • " + t.userName) + (Model.nz(desc).isEmpty() ? "" : "\n" + desc), 12, a.muted, false));
+651:             c.setOnClickListener(v -> specialActions(o, t, refresh));
+652:             content.addView(c, a.lp(-1, -2, 4));
+653:         }
+654: 
+655:         // ---------------- الأمانات والمجمّد
+656:         content.addView(a.text("الأمانات والمبالغ المجمّدة", 16, a.ink, true), a.lp(-1, -2, 14));
+657:         content.addView(a.text("الأمانة المنفصلة لا تدخل في الرصيد ولا في القيود. التجميد يُبقي الرصيد كما هو ويعلّم جزءًا منه «مجمّدًا» فيظهر المتاح. "
+658:                 + "اضغط على أي منها لتحويله لحركة عادية أو فكّه.", 12, a.muted, false));
+659:         if (o.active && a.can(Auth.Perm.HOLDS)) {   // 12.0
+660:             android.widget.Button add = a.smallButton("+ أمانة / تجميد", a.primary, v -> addHold(o, refresh));
+661:             content.addView(add, a.lp(-1, 44, 6));
+662:         }
+663:         List<Db.Hold> all = a.db.holds(o.id, false);
+664:         if (all.isEmpty()) content.addView(a.text("لا أمانات ولا مبالغ مجمّدة لهذا المكتب.", 14, a.muted, false));
+665:         for (final Db.Hold h : all) {
+666:             LinearLayout c = card();
+667:             LinearLayout hd = a.row();
+668:             hd.addView(a.text(h.label(), 14, a.ink, true), new LinearLayout.LayoutParams(0, -2, 1));
+669:             hd.addView(a.chip(h.open() ? "قائم" : h.toTx.isEmpty() ? "فُكّ" : "حُوّل لحركة", h.open() ? a.warnInk : a.muted, h.open() ? a.warnBg : a.surface));
+670:             c.addView(hd);
+671:             c.addView(a.text(a.mf(h.amount, a.db.decimals(h.currency)) + " " + h.currency, 16, a.primaryInk, true));
+672:             c.addView(a.text(Model.date(h.at) + (h.by.isEmpty() ? "" : " • " + h.by) + (h.open() ? "" : "\n" + (h.toTx.isEmpty() ? "فُكّ " : "حُوّل لحركة ") + Model.date(h.releasedAt)
+673:                     + (h.releasedBy.isEmpty() ? "" : " • " + h.releasedBy)) + (h.note.isEmpty() ? "" : "\n" + h.note), 12, a.muted, false));
+674:             if (h.open() && a.can(Auth.Perm.HOLDS)) c.setOnClickListener(v -> holdActions(o, h, refresh));
+675:             content.addView(c, a.lp(-1, -2, 4));
+676:         }
+677:     }
+678: 
+679:     private LinearLayout card() {
+680:         LinearLayout c = new LinearLayout(a);
+681:         c.setOrientation(LinearLayout.VERTICAL);
+682:         c.setPadding(a.dp(14), a.dp(10), a.dp(14), a.dp(10));
+683:         c.setBackground(a.ripple(a.round(a.surface, a.line, 16), 16));
+684:         return c;
+685:     }
+686: 
+687:     /** 12.4: بأي تاريخ تنزل الحركة بالكشف؟ (الأصلي أو اليوم) ثم ينفّذ go(keepDate). */
+688:     private void whichDate(long original, final java.util.function.Consumer<Boolean> go) {
+689:         boolean today = Model.day(original).equals(Model.day(Clock.now()));
+690:         if (today) {
+691:             go.accept(true);
+692:             return;
+693:         }
+694:         new AlertDialog.Builder(a).setTitle("بأي تاريخ تنزل بالكشف والمطابقة؟")
+695:                 .setItems(new String[]{"بتاريخها الأصلي: " + Model.day(original), "بتاريخ اليوم: " + Model.day(Clock.now())}, (d, w) -> go.accept(w == 0))
+696:                 .setNegativeButton("إلغاء", null).show();
+697:     }
+698: 
+699:     private void specialActions(final Model.Office o, final Model.Tx t, final Runnable refresh) {
+700:         final List<String> acts = new ArrayList<>();
+701:         final boolean sp = a.can(Auth.Perm.SPECIAL);
+702:         if (sp && !t.isPending()) {
+703:             acts.add("تحويل لحركة عادية");
+704:             acts.add("تعديل (النوع، الأجور، الحساب في الرصيد…)");
+705:             if (t.isUnposted()) acts.add("إلغاء الحركة الخاصة");
+706:         }
+707:         if (t.isActive() && a.can(Auth.Perm.TX_CANCEL)) acts.add("إلغاء الحركة بقيد عكسي");
+708:         acts.add("التفاصيل");
+709:         new AlertDialog.Builder(a).setTitle("⏳ " + t.special + " — " + a.mf(t.amount, a.db.decimals(t.currency)) + " " + t.currency)
+710:                 .setItems(acts.toArray(new String[0]), (d, w) -> {
+711:                     String act = acts.get(w);
+712:                     if (act.startsWith("تحويل")) whichDate(t.createdAt, keep -> a.txScreen.showConvert(t, keep, () -> showOffice(o)));
+713:                     else if (act.startsWith("تعديل")) a.txScreen.showEdit(t, () -> showOffice(o));
+714:                     else if (act.equals("إلغاء الحركة الخاصة")) a.confirm("إلغاء الحركة الخاصة", "لم تدخل الرصيد بعد، فتُلغى بلا قيد عكسي وتبقى في السجل.", "إلغاء الحركة", () -> {
+715:                         try {
+716:                             a.db.voidSpecial(t.id, "");
+717:                             a.toast("أُلغيت ✓");
+718:                             refresh.run();
+719:                         } catch (Exception e) {
+720:                             a.error(e);
+721:                         }
+722:                     });
+723:                     else if (act.startsWith("إلغاء")) a.logScreen.details(t, refresh);
+724:                     else a.logScreen.details(t, refresh);
+725:                 }).show();
+726:     }
+727: 
+728:     private void holdActions(final Model.Office o, final Db.Hold h, final Runnable refresh) {
+729:         final boolean trust = Db.HOLD_TRUST.equals(h.kind);
+730:         final List<String> acts = new ArrayList<>();
+731:         if (o.active && a.can(Auth.Perm.TX_ADD)) acts.add(trust ? "تحويل لحركة عادية (تنزل بالكشف والمطابقة)" : "تسجيله حركة عادية (انصرف المبلغ فعلًا)");
+732:         acts.add(trust ? "فكّ الأمانة بلا حركة" : "فكّ التجميد (الرصيد كما هو)");
+733:         new AlertDialog.Builder(a).setTitle(h.label() + " — " + a.mf(h.amount, a.db.decimals(h.currency)) + " " + h.currency)
+734:                 .setItems(acts.toArray(new String[0]), (d, w) -> {
+735:                     String act = acts.get(w);
+736:                     if (act.startsWith("تحويل") || act.startsWith("تسجيله")) whichDate(h.at, keep -> a.txScreen.showFromHold(h, keep, () -> showOffice(o)));
+737:                     else a.confirm(trust ? "فكّ الأمانة" : "فكّ التجميد", trust ? "تُعلَّم كمفكوكة وتبقى في السجل. لا يُنشئ أي قيد." : "يرجع المبلغ متاحًا. الرصيد لا يتغير.",
+738:                             "فكّ", () -> {
+739:                                 try {
+740:                                     a.db.releaseHold(h.uuid);
+741:                                     a.toast("فُكّ ✓");
+742:                                     refresh.run();
+743:                                 } catch (Exception e) {
+744:                                     a.error(e);
+745:                                 }
+746:                             });
+747:                 }).show();
+748:     }
+749: 
+750:     private void addHold(final Model.Office o, final Runnable refresh) {
+751:         final List<String> curs = new ArrayList<>(a.db.officeCurrencies(o.id));
+752:         if (curs.isEmpty()) {
+753:             a.toast("أضف عملة للمكتب أولًا");
+754:             return;
+755:         }
+756:         LinearLayout l = new LinearLayout(a);
+757:         l.setOrientation(LinearLayout.VERTICAL);
+758:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+759:         l.addView(a.label("النوع"));
+760:         final Ui.Seg kind = a.new Seg(new String[]{"أمانة منفصلة", "تجميد من الرصيد"}, null, 0, false);
+761:         l.addView(kind.view, a.lp(-1, -2, 2));
+762:         l.addView(a.label("الاتجاه"));
+763:         final Ui.Seg side = a.new Seg(new String[]{"للمكتب عندنا / من «علينا»", "لنا عنده / من «لنا»"}, null, 0, false);
+764:         l.addView(side.view, a.lp(-1, -2, 2));
+765:         l.addView(a.label("العملة"));
+766:         final Ui.Seg cur = a.new Seg(curs.toArray(new String[0]), null, 0, false);
+767:         l.addView(cur.view, a.lp(-1, -2, 2));
+768:         final EditText amount = a.field("المبلغ");
+769:         amount.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
+770:         l.addView(amount, a.lp(-1, 50, 4));
+771:         final EditText note = a.field("ملاحظة (اختياري)");

@@ -1,0 +1,58 @@
+1: package com.smart.hawala;
+2: 
+3: /**
+4:  * 10.18: «الساعة الموحّدة». كل الأوقات التي يسجّلها البرنامج (الحركات، القيود، السجل، ترتيب المزامنة) تؤخذ من هنا لا من
+5:  * ساعة الجهاز مباشرة: ساعة الجهاز + فرق تصحيح يُتعلَّم من وقت خادم Google عند كل اتصال بمكان المزامنة (ترويسة Date)،
+6:  * ويُحفظ على الجهاز فيعمل بلا إنترنت بآخر تصحيح. جهاز ساعته خاطئة (حتى 12 ساعة) تُسجَّل حركاته بالوقت الصحيح.
+7:  * بلا مصدر وقت (لا مزامنة عبر Google) الفرق صفر والسلوك كما كان.
+8:  */
+9: public final class Clock {
+10:     private Clock() {}
+11: 
+12:     /** فروق أصغر من هذا ضجيج شبكة (دقة الترويسة ثانية) فلا تُصحَّح. */
+13:     static final long NOISE_MS = 3000;
+14:     private static volatile long offset;
+15:     private static volatile long learnedAt;
+16: 
+17:     public interface Saver {
+18:         void save(long offsetMs);
+19:     }
+20: 
+21:     public static volatile Saver saver;
+22: 
+23:     /** الوقت الموحّد الآن (ميلي ثانية منذ 1970، عالمي). */
+24:     public static long now() { return System.currentTimeMillis() + offset; }
+25: 
+26:     /** كم تنحرف ساعة الجهاز عن الوقت الصحيح (موجب = الجهاز متأخر). */
+27:     public static long offset() { return offset; }
+28: 
+29:     /** متى عُرف الفرق آخر مرة في هذه الجلسة (0 = من المحفوظ فقط). */
+30:     public static long learnedAt() { return learnedAt; }
+31: 
+32:     /** عند فتح القاعدة: آخر فرق محفوظ على هذا الجهاز. */
+33:     public static void load(long stored) { offset = Math.abs(stored) < NOISE_MS ? 0 : stored; }
+34: 
+35:     /** وقت الخادم كما ورد الآن في رد HTTPS. قيم غير معقولة (قبل 2024 أو فارغة) تُتجاهل. */
+36:     public static void learn(long serverMillis) {
+37:         if (serverMillis < 1_700_000_000_000L) return;
+38:         long o = serverMillis - System.currentTimeMillis();
+39:         if (Math.abs(o) < NOISE_MS) o = 0;
+40:         boolean changed = Math.abs(o - offset) >= 1000;
+41:         offset = o;
+42:         learnedAt = System.currentTimeMillis();
+43:         Saver s = saver;
+44:         if (changed && s != null) {
+45:             try {
+46:                 s.save(o);
+47:             } catch (Throwable ignored) {
+48:                 // الحفظ للجلسة التالية فقط
+49:             }
+50:         }
+51:     }
+52: 
+53:     /** للاختبارات. */
+54:     public static void reset() {
+55:         offset = 0;
+56:         learnedAt = 0;
+57:     }
+58: }

@@ -1,0 +1,69 @@
+1: package android.widget;
+2: 
+3: import android.content.Context;
+4: import android.content.res.ColorStateList;
+5: import android.graphics.*;
+6: 
+7: /** مفتاح Material: مسار ومقبض ينزلق. */
+8: public class Switch extends CompoundButton {
+9:     private float pos;
+10:     private ColorStateList thumbTint, trackTint;
+11:     private CharSequence textOn, textOff;
+12:     private boolean showText;
+13:     public Switch(Context c) { super(c); }
+14:     public Switch(Context c, android.util.AttributeSet a) { this(c); }
+15:     @Override protected int buttonWidth() { return Math.round(52 * d); }
+16:     public void setThumbTintList(ColorStateList t) { thumbTint = t; invalidate(); }
+17:     public void setTrackTintList(ColorStateList t) { trackTint = t; invalidate(); }
+18:     public void setThumbDrawable(android.graphics.drawable.Drawable dr) {}
+19:     public void setTrackDrawable(android.graphics.drawable.Drawable dr) {}
+20:     public void setTextOn(CharSequence t) { textOn = t; }
+21:     public void setTextOff(CharSequence t) { textOff = t; }
+22:     public void setShowText(boolean s) { showText = s; }
+23:     public void setSwitchMinWidth(int w) {}
+24:     public void setSwitchPadding(int p) {}
+25:     @Override public void setChecked(boolean c) {
+26:         boolean was = isChecked();
+27:         super.setChecked(c);
+28:         if (was != c && isAttachedToWindow() && !android.animation.Choreo.instant) {
+29:             android.animation.ValueAnimator a = android.animation.ValueAnimator.ofFloat(pos, c ? 1f : 0f);
+30:             a.setDuration(160);
+31:             a.addUpdateListener(x -> { pos = (float) x.getAnimatedValue(); invalidate(); });
+32:             a.start();
+33:         } else pos = c ? 1f : 0f;
+34:     }
+35:     @Override protected void drawButton(Canvas c, int x, int w) {
+36:         float cy = getHeight() / 2f;
+37:         float tw = 34 * d, th = 14 * d;
+38:         float cx = x + w / 2f;
+39:         boolean on = isChecked();
+40:         float p = isAttachedToWindow() ? pos : (on ? 1f : 0f);
+41:         if (!isAttachedToWindow()) pos = p;
+42:         boolean night = getContext() instanceof android.app.Activity && ((android.app.Activity) getContext()).themeNight();
+43:         int acc = accent();
+44:         int[] st = getDrawableState();
+45:         int track = trackTint != null ? trackTint.getColorForState(st, trackTint.getDefaultColor()) : on ? ((acc & 0xFFFFFF) | 0x80000000) : (night ? 0x4DFFFFFF : 0x61000000);
+46:         int thumb = thumbTint != null ? thumbTint.getColorForState(st, thumbTint.getDefaultColor()) : on ? acc : (night ? 0xFFBDBDBD : 0xFFF1F1F1);
+47:         Paint pp = new Paint(Paint.ANTI_ALIAS_FLAG);
+48:         pp.setColor(track);
+49:         float a = isEnabled() ? 1f : 0.5f;
+50:         pp.setAlpha(Math.round(Color.alpha(track) * a));
+51:         // في الواجهة العربية «مفعّل» إلى اليسار كما في أندرويد
+52:         boolean rtl = isRtl();
+53:         c.drawRoundRect(new RectF(cx - tw / 2, cy - th / 2, cx + tw / 2, cy + th / 2), th / 2, th / 2, pp);
+54:         float r = 10 * d;
+55:         float from = rtl ? cx + tw / 2 - r + 2 * d : cx - tw / 2 + r - 2 * d, to = rtl ? cx - tw / 2 + r - 2 * d : cx + tw / 2 - r + 2 * d;
+56:         float tx = from + (to - from) * p;
+57:         Paint sh = new Paint(Paint.ANTI_ALIAS_FLAG);
+58:         sh.setColor(0x33000000);
+59:         c.drawCircle(tx, cy + d, r, sh);
+60:         pp.setColor(thumb);
+61:         pp.setAlpha(Math.round(Color.alpha(thumb) * a));
+62:         c.drawCircle(tx, cy, r, pp);
+63:         if (isPressed() || isHovered()) {
+64:             Paint h = new Paint(Paint.ANTI_ALIAS_FLAG);
+65:             h.setColor((acc & 0xFFFFFF) | 0x22000000);
+66:             c.drawCircle(tx, cy, 20 * d, h);
+67:         }
+68:     }
+69: }

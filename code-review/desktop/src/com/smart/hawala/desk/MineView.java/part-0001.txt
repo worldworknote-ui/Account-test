@@ -1,0 +1,165 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.Auth;
+4: import com.smart.hawala.Db;
+5: import com.smart.hawala.Model;
+6: import java.awt.*;
+7: import java.awt.datatransfer.StringSelection;
+8: import java.util.ArrayList;
+9: import java.util.List;
+10: import java.util.Map;
+11: import javax.swing.*;
+12: 
+13: /**
+14:  * 10.5 (§7): «مكاتبي والتحقق» — المكاتب المخصصة للمحاسب بأرصدتها وعلامة آخر رسالة واتساب نُقلت لكل منها، وقائمة
+15:  * «بانتظار تحققي»: حركات نافذة أدخلها غيره ولم يتحقق منها. «تم التحقق» لا يُنشئ أي قيد.
+16:  */
+17: final class MineView extends View {
+18:     MineView(App app) { super(app, "مكاتبي"); }
+19: 
+20:     // 10.13: صفحات من الأعلى (كالهاتف): مكاتب للتسجيل، مكاتب للتحقق، مطابقات للتحقق، تسجيلات المحاسبين، وكل المكاتب للمدير
+21:     static final String P_REC = "rec", P_CHK = "chk", P_RECON = "recon", P_TX = "tx", P_ALL = "all";
+22:     String filter;
+23: 
+24:     List<String[]> pages() {
+25:         List<String[]> p = new ArrayList<>();
+26:         if (!db.myOffices().isEmpty()) p.add(new String[]{P_REC, "مكاتب للتسجيل"});
+27:         if (!db.myCheckOffices().isEmpty()) p.add(new String[]{P_CHK, "مكاتب للتحقق"});
+28:         if (can(Auth.Perm.VERIFY)) {
+29:             p.add(new String[]{P_RECON, "مطابقات للتحقق"});
+30:             p.add(new String[]{P_TX, "تسجيلات المحاسبين"});
+31:         }
+32:         if (can(Auth.Perm.USERS)) p.add(new String[]{P_ALL, "كل المكاتب"});
+33:         return p;
+34:     }
+35: 
+36:     @Override void refresh() {
+37:         clear();
+38:         int w = textWidth();
+39:         subtitle.setText("أسجّل " + db.myOffices().size() + " مكتب • أتحقق من " + db.myCheckOffices().size());
+40:         if (can(Auth.Perm.USERS)) action(Ui.ghost("فرز المكاتب بين المحاسبين", e -> app.go("team")));
+41:         List<String[]> pages = pages();
+42:         if (pages.isEmpty()) {
+43:             add(Ui.para("لم يخصص لك المدير مكاتب بعد (المستخدمون ← فرز المكاتب).", 13.5f, Ui.muted, w));
+44:             done();
+45:             return;
+46:         }
+47:         String cur = db.setting("mine_page", pages.get(0)[0]);
+48:         int sel = 0;
+49:         String[] labels = new String[pages.size()];
+50:         for (int i = 0; i < pages.size(); i++) {
+51:             labels[i] = pages.get(i)[1];
+52:             if (pages.get(i)[0].equals(cur)) sel = i;
+53:         }
+54:         Ui.Seg seg = new Ui.Seg(labels, null, sel);
+55:         seg.listener = i -> {
+56:             db.setSettingQuiet("mine_page", pages.get(i)[0]);
+57:             filter = null;
+58:             refresh();
+59:         };
+60:         seg.setMaximumSize(new Dimension(Math.min(w, 190 * labels.length), 46));
+61:         add(seg);
+62:         space(10);
+63:         String page = pages.get(sel)[0];
+64:         switch (page) {
+65:             case P_REC: offices(db.myOffices(), page, w); break;
+66:             case P_CHK: offices(db.myCheckOffices(), page, w); break;
+67:             case P_RECON: recons(w); break;
+68:             case P_TX: txs(w); break;
+69:             default: {
+70:                 List<Model.Office> all = new ArrayList<>();
+71:                 for (Model.Office o : db.offices()) if (o.active) all.add(o);
+72:                 offices(all, page, w);
+73:             }
+74:         }
+75:         done();
+76:     }
+77: 
+78:     static Color workColor(String s) {
+79:         if (Db.W_DOING.equals(s)) return Ui.dark ? new Color(251, 191, 36) : new Color(196, 118, 6);
+80:         if (Db.W_DONE.equals(s)) return Ui.green;
+81:         if (Db.W_RECON.equals(s)) return Ui.dark ? new Color(96, 165, 250) : new Color(37, 99, 235);
+82:         return Ui.muted;
+83:     }
+84: 
+85:     void offices(List<Model.Office> list, String page, int w) {
+86:         Map<Long, Db.Work> work = db.officeWork();
+87:         Map<Long, Db.Team> teams = new java.util.HashMap<>();
+88:         for (Db.Team t : db.teams()) teams.put(t.office.id, t);
+89:         Map<Long, Integer> waitMine = new java.util.HashMap<>();
+90:         if (P_CHK.equals(page)) for (Model.Tx t : db.awaitingMyCheck(60, 2000)) waitMine.merge(t.officeId, 1, Integer::sum);
+91:         Map<String, Integer> counts = new java.util.HashMap<>();
+92:         for (Model.Office o : list) {
+93:             Db.Work x = work.get(o.id);
+94:             counts.merge(x == null ? Db.W_NONE : x.status, 1, Integer::sum);
+95:         }
+96:         List<Component> fl = new ArrayList<>();
+97:         fl.add(filterBtn("الكل " + list.size(), null));
+98:         for (String k : Db.WORK_KEYS) fl.add(filterBtn(Db.workLabel(k) + " " + counts.getOrDefault(k, 0), k));
+99:         add(Ui.flow(fl.toArray(new Component[0])));
+100:         space(4);
+101:         String sort = db.setting("mine_sort", "status");
+102:         String[] sk = {"status", "name", "mine"};
+103:         Ui.Seg so = new Ui.Seg(new String[]{"بالحالة", "بالاسم", "ترتيبي"}, null, java.util.Arrays.asList(sk).indexOf(sort) < 0 ? 0 : java.util.Arrays.asList(sk).indexOf(sort));
+104:         so.listener = i -> {
+105:             db.setSettingQuiet("mine_sort", sk[i]);
+106:             refresh();
+107:         };
+108:         so.setMaximumSize(new Dimension(330, 40));
+109:         add(Ui.row(Ui.label("الترتيب:", 13, Ui.muted, false), so));
+110:         if ("mine".equals(sort)) add(Ui.para("رتّب بالسهمين ↑↓ في كل مكتب. الترتيب لك وحدك (ويتبعه الهاتف).", 12.5f, Ui.muted, w));
+111:         space(6);
+112:         List<Model.Office> shown = new ArrayList<>();
+113:         for (Model.Office o : list) {
+114:             Db.Work x = work.get(o.id);
+115:             if (filter == null || filter.equals(x == null ? Db.W_NONE : x.status)) shown.add(o);
+116:         }
+117:         java.text.Collator col = java.text.Collator.getInstance(new java.util.Locale("ar"));
+118:         List<String> order = new ArrayList<>(java.util.Arrays.asList(db.setting("mine_order", "").split(",")));
+119:         order.remove("");
+120:         if ("name".equals(sort)) shown.sort((x, y) -> col.compare(x.name, y.name));
+121:         else if ("mine".equals(sort)) shown.sort((x, y) -> {
+122:             int ix = order.indexOf(String.valueOf(x.id)), iy = order.indexOf(String.valueOf(y.id));
+123:             if (ix < 0) ix = Integer.MAX_VALUE;
+124:             if (iy < 0) iy = Integer.MAX_VALUE;
+125:             return ix != iy ? Integer.compare(ix, iy) : col.compare(x.name, y.name);
+126:         });
+127:         else shown.sort((x, y) -> {
+128:             Db.Work wx = work.get(x.id), wy = work.get(y.id);
+129:             int rx = Db.workRank(wx == null ? Db.W_NONE : wx.status), ry = Db.workRank(wy == null ? Db.W_NONE : wy.status);
+130:             return rx != ry ? Integer.compare(rx, ry) : col.compare(x.name, y.name);
+131:         });
+132:         if (shown.isEmpty()) add(Ui.para(list.isEmpty() ? "لا مكاتب في هذه الصفحة." : "لا مكاتب بهذه الحالة.", 13.5f, Ui.muted, w));
+133:         Map<String, Integer> dec = db.decimalsMap();
+134:         JPanel grid = new JPanel(new GridLayout(0, Math.max(1, Math.min(3, w / 330)), 10, 10));
+135:         grid.setOpaque(false);
+136:         grid.setAlignmentX(Component.RIGHT_ALIGNMENT);
+137:         for (int idx = 0; idx < shown.size(); idx++) {
+138:             Model.Office o = shown.get(idx);
+139:             Db.Work x = work.get(o.id) != null ? work.get(o.id) : new Db.Work();
+140:             Ui.Card c = Ui.card();
+141:             Color wc = workColor(x.status);
+142:             Ui.Btn st = Ui.button(Db.workLabel(x.status) + (x.manual != null ? " " : ""), Ui.mix(Ui.surface, wc, Ui.dark ? 0.25f : 0.14f), null);
+143:             st.colors(Ui.mix(Ui.surface, wc, Ui.dark ? 0.25f : 0.14f), wc);
+144:             st.setFont(Ui.font(12.5f, true));
+145:             st.setToolTipText(x.manual != null ? "وضعها " + x.byName + " — انقر للتغيير" : "تلقائية — انقر للتغيير");
+146:             if (db.canSetWork(o.id)) st.addActionListener(e -> pickStatus(st, o, x));
+147:             else st.setEnabled(false);
+148:             c.add(Ui.row(Ui.label(o.name, 15.5f, Ui.primaryInk, true), Box.createHorizontalGlue(), st));
+149:             List<String> marks = new ArrayList<>();
+150:             if (P_CHK.equals(page)) {
+151:                 Integer n = waitMine.get(o.id);
+152:                 marks.add(n == null || n == 0 ? "✓ تحققتُ" : " " + n + " بانتظار تحققي");
+153:                 Db.Team t = teams.get(o.id);
+154:                 marks.add("يسجّله: " + (t == null || t.owners.isEmpty() ? "—" : Db.names(t.owners)));
+155:             } else {
+156:                 if (x.myTxToday > 0) marks.add("✓ سجّلتُ " + x.myTxToday);
+157:                 else if (x.txToday > 0) marks.add("✓ سُجّلت " + x.txToday);
+158:                 if (x.reconToday) marks.add(x.myReconToday ? "✓ أرسلتُ مطابقة" : "✓ أُرسلت مطابقة");
+159:                 if (x.txToday > 0) marks.add(x.unverifiedToday == 0 ? "✓ تُحقِّق منها" : " " + x.unverifiedToday + " بلا تحقق");
+160:                 if (P_ALL.equals(page)) {
+161:                     Db.Team t = teams.get(o.id);
+162:                     marks.add("يسجّله: " + (t == null || t.owners.isEmpty() ? "—" : Db.names(t.owners)) + " • يتحقق: " + (t == null || t.checkers.isEmpty() ? "—" : Db.names(t.checkers)));
+163:                 }
+164:             }
+165:             if (!marks.isEmpty()) c.add(Ui.para(String.join("   ", marks), 12.5f, Ui.muted, 300));

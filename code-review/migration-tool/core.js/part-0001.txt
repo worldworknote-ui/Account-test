@@ -1,0 +1,182 @@
+1: /*
+2:  * أداة النقل إلى «المحاسب الذكي» — المنطق (بدون واجهة).
+3:  * تقرأ صفوف Excel/CSV، تحوّلها إلى مكاتب وأرصدة افتتاحية وحركات بقيد مزدوج مطابق تمامًا لما يكتبه التطبيق،
+4:  * ثم تكتب ملف نسخة احتياطية بصيغة SMARTBK5 (ZIP داخل غلاف AES-256-GCM مقسّم إلى أجزاء).
+5:  * المبالغ كلها أعداد صحيحة بالوحدة الصغرى (BigInt) حتى لا يدخل أي خطأ تقريب في الحسابات.
+6:  */
+7: "use strict";
+8: var Core = (function () {
+9:   // ===================================================================================
+10:   // نصوص
+11:   // ===================================================================================
+12:   var AR_DIGITS = { "٠": "0", "١": "1", "٢": "2", "٣": "3", "٤": "4", "٥": "5", "٦": "6", "٧": "7", "٨": "8", "٩": "9",
+13:     "۰": "0", "۱": "1", "۲": "2", "۳": "3", "۴": "4", "۵": "5", "۶": "6", "۷": "7", "۸": "8", "۹": "9", "٫": ".", "٬": ",", "−": "-", "–": "-" };
+14: 
+15:   function normDigits(s) {
+16:     return String(s).replace(/[٠-٩۰-۹٫٬−–]/g, function (c) { return AR_DIGITS[c]; });
+17:   }
+18: 
+19:   function clean(v) {
+20:     if (v === null || v === undefined) return "";
+21:     return String(v).replace(/[‎‏‪-‮⁦-⁩ ]/g, " ").replace(/\s+/g, " ").trim();
+22:   }
+23: 
+24:   /** مفتاح مطابقة أسماء المكاتب: يتجاهل المسافات الزائدة والتشكيل والتطويل وحالة الأحرف. */
+25:   function officeKey(name) {
+26:     return clean(name).replace(/[ً-ْـ]/g, "").toLowerCase();
+27:   }
+28: 
+29:   /** مفتاح أوسع لاكتشاف الأسماء المتشابهة (أ/إ/آ/ا، ة/ه، ى/ي). لا يُدمج به إلا بموافقة المستخدم. */
+30:   function looseKey(name) {
+31:     return officeKey(name).replace(/[أإآٱ]/g, "ا").replace(/ة/g, "ه").replace(/ى/g, "ي").replace(/ؤ/g, "و").replace(/ئ/g, "ي").replace(/\s/g, "");
+32:   }
+33: 
+34:   function headerKey(h) {
+35:     return looseKey(normDigits(h)).replace(/[:：.\-_/()\[\]]/g, "");
+36:   }
+37: 
+38:   // ===================================================================================
+39:   // المبالغ
+40:   // ===================================================================================
+41: 
+42:   /**
+43:    * يقرأ مبلغًا من خلية: رقم Excel أو نص مثل «1,250.50» أو «(300)» أو «٥٠٠» أو «500-».
+44:    * يرجع {empty:true} أو {ok:true, neg, int, frac, hadText} أو {ok:false, reason}.
+45:    */
+46:   function parseAmount(v) {
+47:     if (v === null || v === undefined) return { empty: true };
+48:     if (typeof v === "object" && v.n !== undefined) v = v.n;
+49:     else if (typeof v === "object" && v.s !== undefined) v = v.s;
+50:     else if (typeof v === "object" && v.date) return { ok: false, reason: "تاريخ في خانة مبلغ" };
+51:     if (typeof v === "number") {
+52:       if (!isFinite(v)) return { ok: false, reason: "رقم غير صالح" };
+53:       if (Math.abs(v) >= 1e15) return { ok: false, reason: "رقم كبير جدًا" };
+54:       if (v === 0) return { ok: true, zero: true, neg: false, int: "0", frac: "" };
+55:       var neg0 = v < 0;
+56:       var s0 = Math.abs(v).toFixed(10).replace(/0+$/, "").replace(/\.$/, "");
+57:       var p0 = s0.split(".");
+58:       return { ok: true, neg: neg0, int: p0[0].replace(/^0+(?=\d)/, ""), frac: p0[1] || "", zero: /^0*$/.test(p0[0] + (p0[1] || "")) };
+59:     }
+60:     var s = clean(normDigits(v));
+61:     if (s === "" || s === "-" || s === "—") return { empty: true };
+62:     var neg = false;
+63:     if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1).trim(); }
+64:     if (/^-/.test(s)) { neg = !neg; s = s.slice(1).trim(); } else if (/-$/.test(s)) { neg = !neg; s = s.slice(0, -1).trim(); }
+65:     var hadText = /[^\d.,\s]/.test(s);
+66:     var nums = s.replace(/[^\d.,]/g, " ").trim().split(/\s+/).filter(function (x) { return /\d/.test(x); });
+67:     if (nums.length === 0) return { ok: false, reason: "لا يوجد رقم" };
+68:     if (nums.length > 1) return { ok: false, reason: "أكثر من رقم في الخلية" };
+69:     var t = nums[0];
+70:     var lastDot = t.lastIndexOf("."), lastComma = t.lastIndexOf(",");
+71:     var intPart, fracPart;
+72:     if (lastDot >= 0 && lastComma >= 0) {
+73:       var dec = lastDot > lastComma ? "." : ",";
+74:       var other = dec === "." ? "," : ".";
+75:       var i = t.lastIndexOf(dec);
+76:       intPart = t.slice(0, i).split(other).join("");
+77:       fracPart = t.slice(i + 1);
+78:       if (intPart.indexOf(dec) >= 0 || /[.,]/.test(fracPart)) return { ok: false, reason: "صيغة رقم غير مفهومة" };
+79:     } else if (lastComma >= 0) {
+80:       var parts = t.split(",");
+81:       if (parts.length > 2 || (parts.length === 2 && parts[1].length === 3 && parts[0].length >= 1)) {
+82:         // فاصلة آلاف: 1,250 أو 1,250,000
+83:         if (!parts.slice(1).every(function (x) { return x.length === 3; })) return { ok: false, reason: "صيغة رقم غير مفهومة" };
+84:         intPart = parts.join("");
+85:         fracPart = "";
+86:       } else {
+87:         intPart = parts[0];
+88:         fracPart = parts[1] || "";
+89:       }
+90:     } else if (lastDot >= 0) {
+91:       var dp = t.split(".");
+92:       if (dp.length > 2) {
+93:         if (!dp.slice(1).every(function (x) { return x.length === 3; })) return { ok: false, reason: "صيغة رقم غير مفهومة" };
+94:         intPart = dp.join("");
+95:         fracPart = "";
+96:       } else {
+97:         intPart = dp[0];
+98:         fracPart = dp[1] || "";
+99:       }
+100:     } else {
+101:       intPart = t;
+102:       fracPart = "";
+103:     }
+104:     if (!/^\d*$/.test(intPart) || !/^\d*$/.test(fracPart) || (intPart + fracPart) === "") return { ok: false, reason: "صيغة رقم غير مفهومة" };
+105:     fracPart = fracPart.replace(/0+$/, "");
+106:     intPart = intPart.replace(/^0+(?=\d)/, "") || "0";
+107:     return { ok: true, neg: neg, int: intPart, frac: fracPart, hadText: hadText, zero: /^0*$/.test(intPart + fracPart) };
+108:   }
+109: 
+110:   /** مبلغ بالوحدة الصغرى (BigInt موجب). يرفض المبلغ إن كانت منازله العشرية أكثر من المسموح للعملة. */
+111:   function toMinor(p, dec) {
+112:     if (p.frac.length > dec) return null;
+113:     var f = p.frac;
+114:     while (f.length < dec) f += "0";
+115:     return BigInt(p.int + f);
+116:   }
+117: 
+118:   function fmtMinor(m, dec) {
+119:     var neg = m < 0n;
+120:     var s = (neg ? -m : m).toString();
+121:     while (s.length <= dec) s = "0" + s;
+122:     var ip = dec > 0 ? s.slice(0, s.length - dec) : s;
+123:     var fp = dec > 0 ? s.slice(s.length - dec) : "";
+124:     ip = ip.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+125:     return (neg ? "-" : "") + ip + (fp ? "." + fp : "");
+126:   }
+127: 
+128:   // ===================================================================================
+129:   // التواريخ
+130:   // ===================================================================================
+131: 
+132:   function validDate(y, m, d, H, M, S) {
+133:     if (!(y >= 1980 && y <= 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31 && H >= 0 && H < 24 && M >= 0 && M < 60 && S >= 0 && S < 60)) return null;
+134:     var dt = new Date(y, m - 1, d, H, M, S);
+135:     if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
+136:     return { y: y, m: m, d: d, H: H, M: M, S: S, hasTime: H !== 0 || M !== 0 || S !== 0 };
+137:   }
+138: 
+139:   /** order: dmy | mdy | ymd. يرجع {y,m,d,H,M,S,hasTime} أو null. */
+140:   function parseDate(v, order, serialToDate) {
+141:     if (v === null || v === undefined) return null;
+142:     if (typeof v === "object" && v.date) {
+143:       var x = v.date;
+144:       return validDate(x.y, x.m, x.d, x.H || 0, x.M || 0, Math.floor(x.S || 0));
+145:     }
+146:     if (typeof v === "object" && v.n !== undefined) v = v.n;
+147:     else if (typeof v === "object" && v.s !== undefined) v = v.s;
+148:     if (typeof v === "number") {
+149:       if (v > 20000 && v < 80000 && serialToDate) {
+150:         var d0 = serialToDate(v);
+151:         return d0 ? validDate(d0.y, d0.m, d0.d, d0.H || 0, d0.M || 0, Math.floor(d0.S || 0)) : null;
+152:       }
+153:       return null;
+154:     }
+155:     var s = clean(normDigits(v)).replace(/[،,]/g, " ").replace(/\s+/g, " ");
+156:     var tm = { H: 0, M: 0, S: 0 };
+157:     var tmatch = s.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm|ص|م|a\.m\.|p\.m\.)?/i);
+158:     if (tmatch) {
+159:       tm.H = +tmatch[1];
+160:       tm.M = +tmatch[2];
+161:       tm.S = tmatch[3] ? +tmatch[3] : 0;
+162:       var ap = (tmatch[4] || "").toLowerCase();
+163:       if ((ap === "pm" || ap === "م" || ap === "p.m.") && tm.H < 12) tm.H += 12;
+164:       if ((ap === "am" || ap === "ص" || ap === "a.m.") && tm.H === 12) tm.H = 0;
+165:       s = s.replace(tmatch[0], " ").trim();
+166:     }
+167:     var m = s.match(/(\d{1,4})\s*[\/\-.]\s*(\d{1,2})\s*[\/\-.]\s*(\d{1,4})/);
+168:     if (!m) {
+169:       if (/^\d{8}$/.test(s)) m = [s, s.slice(0, 4), s.slice(4, 6), s.slice(6, 8)];
+170:       else return null;
+171:     }
+172:     var a = +m[1], b = +m[2], c = +m[3], y, mo, d;
+173:     if (m[1].length === 4) { y = a; mo = b; d = c; }
+174:     else if (order === "mdy") { mo = a; d = b; y = c; }
+175:     else if (order === "ymd") { y = a; mo = b; d = c; }
+176:     else { d = a; mo = b; y = c; }
+177:     if (y < 100) y += 2000;
+178:     return validDate(y, mo, d, tm.H, tm.M, tm.S);
+179:   }
+180: 
+181:   /** يقترح ترتيب اليوم والشهر من نصوص التواريخ نفسها. */
+182:   function guessDateOrder(values) {

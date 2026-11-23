@@ -1,0 +1,134 @@
+421:     throw new Error("الطلب مبتور أو غير مقروء: انسخه كاملًا من رسالة العميل، أو افتح ملف الطلب");
+422:   }
+423: 
+424:   function parseRequest(text) {
+425:     if (String(text || "").indexOf("SA8-REQ:") < 0) throw new Error("هذا ليس طلب تفعيل من «المحاسب الذكي» 8 (يبدأ بـ SA8-REQ:)");
+426:     var j = extract(text, "SA8-REQ:", "A-Za-z0-9_\\-", function (c) {
+427:       var o = JSON.parse(fromUtf8(b64ToBytes(c)));
+428:       return o && typeof o === "object" ? o : null;
+429:     });
+430:     if (!j) throw new Error("الطلب مبتور أو غير مقروء: انسخه كاملًا من رسالة العميل");
+431:     if (j.t !== "sa-activate") throw new Error("نوع الطلب غير معروف");
+432:     return j;
+433:   }
+434: 
+435:   /**
+436:    * يفحص الطلب: errors تمنع الإصدار (إلا بتجاوز صريح)، warnings تُعرض للبائع، info للعلم.
+437:    * ledger اختياري: لتنبيه «هذا الهاتف لديه رخصة» و«رقم الطلب استُعمل».
+438:    */
+439:   async function reviewRequest(text, opts) {
+440:     opts = opts || {};
+441:     var out = { req: null, errors: [], warnings: [], info: [], attest: null, level: -1, pub: null };
+442:     var req;
+443:     try {
+444:       req = await parseRequestAny(text);
+445:     } catch (e) {
+446:       out.errors.push(e.message || "الطلب غير مقروء");
+447:       return out;
+448:     }
+449:     out.req = req;
+450:     var pub = b64ToBytes(req.pub || "");
+451:     out.pub = pub;
+452:     if (!pub.length) out.errors.push("الطلب بلا مفتاح عام");
+453:     else if ((await deviceFingerprint(pub)) !== req.dk) out.errors.push("بصمة الهاتف في الطلب لا تطابق مفتاحه (الطلب معدَّل)");
+454:     else {
+455:       try {
+456:         await subtle.importKey("spki", pub, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+457:       } catch (e) {
+458:         out.errors.push("مفتاح الهاتف ليس ECDSA P-256");
+459:       }
+460:     }
+461:     if (req.platform === "mac") {
+462:       // نسخة الماك: لا تصديق عتادي في الماك. المفتاح في «سلسلة المفاتيح» للمستخدم، والطلب يثبت حيازته بتوقيع رقم الطلب.
+463:       out.mac = true;
+464:       if (req.pkg !== MAC_PKG) out.errors.push("اسم البرنامج " + req.pkg + " وليس " + MAC_PKG + " (برنامج آخر أو نسخة معدّلة)");
+465:       if (!req.order) out.errors.push("الطلب بلا رقم طلب");
+466:       var want = "v=1;t=request;order=" + req.order + ";dk=" + req.dk;
+467:       if (req.proof !== want || !req.proofSig) out.errors.push("الطلب بلا إثبات حيازة المفتاح أو الإثبات لا يطابق رقم الطلب");
+468:       else if (pub.length) {
+469:         try {
+470:           var mk = await subtle.importKey("spki", pub, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+471:           var ok = await subtle.verify({ name: "ECDSA", hash: "SHA-256" }, mk, derToRaw(b64ToBytes(req.proofSig), 32), utf8(req.proof));
+472:           if (!ok) out.errors.push("توقيع إثبات الحيازة لا يتحقق (الطلب معدَّل)");
+473:           else out.info.push("الطلب موقّع بمفتاح هذا الماك نفسه.");
+474:         } catch (e) {
+475:           out.errors.push("تعذر التحقق من توقيع الطلب");
+476:         }
+477:       }
+478:       out.warnings.push("طلب من Mac: المفتاح محفوظ في «سلسلة مفاتيح» الماك (لا يوجد تصديق عتادي كما في الهاتف). يكفي لربط الرخصة بهذا الماك، لكنه أقل صرامة من الهاتف.");
+479:       if (req.hw) out.info.push("معرّف الجهاز: " + String(req.hw).substring(0, 12) + "…");
+480:     } else {
+481:       if (req.pkg !== PKG) out.errors.push("اسم الحزمة " + req.pkg + " وليس " + PKG + " (تطبيق آخر أو نسخة معدّلة)");
+482:       if (!req.order) out.errors.push("الطلب بلا رقم طلب");
+483:     }
+484:     if (req.platform === "mac") {
+485:       // لا سلسلة
+486:     } else if (!req.chain || !req.chain.length) {
+487:       out.warnings.push("لا توجد سلسلة تصديق: لا يمكن التأكد أن المفتاح محفوظ في عتاد آمن (محاكٍ أو هاتف لا يدعم التصديق).");
+488:     } else {
+489:       var a = await verifyChain(req.chain, opts);
+490:       out.attest = a;
+491:       if (!a.sigOk) out.errors.push("سلسلة التصديق لا تتحقق: " + a.problems.join("؛ "));
+492:       else if (!a.rootTrusted) out.warnings.push("السلسلة لا تنتهي بجذر Google: محاكٍ أو هاتف بتصديق غير معتمد.");
+493:       else out.info.push("السلسلة موقّعة حتى " + a.rootName + ".");
+494:       if (a.revoked.length) out.errors.push("شهادة في السلسلة ملغاة لدى Google: " + a.revoked.join("، "));
+495:       if (a.leafSpki && pub.length && !eq(a.leafSpki, pub)) out.errors.push("المفتاح المصدَّق ليس مفتاح الطلب");
+496:       var kd = a.kd;
+497:       if (!kd) out.warnings.push("لا يمكن قراءة وصف المفتاح المصدَّق.");
+498:       else {
+499:         out.level = kd.securityLevel;
+500:         var ch = fromUtf8(kd.challenge);
+501:         if (ch !== "SA8|" + req.order) out.errors.push("التحدي في التصديق «" + ch + "» لا يطابق رقم الطلب (طلب قديم أو منسوخ من هاتف آخر).");
+502:         if (kd.securityLevel === 0) out.warnings.push("المفتاح برمجي لا عتادي: يمكن نسخه من هاتف مروّت.");
+503:         else out.info.push("مستوى الحماية: " + (LEVELS[kd.securityLevel] || kd.securityLevel) + ".");
+504:         if (!kd.appId) out.warnings.push("التصديق بلا هوية التطبيق.");
+505:         else {
+506:           var names = kd.appId.packages.map(function (p) { return p.name; });
+507:           if (names.indexOf(PKG) < 0) out.errors.push("المفتاح أنشأه تطبيق آخر: " + names.join("، "));
+508:           if (kd.appId.signatures.indexOf(APP_CERT_SHA256) < 0) out.errors.push("التطبيق الذي أنشأ الطلب ليس موقّعًا بشهادتك (نسخة معدّلة أو معاد توقيعها).");
+509:           else out.info.push("التطبيق أصلي (بصمة شهادة التوقيع مطابقة).");
+510:         }
+511:         if (kd.rootOfTrust && (!kd.rootOfTrust.deviceLocked || kd.rootOfTrust.verifiedBootState !== "VERIFIED")) {
+512:           out.warnings.push("محمّل الإقلاع مفتوح أو النظام معدَّل (" + kd.rootOfTrust.verifiedBootState + "): الهاتف أقل أمانًا.");
+513:         }
+514:       }
+515:     }
+516:     // 12.7: هوية المكتب، وسجل محاولات استخدام الرخصة لمكتب آخر (مختوم بمفتاح الجهاز نفسه)
+517:     if (req.of) {
+518:       out.office = { of: req.of, active: opts.ledger ? officeSeats(opts.ledger, req.of) : 0 };
+519:       out.info.push("هوية المكتب: " + req.of + " • أجهزة مرخّصة لهذا المكتب الآن: " + out.office.active + ".");
+520:     } else out.warnings.push("الطلب من إصدار أقدم من 12.7: الرخصة لن تُربط بمكتب (تعمل على أي بيانات).");
+521:     if (req.mis && req.mis.length) {
+522:       var sigOk = false;
+523:       try {
+524:         var mk2 = await subtle.importKey("spki", pub, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+525:         sigOk = await subtle.verify({ name: "ECDSA", hash: "SHA-256" }, mk2, derToRaw(b64ToBytes(req.misSig || ""), 32), utf8(misuseBody(req.mis)));
+526:       } catch (e) {
+527:         sigOk = false;
+528:       }
+529:       out.misuse = { list: req.mis, signed: sigOk };
+530:       var days = req.mis.map(function (x) { return new Date(x.at).toISOString().substring(0, 10) + " (رخصة " + x.lid + " على مكتب " + x.saw + ")"; });
+531:       out.warnings.push("⚠ محاولة غش محتملة: حاول هذا الجهاز استخدام رخصة على بيانات مكتب آخر " + req.mis.length + " مرة: " + days.join("، ") + "."
+532:         + (sigOk ? " السجل مختوم بمفتاح الجهاز وسليم." : " تنبيه: ختم السجل لا يتحقق (عُدّل السجل)."));
+533:     }
+534:     var L = opts.ledger;
+535:     if (L && req.dk) {
+536:       L.licenses.forEach(function (l) {
+537:         if (l.dk === req.dk && l.status === "active") out.warnings.push("هذا الهاتف لديه رخصة فعّالة: " + l.lid + ".");
+538:         if (l.order === req.order && l.status !== "released") out.warnings.push("رقم الطلب " + req.order + " استُعمل في الرخصة " + l.lid + ".");
+539:       });
+540:     }
+541:     return out;
+542:   }
+543: 
+544:   // =================================================================================== المفاتيح والرمز
+545: 
+546:   async function importPrivatePem(pem) {
+547:     var blocks = pemBlocks(pem, "PRIVATE KEY");
+548:     if (!blocks.length) throw new Error("الملف ليس مفتاحًا خاصًا بصيغة PEM (BEGIN PRIVATE KEY)");
+549:     return importPkcs8(blocks[0]);
+550:   }
+551: 
+552:   async function importPkcs8(pkcs8) {
+553:     var key = await subtle.importKey("pkcs8", pkcs8, { name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]);
+554:     var jwk = await subtle.exportKey("jwk", key);

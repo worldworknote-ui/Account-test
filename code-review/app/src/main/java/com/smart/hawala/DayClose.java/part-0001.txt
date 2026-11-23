@@ -1,0 +1,66 @@
+1: package com.smart.hawala;
+2: 
+3: import java.nio.charset.StandardCharsets;
+4: import java.util.ArrayList;
+5: import java.util.Collections;
+6: import java.util.List;
+7: import javax.crypto.Mac;
+8: import javax.crypto.spec.SecretKeySpec;
+9: 
+10: /**
+11:  * 8.0 (ت5): بصمة اليوم (منطق بحت). ملخص قانوني لحركات يوم واحد (كل الحالات، مرتبة برقمها) يُوقَّع بـ HMAC بسرّ المكتب،
+12:  * فيُطبع رمز قصير على التقرير اليومي المصدَّر. من يعدّل رقمًا في الملف بعد خروجه من الهاتف لا يستطيع إنتاج رمز صحيح،
+13:  * والتطبيق يعيد الحساب ويقارن. إلغاء حركة أو تعديلها لاحقًا يغيّر بصمة يومها (وهذا مقصود: يدل على تغيير بعد الإقفال).
+14:  */
+15: public final class DayClose {
+16:     private DayClose() {}
+17: 
+18:     private static final String B32 = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+19: 
+20:     /** النص القانوني: سطر لكل حركة، والحقول مسبوقة بأطوالها. */
+21:     public static String canonical(String day, List<Model.Tx> txs) {
+22:         List<Model.Tx> l = new ArrayList<>(txs);
+23:         Collections.sort(l, (x, y) -> Long.compare(x.id, y.id));
+24:         StringBuilder b = new StringBuilder("SA-DAY-1|").append(day).append('|').append(l.size());
+25:         for (Model.Tx t : l) {
+26:             b.append('\n');
+27:             for (String s : new String[]{t.uuid, t.type, Long.toString(t.amount), t.currency, t.feeType, Long.toString(t.fee), t.feeCurrency,
+28:                     t.status, Long.toString(t.createdAt)}) {
+29:                 String v = s == null ? "" : s;
+30:                 b.append(v.length()).append(':').append(v).append('|');
+31:             }
+32:         }
+33:         return b.toString();
+34:     }
+35: 
+36:     /** رمز من 12 حرفًا (60 بتًا) بصيغة XXXX-XXXX-XXXX، بلا حروف ملتبسة. */
+37:     public static String code(byte[] key, String canonical) {
+38:         try {
+39:             Mac m = Mac.getInstance("HmacSHA256");
+40:             m.init(new SecretKeySpec(key, "HmacSHA256"));
+41:             byte[] h = m.doFinal(canonical.getBytes(StandardCharsets.UTF_8));
+42:             long v = 0;
+43:             for (int i = 0; i < 8; i++) v = (v << 8) | (h[i] & 0xff);
+44:             StringBuilder s = new StringBuilder();
+45:             for (int i = 0; i < 12; i++) {
+46:                 if (i > 0 && i % 4 == 0) s.append('-');
+47:                 s.append(B32.charAt((int) ((v >>> (59 - 5 * i)) & 31)));
+48:             }
+49:             return s.toString();
+50:         } catch (Exception e) {
+51:             throw new IllegalStateException(e);
+52:         }
+53:     }
+54: 
+55:     /** يوحّد ما يكتبه المستخدم: أحرف كبيرة، بلا مسافات أو شرطات (الأبجدية بلا 0 و1 وO وI أصلًا). */
+56:     public static String normalize(String typed) {
+57:         if (typed == null) return "";
+58:         StringBuilder s = new StringBuilder();
+59:         for (char ch : typed.toUpperCase(java.util.Locale.ROOT).toCharArray()) {
+60:             if (ch >= 0x0660 && ch <= 0x0669) ch = (char) ('0' + ch - 0x0660);
+61:             if (B32.indexOf(ch) >= 0) s.append(ch);
+62:         }
+63:         String r = s.toString();
+64:         return r.length() == 12 ? r.substring(0, 4) + "-" + r.substring(4, 8) + "-" + r.substring(8) : r;
+65:     }
+66: }

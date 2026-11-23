@@ -1,0 +1,157 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.app.DatePickerDialog;
+5: import android.graphics.Color;
+6: import android.text.InputType;
+7: import android.view.View;
+8: import android.widget.CheckBox;
+9: import android.widget.EditText;
+10: import android.widget.LinearLayout;
+11: import android.widget.Spinner;
+12: import android.widget.TextView;
+13: import java.io.File;
+14: import java.io.FileOutputStream;
+15: import java.math.BigDecimal;
+16: import java.nio.charset.StandardCharsets;
+17: import java.util.ArrayList;
+18: import java.util.Calendar;
+19: import java.util.Collections;
+20: import java.util.Iterator;
+21: import java.util.List;
+22: import java.util.Locale;
+23: import org.json.JSONObject;
+24: 
+25: /**
+26:  * 9.0: «مركز التقارير»: الفترة أولًا (اليوم، أمس، 7 أيام، هذا الشهر، الشهر الماضي، 3 أشهر، 12 شهرًا، هذه السنة، الكل، أو من–إلى)،
+27:  * ثم التقارير مرتبة في مجموعات: الأساسية، والجاهزة للفترة، والصندوق، والتقرير المخصص بخياراته كلها، والقوالب المحفوظة.
+28:  * الحساب في ReportBuilder وCashBox المشتركين مع الماك، والتصدير PDF و Excel و CSV.
+29:  */
+30: final class ReportsScreen {
+31:     private final MainActivity a;
+32:     /** الفترة المختارة (فهرس في ReportBuilder.PERIODS) وحدّا الفترة المخصصة. */
+33:     private int period = ReportBuilder.P_MONTH;
+34:     private long customFrom, customTo;
+35:     private ReportBuilder.Spec draft;
+36: 
+37:     ReportsScreen(MainActivity a) { this.a = a; }
+38: 
+39:     static final String KEY = "report_presets";
+40: 
+41:     long[] range() {
+42:         if (period == ReportBuilder.P_CUSTOM) return new long[]{customFrom, customTo};
+43:         return ReportBuilder.period(period, Clock.now());
+44:     }
+45: 
+46:     String rangeText() {
+47:         long[] r = range();
+48:         if (r[0] <= 0 && r[1] <= 0) return "كل الفترات";
+49:         return "من " + (r[0] > 0 ? "\u2066" + Model.day(r[0]) + "\u2069" : "البداية") + " إلى " + (r[1] > 0 ? "\u2066" + Model.day(r[1] - 1) + "\u2069" : "الآن");
+50:     }
+51: 
+52:     // ===================================================================================
+53:     // الشاشة الرئيسية
+54:     // ===================================================================================
+55: 
+56:     private boolean allPresets;
+57: 
+58:     void show() {
+59:         if (!a.require(Auth.Perm.VIEW) || !a.require(Auth.Perm.REPORTS)) return;   // 12.0
+60:         a.here(this::show);
+61:         a.tabbedScreen("مركز التقارير", a.moreScreen::show, "more");
+62:         periodCard(this::show);
+63:         final long[] r = range();
+64:         final StatementScreen.Period sp = new StatementScreen.Period(ReportBuilder.PERIODS[period], r[0], r[1] > 0 ? r[1] : Long.MAX_VALUE);
+65: 
+66:         a.section("الأساسية", null, null);
+67:         LinearLayout g = a.group();
+68:         int ic = a.primaryInk;
+69:         a.groupRow(g, R.drawable.ic_scale, ic, "أرصدة كل المكاتب", "الآن: لنا وعلينا لكل عملة، مع التقويم بالدولار", null, v -> a.balancesScreen.show());
+70:         a.groupRow(g, R.drawable.ic_doc, ic, "كشف مكتب للفترة", "اختر المكتب: حركاته ورصيده المتراكم للفترة المختارة", null,
+71:                 v -> a.officePicker(o -> a.statementScreen.show(o, sp, false)));
+72:         a.groupRow(g, R.drawable.ic_calendar, ic, "التقرير اليومي", "حركات يوم وأجوره ومجاميعه", null,
+73:                 v -> a.dailyScreen.show(r[0] > 0 ? r[0] : Clock.now()));
+74:         a.groupRow(g, R.drawable.ic_filter, ic, "البحث المتقدم في الحركات", "حسب المكتب والنوع والعملة والفترة والمبلغ", null, v -> a.logScreen.show(true));
+75:         if (a.can(Auth.Perm.OWNER)) a.groupRow(g, R.drawable.ic_pulse, ic, "تقارير صاحب المكتب", "النمو، التركّز، عمر الديون، الخاملة، الاتجاهات، الأجور، الخدمات", null, v -> a.ownerScreen.show());
+76:         if (a.db.cashConfig().on)
+77:             a.groupRow(g, R.drawable.ic_cash, ic, "تقرير صندوق المكتب للفترة", "الداخل والخارج والمصاريف حسب البند والجرد، وكشف برصيد متراكم", null,
+78:                     v -> a.cashScreen.reportFor(r[0], r[1], this::show));
+79: 
+80:         // 10.12: التحقق بين المحاسبين (مع نظام المستخدمين)
+81:         if (a.db.usersEnabled())
+82:             a.groupRow(g, R.drawable.ic_check2, ic, "التسجيل والتحقق بين المحاسبين", "لكل مكتب من يسجّل ومن يتحقق، وما تحقق منه وما ينتظر، والمطابقات", null,
+83:                     v -> teamReport(r[0], r[1]));
+84: 
+85:         a.section("جاهزة للفترة المختارة", null, null);
+86:         LinearLayout pg = a.group();
+87:         // 10.16: الأكثر استعمالًا أولًا، والبقية تظهر عند الطلب (كانت قائمة طويلة تزحم الشاشة)
+88:         final List<ReportBuilder.Preset> presets = ReportBuilder.presets();
+89:         int shownPresets = 0;
+90:         for (final ReportBuilder.Preset p : presets) {
+91:             if (!allPresets && shownPresets >= 5) break;
+92:             shownPresets++;
+93:             a.groupRow(pg, R.drawable.ic_report, ic, p.name, p.hint, null, v -> {
+94:                 ReportBuilder.Spec s = ReportBuilder.Spec.fromJson(p.spec.toJson());
+95:                 s.from = r[0];
+96:                 s.to = r[1];
+97:                 run(s, this::show);
+98:             });
+99:         }
+100:         if (presets.size() > 5) a.groupRow(pg, R.drawable.ic_sliders, a.muted, allPresets ? "إخفاء التقارير الإضافية" : "عرض بقية التقارير الجاهزة (" + (presets.size() - 5) + ")",
+101:                 allPresets ? null : "قص العملات، الحركات بين مكتبين، ساعات الذروة، الحوالات الكبيرة…", null, v -> {
+102:             allPresets = !allPresets;
+103:             show();
+104:         });
+105: 
+106:         a.section("تقرير مخصص", null, null);
+107:         LinearLayout cg = a.group();
+108:         a.groupRow(cg, R.drawable.ic_sliders, ic, "صمّم تقريرك", "المكاتب والعملات والاتجاه والنوع والحالة والمبلغ، والتجميع والجدول المتقاطع والمقارنة", null, v -> builder(null));
+109:         JSONObject st = stored();
+110:         List<String> names = new ArrayList<>();
+111:         for (Iterator<String> it = st.keys(); it.hasNext(); ) names.add(it.next());
+112:         Collections.sort(names);
+113:         for (final String n : names) {
+114:             a.groupRow(cg, R.drawable.ic_tag, ic, n, "قالب محفوظ — اضغط للتشغيل، ومطولًا للتعديل أو الحذف", null, v -> runSaved(n)).setOnLongClickListener(v -> {
+115:                 savedMenu(n);
+116:                 return true;
+117:             });
+118:         }
+119:         a.hint("كل تقرير يُصدَّر PDF أو Excel أو يُشارَك. القوالب المحفوظة تنتقل مع النسخة الاحتياطية وتعمل على الماك أيضًا.");
+120:     }
+121: 
+122:     /** 11.5: اختيار مكاتب التقرير مع بحث (كانت قائمة طويلة بلا بحث). بلا تحديد = كل المكاتب. */
+123:     private void chooseOffices(final List<Model.Office> offs, final java.util.Set<Long> chosen, final Runnable after) {
+124:         final java.util.Set<Long> pick = new java.util.TreeSet<>(chosen);
+125:         LinearLayout l = new LinearLayout(a);
+126:         l.setOrientation(LinearLayout.VERTICAL);
+127:         l.setPadding(a.dp(12), a.dp(6), a.dp(12), 0);
+128:         final EditText q = new EditText(a);
+129:         q.setHint("ابحث باسم المكتب");
+130:         q.setSingleLine(true);
+131:         l.addView(q, new LinearLayout.LayoutParams(-1, a.dp(52)));
+132:         final TextView count = a.text("", 12, a.muted, true);
+133:         l.addView(count);
+134:         android.widget.ScrollView sv = new android.widget.ScrollView(a);
+135:         final LinearLayout box = new LinearLayout(a);
+136:         box.setOrientation(LinearLayout.VERTICAL);
+137:         sv.addView(box);
+138:         float d = a.getResources().getDisplayMetrics().density;
+139:         int h = Math.max(220, Math.min(620, Math.round(a.getResources().getDisplayMetrics().heightPixels / d) - 300));
+140:         l.addView(sv, new LinearLayout.LayoutParams(-1, a.dp(h)));
+141:         final List<CheckBox> boxes = new ArrayList<>();
+142:         final Runnable counter = () -> count.setText(pick.isEmpty() ? "لا تحديد = كل المكاتب" : "المختارة: " + pick.size());
+143:         for (final Model.Office o : offs) {
+144:             CheckBox cb = new CheckBox(a);
+145:             cb.setText(o.name + (o.active ? "" : "  (موقوف)"));
+146:             cb.setChecked(pick.contains(o.id));
+147:             cb.setOnCheckedChangeListener((b, on) -> {
+148:                 if (on) pick.add(o.id);
+149:                 else pick.remove(o.id);
+150:                 counter.run();
+151:             });
+152:             cb.setTag(o);
+153:             boxes.add(cb);
+154:             box.addView(cb, new LinearLayout.LayoutParams(-1, a.dp(44)));
+155:         }
+156:         counter.run();
+157:         q.addTextChangedListener(Ui.watcher(() -> {

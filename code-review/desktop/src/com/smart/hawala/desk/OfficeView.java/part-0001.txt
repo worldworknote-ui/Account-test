@@ -1,0 +1,169 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.awt.datatransfer.StringSelection;
+6: import java.math.BigDecimal;
+7: import java.math.RoundingMode;
+8: import java.net.URI;
+9: import java.net.URLEncoder;
+10: import java.nio.charset.StandardCharsets;
+11: import java.util.*;
+12: import java.util.List;
+13: import javax.swing.*;
+14: import javax.swing.table.DefaultTableModel;
+15: 
+16: /** صفحة مكتب: الأرصدة، آخر الحركات، المطابقات، وأوامر المكتب (حركة، كشف، تعديل، تبديل عملة، دمج، مطابقة، إيقاف، حذف). */
+17: final class OfficeView extends View {
+18:     long officeId;
+19:     /** 10.18: العملة المختارة لتصفية حركات المكتب (null = الكل)، ونص البحث فيها. */
+20:     String txCur, txFind = "";
+21: 
+22:     OfficeView(App app) {
+23:         super(app, "المكتب");
+24:     }
+25: 
+26:     @Override void open(Object arg) {
+27:         if (!Long.valueOf(officeId).equals(arg)) {
+28:             txCur = null;
+29:             txFind = "";
+30:         }
+31:         officeId = (Long) arg;
+32:         try {
+33:             db.touchOffice(officeId);
+34:         } catch (Exception ignored) {
+35:             // ترتيب «آخر ما فتحته» غير حرج
+36:         }
+37:         refresh();
+38:     }
+39: 
+40:     @Override void refresh() {
+41:         clear();
+42:         Model.Office o = db.office(officeId);
+43:         if (o == null) {
+44:             add(Ui.label("المكتب غير موجود (ربما حُذف أو دُمج).", 15, Ui.muted, false));
+45:             done();
+46:             return;
+47:         }
+48:         int w = textWidth();
+49:         titleLabel.setText(o.name);
+50:         List<String> sub = new ArrayList<>();
+51:         if (!Model.nz(o.phone).isEmpty()) sub.add("هاتف: " + o.phone);
+52:         if (!Model.nz(o.location).isEmpty()) sub.add(o.location);
+53:         if (!Model.nz(o.contact).isEmpty()) sub.add(o.contact);
+54:         if (!o.active) sub.add("موقوف");
+55:         subtitle.setText(Model.join(sub, " · "));
+56:         // 10.18: تصميم صفحة المكتب كالهاتف: بطاقة الرصيد الخضراء، تأكيد المطابقة، أزرار مربعة، ثم تبويبات
+57:         JPopupMenu more = new JPopupMenu();
+58:         more.add(App.item("تعديل بيانات المكتب", 0, () -> OfficesView.edit(this, app, o, this::refresh)));
+59:         more.add(App.item(o.pinned ? "إلغاء التثبيت" : "تثبيت المكتب", 0, () -> {
+60:             db.setPinned(o.id, !o.pinned);
+61:             refresh();
+62:         }));
+63:         more.add(App.item(app.hidden() ? "إظهار المبالغ" : "إخفاء المبالغ", 0, () -> {
+64:             app.toggleHidden();
+65:             refresh();
+66:         }));
+67:         more.addSeparator();
+68:         more.add(App.item("دمج هذا المكتب في مكتب آخر…", 0, () -> merge(o)));
+69:         more.add(App.item(o.active ? "إيقاف المكتب" : "تفعيل المكتب", 0, () -> {
+70:             try {
+71:                 db.setOfficeActive(o.id, !o.active);
+72:                 refresh();
+73:             } catch (Exception ex) {
+74:                 Ui.error(this, ex);
+75:             }
+76:         }));
+77:         more.add(App.item("حذف المكتب…", 0, () -> delete(o)));
+78:         Ui.rtl(more);
+79:         Ui.Btn mb = Ui.ghost("خيارات المكتب…", null);
+80:         mb.addActionListener(e -> more.show(mb, 0, mb.getHeight()));
+81:         action(mb);
+82: 
+83:         Map<String, Integer> dec = db.decimalsMap();
+84:         Map<String, Long> bal = new TreeMap<>();
+85:         for (String c : db.officeCurrencies(o.id)) bal.put(c, 0L);
+86:         bal.putAll(db.balances(o.id));
+87:         Map<String, String> names = db.currencyNames();
+88:         Map<String, Db.Limit> limits = db.officeLimits(o.id);
+89:         Ui.Hero hero = new Ui.Hero();
+90:         hero.add(Ui.Hero.text("الرصيد الحالي", 13.5f, false, true));
+91:         hero.add(Box.createVerticalStrut(4));
+92:         for (Map.Entry<String, Long> e : bal.entrySet()) {
+93:             int d = dec.getOrDefault(e.getKey(), 2);
+94:             long v = e.getValue();
+95:             String nm = names.get(e.getKey());
+96:             JLabel amt = Ui.Hero.text(app.hidden() ? "••••" : Model.fmt(Math.abs(v), d), 26, true, false);
+97:             JPanel r = Ui.row(Ui.Hero.text(nm == null || nm.isEmpty() ? e.getKey() : nm + " · " + e.getKey(), 17, false, false), Box.createHorizontalGlue(), amt,
+98:                     Box.createHorizontalStrut(10), Ui.side(v));
+99:             r.setBorder(new javax.swing.border.EmptyBorder(5, 0, 5, 0));
+100:             hero.add(r);
+101:             Db.Limit l = limits.get(e.getKey());
+102:             if (l != null) {
+103:                 String lt = (l.receivable != null ? "حد لنا " + Model.fmt(l.receivable, d) : "") + (l.payable != null ? (l.receivable != null ? " · " : "") + "حد علينا " + Model.fmt(l.payable, d) : "");
+104:                 boolean over = (l.receivable != null && v > l.receivable) || (l.payable != null && -v > l.payable);
+105:                 hero.add(Ui.Hero.text(lt + (over ? "  ! تجاوز الحد" : ""), 12.5f, over, !over));
+106:             }
+107:         }
+108:         if (bal.isEmpty()) hero.add(Ui.Hero.text("لا توجد عملات مفعّلة لهذا المكتب", 14, false, false));
+109:         for (String hl : db.holdLines(o.id)) hero.add(Ui.Hero.text("• " + (app.hidden() ? hl.replaceAll("[0-9٠-٩][0-9٠-٩,.]*", "••••") : hl), 13.5f, false, false));
+110:         boolean anyBal = false;
+111:         for (long v : bal.values()) anyBal |= v != 0;
+112:         if (anyBal) {
+113:             Ledger.Valuation val = Ledger.valueOffice(db.balances(o.id), db.usdRates(), dec);
+114:             BigDecimal net = val.netUsd();
+115:             long whole = net.abs().setScale(0, RoundingMode.HALF_EVEN).longValue();
+116:             String s = app.hidden() ? "الميزان ≈ •••• USD" : whole == 0 ? "الميزان ≈ صفر USD" : "الميزان ≈ " + Ui.ltr(Model.fmt(whole, 0) + " USD") + " " + (net.signum() > 0 ? "لنا" : "علينا");
+117:             if (!val.missingRates.isEmpty()) s += " (بلا سعر: " + Model.join(new ArrayList<>(val.missingRates), "، ") + ")";
+118:             hero.add(Box.createVerticalStrut(6));
+119:             hero.add(Ui.Hero.text(s, 19, true, false));
+120:         }
+121:         Model.Recon last = db.lastRecon(o.id, false);
+122:         if (last != null) {
+123:             JSeparator sep = new JSeparator();
+124:             sep.setForeground(Ui.mix(Color.WHITE, Ui.primary, 0.6f));
+125:             sep.setMaximumSize(new Dimension(Integer.MAX_VALUE, 2));
+126:             hero.add(Box.createVerticalStrut(10));
+127:             hero.add(sep);
+128:             hero.add(Box.createVerticalStrut(8));
+129:             hero.add(Ui.Hero.text("آخر مطابقة: " + Model.date(last.createdAt) + " — " + last.statusLabel(), 14, false, true));
+130:         }
+131:         add(hero);
+132:         space(12);
+133:         if (last != null && Model.RECON_SENT.equals(last.status) && can(Auth.Perm.TX_ADD)) {
+134:             JPanel two = new JPanel(new GridLayout(1, 2, 12, 0));
+135:             two.setOpaque(false);
+136:             two.setAlignmentX(Component.RIGHT_ALIGNMENT);
+137:             Ui.Btn ok = Ui.button("✓ أكّد المكتب المطابقة", Ui.green, e -> status(last, Model.RECON_CONFIRMED));
+138:             Ui.Btn no = Ui.button("× غير مطابق", Ui.red, e -> status(last, Model.RECON_DISPUTED));
+139:             ok.setPreferredSize(new Dimension(200, 52));
+140:             two.add(ok);
+141:             two.add(no);
+142:             two.setMaximumSize(new Dimension(Integer.MAX_VALUE, 54));
+143:             Ui.rtl(two);
+144:             add(two);
+145:             space(12);
+146:         }
+147:         // الأزرار المربعة
+148:         List<Ui.Tile> tiles = new ArrayList<>();
+149:         if (can(Auth.Perm.TX_ADD) && o.active) tiles.add(new Ui.Tile("plus", "حركة\nجديدة", true, e -> app.go("tx", new TxView.Prefill(officeId))));
+150:         tiles.add(new Ui.Tile("statement", "كشف", false, e -> app.go("statement", officeId)));
+151:         tiles.add(new Ui.Tile("recon", "مطابقة\nرصيد", false, e -> sendRecon(o)));
+152:         if (can(Auth.Perm.TX_EDIT) && can(Auth.Perm.TX_ADD) && o.active) tiles.add(new Ui.Tile("fx", "قص\nعملات", false, e -> app.go("fx", new RecordView.Open(o.id))));
+153:         if (can(Auth.Perm.TX_ADD) && o.active) tiles.add(new Ui.Tile("xfer", "بين\nمكتبين", false, e -> app.go("xfer", new RecordView.Open(o.id))));
+154:         if (can(Auth.Perm.EXPORT)) tiles.add(new Ui.Tile("share", "مشاركة", false, e -> {
+155:             app.go("statement", officeId);
+156:             View sv = app.views.get("statement");
+157:             if (sv instanceof StatementView) ((StatementView) sv).export();
+158:         }));
+159:         if (o.active && can(Auth.Perm.CASH) && db.cashConfig().on) {
+160:             final Ui.Tile[] ct = new Ui.Tile[1];
+161:             ct[0] = new Ui.Tile("cash", "الصندوق", false, e -> {
+162:                 JPopupMenu cm = new JPopupMenu();
+163:                 cm.add(App.item("تسليم من الصندوق لحسابه (لنا على المكتب)", 0, () -> cash(o, CashBox.OUT)));
+164:                 cm.add(App.item("استلام إلى الصندوق لحسابه (علينا للمكتب)", 0, () -> cash(o, CashBox.IN)));
+165:                 Ui.rtl(cm);
+166:                 cm.show(ct[0], 0, ct[0].getHeight());
+167:             });
+168:             tiles.add(ct[0]);
+169:         }

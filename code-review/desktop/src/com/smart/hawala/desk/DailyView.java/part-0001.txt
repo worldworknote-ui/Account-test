@@ -1,0 +1,93 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import javax.swing.*;
+6: 
+7: /** التقرير اليومي مع «بصمة اليوم» (رمز HMAC يكشف أي تعديل في التقرير بعد خروجه)، والتحقق من بصمة تقرير مطبوع. */
+8: final class DailyView extends View {
+9:     final Ui.DateField day = new Ui.DateField(Clock.now());
+10:     final JPanel out = Ui.column();
+11: 
+12:     DailyView(App app) {
+13:         super(app, "التقرير اليومي");
+14:     }
+15: 
+16:     @Override void build() {
+17:         Ui.Card c = Ui.card();
+18:         c.add(Ui.row(Ui.label("اليوم", 14, Ui.muted, true), day, Ui.ghost("‹ السابق", e -> shift(-1)), Ui.ghost("التالي ›", e -> shift(1)),
+19:                 Ui.ghost("اليوم", e -> {
+20:                     day.set(Clock.now());
+21:                     refresh();
+22:                 })));
+23:         body.add(c);
+24:         body.add(Ui.gap(14));
+25:         body.add(out);
+26:         day.onChange = this::refresh;
+27:         scroll = Ui.scroll(body);
+28:         add(scroll, BorderLayout.CENTER);
+29:     }
+30: 
+31:     void shift(int d) {
+32:         try {
+33:             long s = day.start();
+34:             day.set(Ui.addDays(s == 0 ? Ui.startOfDay(Clock.now()) : s, d));
+35:             refresh();
+36:         } catch (Exception e) {
+37:             Ui.error(this, e);
+38:         }
+39:     }
+40: 
+41:     long from() {
+42:         try {
+43:             long s = day.start();
+44:             return s == 0 ? Ui.startOfDay(Clock.now()) : s;
+45:         } catch (Exception e) {
+46:             return Ui.startOfDay(Clock.now());
+47:         }
+48:     }
+49: 
+50:     Report report(long from, long to) {
+51:         Db.TxFilter f = new Db.TxFilter();
+52:         f.from = from;
+53:         f.to = to;
+54:         f.includeCancelled = true;
+55:         Report r = Reports.daily(Model.day(from), db.dailyStats(from, to), db.txLog(f), db.officeNames(), db.decimalsMap(), db.setting("office_name", ""), Clock.now());
+56:         try {
+57:             r.headerLines.add("بصمة اليوم: " + db.dayCode(from, to) + " — للتحقق: التقرير اليومي ← «التحقق من بصمة تقرير»");
+58:         } catch (Exception ignored) {
+59:             // بلا بصمة
+60:         }
+61:         return r;
+62:     }
+63: 
+64:     @Override void refresh() {
+65:         actions.removeAll();
+66:         long from = from(), to = Ui.addDays(from, 1);
+67:         action(Ui.primary("تصدير / طباعة…", e -> Export.dialog(this, app, "التقرير اليومي " + Model.day(from), () -> report(from, to))));
+68:         action(Ui.ghost("التحقق من بصمة تقرير", e -> verify(from)));
+69:         out.removeAll();
+70:         try {
+71:             subtitle.setText("بصمة اليوم: " + db.dayCode(from, to));
+72:             out.add(ReportPanel.render(report(from, to), textWidth()));
+73:         } catch (Exception e) {
+74:             out.add(Ui.label(Ui.friendly(e), 14, Ui.red, false));
+75:         }
+76:         Ui.rtl(out);
+77:         out.revalidate();
+78:         out.repaint();
+79:         done();
+80:     }
+81: 
+82:     void verify(long day) {
+83:         String code = Ui.input(this, "التحقق من بصمة تقرير يوم " + Model.day(day),
+84:                 "اكتب البصمة المطبوعة في أعلى التقرير اليومي ليوم " + Model.day(day) + ". (لتقرير يوم آخر اختر اليوم أولًا.)", "");
+85:         if (code == null) return;
+86:         String want = db.dayCode(day, Ui.addDays(day, 1));
+87:         boolean ok = want.equals(DayClose.normalize(code));
+88:         db.audit("DAY_CODE_VERIFY", "daily", day, ok ? "ok" : "mismatch");
+89:         Ui.message(this, ok ? "مطابقة ✓" : "غير مطابقة", ok ? "التقرير يطابق حركات ذلك اليوم كما هي في البرنامج: لم يُعدَّل بعد إصداره."
+90:                 : "البصمة لا تطابق. إما أن الملف عُدّل بعد خروجه من البرنامج، أو أن حركة من ذلك اليوم أُلغيت أو عُدّلت بعد إصدار التقرير (راجع سجل العمليات)، أو أن الرمز كُتب خطأً.",
+91:                 ok ? JOptionPane.INFORMATION_MESSAGE : JOptionPane.WARNING_MESSAGE);
+92:     }
+93: }

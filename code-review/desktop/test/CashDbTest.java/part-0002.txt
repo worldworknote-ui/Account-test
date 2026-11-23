@@ -1,0 +1,125 @@
+168:         db.editTx(t2, restore1, null, null, "إرجاع");
+169:         check(b(db.cashBalances(), "USD") == cashBefore && b(bal(db, nour), "USD") == 10100 && db.cashMove(m1).fee == 100 && !db.cashMove(m1).feeInCash,
+170:                 "إرجاعها كما كانت يعيد النقد والرصيد والأجرة على حساب المكتب");
+171:         healthy(db, "بعد الحركات المرتبطة");
+172: 
+173:         System.out.println("== 4) صرف عملة داخل الصندوق");
+174:         CashBox.Input ex = in(CashBox.EXCHANGE, "USD", 100000);    // 1,000 USD ← 920 EUR
+175:         ex.toCurrency = "EUR";
+176:         ex.toAmount = 92000;
+177:         ex.rate = "0.92";
+178:         long exId = db.addCashMove(ex);
+179:         cb = db.cashBalances();
+180:         check(b(cb, "USD") == 990500 - 100000 && b(cb, "EUR") == 250500 + 92000, "الصرف: USD ناقص 1,000 وEUR زائد 920 " + cb);
+181: 
+182:         System.out.println("== 5) الإلغاء في الاتجاهين");
+183:         db.cancelCashMove(m1, "خطأ");
+184:         check(b(bal(db, nour), "USD") == 0, "إلغاء حركة الصندوق يلغي حركة المكتب بقيد عكسي (رصيد النور صفر)");
+185:         check(b(db.cashBalances(), "USD") == 890500 + 10000, "ويعود النقد للصندوق: " + b(db.cashBalances(), "USD"));
+186:         CashBox.Move m2 = null;
+187:         for (CashBox.Move x : db.cashMoves()) if (x.officeId != null && x.officeId == amal) m2 = x;
+188:         db.cancelTx(m2.txId, "من صفحة المكتب");
+189:         check(db.cashMove(m2.id).cancelled() && b(db.cashBalances(), "EUR") == 342500 - 50500, "إلغاء حركة المكتب من صفحته يلغي حركة الصندوق (والأجرة النقدية معها)");
+190:         db.cancelCashMove(exId, "صرف خاطئ");
+191:         cb = db.cashBalances();
+192:         check(b(cb, "USD") == 1000500 && b(cb, "EUR") == 200000, "إلغاء الصرف يلغي ساقيه معًا " + cb);
+193:         healthy(db, "بعد الإلغاء");
+194: 
+195:         System.out.println("== 6) الخلاصة والتقرير");
+196:         List<CashBox.Move> all = db.cashMoves();
+197:         Map<String, CashBox.Summary> sums = CashBox.summaries(all, 0, 0, null);
+198:         boolean same = true;
+199:         for (Map.Entry<String, Long> e : db.cashBalances().entrySet()) {
+200:             CashBox.Summary s = sums.get(e.getKey());
+201:             if (s == null ? e.getValue() != 0 : s.closing != e.getValue()) same = false;
+202:         }
+203:         check(same, "الخلاصة: آخر الفترة = أولها + الداخل − الخارج ± الأجور − المصاريف = الرصيد لكل عملة");
+204:         CashBox.Summary su = sums.get("USD");
+205:         check(su.expenses == 30000 && su.byCategory.get("إيجار المحل") == 30000 && su.feesIn == 1000 && su.feesOut == 500, "المصاريف حسب البند والأجور النقدية");
+206:         long mid = System.currentTimeMillis() + 1;
+207:         Map<String, CashBox.Summary> s2 = CashBox.summaries(all, mid, 0, null);
+208:         check(s2.get("USD").opening == su.closing && s2.get("USD").closing == su.closing, "فترة بعد كل الحركات: أولها = آخرها = الرصيد "
+209:                 + s2.get("USD").opening + " " + s2.get("USD").closing + " " + su.closing + " in=" + s2.get("USD").in + " out=" + s2.get("USD").out + " cnt=" + s2.get("USD").count);
+210:         CashBox.ReportSpec sp = new CashBox.ReportSpec();
+211:         Report r = CashBox.report(all, sp, db.decimalsMap(), db.officeNames(), "الصندوق الرئيسي", "مكتب الاختبار");
+212:         check(r.sections.size() >= 4 && r.dataRows() > 5, "تقرير الصندوق: " + r.sections.size() + " أقسام");
+213: 
+214:         System.out.println("== 7) الجرد");
+215:         Map<String, Long> counted = new HashMap<>();
+216:         counted.put("USD", 1000000L);   // العجز 5
+217:         counted.put("EUR", 200300L);    // زيادة 3
+218:         int n = db.cashCount(counted, "جرد المساء");
+219:         cb = db.cashBalances();
+220:         check(n == 2 && b(cb, "USD") == 1000000 && b(cb, "EUR") == 200300, "الجرد يسجّل عجز 5 USD وزيادة 3 EUR فيطابق الصندوق المعدود " + cb);
+221: 
+222:         System.out.println("== 8) الربط الإلزامي");
+223:         db.cashSetup("الصندوق الرئيسي", ue, null, true, false);
+224:         CashBox.Input s1 = in(CashBox.IN, "USD", 100);
+225:         s1.category = "أخرى";
+226:         check(throwsMsg(io(() -> db.addCashMove(s1)), "الربط الإلزامي"), "الاستلام بلا مكتب يُرفض");
+227:         CashBox.Input s3 = in(CashBox.EXPENSE, "USD", 100);
+228:         s3.category = "ضيافة ونثريات";
+229:         check(throwsMsg(io(() -> db.addCashMove(s3)), "لا يسمح بالمصاريف"), "المصروف يُرفض حين لا يُسمح به");
+230:         db.cashSetup("الصندوق الرئيسي", ue, null, true, true);
+231:         db.addCashMove(s3);
+232:         CashBox.Input s4 = in(CashBox.OUT, "USD", 5000);
+233:         s4.officeId = amal;
+234:         db.addCashMove(s4);
+235:         check(b(db.cashBalances(), "USD") == 1000000 - 100 - 5000 && b(bal(db, amal), "USD") == 5000, "مع الإذن: المصروف مقبول، والتسليم لحساب مكتب يعمل");
+236:         check(throwsMsg(() -> db.cashSetup("x", Arrays.asList("EUR"), null, false, true), "لا يمكن إزالة"), "لا تُزال عملة رصيدها في الصندوق ليس صفرًا");
+237: 
+238:         System.out.println("== 9) حذف مكتب ودمج مكتبين مع حركات صندوق");
+239:         long rami = db.addOffice("الرامي", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+240:         CashBox.Input d1 = in(CashBox.OUT, "EUR", 7000);
+241:         d1.officeId = rami;
+242:         db.addCashMove(d1);
+243:         long eurBefore = b(db.cashBalances(), "EUR");
+244:         db.deleteOffice(rami, true);
+245:         check(b(db.cashBalances(), "EUR") == eurBefore, "حذف المكتب لا يغيّر الصندوق (النقد خرج فعلًا): تُفك الحركة وتبقى");
+246:         boolean unlinked = false;
+247:         for (CashBox.Move x : db.cashMoves()) if (x.amount == 7000 && x.officeId == null && x.txId == null && x.category.contains("محذوف")) unlinked = true;
+248:         check(unlinked, "حركة الصندوق للمكتب المحذوف بقيت بلا ربط وبند «لحساب مكتب محذوف»");
+249:         long amal2 = db.addOffice("مكتب الأمل", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+250:         db.mergeOffices(amal, amal2);
+251:         boolean moved = true;
+252:         for (CashBox.Move x : db.cashMoves()) if (x.officeId != null && x.officeId == amal) moved = false;
+253:         check(moved && b(bal(db, amal2), "USD") == 5000, "الدمج ينقل ربط حركات الصندوق للمكتب الهدف");
+254:         healthy(db, "بعد الحذف والدمج");
+255: 
+256:         System.out.println("== 9.1) 9.0.1: البيع والشراء");
+257:         db.cashSetup("الصندوق الرئيسي", ue, null, false, true);
+258:         Map<String, Long> c0 = db.cashBalances();
+259:         CashBox.Input sell = in(CashBox.EXCHANGE, "USD", 10000);   // بيع 100 USD بسعر 0.92 = 92 EUR
+260:         sell.side = CashBox.SELL;
+261:         sell.toCurrency = "EUR";
+262:         sell.rate = "0.92";
+263:         sell.toAmount = CashBox.counterAmount(10000, 2, "0.92", 2);
+264:         check(sell.toAmount == 9200, "المقابل محسوب: 100 × 0.92 = 92.00 EUR");
+265:         db.addCashMove(sell);
+266:         CashBox.Input buy = in(CashBox.EXCHANGE, "EUR", 5000);     // شراء 50 EUR بسعر 1.08 = ندفع 54 USD
+267:         buy.side = CashBox.BUY;
+268:         buy.toCurrency = "USD";
+269:         buy.rate = "1.08";
+270:         buy.toAmount = CashBox.counterAmount(5000, 2, "1.08", 2);
+271:         long buyId = db.addCashMove(buy);
+272:         Map<String, Long> c1 = db.cashBalances();
+273:         check(b(c1, "USD") == b(c0, "USD") - 10000 - 5400 && b(c1, "EUR") == b(c0, "EUR") + 9200 + 5000,
+274:                 "البيع: USD −100 وEUR +92؛ الشراء: EUR +50 وUSD −54 " + c1);
+275:         CashBox.Input huge = in(CashBox.EXCHANGE, "EUR", 100000000);
+276:         huge.side = CashBox.BUY;
+277:         huge.toCurrency = "USD";
+278:         huge.toAmount = 108000000;
+279:         String neg = CashBox.negativeAfter(huge, c1, db.decimalsMap());
+280:         check(neg != null && neg.contains("USD"), "الشراء الذي يدفع أكثر مما في الصندوق ينبّه على عملة الدفع (USD)");
+281:         Map<String, Long> ch = CashBox.changes(buy);
+282:         check(ch.get("EUR") == 5000 && ch.get("USD") == -5400, "المعاينة: أثر الشراء +50 EUR و−54 USD");
+283:         Report fx = CashBox.report(db.cashMoves(), new CashBox.ReportSpec(), db.decimalsMap(), db.officeNames(), "x", "");
+284:         boolean fxSec = false;
+285:         for (Report.Section sec : fx.sections) if (sec.heading.contains("بيع وشراء")) fxSec = sec.rows.size() == 2;
+286:         check(fxSec, "التقرير: قسم البيع والشراء بسطرين (بيع USD/EUR وشراء EUR/USD)");
+287:         db.cancelCashMove(buyId, "خطأ");
+288:         Map<String, Long> c2 = db.cashBalances();
+289:         check(b(c2, "USD") == b(c0, "USD") - 10000 && b(c2, "EUR") == b(c0, "EUR") + 9200, "إلغاء الشراء يعيد ساقيه معًا");
+290:         healthy(db, "بعد البيع والشراء");
+291: 
+292:         System.out.println("== 9.2) 9.0.1: عدة صناديق والتحويل بينها");

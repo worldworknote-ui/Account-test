@@ -1,0 +1,168 @@
+304:                 if (sha != null) o.put("_sha", sha);
+305:             }
+306:             return o;
+307:         }
+308:     }
+309: 
+310:     /** 10.4: بصمة محتوى الصورة المكشوف (محفوظة بعد أول حساب)، أو null إن تعذر فكها. */
+311:     static String blobSha(SQLiteDatabase d, long attId, File f) {
+312:         try (Cursor c = d.rawQuery("SELECT sha FROM sync_blobs WHERE att_id=?", new String[]{"" + attId})) {
+313:             if (c.moveToFirst()) return c.getString(0);
+314:         }
+315:         try {
+316:             byte[] plain = Crypto.decBytes(java.nio.file.Files.readAllBytes(f.toPath()));
+317:             String sha = SyncCrypto.hex(SyncCrypto.sha256(plain));
+318:             d.execSQL("INSERT OR REPLACE INTO sync_blobs(att_id,sha) VALUES(?,?)", new Object[]{attId, sha});
+319:             return sha;
+320:         } catch (Exception e) {
+321:             return null;
+322:         }
+323:     }
+324: 
+325:     /**
+326:      * يحوّل التغييرات الملتقطة (معاملات مكتملة فقط: يجري داخل معاملة كتابة) إلى عمليات بساعة واحدة، ويحدّث ساعة كل صف.
+327:      * يرجع null إن لم يكن هناك تغيير.
+328:      */
+329:     static JSONArray seal(Db db, SQLiteDatabase d, String hlc) throws Exception {
+330:         LinkedHashMap<String, String[]> pending = new LinkedHashMap<>();
+331:         long maxSeq = 0;
+332:         try (Cursor c = d.rawQuery("SELECT seq,tbl,rid,op FROM sync_chg ORDER BY seq", null)) {
+333:             while (c.moveToNext()) {
+334:                 maxSeq = c.getLong(0);
+335:                 String k = c.getString(1) + "\u0000" + c.getString(2);
+336:                 String[] cur = pending.get(k);
+337:                 if (cur == null) pending.put(k, new String[]{c.getString(1), c.getString(2), c.getString(3)});
+338:                 else cur[2] = c.getString(3);
+339:             }
+340:         }
+341:         if (pending.isEmpty()) return null;
+342:         JSONArray ops = new JSONArray();
+343:         for (String[] p : pending.values()) {
+344:             String table = p[0], rid = p[1], op = p[2];
+345:             if (table.equals("settings") && localSetting(rid)) continue;
+346:             JSONObject o = new JSONObject();
+347:             o.put("t", table);
+348:             o.put("k", rid);
+349:             if ("U".equals(op)) {
+350:                 JSONObject img = image(db, d, table, rid);
+351:                 if (img == null) {
+352:                     // حُذف بعد تعديله في المعاملة نفسها (أو إعداد لا يُزامَن)
+353:                     if (table.equals("settings") || table.equals("exchange_rates")) continue;
+354:                     o.put("o", "D");
+355:                 } else {
+356:                     o.put("o", "U");
+357:                     o.put("r", img);
+358:                 }
+359:             } else o.put("o", "D");
+360:             ops.put(o);
+361:             d.execSQL("INSERT OR REPLACE INTO sync_clock(tbl,rid,hlc) VALUES(?,?,?)", new Object[]{table, rid, hlc});
+362:         }
+363:         d.execSQL("DELETE FROM sync_chg WHERE seq<=" + maxSeq);
+364:         return ops.length() == 0 ? null : ops;
+365:     }
+366: 
+367:     // ===================================================================================
+368:     // التطبيق: حزمة من جهاز آخر في معاملة واحدة
+369:     // ===================================================================================
+370: 
+371:     /** نتيجة تطبيق حزمة. */
+372:     static final class Applied {
+373:         int rows, skippedOlder, duplicates, conflicts, dupTx;
+374:         /** 10.16: تنبيهات للمراجعة ليست تعارض حركات (تعديل لم يُطبَّق، تغيّر صلاحيات…). */
+375:         int notices;
+376:         /** 10.2: حركات جديدة وصلت من جهاز آخر (للإشعارات). */
+377:         final List<Long> newTx = new ArrayList<>();
+378:         /** حركات أنشأها هذا الجهاز وخسرت تعارض تعديل: يلغيها الجهاز نفسه بعد التطبيق. */
+379:         final List<Long> loseMine = new ArrayList<>();
+380:     }
+381: 
+382:     static Set<String> columns(SQLiteDatabase d, String table, Map<String, Set<String>> cache) {
+383:         Set<String> s = cache.get(table);
+384:         if (s == null) {
+385:             s = Db.columnsOf(d, table);
+386:             cache.put(table, s);
+387:         }
+388:         return s;
+389:     }
+390: 
+391:     static void conflict(SQLiteDatabase d, String kind, String table, String rid, String detail, String dev) {
+392:         d.execSQL("INSERT OR IGNORE INTO sync_conflicts(created_at,kind,tbl,rid,detail,dev) VALUES(?,?,?,?,?,?)",
+393:                 new Object[]{Clock.now(), kind, table, rid, detail, dev});
+394:     }
+395: 
+396:     /** 10.16: أسماء أنواع التعارضات والتنبيهات (واحدة للهاتف والكمبيوتر). */
+397:     public static String kindName(String k) {
+398:         switch (k == null ? "" : k) {
+399:             case "EDIT_TWICE": return "حركة عُدّلت من جهازين";
+400:             case "MISSING_PARENT": return "حركة لمكتب أو أصل محذوف";
+401:             case "LATE": return "حركة بتاريخ داخل فترة مقفلة";
+402:             case "UNKNOWN_TABLE": return "بيانات من إصدار أحدث";
+403:             case "IMAGE_MISSING": return "صورة لم تصل";
+404:             case "DUPLICATE": return "حركتان قد تكونان مكررتين";
+405:             case "EDIT_LOST": return "تعديل من جهاز آخر لم يُطبَّق";
+406:             case "ROLE_CHANGED": return "تغيّر في المستخدمين والصلاحيات";
+407:             case "DEVICE_JOINED": return "جهاز جديد دخل المزامنة";
+408:             case "DEVICE_GONE": return "جهاز خرج من المزامنة";
+409:             case "CLOCK": return "ساعة جهاز غير مضبوطة";
+410:             default: return k;
+411:         }
+412:     }
+413: 
+414:     /** 10.16: هل هذا النوع إشعار للعلم (لا يحتاج قرارًا في حركة)؟ */
+415:     public static boolean isNotice(String k) {
+416:         return "ROLE_CHANGED".equals(k) || "DEVICE_JOINED".equals(k) || "DEVICE_GONE".equals(k) || "CLOCK".equals(k);
+417:     }
+418: 
+419:     /** 10.16: جداول يُنبَّه المستخدم إن خسر فيها تعديلٌ قاعدةَ «الأحدث يفوز» (بيانات يعدّلها الناس يدويًا ولا تُعوَّض بقيد). */
+420:     private static final Map<String, String> EDIT_LOST_TABLES = new HashMap<>();
+421:     static {
+422:         EDIT_LOST_TABLES.put("offices", "المكتب");
+423:         EDIT_LOST_TABLES.put("users", "المستخدم");
+424:         EDIT_LOST_TABLES.put("currencies", "العملة");
+425:         EDIT_LOST_TABLES.put("cash_boxes", "الصندوق");
+426:         EDIT_LOST_TABLES.put("cash_clients", "العميل");
+427:     }
+428: 
+429:     private static String rowLabel(SQLiteDatabase d, String table, String rid) {
+430:         String what = EDIT_LOST_TABLES.get(table);
+431:         if (table.equals("offices") || table.equals("users") || table.equals("cash_boxes") || table.equals("cash_clients")) {
+432:             try (Cursor c = d.rawQuery("SELECT name FROM " + table + " WHERE id=?", new String[]{rid})) {
+433:                 if (c.moveToFirst() && c.getString(0) != null) {
+434:                     List<String> sens = Db.SENSITIVE.get(table);
+435:                     String n = sens != null && sens.contains("name") ? Crypto.dec(c.getString(0)) : c.getString(0);
+436:                     if (n != null && !n.isEmpty()) return what + " «" + n + "»";
+437:                 }
+438:             } catch (Exception ignored) {
+439:                 // الاسم للعرض فقط
+440:             }
+441:         }
+442:         return what + " " + rid;
+443:     }
+444: 
+445:     private static String[] userState(SQLiteDatabase d, String rid, Set<String> cols) {
+446:         String perms = cols.contains("perms") ? "COALESCE(perms,'')" : "''";
+447:         try (Cursor c = d.rawQuery("SELECT name,role,active," + perms + " FROM users WHERE id=?", new String[]{rid})) {
+448:             return c.moveToFirst() ? new String[]{c.getString(0), Model.nz(c.getString(1)), "" + c.getInt(2), c.getString(3)} : null;
+449:         }
+450:     }
+451: 
+452:     /**
+453:      * يطبّق عمليات حزمة (يُستدعى داخل معاملة، والالتقاط متوقف). myPrefix: لمعرفة الحركات التي أنشأها هذا الجهاز.
+454:      */
+455:     static Applied apply(Db db, SQLiteDatabase d, JSONArray ops, String hlc, String fromDev, long myPrefix) throws Exception {
+456:         Applied res = new Applied();
+457:         Map<String, Set<String>> cols = new HashMap<>();
+458:         Map<String, Set<Long>> touched = new HashMap<>();
+459:         Set<Long> insertedTx = new HashSet<>();
+460:         Map<String, String[]> userChanges = new java.util.LinkedHashMap<>();
+461:         Set<String> baseline = fkViolations(d);
+462:         d.execSQL("PRAGMA defer_foreign_keys=ON");
+463:         for (int i = 0; i < ops.length(); i++) {
+464:             JSONObject op = ops.getJSONObject(i);
+465:             String table = op.getString("t"), rid = op.getString("k"), kind = op.getString("o");
+466:             if (!KEYS.containsKey(table)) {
+467:                 conflict(d, "UNKNOWN_TABLE", table, rid, "جدول من إصدار أحدث", fromDev);
+468:                 continue;
+469:             }
+470:             if (table.equals("settings") && localSetting(rid)) continue;
+471:             boolean secret = table.equals("settings") && Db.ENCRYPTED_SETTINGS.contains(rid);

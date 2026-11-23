@@ -1,0 +1,179 @@
+191:                     if (parsed.table(e.getKey()).size() != e.getValue()) {
+192:                         throw new SecureStreams.CorruptBackupException("عدد صفوف " + e.getKey() + " بعد الفك لا يطابق الأصل");
+193:                     }
+194:                 }
+195:                 if (parsed.attachments.size() != expected.attachments) {
+196:                     throw new SecureStreams.CorruptBackupException("عدد الصور بعد الفك لا يطابق الأصل");
+197:                 }
+198:             }
+199:             BackupFormat.Report r = BackupFormat.validate(parsed);
+200:             if (!r.ok()) throw new SecureStreams.CorruptBackupException("فشل فحص محتوى النسخة: " + r.errors.get(0));
+201:         } finally {
+202:             if (parsed != null) BackupFormat.discardSpill(parsed);
+203:             Snapshot.deleteTree(spill);
+204:         }
+205:     }
+206: 
+207:     /** نتيجة تمرين الاستعادة (ت6). */
+208:     public static final class DrillResult {
+209:         public boolean ok, wrongPassword;
+210:         public String message = "";
+211:         public long offices, tx, attachments, newerTx;
+212:     }
+213: 
+214:     /**
+215:      * 8.0 (ت6): يفك النسخة كاملة (الصور تُفك وتُعد دون حفظ، والجداول الكبيرة في ملف مؤقت مشفّر) ويشغّل فحص الاستعادة
+216:      * نفسه، دون أي تغيير في البيانات. «النسخة التي لم تُجرَّب استعادتها لا تُعدّ نسخة».
+217:      */
+218:     public static DrillResult drill(Context ctx, File f, char[] password, Progress p) {
+219:         DrillResult r = new DrillResult();
+220:         File spill = new File(ctx.getCacheDir(), "drill-spill");
+221:         BackupFormat.Parsed parsed = null;
+222:         final long[] att = {0};
+223:         BackupFormat.AttachmentStore counting = new BackupFormat.AttachmentStore() {
+224:             @Override public Object store(long id, InputStream data) throws IOException {
+225:                 byte[] b = new byte[16384];
+226:                 while (data.read(b) > 0) { /* الصورة تُقرأ كاملة ويُتحقق من بصمتها */ }
+227:                 att[0]++;
+228:                 return id;
+229:             }
+230: 
+231:             @Override public void discard(Object handle) { /* لا شيء محفوظ */ }
+232:         };
+233:         try (InputStream in = new BufferedInputStream(new FileInputStream(f), 65536)) {
+234:             p.update("جارٍ فك التشفير وقراءة كل الجداول والصور…");
+235:             parsed = BackupFormat.readV5(new SecureStreams.DecryptingInputStream(in, password), counting, spill);
+236:             p.update("جارٍ فحص القيود والعلاقات…");
+237:             BackupFormat.Report rep = BackupFormat.validate(parsed);
+238:             if (!rep.ok()) {
+239:                 r.message = "النسخة تُفك لكنها لا تجتاز الفحص: " + rep.errors.get(0);
+240:                 return r;
+241:             }
+242:             r.offices = rep.offices;
+243:             r.tx = rep.txActive + rep.txCancelled;
+244:             r.attachments = att[0];
+245:             Db db = SmartApp.db;
+246:             if (db != null) r.newerTx = Math.max(0, db.txCount() - r.tx);
+247:             r.ok = true;
+248:         } catch (SecureStreams.WrongPasswordException e) {
+249:             r.wrongPassword = true;
+250:             r.message = "كلمة المرور لا تفتح هذه النسخة. إن نسيتها فلن تستطيع استعادتها: أنشئ نسخة جديدة بكلمة مرور تحفظها.";
+251:         } catch (Throwable t) {
+252:             r.message = "تعذر فك النسخة: " + (t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage());
+253:         } finally {
+254:             if (parsed != null) BackupFormat.discardSpill(parsed);
+255:             Snapshot.deleteTree(spill);
+256:         }
+257:         return r;
+258:     }
+259: 
+260:     public static List<File> localBackups(Context c) {
+261:         File[] fs = backupsDir(c).listFiles();
+262:         List<File> l = new ArrayList<>();
+263:         if (fs != null) for (File f : fs) if (f.isFile() && f.getName().endsWith(".sba")) l.add(f);
+264:         java.util.Collections.sort(l, new Comparator<File>() {
+265:             @Override public int compare(File a, File b) { return Long.compare(b.lastModified(), a.lastModified()); }
+266:         });
+267:         return l;
+268:     }
+269: 
+270:     static void pruneLocal(Context c, int keep) {
+271:         List<File> l = localBackups(c);
+272:         for (int i = keep; i < l.size(); i++) l.get(i).delete();
+273:         File[] fs = backupsDir(c).listFiles();
+274:         if (fs != null) for (File f : fs) if (f.getName().endsWith(".tmp")) f.delete();
+275:     }
+276: 
+277:     // ===================================================================================
+278:     // النسخ إلى المكان الذي يختاره المستخدم، مع إعادة القراءة والمطابقة
+279:     // ===================================================================================
+280: 
+281:     public static final class Delivery {
+282:         public boolean verified;
+283:         public String note = "";
+284:         public long size;
+285:     }
+286: 
+287:     /**
+288:      * الماك: ينسخ النسخة الجاهزة إلى ملف يختاره المستخدم (مجلد، قرص خارجي، iCloud Drive…) ثم يعيد قراءته ويطابق بصمته.
+289:      */
+290:     /** 11.0: واجهة الهاتف تختار المكان كعنوان (file:// على الكمبيوتر). */
+291:     public static Delivery copyToUri(android.content.Context ctx, File src, android.net.Uri target) throws BackupException { return copyToFile(src, target.file()); }
+292: 
+293:     public static Delivery copyToUri(android.content.Context ctx, File src, android.net.Uri target, boolean deleteBad) throws BackupException { return copyToFile(src, target.file()); }
+294: 
+295:     public static String displayName(android.content.Context ctx, android.net.Uri u) { return u.file().getName(); }
+296: 
+297:     /** ينسخ الملف المختار إلى مجلد مؤقت داخل البرنامج (كما في الهاتف). */
+298:     public static File copyIn(android.content.Context ctx, android.net.Uri src) throws BackupException {
+299:         File f = new File(ctx.getCacheDir(), "restore-input.sba");
+300:         try (InputStream in = ctx.getContentResolver().openInputStream(src); OutputStream o = new FileOutputStream(f)) {
+301:             byte[] b = new byte[65536];
+302:             int n;
+303:             while ((n = in.read(b)) > 0) o.write(b, 0, n);
+304:             if (f.length() == 0) throw new IOException("الملف المختار فارغ");
+305:         } catch (Throwable t) {
+306:             f.delete();
+307:             throw wrap(Stage.READ, t);
+308:         }
+309:         return f;
+310:     }
+311: 
+312:     public static Delivery copyToFile(File src, File target) throws BackupException {
+313:         Delivery d = new Delivery();
+314:         d.size = src.length();
+315:         String srcSha;
+316:         try {
+317:             srcSha = sha256(src);
+318:         } catch (Exception e) {
+319:             throw wrap(Stage.READ, e);
+320:         }
+321:         File tmp = new File(target.getParentFile(), "." + target.getName() + ".part");
+322:         try (InputStream in = new FileInputStream(src); FileOutputStream o = new FileOutputStream(tmp)) {
+323:             byte[] b = new byte[65536];
+324:             int n;
+325:             while ((n = in.read(b)) > 0) o.write(b, 0, n);
+326:             o.flush();
+327:             o.getFD().sync();
+328:         } catch (Throwable t) {
+329:             tmp.delete();
+330:             throw wrap(Stage.WRITE, t);
+331:         }
+332:         try {
+333:             java.nio.file.Files.move(tmp.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+334:         } catch (Throwable t) {
+335:             tmp.delete();
+336:             throw wrap(Stage.WRITE, t);
+337:         }
+338:         String gotSha;
+339:         try {
+340:             gotSha = sha256(target);
+341:         } catch (Throwable t) {
+342:             d.note = "حُفظ الملف لكن تعذرت إعادة قراءته للتحقق. النسخة محفوظة أيضًا داخل البرنامج.";
+343:             return d;
+344:         }
+345:         if (target.length() == d.size && srcSha.equalsIgnoreCase(gotSha)) {
+346:             d.verified = true;
+347:             return d;
+348:         }
+349:         target.delete();
+350:         throw new BackupException(Stage.REREAD, "الملف الذي حُفظ غير مطابق للأصل. ربما امتلأت المساحة أو انقطع القرص. لم يُعتمد؛ جرّب مكانًا آخر.", null);
+351:     }
+352: 
+353:     // ===================================================================================
+354:     // الاستعادة: نسخ الملف ← فك وفحص كامل ← معاينة ← نسخة أمان ← استبدال
+355:     // ===================================================================================
+356: 
+357:     public static File stagingDir(Context ctx) {
+358:         return new File(ctx.getFilesDir(), "restore_staging");
+359:     }
+360: 
+361:     public static void clearStaging(Context ctx) {
+362:         File d = stagingDir(ctx);
+363:         File[] fs = d.listFiles();
+364:         if (fs != null) for (File f : fs) f.delete();
+365:     }
+366: 
+367:     public static final class Prepared {
+368:         public BackupFormat.Parsed parsed;
+369:         public BackupFormat.Report report;

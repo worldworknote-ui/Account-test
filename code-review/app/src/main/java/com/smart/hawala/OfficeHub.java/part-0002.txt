@@ -1,0 +1,157 @@
+199:     /** 9.0: سطر «الميزان» — مجموع أرصدة المكتب بكل العملات مقوّمًا بالدولار (لنا − علينا). */
+200:     String usdLine(Map<String, Long> b, Map<String, Integer> dec, Map<String, java.math.BigDecimal> rates) {
+201:         boolean any = false;
+202:         for (long v : b.values()) if (v != 0) any = true;
+203:         if (!any) return null;
+204:         Ledger.Valuation val = Ledger.valueOffice(b, rates, dec);
+205:         java.math.BigDecimal net = val.netUsd();
+206:         long whole = net.abs().setScale(0, java.math.RoundingMode.HALF_EVEN).longValue();
+207:         if (a.amountsHidden()) return "الميزان ≈ •••• USD";
+208:         String s = whole == 0 ? "الميزان ≈ صفر USD" : "الميزان ≈ \u2066" + Model.fmt(whole, 0) + " USD\u2069 " + (net.signum() > 0 ? "لنا" : "علينا");
+209:         if (!val.missingRates.isEmpty()) s += " (بلا سعر: " + Model.join(new ArrayList<>(val.missingRates), "، ") + ")";
+210:         if (!val.weightOnly.isEmpty()) s += " (بالوزن فقط: " + Model.join(new ArrayList<>(val.weightOnly), "، ") + ")";
+211:         return s;
+212:     }
+213: 
+214:     View officeCard(final Model.Office o, Map<String, Long> b, Map<String, Integer> dec, Map<String, java.math.BigDecimal> usd, final Runnable refresh) {
+215:         LinearLayout c = new LinearLayout(a);
+216:         c.setOrientation(LinearLayout.HORIZONTAL);
+217:         c.setPadding(a.dp(12), a.dp(12), a.dp(12), a.dp(12));
+218:         c.setBackground(a.ripple(a.round(a.surface, o.pinned ? Ui.mix(a.line, a.primary, 0.45f) : a.line, 16), 16));
+219:         c.addView(avatar(o), new LinearLayout.LayoutParams(a.dp(42), a.dp(42)));
+220:         LinearLayout col = new LinearLayout(a);
+221:         col.setOrientation(LinearLayout.VERTICAL);
+222:         col.setPadding(a.dp(10), 0, 0, 0);
+223:         LinearLayout head = a.row();
+224:         TextView name = a.text(o.name, 16, o.active ? a.ink : a.muted, true);
+225:         name.setSingleLine(true);
+226:         name.setEllipsize(TextUtils.TruncateAt.END);
+227:         head.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+228:         if (o.pinned) head.addView(a.icon(R.drawable.ic_pin, a.accent, 16), new LinearLayout.LayoutParams(a.dp(16), a.dp(16)));
+229:         if (!o.active) head.addView(a.chip("موقوف", a.red, a.debitBg));
+230:         col.addView(head);
+231:         Ui.Flow chips = a.flow();
+232:         int nonZero = 0;
+233:         for (Map.Entry<String, Long> e : b.entrySet()) {
+234:             long v = e.getValue();
+235:             if (v == 0) continue;
+236:             nonZero++;
+237:             int d = dec.containsKey(e.getKey()) ? dec.get(e.getKey()) : 2;
+238:             chips.addView(balChip(v, d, e.getKey()));
+239:         }
+240:         if (nonZero > 0) {
+241:             LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-1, -2);
+242:             cp.setMargins(a.dp(4), a.dp(4), 0, 0);
+243:             col.addView(chips, cp);
+244:             String ul = usd == null ? null : usdLine(b, dec, usd);
+245:             if (ul != null) {
+246:                 java.math.BigDecimal n = Ledger.valueOffice(b, usd, dec).netUsd();
+247:                 col.addView(a.text(ul, 12, n.signum() > 0 ? a.green : n.signum() < 0 ? a.red : a.muted, true));
+248:             }
+249:         } else {
+250:             col.addView(a.text(o.active ? "الحساب مسدَّد بالكامل" : "لا تُقبل عليه حركات جديدة، وكشفه باقٍ", 12, a.muted, false));
+251:         }
+252:         c.addView(col, new LinearLayout.LayoutParams(0, -2, 1));
+253:         c.setOnClickListener(v -> showOffice(o));
+254:         c.setOnLongClickListener(v -> {
+255:             quickMenu(o, refresh);
+256:             return true;
+257:         });
+258:         return c;
+259:     }
+260: 
+261:     View avatar(Model.Office o) {
+262:         String n = Model.nz(o.shortName).trim().isEmpty() ? Model.nz(o.name).trim() : o.shortName.trim();
+263:         // 9.0: «الأمل» و«النور» لا يظهر لهما «ا» معًا: الحرف بعد «ال»
+264:         if (n.startsWith("مكتب ") && n.length() > 6) n = n.substring(5).trim();
+265:         if (n.startsWith("ال") && n.length() > 3) n = n.substring(2);
+266:         TextView t = a.text(n.isEmpty() ? "؟" : n.substring(0, n.offsetByCodePoints(0, 1)), 17, a.primaryInk, true);
+267:         t.setGravity(Gravity.CENTER);
+268:         t.setPadding(0, 0, 0, 0);
+269:         GradientDrawable g = new GradientDrawable();
+270:         g.setShape(GradientDrawable.OVAL);
+271:         g.setColor(a.primarySoft);
+272:         t.setBackground(g);
+273:         return t;
+274:     }
+275: 
+276:     /** رقاقة رصيد: «59,450.00 SYP لنا» بالأخضر أو بالأحمر. */
+277:     TextView balChip(long v, int d, String code) {
+278:         boolean us = v > 0;
+279:         TextView t = a.chip((a.amountsHidden() ? "•••• " + code : "\u2066" + Model.fmt(Math.abs(v), d) + " " + code + "\u2069") + " " + (us ? "لنا" : "علينا"), us ? a.green : a.red, us ? a.creditBg : a.debitBg);
+280:         t.setTextSize(12);
+281:         return t;
+282:     }
+283: 
+284:     /** قائمة الضغطة المطولة على مكتب. */
+285:     void quickMenu(final Model.Office o, final Runnable refresh) {
+286:         final List<String> acts = new ArrayList<>();
+287:         if (o.active && a.can(Auth.Perm.TX_ADD)) acts.add("حركة جديدة لهذا المكتب");
+288:         acts.add("فتح صفحة المكتب");
+289:         acts.add("كشف المكتب");
+290:         if (a.can(Auth.Perm.EXPORT)) acts.add("مطابقة رصيد");
+291:         if (o.active && a.can(Auth.Perm.CASH) && a.db.cashConfig().on) {
+292:             acts.add("تسليم من الصندوق لحسابه");
+293:             acts.add("استلام إلى الصندوق لحسابه");
+294:         }
+295:         acts.add(o.pinned ? "إلغاء التثبيت" : "تثبيت في أعلى القوائم");
+296:         if (a.can(Auth.Perm.OFFICES)) acts.add("تعديل بيانات المكتب");
+297:         new AlertDialog.Builder(a).setTitle(o.name).setItems(acts.toArray(new String[0]), (d, w) -> {
+298:             String s = acts.get(w);
+299:             if (s.startsWith("حركة")) a.txScreen.showForOffice(o);
+300:             else if (s.startsWith("فتح")) showOffice(o);
+301:             else if (s.startsWith("كشف")) a.statementScreen.show(o);
+302:             else if (s.startsWith("مطابقة")) a.reconScreen.sendDialog(o, refresh);
+303:             else if (s.startsWith("تسليم من الصندوق")) a.cashScreen.form(CashBox.OUT, o);
+304:             else if (s.startsWith("استلام إلى الصندوق")) a.cashScreen.form(CashBox.IN, o);
+305:             else if (s.contains("التثبيت") || s.startsWith("تثبيت")) {
+306:                 a.db.setPinned(o.id, !o.pinned);
+307:                 a.toast(o.pinned ? "أُلغي تثبيت المكتب" : "تم تثبيت المكتب في أعلى القوائم");
+308:                 refresh.run();
+309:             } else a.officesScreen.form(o);
+310:         }).show();
+311:     }
+312: 
+313:     // ===================================================================================
+314:     // صفحة المكتب
+315:     // ===================================================================================
+316: 
+317:     void showOffice(Model.Office office) {
+318:         if (!a.require(Auth.Perm.VIEW)) return;
+319:         final Model.Office o = a.db.office(office.id) == null ? office : a.db.office(office.id);
+320:         touch(a.db, o.id);
+321:         final Runnable refresh = () -> showOffice(o);
+322:         a.here(() -> showOffice(o));
+323:         a.tabbedScreen(o.name, this::showList, "offices");
+324:         a.headerAction(R.drawable.ic_pin, o.pinned ? "إلغاء التثبيت" : "تثبيت", v -> {
+325:             a.db.setPinned(o.id, !o.pinned);
+326:             a.toast(o.pinned ? "أُلغي تثبيت المكتب" : "تم تثبيت المكتب في أعلى القوائم");
+327:             showOffice(o);
+328:         });
+329:         if (o.pinned) {
+330:             View pin = a.barActions.getChildAt(a.barActions.getChildCount() - 1);
+331:             if (pin instanceof FrameLayout && ((FrameLayout) pin).getChildAt(0) instanceof android.widget.ImageView) {
+332:                 ((android.widget.ImageView) ((FrameLayout) pin).getChildAt(0)).setImageTintList(android.content.res.ColorStateList.valueOf(a.accent));
+333:             }
+334:         }
+335:         if (a.can(Auth.Perm.OFFICES)) a.headerAction(R.drawable.ic_dots, "خيارات المكتب", v -> optionsMenu(o));
+336:         a.eyeAction(refresh);
+337: 
+338:         // بطاقة الرصيد: من دفتر القيود مباشرة
+339:         Map<String, Long> bal = new java.util.TreeMap<>();
+340:         for (String code : a.db.officeCurrencies(o.id)) bal.put(code, 0L);
+341:         bal.putAll(a.db.balances(o.id));
+342:         Map<String, String> names = a.db.currencyNames();
+343:         LinearLayout card = new LinearLayout(a);
+344:         card.setOrientation(LinearLayout.VERTICAL);
+345:         card.setPadding(a.dp(16), a.dp(14), a.dp(16), a.dp(14));
+346:         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{a.primary, Ui.darker(a.primary, 0.78f)});
+347:         g.setCornerRadius(a.dp(20));
+348:         card.setBackground(g);
+349:         int soft = Ui.mix(Color.WHITE, a.primary, 0.22f);
+350:         card.addView(plain("الرصيد الحالي", 13, soft, false));
+351:         int shown = 0;
+352:         for (Map.Entry<String, Long> e : bal.entrySet()) {
+353:             int d = a.db.decimals(e.getKey());
+354:             long v = e.getValue();
+355:             LinearLayout r = a.row();

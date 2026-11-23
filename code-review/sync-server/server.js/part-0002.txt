@@ -1,0 +1,60 @@
+185:         fs.writeFileSync(tmp, body, { mode: 384 });
+186:         var fd = fs.openSync(tmp, "r");
+187:         fs.fsyncSync(fd);
+188:         fs.closeSync(fd);
+189:         fs.renameSync(tmp, path.join(dir, name));
+190:         return send(rs, 200, { ok: true, size: body.length });
+191:       } catch (e) {
+192:         if (e && e.code === "EEXIST") return send(rs, 409, { error: "الخزنة أُنشئت للتو من جهاز آخر؛ أعد المحاولة" });
+193:         return send(rs, 500, { error: "تعذر الحفظ على الخادم" });
+194:       }
+195:     });
+196:   }
+197:   if (name !== null && rq.method === "DELETE") {
+198:     if (!vaultExists(id)) return send(rs, 404, { error: "لا توجد خزنة بهذا الرمز" });
+199:     if (!tokenOk(id, rq)) return send(rs, 401, { error: "رمز الخزنة غير صحيح" });
+200:     if (name === HEADER) return send(rs, 403, { error: "لا يُحذف رأس الخزنة" });
+201:     try {
+202:       fs.unlinkSync(path.join(dir, name));
+203:     } catch (e) {
+204:       if (e && e.code === "ENOENT") return send(rs, 404, { error: "لا يوجد" });
+205:       return send(rs, 500, { error: "تعذر الحذف" });
+206:     }
+207:     return send(rs, 200, { ok: true });
+208:   }
+209:   return send(rs, 405, { error: "طريقة غير مسموحة" });
+210: }
+211: 
+212: function makeServer() {
+213:   var hits = new Map();
+214:   return http.createServer(function (rq, rs) {
+215:     var ip = clientIp(rq);
+216:     var now = Date.now(), h = hits.get(ip) || { n: 0, t: now };
+217:     if (now - h.t > 60000) h = { n: 0, t: now };
+218:     h.n++;
+219:     hits.set(ip, h);
+220:     if (hits.size > 100000) hits.clear();
+221:     if (h.n > RATE) return send(rs, 429, { error: "طلبات كثيرة؛ أعد المحاولة بعد دقيقة" });
+222:     try {
+223:       handle(rq, rs);
+224:     } catch (e) {
+225:       send(rs, 500, { error: "خطأ في الخادم" });
+226:     }
+227:   });
+228: }
+229: 
+230: if (require.main === module) {
+231:   // 10.11 (AUDIT-009): القيمة النموذجية في ملف الخدمة ليست سرًا
+232:   if (/change-me/i.test(SERVER_KEY)) {
+233:     console.error("SERVER_KEY ما زال القيمة النموذجية من ملف الخدمة: ضع سرًا عشوائيًا طويلًا ثم أعد التشغيل.");
+234:     process.exit(1);
+235:   }
+236:   if (SERVER_KEY && SERVER_KEY.length < 16) console.warn("تنبيه: SERVER_KEY قصير؛ يُنصح بسر عشوائي من 32 محرفًا على الأقل.");
+237:   fs.mkdirSync(DATA, { recursive: true, mode: 448 });
+238:   var port = Number(process.env.PORT || 8090);
+239:   makeServer().listen(port, process.env.HOST || "127.0.0.1", function () {
+240:     console.log("smart-accountant-sync " + VERSION + " on " + port + " data=" + DATA + (SERVER_KEY ? " (server key required)" : " (open: set SERVER_KEY!)"));
+241:   });
+242: }
+243: 
+244: module.exports = { makeServer: makeServer };

@@ -1,0 +1,37 @@
+918:             long outAfter = countRows(Y8, "sync_chg") + countRows(Y8, "sync_outbox");
+919:             check(ef.contains("غير موقّع") && SyncEngine.enabled(Y8) && outAfter == outBefore && outBefore > 0,
+920:                     "أمر حذف بلا توقيع لا يُنفَّذ: الجهاز باقٍ وحزمه غير المرسلة (" + outBefore + ") محفوظة");
+921:             forged.put("auth", "00".repeat(32));
+922:             ff.write(SyncEngine.HEADER, forged.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+923:             check(errOf(() -> eY8n.sync()).contains("غير موقّع") && SyncEngine.enabled(Y8), "ولا بتوقيع مختلق");
+924:             eY8n.repair(null);
+925:             check(errOf(() -> eY8n.sync()).isEmpty() && errOf(() -> eX8n.sync()).isEmpty() && bal(X8).equals(bal(Y8)),
+926:                     "«إصلاح» يعيد رأس الخزنة بعد التزوير وتعود المزامنة وتتطابق الأرصدة");
+927:             // حدود عدد الدورات في الرأس
+928:             org.json.JSONObject h2 = new org.json.JSONObject(new String(ff.read(SyncEngine.HEADER), java.nio.charset.StandardCharsets.UTF_8));
+929:             org.json.JSONObject bad = new org.json.JSONObject(h2.toString()).put("iter", 2_000_000_000);
+930:             ff.write(SyncEngine.HEADER, bad.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+931:             long t0 = System.currentTimeMillis();
+932:             String ei = errOf(() -> new SyncEngine(dev("18I"), new FileSyncFolder(n18)).join(p18.toCharArray(), false, "ح"));
+933:             check(!ei.isEmpty() && System.currentTimeMillis() - t0 < 10000, "عدد دورات ضخم في الرأس يُرفض فورًا (لا تعطيل)");
+934:             ff.write(SyncEngine.HEADER, h2.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+935:         }
+936:         int wiped = eX8n.wipe(null, rc18.toCharArray(), true);
+937:         check(wiped > 0 && n18.list().length == 1 && !SyncEngine.enabled(X8), "الحذف برمز الاسترداد: لا يبقى إلا الشاهد، وخرج هذا الجهاز");
+938:         String e2 = errOf(() -> eY8n.sync());
+939:         check(e2.contains("حذف المدير") && !SyncEngine.enabled(Y8) && bal(Y8).equals(bal(X8)), "الجهاز الآخر يخرج من المزامنة في جولته وبياناته باقية: " + e2);
+940:         check(SyncEngine.status(Y8).leftReason.contains("حذف المدير"), "سبب الخروج يظهر على الجهاز: " + SyncEngine.status(Y8).leftReason);
+941:         // مزامنة جديدة في المكان نفسه بعد الحذف
+942:         String rcNew = new SyncEngine(Y8, new FileSyncFolder(n18)).create("كلمة-جديدة-تماما".toCharArray(), "من جديد");
+943:         Db W8 = dev("18W");
+944:         new SyncEngine(W8, new FileSyncFolder(n18)).join("كلمة-جديدة-تماما".toCharArray(), false, "و");
+945:         check(!rcNew.isEmpty() && bal(W8).equals(bal(Y8)), "إنشاء مزامنة جديدة في المكان بعد الحذف والانضمام إليها");
+946:         healthy(Y8, "18Y");
+947:         SmartApp.currentUser = null;
+948:     }
+949: 
+950:     static boolean hasImage(Db db) {
+951:         for (Model.Tx t : db.recentTx(20)) if (!db.attachmentIds(t.id).isEmpty() && db.attachment(db.attachmentIds(t.id).get(0)) != null) return true;
+952:         return false;
+953:     }
+954: }

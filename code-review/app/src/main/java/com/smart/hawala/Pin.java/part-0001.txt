@@ -1,0 +1,129 @@
+1: package com.smart.hawala;
+2: 
+3: import java.nio.charset.StandardCharsets;
+4: import java.security.MessageDigest;
+5: import java.security.SecureRandom;
+6: import javax.crypto.Mac;
+7: import javax.crypto.SecretKeyFactory;
+8: import javax.crypto.spec.PBEKeySpec;
+9: import javax.crypto.spec.SecretKeySpec;
+10: 
+11: /**
+12:  * تجزئة رموز دخول المستخدمين (PBKDF2 + ملح عشوائي). الرمز نفسه لا يُحفظ أبدًا.
+13:  * 8.0 (الصيغة v2): الرمز يمر أولًا بـ HMAC بسرّ («فلفل») محفوظ مشفّرًا بمفتاح الهاتف، ثم 120,000 دورة.
+14:  * فمن ينسخ ملف قاعدة البيانات وحده لا يستطيع تجربة الرموز العشرة آلاف خارج الهاتف. السرّ ينتقل مع النسخة الاحتياطية
+15:  * (المشفّرة بكلمة مرورها) فتعمل الرموز بعد نقل البيانات إلى هاتف جديد. رمز الاسترداد يبقى بالصيغة الأولى عمدًا
+16:  * (عشوائيته نحو 79 بتًا) ليبقى باب الإنقاذ مفتوحًا حتى لو ضاع السرّ.
+17:  */
+18: public final class Pin {
+19:     private static final int ITER = 30000;
+20:     static final int ITER_V2 = 120000;
+21:     static final String V2 = "v2:";
+22: 
+23:     private Pin() {}
+24: 
+25:     public static String newSalt() {
+26:         byte[] b = new byte[16];
+27:         new SecureRandom().nextBytes(b);
+28:         return BackupFormat.hex(b);
+29:     }
+30: 
+31:     public static String hash(String pin, String saltHex) {
+32:         try {
+33:             byte[] salt = new byte[saltHex.length() / 2];
+34:             for (int i = 0; i < salt.length; i++) salt[i] = (byte) Integer.parseInt(saltHex.substring(2 * i, 2 * i + 2), 16);
+35:             PBEKeySpec spec = new PBEKeySpec(pin.toCharArray(), salt, ITER, 256);
+36:             try {
+37:                 return BackupFormat.hex(SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded());
+38:             } finally {
+39:                 spec.clearPassword();
+40:             }
+41:         } catch (Exception e) {
+42:             throw new IllegalStateException(e);
+43:         }
+44:     }
+45: 
+46:     public static boolean verify(String pin, String saltHex, String expectedHex) {
+47:         if (pin == null || saltHex == null || expectedHex == null) return false;
+48:         return MessageDigest.isEqual(hash(pin, saltHex).getBytes(), expectedHex.getBytes());
+49:     }
+50: 
+51:     /** الصيغة v2: «v2:» + PBKDF2(HMAC(السرّ، الرمز)، الملح، 120000). */
+52:     public static String hashV2(String pin, String saltHex, byte[] pepper) {
+53:         if (pepper == null || pepper.length < 16) throw new IllegalStateException("سرّ الرموز غير متاح");
+54:         try {
+55:             Mac m = Mac.getInstance("HmacSHA256");
+56:             m.init(new SecretKeySpec(pepper, "HmacSHA256"));
+57:             String peppered = BackupFormat.hex(m.doFinal(pin.getBytes(StandardCharsets.UTF_8)));
+58:             byte[] salt = new byte[saltHex.length() / 2];
+59:             for (int i = 0; i < salt.length; i++) salt[i] = (byte) Integer.parseInt(saltHex.substring(2 * i, 2 * i + 2), 16);
+60:             PBEKeySpec spec = new PBEKeySpec(peppered.toCharArray(), salt, ITER_V2, 256);
+61:             try {
+62:                 return V2 + BackupFormat.hex(SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded());
+63:             } finally {
+64:                 spec.clearPassword();
+65:             }
+66:         } catch (Exception e) {
+67:             throw new IllegalStateException(e);
+68:         }
+69:     }
+70: 
+71:     /** يتحقق من الصيغتين: v2 بالسرّ، والقديمة بلا سرّ (تُرقّى عند أول دخول ناجح). */
+72:     public static boolean verifyAny(String pin, String saltHex, String expected, byte[] pepper) {
+73:         if (pin == null || saltHex == null || expected == null) return false;
+74:         if (expected.startsWith(V2)) {
+75:             if (pepper == null) return false;
+76:             return MessageDigest.isEqual(hashV2(pin, saltHex, pepper).getBytes(), expected.getBytes());
+77:         }
+78:         return verify(pin, saltHex, expected);
+79:     }
+80: 
+81:     public static boolean needsUpgrade(String expected) { return expected != null && !expected.startsWith(V2); }
+82: 
+83:     public static byte[] newPepper() {
+84:         byte[] b = new byte[32];
+85:         new SecureRandom().nextBytes(b);
+86:         return b;
+87:     }
+88: 
+89:     private static final String CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+90: 
+91:     /** رمز استرداد المدير: 16 حرفًا ورقمًا بلا حروف ملتبسة، بصيغة XXXX-XXXX-XXXX-XXXX (نحو 79 بت). */
+92:     public static String newRecoveryCode() {
+93:         SecureRandom r = new SecureRandom();
+94:         StringBuilder sb = new StringBuilder();
+95:         for (int i = 0; i < 16; i++) {
+96:             if (i > 0 && i % 4 == 0) sb.append('-');
+97:             sb.append(CODE_CHARS.charAt(r.nextInt(CODE_CHARS.length())));
+98:         }
+99:         return sb.toString();
+100:     }
+101: 
+102:     /** يوحّد رمز الاسترداد كما كتبه المستخدم: أحرف كبيرة، بلا مسافات أو شرطات، والأرقام العربية تُحوَّل. */
+103:     public static String normalizeRecovery(String code) {
+104:         if (code == null) return "";
+105:         StringBuilder sb = new StringBuilder();
+106:         for (char ch : code.toUpperCase(java.util.Locale.ROOT).toCharArray()) {
+107:             if (ch >= 0x0660 && ch <= 0x0669) ch = (char) ('0' + ch - 0x0660);
+108:             if (CODE_CHARS.indexOf(ch) >= 0) sb.append(ch);
+109:         }
+110:         return sb.toString();
+111:     }
+112: 
+113:     /** رمز المدير: من 6 إلى 8 أرقام. */
+114:     public static boolean validAdmin(String pin) {
+115:         return pin != null && pin.matches("[0-9]{6,8}");
+116:     }
+117: 
+118:     /** مدة الانتظار بعد محاولات خاطئة متتالية: لا شيء حتى 4، ثم 30 ثانية تتضاعف حتى ساعة. */
+119:     public static long lockoutMillis(int fails) {
+120:         if (fails < 5) return 0;
+121:         long ms = 30000L << Math.min(fails - 5, 7);
+122:         return Math.min(ms, 3600000L);
+123:     }
+124: 
+125:     /** رمز من 4 إلى 8 أرقام. */
+126:     public static boolean valid(String pin) {
+127:         return pin != null && pin.matches("[0-9]{4,8}");
+128:     }
+129: }

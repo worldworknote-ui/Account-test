@@ -1,0 +1,64 @@
+195:             float rr = r0 + (R - r0) * 0.55f;
+196:             float ix = cx + (float) Math.cos(mid) * rr, iy = cy + (float) Math.sin(mid) * rr - 6 * dp;
+197:             float dr = 19 * dp * k * (0.6f + 0.4f * lt);
+198:             dot.setColor(it.enabled ? it.color : Color.rgb(170, 178, 190));
+199:             dot.setAlpha((int) (255 * alpha));
+200:             c.drawCircle(ix, iy, dr, dot);
+201:             int is = (int) (20 * dp * k * (0.6f + 0.4f * lt));
+202:             it.icon.setBounds((int) (ix - is / 2f), (int) (iy - is / 2f), (int) (ix + is / 2f), (int) (iy + is / 2f));
+203:             it.icon.setAlpha((int) (255 * alpha));
+204:             it.icon.draw(c);
+205:             label.setAlpha((int) (255 * alpha * (it.enabled ? 1f : 0.5f)));
+206:             c.drawText(it.label, ix, iy + dr + 14 * dp * k + 2 * dp, label);
+207:         }
+208:     }
+209: 
+210:     /** رقم الشريحة تحت النقطة، أو −1. */
+211:     private int hit(float x, float y) {
+212:         float dx = x - cx, dy = y - cy;
+213:         float d = (float) Math.sqrt(dx * dx + dy * dy);
+214:         if (d < innerR() || d > outerR() || dy > 0) return -1;
+215:         float ang = (float) Math.toDegrees(Math.atan2(dy, dx));
+216:         if (ang < 0) ang += 360f;
+217:         if (ang < START || ang > END) return -1;
+218:         int fromRight = (int) ((END - ang) / span());
+219:         return fromRight >= 0 && fromRight < items.size() ? fromRight : -1;
+220:     }
+221: 
+222:     @SuppressLint("ClickableViewAccessibility")
+223:     @Override
+224:     public boolean onTouchEvent(MotionEvent e) {
+225:         if (closing) return true;
+226:         int h = hit(e.getX(), e.getY());
+227:         switch (e.getAction()) {
+228:             case MotionEvent.ACTION_DOWN:
+229:             case MotionEvent.ACTION_MOVE:
+230:                 if (h != pressed) {
+231:                     pressed = h;
+232:                     invalidate();
+233:                 }
+234:                 return true;
+235:             case MotionEvent.ACTION_UP:
+236:                 pressed = -1;
+237:                 if (h < 0) {
+238:                     close(null);
+239:                     return true;
+240:                 }
+241:                 final Item it = items.get(h);
+242:                 if (getContext() instanceof Ui) ((Ui) getContext()).tick(this);
+243:                 if (!it.enabled) {
+244:                     invalidate();
+245:                     android.widget.Toast.makeText(getContext(), "غير متاح الآن", android.widget.Toast.LENGTH_SHORT).show();
+246:                     return true;
+247:                 }
+248:                 close(it.action);
+249:                 return true;
+250:             case MotionEvent.ACTION_CANCEL:
+251:                 pressed = -1;
+252:                 invalidate();
+253:                 return true;
+254:             default:
+255:                 return true;
+256:         }
+257:     }
+258: }

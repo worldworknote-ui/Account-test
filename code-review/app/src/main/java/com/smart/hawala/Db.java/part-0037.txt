@@ -1,0 +1,153 @@
+5512:                         z.put("type", cur < 0 ? "لنا" : "علينا");
+5513:                         z.put("amount_minor", amt);
+5514:                         z.put("entry_id", eid);
+5515:                         ins(d, "opening_balances", z);
+5516:                         want.put(key, (want.containsKey(key) ? want.get(key) : cur) - cur);
+5517:                         adopted++;
+5518:                     }
+5519:                 }
+5520:             }
+5521:             for (MergePlan.Opening o : plan.openings) {
+5522:                 if (lock > 0 && o.when < lock) throw new IllegalStateException("رصيد سابق قبل تاريخ الإقفال المحاسبي");
+5523:                 long id = target.get(o.fileOffice);
+5524:                 long amt = Math.abs(o.signed);
+5525:                 long eid = postEntry(d, null, "OPENING", id, o.code, o.signed > 0 ? amt : 0, o.signed < 0 ? amt : 0, o.when);
+5526:                 ContentValues z = new ContentValues();
+5527:                 z.put("office_id", id);
+5528:                 z.put("currency", o.code);
+5529:                 z.put("type", o.signed > 0 ? "لنا" : "علينا");
+5530:                 z.put("amount_minor", amt);
+5531:                 z.put("entry_id", eid);
+5532:                 ins(d, "opening_balances", z);
+5533:             }
+5534:             for (MergePlan.Tx x : plan.txs) {
+5535:                 if (lock > 0 && x.when < lock) throw new IllegalStateException("حركة قبل تاريخ الإقفال المحاسبي");
+5536:                 long office = target.get(x.fileOffice);
+5537:                 boolean hasFee = !FEE_NONE.equals(x.feeType);
+5538:                 ContentValues v = new ContentValues();
+5539:                 v.put("uuid", x.uuid);
+5540:                 v.put("office_id", office);
+5541:                 v.put("type", x.type);
+5542:                 v.put("person", Crypto.enc(Model.nz(x.person)));
+5543:                 v.put("amount_minor", x.amount);
+5544:                 v.put("currency", x.currency);
+5545:                 v.put("fee_type", x.feeType);
+5546:                 v.put("fee_minor", hasFee ? x.fee : 0);
+5547:                 v.put("fee_currency", hasFee ? x.feeCurrency : x.currency);
+5548:                 v.put("description", Crypto.enc(Model.nz(x.description)));
+5549:                 v.put("notes", Crypto.enc(Model.nz(x.notes)));
+5550:                 v.put("created_at", x.when);
+5551:                 v.put("user_name", Crypto.enc(Model.nz(x.userName)));
+5552:                 long id = ins(d, "tx", v);
+5553:                 postEntry(d, id, "PRINCIPAL", office, x.currency, TYPE_DEBIT.equals(x.type) ? x.amount : 0, TYPE_CREDIT.equals(x.type) ? x.amount : 0, x.when);
+5554:                 if (hasFee) postEntry(d, id, "FEE", office, x.feeCurrency, FEE_US.equals(x.feeType) ? x.fee : 0, FEE_THEM.equals(x.feeType) ? x.fee : 0, x.when);
+5555:             }
+5556:             // التحقق: كل رصيد تغيّر بمقدار قيود الملف تمامًا
+5557:             for (Map.Entry<String, Long> e : want.entrySet()) {
+5558:                 String[] k = e.getKey().split("\\|", 2);
+5559:                 long got = officeBalance(d, Long.parseLong(k[0]), k[1]);
+5560:                 if (got != e.getValue()) {
+5561:                     throw new IllegalStateException("التحقق بعد الإضافة فشل (" + k[1] + "): الرصيد " + got + " والمتوقع " + e.getValue() + ". لم يُضف شيء.");
+5562:                 }
+5563:             }
+5564:             try (Cursor c = d.rawQuery("SELECT entry_id,currency,SUM(debit_minor-credit_minor) s FROM journal_lines GROUP BY entry_id,currency HAVING s<>0 LIMIT 1", null)) {
+5565:                 if (c.moveToFirst()) throw new IllegalStateException("قيد غير متوازن بعد الإضافة؛ لم يُضف شيء.");
+5566:             }
+5567:             String prev = rawSetting(d, "merged_files");
+5568:             d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('merged_files',?)",
+5569:                     new Object[]{(prev == null || prev.isEmpty() ? "" : prev + "\n") + plan.fingerprint});
+5570:             rebaseQuotaKeep(d);
+5571:             audit(d, "MERGE_MIGRATION", "import", 0, plan.offices.size() + " مكتب (" + created + " جديد)، " + plan.txs.size() + " حركة، "
+5572:                     + plan.openings.size() + " رصيد سابق" + (adopted > 0 ? "، واعتُمد رصيد الملف بدل الجمع في " + adopted + " رصيد (قيد تسوية للرصيد السابق)" : "")
+5573:                     + (plan.droppedOffices > 0 ? "، واستُبعد " + plan.droppedOffices + " مكتب باختيارك" : ""));
+5574:             d.setTransactionSuccessful();
+5575:             return created;
+5576:         } finally {
+5577:             d.endTransaction();
+5578:         }
+5579:     }
+5580: 
+5581:     // ===================================================================================
+5582:     // 9.0: عدّاد واتساب اليومي للنسخة المجانية
+5583:     // ===================================================================================
+5584: 
+5585:     static String today() { return Model.sdf(new java.text.SimpleDateFormat("yyyyMMdd", Locale.US)).format(new java.util.Date()); }
+5586: 
+5587:     private WaQuota waQuota(SQLiteDatabase d) {
+5588:         String raw = rawSetting(d, "wa_quota");
+5589:         WaQuota q = WaQuota.parse(raw);
+5590:         String want = raw == null ? "" : quotaMac.apply(q.serialize());
+5591:         String stored = rawSetting(d, "wa_quota_mac");
+5592:         if (raw != null && !want.isEmpty() && !want.equals(stored)) {
+5593:             // عُدّل خارج التطبيق: يُعتبر حد اليوم مستنفدًا (يعود غدًا)
+5594:             q = new WaQuota();
+5595:             q.day = today();
+5596:             for (int i = 0; i < Entitlements.FREE_WA_PER_DAY; i++) q.seen.add("x" + i);
+5597:         }
+5598:         return q;
+5599:     }
+5600: 
+5601:     /** هل يُسمح باستخراج معلومات هذه الرسالة الآن؟ (الكاملة: دائمًا) */
+5602:     public boolean waAllowed(String text) {
+5603:         long max = License.current.waPerDay();
+5604:         if (max == Entitlements.UNLIMITED) return true;
+5605:         return waQuota(getReadableDatabase()).allows(WaQuota.key(text), max, today());
+5606:     }
+5607: 
+5608:     /** يحتسب الرسالة اليوم (مرة واحدة لكل نص). false = بلغ الحد. */
+5609:     public boolean waUse(String text) {
+5610:         long max = License.current.waPerDay();
+5611:         if (max == Entitlements.UNLIMITED) return true;
+5612:         SQLiteDatabase d = getWritableDatabase();
+5613:         d.beginTransaction();
+5614:         try {
+5615:             WaQuota q = waQuota(d);
+5616:             boolean ok = q.use(WaQuota.key(text), max, today());
+5617:             String v = q.serialize();
+5618:             d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('wa_quota',?)", new Object[]{v});
+5619:             d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('wa_quota_mac',?)", new Object[]{quotaMac.apply(v)});
+5620:             d.setTransactionSuccessful();
+5621:             return ok;
+5622:         } finally {
+5623:             d.endTransaction();
+5624:         }
+5625:     }
+5626: 
+5627:     /** {المستخدم اليوم، الحد} (الحد UNLIMITED في الكاملة). */
+5628:     public long[] waUsage() {
+5629:         long max = License.current.waPerDay();
+5630:         if (max == Entitlements.UNLIMITED) return new long[]{0, max};
+5631:         return new long[]{waQuota(getReadableDatabase()).used(today()), max};
+5632:     }
+5633: 
+5634:     // ===================================================================================
+5635:     // 9.0: ترتيب المكاتب: الاستخدام وآخر فتح والميزان بالدولار
+5636:     // ===================================================================================
+5637: 
+5638:     /** لكل مكتب: {حركات آخر 90 يومًا، كل الحركات، وقت آخر حركة}. */
+5639:     public Map<Long, long[]> officeUsage() {
+5640:         Map<Long, long[]> m = new HashMap<>();
+5641:         long since = Clock.now() - 90L * 86400000L;
+5642:         try (Cursor c = getReadableDatabase().rawQuery("SELECT office_id,SUM(CASE WHEN created_at>=" + since + " THEN 1 ELSE 0 END),COUNT(*),MAX(created_at) FROM tx GROUP BY office_id", null)) {
+5643:             while (c.moveToNext()) m.put(c.getLong(0), new long[]{c.getLong(1), c.getLong(2), c.isNull(3) ? 0 : c.getLong(3)});
+5644:         }
+5645:         return m;
+5646:     }
+5647: 
+5648:     /** يُسجَّل فتح صفحة المكتب أو التسجيل عليه (لترتيب «آخر ما فتحته»). */
+5649:     public void touchOffice(long officeId) {
+5650:         setSettingQuiet("office_opened", OfficeOrder.touchOpened(setting("office_opened", ""), officeId, Clock.now()));
+5651:     }
+5652: 
+5653:     public OfficeOrder.Inputs officeOrderInputs(Map<Long, Map<String, Long>> balances) {
+5654:         OfficeOrder.Inputs in = new OfficeOrder.Inputs();
+5655:         Map<String, BigDecimal> rates = usdRates();
+5656:         Map<String, Integer> dec = decimalsMap();
+5657:         for (Map.Entry<Long, Map<String, Long>> e : balances.entrySet()) in.usdNet.put(e.getKey(), Ledger.valueOffice(e.getValue(), rates, dec).netUsd());
+5658:         Map<Long, long[]> use = officeUsage();
+5659:         Map<Long, Long> opened = OfficeOrder.parseOpened(setting("office_opened", ""));
+5660:         for (Map.Entry<Long, long[]> e : use.entrySet()) {
+5661:             in.usage.put(e.getKey(), new long[]{e.getValue()[0], e.getValue()[1]});
+5662:             Long o = opened.get(e.getKey());
+5663:             opened.put(e.getKey(), Math.max(o == null ? 0 : o, e.getValue()[2]));
+5664:         }

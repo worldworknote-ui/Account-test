@@ -1,0 +1,173 @@
+1209:         setFounder(h, me, old, "استلام برمز الاسترداد بعد غياب الرئيسي");
+1210:         db.audit("SYNC_FOUNDER", "sync", 0, "استلم هذا الجهاز دور الجهاز الرئيسي برمز الاسترداد (السابق: " + nameOf(keys, old) + ")");
+1211:         writeMember();
+1212:         cacheMembers();
+1213:     }
+1214: 
+1215:     /** null إن جاز استلام الدور الآن، وإلا السبب (للواجهة قبل طلب الرمز). */
+1216:     public String founderClaimBlock(String founderDev) throws Exception {
+1217:         if (founderDev == null || founderDev.isEmpty()) return null;
+1218:         roundMembers = null;
+1219:         readMembers(keys());   // يدمج سجلات الخروج الأحدث من بطاقات الجميع
+1220:         JSONObject x = removedMap().get(founderDev);
+1221:         if (x != null) return null;   // خرج بإعادة التعيين
+1222:         JSONObject fm = readMembersRaw(keys()).get(founderDev);
+1223:         if (fm == null) return null;  // لا بطاقة له في المكان
+1224:         long gone = Clock.now() - fm.optLong("at");
+1225:         if (gone >= FOUNDER_ABSENT_MS) return null;
+1226:         long days = Math.max(1, (FOUNDER_ABSENT_MS - gone + 86_399_999L) / 86_400_000L);
+1227:         return "الجهاز الرئيسي «" + fm.optString("name") + "» زامن في " + Model.date(fm.optLong("at")) + ". إن كان بين يديك فانقل الدور منه هو؛ "
+1228:                 + "وإن ضاع فيُسمح باستلام الدور بعد " + days + " يوم من غيابه (حماية من وجود جهازين رئيسيين).";
+1229:     }
+1230: 
+1231:     private String nameOf(SyncCrypto.Keys keys, String dev) {
+1232:         try {
+1233:             JSONObject m = readMembersRaw(keys).get(dev);
+1234:             if (m != null) return m.optString("name");
+1235:         } catch (Exception ignored) {
+1236:             // الاسم للعرض فقط
+1237:         }
+1238:         JSONObject x = removedMap().get(dev);
+1239:         return x != null ? x.optString("name") : dev;
+1240:     }
+1241: 
+1242:     private void setFounder(JSONObject h, String to, String from, String how) throws Exception {
+1243:         h.put("founder", to);
+1244:         h.put("founder_epoch", h.optLong("founder_epoch", 0) + 1);
+1245:         h.put("founder_at", Clock.now());
+1246:         h.put("founder_from", from == null ? "" : from);
+1247:         h.put("founder_how", how);
+1248:         folder.write(HEADER, h.toString(1).getBytes(StandardCharsets.UTF_8));
+1249:         SQLiteDatabase d = db.getWritableDatabase();
+1250:         SyncStore.setMeta(d, "header_copy", h.toString());
+1251:         SyncStore.setMeta(d, "founder", to);
+1252:         // الأسرار وصلت إلى كل جهاز مع لقطته: لا تُعاد من الرئيسي الجديد (لا تتغير رموز المستخدمين)
+1253:         if (to.equals(SyncStore.meta(d, "device"))) SyncStore.setMeta(d, "secrets_sent", "1");
+1254:     }
+1255: 
+1256:     /** «10.5» ≥ «10.4»… (أرقام مفصولة بنقاط). */
+1257:     static boolean atLeast(String v, String min) {
+1258:         String[] a = (v == null ? "" : v).split("\\."), b = min.split("\\.");
+1259:         for (int i = 0; i < Math.max(a.length, b.length); i++) {
+1260:             long x = i < a.length ? lng(a[i].replaceAll("[^0-9]", "")) : 0, y = i < b.length ? lng(b[i]) : 0;
+1261:             if (x != y) return x > y;
+1262:         }
+1263:         return true;
+1264:     }
+1265: 
+1266:     /** 10.4: اسم جديد لهذا الجهاز (يظهر لبقية الأجهزة بعد الجولة التالية). */
+1267:     public void rename(String name) throws Exception {
+1268:         VAULT.lock();
+1269:         try {
+1270:             renameLocked(name);
+1271:         } finally {
+1272:             VAULT.unlock();
+1273:         }
+1274:     }
+1275: 
+1276:     private void renameLocked(String name) throws Exception {
+1277:         String n = name == null ? "" : name.trim();
+1278:         if (n.isEmpty()) throw new IllegalArgumentException("اكتب اسمًا للجهاز");
+1279:         if (n.length() > 40) n = n.substring(0, 40);
+1280:         SyncStore.setMeta(db.getWritableDatabase(), "device_name", n);
+1281:         // تسمية الجهاز لنفسه أحدث من أي تسمية سابقة أعطاها له المدير
+1282:         Map<String, JSONObject> rn = renamesMap();
+1283:         JSONObject x = new JSONObject();
+1284:         x.put("name", n);
+1285:         x.put("at", Clock.now());
+1286:         rn.put(nz(SyncStore.meta(db.getReadableDatabase(), "device")), x);
+1287:         saveRenames(rn);
+1288:         writeMember();
+1289:         cacheMembers();
+1290:     }
+1291: 
+1292:     // ---- 10.17: المدير يعيد تسمية أي جهاز منضم ----
+1293: 
+1294:     Map<String, JSONObject> renamesMap() {
+1295:         Map<String, JSONObject> out = new TreeMap<>();
+1296:         try {
+1297:             String s = SyncStore.meta(db.getReadableDatabase(), "renames");
+1298:             JSONObject o = new JSONObject(s == null || s.isEmpty() ? "{}" : s);
+1299:             for (java.util.Iterator<String> it = o.keys(); it.hasNext(); ) {
+1300:                 String k = it.next();
+1301:                 if (o.optJSONObject(k) != null) out.put(k, o.getJSONObject(k));
+1302:             }
+1303:         } catch (Exception ignored) {
+1304:             // قائمة تالفة = بلا تسميات
+1305:         }
+1306:         return out;
+1307:     }
+1308: 
+1309:     void saveRenames(Map<String, JSONObject> m) throws Exception {
+1310:         JSONObject o = new JSONObject();
+1311:         for (Map.Entry<String, JSONObject> e : m.entrySet()) o.put(e.getKey(), e.getValue());
+1312:         SyncStore.setMeta(db.getWritableDatabase(), "renames", o.toString());
+1313:     }
+1314: 
+1315:     /**
+1316:      * يسمّي المدير جهازًا منضمًّا (من جهازه). التسمية تنتقل في بطاقات الأجهزة (الأحدث يفوز)، فتراها كل الأجهزة بعد جولتها
+1317:      * التالية، والجهاز نفسه يعتمدها اسمًا له.
+1318:      */
+1319:     public void renameDevice(String dev, String name) throws Exception {
+1320:         VAULT.lock();
+1321:         try {
+1322:             db.requireAdmin("إعادة تسمية أجهزة المزامنة للمدير وحده.");
+1323:             String n = name == null ? "" : name.trim();
+1324:             if (n.isEmpty()) throw new IllegalArgumentException("اكتب اسمًا للجهاز");
+1325:             if (n.length() > 40) n = n.substring(0, 40);
+1326:             if (dev == null || dev.isEmpty()) throw new IllegalArgumentException("الجهاز غير معروف");
+1327:             if (dev.equals(SyncStore.meta(db.getReadableDatabase(), "device"))) {
+1328:                 renameLocked(n);
+1329:                 return;
+1330:             }
+1331:             Map<String, JSONObject> rn = renamesMap();
+1332:             JSONObject x = new JSONObject();
+1333:             x.put("name", n);
+1334:             x.put("at", Clock.now());
+1335:             x.put("by", nz(SyncStore.meta(db.getReadableDatabase(), "device_name")));
+1336:             rn.put(dev, x);
+1337:             saveRenames(rn);
+1338:             writeMember();
+1339:             cacheMembers();
+1340:             db.audit("SYNC_DEVICE", "sync", 0, "سمّى المدير الجهاز: " + n);
+1341:         } finally {
+1342:             VAULT.unlock();
+1343:         }
+1344:     }
+1345: 
+1346:     // ===================================================================================
+1347:     // الأعضاء واللقطات
+1348:     // ===================================================================================
+1349: 
+1350:     /** 10.4: الأعضاء النشطون فقط (بلا الأجهزة التي أزالها المدير). يحدّث قائمة المُزالين المحلية من بطاقات الجميع. */
+1351:     Map<String, JSONObject> readMembers(SyncCrypto.Keys keys) throws IOException {
+1352:         Map<String, JSONObject> all = readMembersRaw(keys);
+1353:         Map<String, JSONObject> removed = removedMap();
+1354:         boolean grew = false;
+1355:         for (JSONObject m : all.values()) {
+1356:             JSONArray r = m.optJSONArray("removed");
+1357:             if (r == null) continue;
+1358:             for (int i = 0; i < r.length(); i++) {
+1359:                 JSONObject x = r.optJSONObject(i);
+1360:                 if (x == null || x.optString("dev").isEmpty()) continue;
+1361:                 JSONObject have = removed.get(x.optString("dev"));
+1362:                 if (have == null) {
+1363:                     removed.put(x.optString("dev"), x);
+1364:                     grew = true;
+1365:                     continue;
+1366:                 }
+1367:                 // 10.5: سجلان للجهاز نفسه (أزاله جهازان، أو خرج بنفسه وأزيل): يُؤخذ الأبعد upTo فلا يُقطع ما أرسله
+1368:                 try {
+1369:                     if (x.has("upTo") && (!have.has("upTo") && purgedTo(have) < 0 || x.optLong("upTo") > have.optLong("upTo", 0))) {
+1370:                         have.put("upTo", x.optLong("upTo"));
+1371:                         have.put("snaps", Math.max(have.optLong("snaps", 0), x.optLong("snaps", 0)));
+1372:                         grew = true;
+1373:                     }
+1374:                     if (purgedTo(x) > purgedTo(have)) {
+1375:                         have.put("purgedTo", purgedTo(x));
+1376:                         grew = true;
+1377:                     }
+1378:                 } catch (org.json.JSONException ignored) {
+1379:                     // سجل غير مكتمل: يبقى المحلي
+1380:                 }
+1381:             }

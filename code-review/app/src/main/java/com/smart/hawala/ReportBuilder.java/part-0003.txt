@@ -1,0 +1,152 @@
+316:         if (s.isEmpty()) return new String[]{"￿", empty};
+317:         return new String[]{OwnerReports.norm(s), s};
+318:     }
+319: 
+320:     static String name(Data d, long office) {
+321:         String n = d.names.get(office);
+322:         return n == null || n.isEmpty() ? "مكتب " + office : n;
+323:     }
+324: 
+325:     static boolean timeGroup(int g) { return g >= G_DAY && g <= G_HOUR; }
+326: 
+327:     // ===================================================================================
+328:     // الحساب
+329:     // ===================================================================================
+330: 
+331:     public static final class Result {
+332:         /** المجموعة ← العملة ← المجاميع. */
+333:         public final Map<String, Map<String, Agg>> groups = new LinkedHashMap<>();
+334:         public final Map<String, String> labels = new HashMap<>();
+335:         public final Map<String, Agg> totals = new TreeMap<>();
+336:         public final Map<String, Map<String, Agg>> previous = new HashMap<>();
+337:         public final Map<String, Agg> previousTotals = new TreeMap<>();
+338:         public final List<Model.Tx> rows = new ArrayList<>();
+339:         /** الجدول المتقاطع: المجموعة ← العمود ← العملة ← المجاميع. */
+340:         public final Map<String, Map<String, Map<String, Agg>>> pivot = new HashMap<>();
+341:         public final Map<String, String> pivotLabels = new TreeMap<>();
+342:         public long from, to, prevFrom, prevTo;
+343:     }
+344: 
+345:     public static Result compute(Spec s, Data d) {
+346:         Result r = new Result();
+347:         r.from = s.from;
+348:         r.to = s.to > 0 ? s.to : Long.MAX_VALUE;
+349:         Map<String, Map<String, Agg>> groups = new HashMap<>();
+350:         for (Model.Tx t : d.txs) {
+351:             if (!matches(s, d, t, r.from, r.to)) continue;
+352:             r.rows.add(t);
+353:             String[] k = key(s.group, d, t);
+354:             r.labels.put(k[0], k[1]);
+355:             accumulate(groups.computeIfAbsent(k[0], z -> new TreeMap<>()), t, s.currencies);
+356:             accumulate(r.totals, t, s.currencies);
+357:             if (s.group2 != G_NONE) {
+358:                 String[] k2 = key(s.group2, d, t);
+359:                 r.pivotLabels.put(k2[0], k2[1]);
+360:                 accumulate(r.pivot.computeIfAbsent(k[0], z -> new HashMap<>()).computeIfAbsent(k2[0], z -> new TreeMap<>()), t, s.currencies);
+361:             }
+362:         }
+363:         if (s.compare && s.from > 0) {
+364:             long len = r.to == Long.MAX_VALUE ? d.now - s.from : r.to - s.from;
+365:             r.prevFrom = s.from - len;
+366:             r.prevTo = s.from;
+367:             for (Model.Tx t : d.txs) {
+368:                 if (!matches(s, d, t, r.prevFrom, r.prevTo)) continue;
+369:                 String[] k = key(s.group, d, t);
+370:                 if (!r.labels.containsKey(k[0])) r.labels.put(k[0], k[1]);
+371:                 accumulate(r.previous.computeIfAbsent(k[0], z -> new TreeMap<>()), t, s.currencies);
+372:                 accumulate(r.previousTotals, t, s.currencies);
+373:             }
+374:             for (String k : r.previous.keySet()) groups.computeIfAbsent(k, z -> new TreeMap<>());
+375:         }
+376:         List<String> keys = new ArrayList<>(groups.keySet());
+377:         final Map<String, Map<String, Agg>> g = groups;
+378:         Comparator<String> byKey = timeGroup(s.group) || s.group == G_DIRECTION || s.group == G_KIND || s.group == G_SIZE || s.group == G_YEAR
+379:                 ? Comparator.naturalOrder() : (a, b) -> r.labels.get(a).compareTo(r.labels.get(b));
+380:         Comparator<String> cmp;
+381:         switch (s.sort) {
+382:             case SORT_COUNT: cmp = Comparator.comparingLong((String k) -> -sum(g.get(k), M_COUNT)); break;
+383:             case SORT_VOLUME: cmp = Comparator.comparingLong((String k) -> -sum(g.get(k), M_VOLUME)); break;
+384:             case SORT_NET: cmp = Comparator.comparingLong((String k) -> -Math.abs(sum(g.get(k), M_NET))); break;
+385:             case SORT_FEES: cmp = Comparator.comparingLong((String k) -> -sum(g.get(k), M_FEES_NET)); break;
+386:             default: cmp = byKey;
+387:         }
+388:         Collections.sort(keys, cmp.thenComparing(byKey));
+389:         if (s.top > 0 && keys.size() > s.top) keys = keys.subList(0, s.top);
+390:         for (String k : keys) r.groups.put(k, groups.get(k));
+391:         return r;
+392:     }
+393: 
+394:     /**
+395:      * مجموع مقياس عبر العملات. للعدد يُجمع مباشرة؛ للمبالغ يُجمع بلا تحويل (للترتيب فقط، ضمن عملة واحدة في الغالب).
+396:      */
+397:     static long sum(Map<String, Agg> m, int measure) {
+398:         long s = 0;
+399:         if (m == null) return 0;
+400:         for (Agg a : m.values()) s += a.measure(measure);
+401:         return s;
+402:     }
+403: 
+404:     /** رصيد كل مكتب|عملة قبل لحظة (حركات نشطة + أرصدة سابقة)، للرصيد المتراكم في الكشف التفصيلي. */
+405:     static Map<String, Long> balanceBefore(Data d, long before) {
+406:         Map<String, Long> b = new HashMap<>();
+407:         for (Model.Tx t : d.txs) {
+408:             if (!t.isActive() || t.createdAt >= before) continue;
+409:             b.merge(t.officeId + "|" + t.currency, isDebit(t) ? t.amount : -t.amount, Long::sum);
+410:             if (t.hasFee()) b.merge(t.officeId + "|" + t.feeCurrency, Model.FEE_US.equals(t.feeType) ? t.fee : -t.fee, Long::sum);
+411:         }
+412:         for (OwnerReports.Opening o : d.openings) if (o.when < before) b.merge(o.office + "|" + o.currency, o.signed, Long::sum);
+413:         return b;
+414:     }
+415: 
+416:     // ===================================================================================
+417:     // بناء التقرير
+418:     // ===================================================================================
+419: 
+420:     public static String describe(Spec s, Data d) {
+421:         List<String> p = new ArrayList<>();
+422:         p.add("الفترة: " + (s.from > 0 ? Model.day(s.from) : "البداية") + " ← " + (s.to > 0 ? Model.day(s.to - 1) : "الآن"));
+423:         if (!s.offices.isEmpty()) {
+424:             List<String> n = new ArrayList<>();
+425:             for (long o : s.offices) n.add(name(d, o));
+426:             p.add("المكاتب: " + (n.size() > 6 ? n.subList(0, 6) + " و" + (n.size() - 6) + " غيرها" : Model.join(n, "، ")));
+427:         }
+428:         if (!s.currencies.isEmpty()) p.add("العملات: " + Model.join(new ArrayList<>(s.currencies), "، "));
+429:         if (s.direction != DIR_ALL) p.add("الاتجاه: " + DIR_NAMES[s.direction]);
+430:         if (s.kind != K_ALL) p.add("النوع: " + KIND_NAMES[s.kind]);
+431:         if (s.status != S_ACTIVE) p.add("الحالة: " + STATUS_NAMES[s.status]);
+432:         if (!s.text.trim().isEmpty()) p.add("بحث: «" + s.text.trim() + "»");
+433:         if (!s.service.trim().isEmpty()) p.add("الخدمة: " + s.service.trim());
+434:         if (!s.dest.trim().isEmpty()) p.add("الوجهة: " + s.dest.trim());
+435:         if (!s.user.trim().isEmpty()) p.add("المستخدم: " + s.user.trim());
+436:         if (s.minAmount != null || s.maxAmount != null)
+437:             p.add("المبلغ: " + (s.minAmount == null ? "" : "من " + s.minAmount.toPlainString() + " ") + (s.maxAmount == null ? "" : "إلى " + s.maxAmount.toPlainString()));
+438:         return Model.join(p, " · ");
+439:     }
+440: 
+441:     public static Report build(Spec s, Data d, String issuer) {
+442:         Result res = compute(s, d);
+443:         Report r = new Report();
+444:         r.title = s.title == null || s.title.trim().isEmpty() ? (s.group == G_NONE ? "كشف حركات مخصص" : "تقرير حسب " + GROUP_NAMES[s.group]) : s.title.trim();
+445:         r.fileBase = "تقرير-مخصص";
+446:         if (issuer != null && !issuer.trim().isEmpty()) r.headerLines.add("صادر عن: " + issuer.trim());
+447:         r.headerLines.add(describe(s, d));
+448: 
+449:         // الخلاصة لكل عملة
+450:         Report.Section sum = r.section("الخلاصة", "الخلاصة");
+451:         sum.kv("عدد الحركات المطابقة", "" + res.rows.size(), false);
+452:         for (Map.Entry<String, Agg> e : res.totals.entrySet()) {
+453:             String c = e.getKey();
+454:             Agg a = e.getValue();
+455:             sum.kv("بـ" + c, "لنا " + fmt(d, c, a.us) + " · علينا " + fmt(d, c, a.them) + " · الصافي " + Model.bal(a.net(), dec(d, c))
+456:                     + " · الأجور لنا " + fmt(d, c, a.feeUs) + " وعلينا " + fmt(d, c, a.feeThem) + " · الأثر على الرصيد " + Model.bal(a.impact(), dec(d, c)) + " " + c, false);
+457:             Agg p = res.previousTotals.get(c);
+458:             if (s.compare && p != null)
+459:                 sum.kv("مقارنة بالفترة السابقة (" + c + ")", "العمليات " + change(a.count, p.count) + " · الحجم " + change(a.volume(), p.volume())
+460:                         + " · صافي الأجور " + change(a.feesNet(), p.feesNet()), false);
+461:         }
+462:         sum.col("العملة", 0.7f, Report.TEXT).col("العمليات", 0.7f, Report.INT).col("لنا", 1.1f, Report.MONEY).col("علينا", 1.1f, Report.MONEY)
+463:                 .col("الصافي", 1.1f, Report.BAL).col("أجور لنا", 1f, Report.MONEY).col("أجور علينا", 1f, Report.MONEY).col("الأثر على الرصيد", 1.1f, Report.BAL);
+464:         for (Map.Entry<String, Agg> e : res.totals.entrySet()) {
+465:             String c = e.getKey();
+466:             Agg a = e.getValue();
+467:             int dc = dec(d, c);

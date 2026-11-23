@@ -1,0 +1,112 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.Report;
+4: import java.awt.*;
+5: import java.util.List;
+6: import javax.swing.*;
+7: import javax.swing.border.EmptyBorder;
+8: import javax.swing.table.DefaultTableCellRenderer;
+9: import javax.swing.table.DefaultTableModel;
+10: 
+11: /**
+12:  * يعرض أي تقرير (Report) على الشاشة كما سيُصدَّر: الأقسام، مربعات الملخص، والجداول بأنماط الصفوف.
+13:  * فالذي تراه هو نفسه ما في PDF وExcel (نموذج واحد للتقرير).
+14:  */
+15: final class ReportPanel {
+16:     private ReportPanel() {}
+17: 
+18:     static JPanel render(Report r, int width) {
+19:         JPanel p = Ui.column();
+20:         for (String h : r.headerLines) p.add(Ui.para(h, 13, Ui.muted, width));
+21:         if (!r.headerLines.isEmpty()) p.add(Ui.gap(10));
+22:         for (Report.Section s : r.sections) {
+23:             p.add(section(s, width));
+24:             p.add(Ui.gap(14));
+25:         }
+26:         if (r.sections.isEmpty()) p.add(Ui.label("لا توجد بيانات.", 14, Ui.muted, false));
+27:         return p;
+28:     }
+29: 
+30:     static JComponent section(Report.Section s, int width) {
+31:         Ui.Card c = Ui.card();
+32:         Color accent = s.accent != 0 ? new Color(s.accent, false) : Ui.primary;
+33:         if (s.heading != null && !s.heading.isEmpty()) {
+34:             JLabel h = Ui.label(s.heading, 16, Ui.darker(accent, 0.8f), true);
+35:             c.add(h);
+36:             c.add(Ui.gap(6));
+37:         }
+38:         if (!s.summary.isEmpty()) {
+39:             JPanel g = new JPanel(new GridLayout(0, 1, 0, 3));
+40:             g.setOpaque(false);
+41:             g.setAlignmentX(Component.RIGHT_ALIGNMENT);
+42:             for (Report.Kv kv : s.summary) {
+43:                 JLabel l = Ui.label("<html><div style='text-align:right;width:" + Ui.css(Math.max(300, width - 120)) + "px'><b>" + Ui.esc(kv.label) + ":</b> "
+44:                         + Ui.esc(Report.text(kv.value)) + "</div></html>", 13.5f, kv.emphasis ? Ui.red : Ui.ink, false);
+45:                 g.add(l);
+46:             }
+47:             c.add(g);
+48:             c.add(Ui.gap(8));
+49:         }
+50:         if (!s.cols.isEmpty() && !s.rows.isEmpty()) {
+51:             String[] cols = new String[s.cols.size()];
+52:             for (int i = 0; i < cols.length; i++) cols[i] = s.cols.get(i).title;
+53:             DefaultTableModel m = new DefaultTableModel(cols, 0) {
+54:                 @Override public boolean isCellEditable(int r, int c) { return false; }
+55:             };
+56:             for (Report.Row row : s.rows) {
+57:                 Object[] cells = new Object[cols.length];
+58:                 for (int i = 0; i < cols.length; i++) cells[i] = i < row.cells.length ? row.cells[i] : "";
+59:                 m.addRow(cells);
+60:             }
+61:             final List<Report.Row> rows = s.rows;
+62:             final List<Report.Col> types = s.cols;
+63:             JTable t = Ui.table(m);
+64:             t.setAutoCreateRowSorter(false);
+65:             DefaultTableCellRenderer rend = new DefaultTableCellRenderer() {
+66:                 @Override public Component getTableCellRendererComponent(JTable tb, Object v, boolean sel, boolean f, int row, int col) {
+67:                     Object shown = v instanceof Report.Money || v instanceof Report.Bal || v instanceof Report.DateV ? v.toString() : Report.text(v);
+68:                     super.getTableCellRendererComponent(tb, Pdf.clean(shown.toString()).replace('\n', ' '), sel, false, row, col);
+69:                     setBorder(new EmptyBorder(0, 8, 0, 8));
+70:                     Report.Row rw = rows.get(row);
+71:                     int type = types.get(col).type;
+72:                     setHorizontalAlignment(type == Report.TEXT ? SwingConstants.RIGHT : SwingConstants.CENTER);
+73:                     setFont(Ui.font(13, rw.style == Report.BOLD || rw.style == Report.TOTAL || v instanceof Report.Bal));
+74:                     Color fg = Ui.ink;
+75:                     if (rw.style == Report.MUTED) fg = Ui.muted;
+76:                     else if (v instanceof Report.Bal) fg = ((Report.Bal) v).v > 0 ? Ui.green : ((Report.Bal) v).v < 0 ? Ui.red : Ui.muted;
+77:                     else if (rw.tint != 0 && (v instanceof Report.Money)) fg = Ui.darker(new Color(rw.tint, false), 0.8f);
+78:                     setForeground(fg);
+79:                     if (!sel) {
+80:                         // 10.18: ألوان الجدول من المظهر الحالي (كانت بيضاء ثابتة فتظهر فاقعة في الوضع الليلي)
+81:                         Color bg = rw.style == Report.TOTAL ? Ui.mix(Ui.surface, accent, 0.18f) : rw.style == Report.SHADED ? Ui.stripe
+82:                                 : rw.tint != 0 ? Ui.mix(Ui.surface, new Color(rw.tint, false), 0.07f) : Ui.surface;
+83:                         setBackground(bg);
+84:                     }
+85:                     setToolTipText(shown.toString().length() > 40 ? "<html><div style='width:360px'>" + Ui.esc(Pdf.clean(shown.toString())) + "</div></html>" : null);
+86:                     return this;
+87:                 }
+88:             };
+89:             t.setDefaultRenderer(Object.class, rend);
+90:             float sum = 0;
+91:             for (Report.Col col : s.cols) sum += col.weight;
+92:             int tw = Math.max(600, width - 40);
+93:             for (int i = 0; i < s.cols.size(); i++) t.getColumnModel().getColumn(i).setPreferredWidth((int) (tw * s.cols.get(i).weight / sum));
+94:             t.getTableHeader().setBackground(Ui.mix(Ui.surface, accent, Ui.dark ? 0.30f : 0.14f));
+95:             t.getTableHeader().setForeground(Ui.dark ? Ui.ink : Ui.darker(accent, 0.7f));
+96:             JScrollPane sp = Ui.tableBox(t);
+97:             // 10.18: الجدول بكامل صفوفه (كان يُقص: صف الملخص لا يظهر كاملًا، والكشف الطويل في نافذة صغيرة داخلية)؛ الصفحة هي التي تتمرر
+98:             int h = s.rows.size() * t.getRowHeight() + Math.max(36, t.getTableHeader().getPreferredSize().height) + 6;
+99:             sp.setPreferredSize(new Dimension(tw, h));
+100:             sp.setMaximumSize(new Dimension(Integer.MAX_VALUE, h));
+101:             sp.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER);
+102:             Ui.passWheel(sp);
+103:             t.applyComponentOrientation(Ui.RTL);
+104:             c.add(sp);
+105:         }
+106:         if (s.note != null && !s.note.isEmpty()) {
+107:             c.add(Ui.gap(6));
+108:             c.add(Ui.para(s.note, 12.5f, Ui.muted, Math.max(300, width - 150)));
+109:         }
+110:         return c;
+111:     }
+112: }

@@ -1,0 +1,191 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.awt.event.KeyEvent;
+6: import java.util.ArrayList;
+7: import java.util.List;
+8: import javax.swing.*;
+9: 
+10: /**
+11:  * 10.6: «تسجيل حركة بين مكتبين» بأسلوب «تسجيل حركة». 10.7 (الاتجاه الصحيح): المكتب طالب الحركة يطلب منا تسليم مبلغ فيصير «لنا» عليه،
+12:  * والمكتب المنفّذ يسلّمه نيابة عنا فيصير «علينا» له — بالمبلغ والعملة نفسيهما، في عملية واحدة (Db.addTransfer).
+13:  * الأجرة: أجرتنا على الطالب («لنا») وأجرة المنفّذ («علينا»)، والفرق ربحنا. لا حركة صندوق. المكتب نفسه في الطرفين مرفوض.
+14:  */
+15: final class TransferView extends RecordView {
+16:     static final String[] FEE_KINDS = {Model.FEE_NONE, Model.FEE_US, Model.FEE_THEM};
+17: 
+18:     OfficeBox from, to;
+19:     final JPanel curHolder = holder();
+20:     Ui.Seg cur, feeMode, fromFee, toFee;
+21:     final Ui.Field amount = Ui.numeric("0"), fromFeeAmt = Ui.numeric("مبلغ أجرة الطالب"), toFeeAmt = Ui.numeric("مبلغ أجرة المنفّذ");
+22:     final Ui.Field person = Ui.field("اسم المستفيد (اختياري)"), desc = Ui.field("البيان (اختياري)");
+23:     final JPanel feeBox = Ui.column();
+24:     final List<String> common = new ArrayList<>();
+25: 
+26:     TransferView(App app) { super(app, "تسجيل حركة"); }
+27: 
+28:     @Override void build() {
+29:         from = new OfficeBox("اختر المكتب طالب الحركة");
+30:         to = new OfficeBox("اختر المكتب المنفّذ");
+31:         Color gray = new Color(120, 120, 120);
+32:         feeMode = new Ui.Seg(new String[]{"بدون أجرة", "مع أجرة"}, null, 0);
+33:         fromFee = new Ui.Seg(FEE_KINDS, new Color[]{gray, Ui.green, Ui.red}, 0);
+34:         toFee = new Ui.Seg(FEE_KINDS, new Color[]{gray, Ui.green, Ui.red}, 0);
+35:         big(amount);
+36:         amount.getAccessibleContext().setAccessibleName("المبلغ");
+37:         JPanel form = Ui.column();
+38:         form.add(kinds(app, RecordMenu.XFER, () -> from.get()));
+39:         form.add(Ui.gap(12));
+40:         form.add(Ui.para("مكتب يطلب منا تسليم مبلغ، وينفّذه مكتب آخر نيابة عنا: طالب الحركة يصير «لنا» عليه، والمنفّذ يصير «علينا» له بالمبلغ نفسه. لا يتحرك النقد في الصندوق. تُسجَّل الساقان وتُعتمدان وتُلغيان معًا.",
+41:                 12.5f, Ui.muted, 460));
+42:         form.add(Ui.gap(10));
+43:         Ui.Card fc = side("المكتب طالب الحركة", "طلب منا التسليم ← يصير «لنا» عليه", Ui.green, Ui.creditBg);
+44:         fc.add(from);
+45:         form.add(fc);
+46:         form.add(Ui.gap(6));
+47:         form.add(centered(swapButton("تبديل الطرفين", e -> swap())));
+48:         form.add(Ui.gap(6));
+49:         Ui.Card tc = side("المكتب المنفّذ", "سلّم المبلغ عنا ← يصير «علينا» له", Ui.red, Ui.debitBg);
+50:         tc.add(to);
+51:         form.add(tc);
+52:         form.add(Ui.gap(14));
+53:         form.add(Ui.labeled("المبلغ", amount));
+54:         form.add(Ui.gap(10));
+55:         form.add(Ui.labeled("العملة (المشتركة بين المكتبين)", curHolder));
+56:         form.add(Ui.gap(12));
+57:         form.add(Ui.labeled("المستفيد", person));
+58:         form.add(Ui.gap(10));
+59:         form.add(Ui.labeled("البيان", desc));
+60:         form.add(Ui.gap(12));
+61:         form.add(Ui.labeled("الأجرة", feeMode));
+62:         feeBox.add(Ui.gap(8));
+63:         feeBox.add(Ui.labeled("أجرتنا على طالب الحركة (عادةً «الأجرة لنا»)", fromFee));
+64:         feeBox.add(Ui.gap(4));
+65:         feeBox.add(fromFeeAmt);
+66:         feeBox.add(Ui.gap(8));
+67:         feeBox.add(Ui.labeled("أجرة المنفّذ (عادةً «الأجرة علينا»)", toFee));
+68:         feeBox.add(Ui.gap(4));
+69:         feeBox.add(toFeeAmt);
+70:         feeBox.add(Ui.label("الأجرة بعملة الحركة نفسها. الفرق بين أجرتنا وأجرة المنفّذ ربحنا.", 12, Ui.muted, false));
+71:         form.add(feeBox);
+72:         columns(form, summaryColumn("تسجيل الحركة", this::save));
+73: 
+74:         from.onChange = () -> picked(from, to);
+75:         to.onChange = () -> picked(to, from);
+76:         // تفعيل الأجرة يقترح الحالة المعتادة: أجرتنا على الطالب «لنا»، وأجرة المنفّذ «علينا»
+77:         feeMode.listener = i -> {
+78:             if (i == 1 && fromFee.selected <= 0 && toFee.selected <= 0) {
+79:                 fromFee.set(1);
+80:                 toFee.set(2);
+81:             }
+82:             update();
+83:         };
+84:         fromFee.listener = i -> update();
+85:         toFee.listener = i -> update();
+86:         for (Ui.Field f : new Ui.Field[]{amount, fromFeeAmt, toFeeAmt, person}) f.getDocument().addDocumentListener(TxView.doc(this::update));
+87:         InputMap im = getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
+88:         im.put(Ui.key(KeyEvent.VK_S), "save-xfer");
+89:         getActionMap().put("save-xfer", new AbstractAction() {
+90:             @Override public void actionPerformed(java.awt.event.ActionEvent e) {
+91:                 if (isShowing()) save();
+92:             }
+93:         });
+94:     }
+95: 
+96:     /** المكتب نفسه لا يكون في الطرفين: اختياره في الطرف الآخر يُرفض (يبقى هذا الطرف فارغًا) مع تنبيه. */
+97:     void picked(OfficeBox a, OfficeBox b) {
+98:         if (building) return;
+99:         if (a.get() != null && b.get() != null && a.get().id == b.get().id) {
+100:             Ui.toast("«" + a.get().name + "» مختار في الطرف الآخر؛ اختر مكتبًا آخر أو استعمل «تبديل الطرفين»");
+101:             building = true;
+102:             a.search.setText("");
+103:             a.load(-1, false);
+104:             building = false;
+105:         }
+106:         currencies();
+107:     }
+108: 
+109:     @Override void refresh() {
+110:         building = true;
+111:         Model.Office f = from.get(), t = to.get();
+112:         from.load(f == null ? db.settingLong("last_office", -1) : f.id, false);
+113:         if (t != null && from.get() != null && t.id == from.get().id) t = null;
+114:         to.load(t == null ? -1 : t.id, false);
+115:         building = false;
+116:         currencies();
+117:         done();
+118:     }
+119: 
+120:     @Override void open(Object arg) {
+121:         if (arg instanceof Open) {
+122:             clearInputs();
+123:             building = true;
+124:             from.search.setText("");
+125:             to.search.setText("");
+126:             from.load(((Open) arg).office, false);
+127:             to.load(-1, false);
+128:             building = false;
+129:             currencies();
+130:             done();
+131:         } else refresh();
+132:     }
+133: 
+134:     void clearInputs() {
+135:         for (Ui.Field f : new Ui.Field[]{amount, fromFeeAmt, toFeeAmt, person, desc}) f.setText("");
+136:         feeMode.set(0);
+137:         fromFee.set(0);
+138:         toFee.set(0);
+139:     }
+140: 
+141:     @Override void clearForm() {
+142:         clearInputs();
+143:         update();
+144:     }
+145: 
+146:     void swap() {
+147:         Model.Office f = from.get(), t = to.get();
+148:         building = true;
+149:         from.search.setText("");
+150:         to.search.setText("");
+151:         from.load(t == null ? -1 : t.id, false);
+152:         to.load(f == null ? -1 : f.id, false);
+153:         building = false;
+154:         currencies();
+155:     }
+156: 
+157:     void currencies() {
+158:         String keep = label(cur);
+159:         common.clear();
+160:         Model.Office f = from.get(), t = to.get();
+161:         if (f != null && t != null) {
+162:             List<String> y = db.officeCurrencies(t.id);
+163:             for (String c : db.officeCurrencies(f.id)) if (y.contains(c)) common.add(c);
+164:         }
+165:         cur = chips(curHolder, common, Ui.primary, i -> update(), f == null || t == null ? "اختر المكتبين لتظهر عملاتهما المشتركة" : "لا عملة مشتركة مفعّلة للمكتبين");
+166:         if (cur != null) {
+167:             if (keep != null && common.contains(keep)) cur.set(common.indexOf(keep));
+168:             else if (common.size() == 1) cur.set(0);
+169:         }
+170:         Ui.rtl(curHolder);
+171:         from.showBalance();
+172:         to.showBalance();
+173:         update();
+174:     }
+175: 
+176:     Db.TransferInput input() {
+177:         Db.TransferInput in = new Db.TransferInput();
+178:         if (from.get() == null || to.get() == null) throw new IllegalArgumentException("اختر المكتبين");
+179:         in.from = from.get().id;
+180:         in.to = to.get().id;
+181:         String c = label(cur);
+182:         if (c == null) throw new IllegalArgumentException(common.isEmpty() ? "لا عملة مشتركة مفعّلة للمكتبين" : "اختر العملة");
+183:         in.currency = c;
+184:         int d = db.decimals(c);
+185:         in.amount = Db.minor(amount.getText(), d);
+186:         in.person = person.val();
+187:         in.description = desc.val();
+188:         in.when = Clock.now();
+189:         boolean fees = feeMode.selected == 1;
+190:         in.fromFeeType = fees ? FEE_KINDS[Math.max(0, fromFee.selected)] : Model.FEE_NONE;
+191:         in.toFeeType = fees ? FEE_KINDS[Math.max(0, toFee.selected)] : Model.FEE_NONE;

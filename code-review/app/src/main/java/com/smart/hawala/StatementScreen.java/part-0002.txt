@@ -1,0 +1,125 @@
+176:         if (period.hasStart()) {
+177:             Map<String, Long> before = a.db.balanceBefore(o.id, period.from, true);
+178:             Map<String, long[]> sums = new java.util.TreeMap<>();
+179:             for (String code : net.keySet()) sums.put(code, new long[]{0, 0});
+180:             for (Model.Line l : a.db.statementLines(o.id, period.from, period.to)) {
+181:                 if (l.cancelledTx()) continue;
+182:                 long[] s = sums.get(l.currency);
+183:                 if (s == null) {
+184:                     s = new long[]{0, 0};
+185:                     sums.put(l.currency, s);
+186:                 }
+187:                 s[0] += l.debit;
+188:                 s[1] += l.credit;
+189:             }
+190:             LinearLayout pc = a.card();
+191:             pc.addView(a.text("ملخص الفترة: " + period.label, 16, a.primary, true));
+192:             for (Map.Entry<String, long[]> e : sums.entrySet()) {
+193:                 int dec = a.db.decimals(e.getKey());
+194:                 long open = before.containsKey(e.getKey()) ? before.get(e.getKey()) : 0;
+195:                 long close = open + e.getValue()[0] - e.getValue()[1];
+196:                 pc.addView(a.text(e.getKey() + ": بداية الفترة " + Model.bal(open, dec) + "\n+ لنا " + Model.fmt(e.getValue()[0], dec)
+197:                         + "   − علينا " + Model.fmt(e.getValue()[1], dec) + "\n= نهاية الفترة " + Model.bal(close, dec), 14, a.dark, false));
+198:             }
+199:         }
+200: 
+201:         final TextView selInfo = a.hint("اضغط على حركة لتحديدها، واضغط مطولًا للتفاصيل والتعديل والإلغاء.");
+202:         // أحدث 400 حركة من قاعدة البيانات مباشرة؛ التصدير يقرأ كل حركات الفترة في الخلفية
+203:         Db.TxFilter tf = new Db.TxFilter();
+204:         tf.office = o.id;
+205:         tf.includeCancelled = showCancelled;
+206:         tf.from = period.from;
+207:         tf.to = period.to;
+208:         tf.limit = 400;
+209:         List<Model.Tx> txs = a.db.txLog(tf);
+210:         final long total = txs.size() < 400 ? txs.size() : a.db.txCount(tf);
+211:         final Set<Long> selected = new HashSet<>();
+212:         final Map<Long, Integer> attCounts = a.db.attachmentCounts(o.id);
+213:         Button exportBtn = a.button("تصدير الكشف (PDF / صور / Excel)", a.primary, null);
+214:         exportBtn.setOnClickListener(v -> a.exportUi.statementDialog(o, period, new HashSet<>(selected)));
+215:         if (total > txs.size()) a.hint("يُعرض أحدث " + txs.size() + " حركة من " + total + ". اختر فترة لعرض الأقدم؛ التصدير يشمل كل حركات الفترة.");
+216:         for (final Model.Tx t : txs) {
+217:             final LinearLayout x = a.card();
+218:             x.addView(a.logScreen.txRow(t, null, attCounts.get(t.id)));
+219:             x.setOnClickListener(v -> {
+220:                 if (selected.contains(t.id)) {
+221:                     selected.remove(t.id);
+222:                     x.setBackground(a.round(a.surface, a.line, 16));
+223:                 } else {
+224:                     selected.add(t.id);
+225:                     x.setBackground(a.round(a.primarySoft, a.primary, 16));
+226:                 }
+227:                 selInfo.setText(selected.isEmpty() ? "لا يوجد تحديد: سيُصدَّر كل حركات الفترة." : "محدد للتصدير: " + selected.size() + " حركة — اضغط «تصدير الكشف».");
+228:             });
+229:             x.setOnLongClickListener(v -> {
+230:                 a.logScreen.details(t, refresh);
+231:                 return true;
+232:             });
+233:         }
+234:         if (txs.isEmpty()) a.add(a.text("لا توجد حركات في هذه الفترة.", 15, a.muted, false));
+235:     }
+236: 
+237:     // ===================================================================================
+238:     // بيانات الكشف للتصدير
+239:     // ===================================================================================
+240: 
+241:     Reports.StatementInput input(Model.Office o, Period p, Set<Long> selected, boolean images, ExportStyle st) {
+242:         return input(o, p, selected, images, st, null, null);
+243:     }
+244: 
+245:     /**
+246:      * بيانات الكشف. since != null: كل ما سُجّل بعد المطابقة (بترتيب القيود لا بالتاريخ)، والرصيد الافتتاحي = رصيد المطابقة.
+247:      * عند إخفاء الملغاة: تُخفى الحركة الملغاة فقط إن كانت هي وإلغاؤها كلاهما بعد المطابقة (صافيها صفر)،
+248:      * أما إلغاء حركة قديمة فيبقى ظاهرًا لأنه يغيّر الرصيد عن رصيد المطابقة.
+249:      */
+250:     Reports.StatementInput input(Model.Office o, Period p, Set<Long> selected, boolean images, ExportStyle st, Model.Recon since, Set<String> only) {
+251:         boolean sel = since == null && selected != null && !selected.isEmpty();
+252:         Reports.StatementInput in = new Reports.StatementInput();
+253:         in.officeName = o.name;
+254:         in.issuer = a.db.setting("office_name", "");
+255:         in.periodLabel = p.label;
+256:         in.periodHasStart = p.hasStart();
+257:         in.selectedOnly = sel;
+258:         in.currencyNames = a.db.currencyNames();
+259:         in.decimals = a.db.decimalsMap();
+260:         in.fullBalance = a.db.balances(o.id);
+261:         in.onlyCurrencies = only;
+262:         List<Model.Line> lines;
+263:         if (since != null) {
+264:             in.periodLabel = "بعد مطابقة " + Model.date(since.createdAt) + " (" + since.statusLabel() + ")";
+265:             in.periodHasStart = true;
+266:             in.opening = a.db.balanceUpTo(o.id, since);
+267:             in.openingLabel = "رصيد المطابقة بتاريخ " + Model.date(since.createdAt);
+268:             in.openingKv = "رصيد آخر مطابقة";
+269:             in.openingCol = "رصيد المطابقة";
+270:             List<Model.Line> after = a.db.statementLinesAfter(o.id, since);
+271:             Set<Long> originalsAfter = new HashSet<>();
+272:             for (Model.Line l : after) if (l.txId != null && !"REVERSAL".equals(l.kind)) originalsAfter.add(l.txId);
+273:             lines = new ArrayList<>();
+274:             for (Model.Line l : after) {
+275:                 if (st.hideCancelled && l.cancelledTx() && l.txId != null && originalsAfter.contains(l.txId)) continue;
+276:                 lines.add(l);
+277:             }
+278:         } else {
+279:             if (!sel && p.hasStart()) in.opening = a.db.balanceBefore(o.id, p.from, st.hideCancelled);
+280:             lines = a.db.statementLines(o.id, sel ? 0 : p.from, sel ? Long.MAX_VALUE : p.to);
+281:             if (sel) {
+282:                 List<Model.Line> keep = new ArrayList<>();
+283:                 for (Model.Line l : lines) if (l.txId != null && selected.contains(l.txId)) keep.add(l);
+284:                 lines = keep;
+285:             }
+286:         }
+287:         in.lines = lines;
+288:         if (images) {
+289:             Map<Long, List<Long>> m = new HashMap<>();
+290:             for (Model.Line l : lines) {
+291:                 if (l.txId != null && "PRINCIPAL".equals(l.kind) && !m.containsKey(l.txId)) {
+292:                     List<Long> ids = a.db.attachmentIds(l.txId);
+293:                     if (!ids.isEmpty()) m.put(l.txId, ids);
+294:                 }
+295:             }
+296:             in.attachments = m;
+297:         }
+298:         return in;
+299:     }
+300: }

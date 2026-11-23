@@ -1,0 +1,181 @@
+1: package com.smart.hawala;
+2: 
+3: import java.awt.*;
+4: import java.awt.event.*;
+5: import java.awt.image.BufferedImage;
+6: import java.io.File;
+7: import java.io.InputStream;
+8: import java.nio.charset.StandardCharsets;
+9: import java.nio.file.Files;
+10: import java.util.ArrayList;
+11: import java.util.HashSet;
+12: import java.util.List;
+13: import java.util.Set;
+14: import java.util.concurrent.TimeUnit;
+15: import java.util.concurrent.atomic.AtomicBoolean;
+16: import javax.swing.*;
+17: 
+18: /**
+19:  * «إطار الالتقاط» على ويندوز وماك: إطار ملوّن فوق محادثة واتساب (أو أي برنامج)، يقرأ ما بداخله ويضع رقمًا على كل
+20:  * رسالة؛ الضغط على الرقم ينقل نص الرسالة إلى البرنامج.
+21:  * <p>
+22:  * 12.2:
+23:  * <ul>
+24:  * <li>الإطار نوافذ منفصلة رفيعة (شريط في الأعلى وثلاث حواف وأرقام)، وداخله فارغ تمامًا: الماوس والتمرير يصلان إلى واتساب
+25:  * مباشرة على كل الأنظمة.</li>
+26:  * <li>الرسالة كلها رقم واحد: نجد شكل كل فقاعة في الصورة ({@link BubbleShapes}) ونجمع فيها أسطرها.</li>
+27:  * <li>«⚡ تلقائي»: حين يتغير ما تحت الإطار (تمرير، رسالة جديدة) ثم يثبت، يُقرأ من جديد وحده.</li>
+28:  * <li>«حدد النافذة»: كبسة على نافذة واتساب تلزق الإطار عليها، أو سحب مستطيل فوق جزء منها.</li>
+29:  * </ul>
+30:  * القراءة بأدوات النظام نفسه بلا مكتبات جديدة ولا اتصال: ويندوز «إمكانية الوصول» ثم قارئ الصور المدمج؛ ماك Vision.
+31:  * لا يلمس البرنامج واتساب ولا يضغط فيه شيئًا.
+32:  */
+33: public final class DeskCapture implements WaMove.Capture {
+34:     static final String TITLE = "SA-CAPTURE";
+35:     private static final String OS = System.getProperty("os.name", "").toLowerCase();
+36:     static final boolean WIN = OS.contains("win"), MAC = OS.contains("mac");
+37: 
+38:     private DeskCapture() {}
+39: 
+40:     /** تُستدعى عند تحميل نسخة الكمبيوتر. */
+41:     public static void install() {
+42:         if (WaMove.capture == null) WaMove.capture = new DeskCapture();
+43:         if (WaMove.collectView == null) WaMove.collectView = new DeskCollect();
+44:     }
+45: 
+46:     /** للتجارب على لينكس: ملف فيه أسطر القارئ بإحداثيات نسبية لداخل الإطار. */
+47:     static String fake() { return System.getProperty("sa.capture.fake"); }
+48: 
+49:     @Override public String unavailable() {
+50:         if (GraphicsEnvironment.isHeadless()) return "لا توجد شاشة.";
+51:         if (fake() != null) return "";
+52:         if (WIN) return new File(powershell()).exists() ? "" : "لم أجد PowerShell في ويندوز، وهو لازم لقراءة الشاشة.";
+53:         if (MAC) return new File("/usr/bin/osascript").exists() ? "" : "لم أجد osascript في الماك.";
+54:         return "إطار الالتقاط متاح على ويندوز وماك فقط.";
+55:     }
+56: 
+57:     private static Win open;
+58: 
+59:     @Override public void open(boolean whole, WaMove.Picked cb, WaMove.Prefs prefs) {
+60:         SwingUtilities.invokeLater(() -> {
+61:             if (open != null && open.isDisplayable()) {
+62:                 open.cb = cb;
+63:                 open.prefs = prefs;
+64:                 open.toFrontAll();
+65:                 if (whole) open.fitWindow();
+66:                 else open.read();
+67:                 return;
+68:             }
+69:             open = new Win(cb, prefs);
+70:             boolean saved = open.restore();
+71:             open.showAll();
+72:             if (whole) open.fitWindow();
+73:             else if (!saved && fake() == null) open.selectArea();
+74:             else open.read();
+75:             if (prefs == null || !"1".equals(prefs.get("cap_intro", ""))) {
+76:                 open.help();
+77:                 if (prefs != null) prefs.put("cap_intro", "1");
+78:             }
+79:         });
+80:     }
+81: 
+82:     /** للتجارب. */
+83:     static Win current() { return open; }
+84: 
+85:     // ===================================================================================
+86:     // الإطار
+87:     // ===================================================================================
+88: 
+89:     static final Color ACCENT = new Color(0x1F, 0x8A, 0x70), PICKED = new Color(0xD3, 0x2F, 0x2F);
+90: 
+91:     static final class Win extends JFrame {
+92:         WaMove.Picked cb;
+93:         WaMove.Prefs prefs;
+94:         final JLabel status = new JLabel(" ", SwingConstants.RIGHT);
+95:         final JToggleButton multi = new JToggleButton("عدة رسائل");
+96:         final JToggleButton auto = new JToggleButton("قراءة تلقائية");
+97:         final JButton send = new JButton("نقل المحدد");
+98:         final List<Bubbles.Bubble> bubbles = new ArrayList<>();
+99:         final Set<Integer> chosen = new HashSet<>();
+100:         final List<JWindow> badgeWins = new ArrayList<>();
+101:         final List<JButton> badgeBtns = new ArrayList<>();
+102:         /** المستطيل الملوّن كله (الحواف داخله) بإحداثيات الشاشة؛ الشريط فوقه. */
+103:         Rectangle area = new Rectangle(100, 140, 460, 600);
+104:         final JWindow left, right, bottom;
+105:         String chat = "";
+106:         String idle = " ";
+107:         volatile boolean reading;
+108:         boolean dragging, hovering;
+109:         private final javax.swing.Timer settle, watch, save;
+110:         private final AtomicBoolean sampling = new AtomicBoolean();
+111:         private int[] lastSig;
+112:         private boolean pending;
+113:         private int stable;
+114:         static final int BAR = 66, EDGE = 8, BADGE = 28, MIN_W = 440, MIN_H = 160, BOX_MIN_W = 250, BOX_MIN_H = 70;
+115:         /** 12.5: «مربع النسخ»: مربع صغير يُوضع فوق رسالة، و«نسخ» ينقل كل ما تحته نصًا واحدًا. */
+116:         boolean boxMode;
+117:         private Rectangle beforeBox;
+118:         final JButton copyBtn = new JButton("نسخ ما في المربع");
+119:         final JToggleButton boxBtn = new JToggleButton("مربع نسخ");
+120:         private final List<Component> normalOnly = new ArrayList<>();
+121: 
+122:         int minW() { return boxMode ? BOX_MIN_W : MIN_W; }
+123: 
+124:         int minH() { return boxMode ? BOX_MIN_H : MIN_H; }
+125: 
+126:         Win(WaMove.Picked cb, WaMove.Prefs prefs) {
+127:             super(TITLE);
+128:             this.cb = cb;
+129:             this.prefs = prefs;
+130:             setUndecorated(true);
+131:             setAlwaysOnTop(true);
+132:             setContentPane(bar());
+133:             left = edge(1);
+134:             right = edge(2);
+135:             bottom = edge(4);
+136:             settle = new javax.swing.Timer(650, e -> read());
+137:             settle.setRepeats(false);
+138:             save = new javax.swing.Timer(800, e -> saveBounds());
+139:             save.setRepeats(false);
+140:             watch = new javax.swing.Timer(450, e -> tick());
+141:             auto.setSelected(prefs == null || !"0".equals(prefs.get("cap_auto", "1")));
+142:             autoLabel();
+143:             getRootPane().registerKeyboardAction(e -> dispose(), KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), JComponent.WHEN_IN_FOCUSED_WINDOW);
+144:         }
+145: 
+146:         // ------------------------------- الشريط -------------------------------
+147: 
+148:         private JComponent bar() {
+149:             JPanel p = new JPanel(new BorderLayout(0, 2)) {
+150:                 @Override protected void paintComponent(Graphics g) {
+151:                     g.setColor(ACCENT);
+152:                     g.fillRect(0, 0, getWidth(), getHeight());
+153:                 }
+154:             };
+155:             p.setBorder(BorderFactory.createEmptyBorder(5, 6, EDGE, 6));
+156:             p.setComponentOrientation(ComponentOrientation.RIGHT_TO_LEFT);
+157:             JPanel btns = new JPanel(new FlowLayout(FlowLayout.RIGHT, 3, 0));
+158:             btns.setOpaque(false);
+159:             btns.setComponentOrientation(ComponentOrientation.RIGHT_TO_LEFT);
+160:             JButton pick = small("حدد النافذة", "اضغط على نافذة واتساب لتحديدها كلها، أو اسحب مستطيلًا فوق الرسائل");
+161:             pick.addActionListener(e -> selectArea());
+162:             JButton again = small("اقرأ", "اقرأ ما داخل الإطار الآن");
+163:             again.addActionListener(e -> read());
+164:             style(auto, "قراءة تلقائية: حين تمرّر في واتساب وتتوقف، تُقرأ الرسائل من جديد وحدها");
+165:             auto.addActionListener(e -> {
+166:                 if (prefs != null) prefs.put("cap_auto", auto.isSelected() ? "1" : "0");
+167:                 lastSig = null;
+168:                 pending = false;
+169:                 autoLabel();
+170:                 if (auto.isSelected() && bubbles.isEmpty()) read();
+171:             });
+172:             autoLabel();
+173:             style(multi, "لعدة رسائل: اضغط «عدة رسائل» ثم الأرقام ثم «نقل المحدد»");
+174:             multi.addActionListener(e -> {
+175:                 chosen.clear();
+176:                 refreshSend();
+177:                 layoutBadges();
+178:             });
+179:             style(send, "انقل الرسائل المحددة دفعة واحدة");
+180:             send.addActionListener(e -> sendChosen());
+181:             send.setVisible(false);

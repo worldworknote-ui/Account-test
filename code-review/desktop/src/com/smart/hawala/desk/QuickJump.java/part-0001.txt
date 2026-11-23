@@ -1,0 +1,144 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.awt.event.KeyAdapter;
+6: import java.awt.event.KeyEvent;
+7: import java.awt.event.MouseAdapter;
+8: import java.awt.event.MouseEvent;
+9: import java.util.ArrayList;
+10: import java.util.List;
+11: import javax.swing.*;
+12: import javax.swing.border.EmptyBorder;
+13: import javax.swing.event.DocumentEvent;
+14: import javax.swing.event.DocumentListener;
+15: 
+16: /**
+17:  * 10.16: «الانتقال السريع» بلوحة المفاتيح (Ctrl+K): اكتب جزءًا من اسم قسم أو مكتب ثم Enter.
+18:  * لكل مكتب: فتح صفحته، كشف حسابه، أو تسجيل حركة له — دون لمس الفأرة. الأسهم للتنقل وEsc للإغلاق.
+19:  */
+20: final class QuickJump {
+21:     private QuickJump() {}
+22: 
+23:     private static final class Item {
+24:         final String label, hint, norm;
+25:         final Runnable run;
+26: 
+27:         Item(String label, String hint, Runnable run) {
+28:             this.label = label;
+29:             this.hint = hint;
+30:             this.run = run;
+31:             this.norm = OwnerReports.norm(label);
+32:         }
+33: 
+34:         @Override public String toString() { return label; }
+35:     }
+36: 
+37:     /** اختصارات لوحة المفاتيح (للمساعدة F1). */
+38:     static final String[][] KEYS = {
+39:             {"Ctrl+K", "الانتقال السريع: أي قسم أو مكتب بالكتابة"}, {"Ctrl+N", "تسجيل حركة جديدة"}, {"Ctrl+Shift+N", "حركة قص عملات"},
+40:             {"Ctrl+Shift+T", "حركة بين مكتبين"}, {"Ctrl+F", "البحث في سجل الحركات"}, {"Ctrl+1 … Ctrl+9", "أقسام القائمة بالترتيب"},
+41:             {"Ctrl+Z / Esc / Alt+←", "رجوع إلى الشاشة السابقة"}, {"F5", "تحديث الشاشة الحالية"}, {"Ctrl+R", "مزامنة الآن"}, {"Ctrl+B", "نسخة احتياطية الآن"},
+42:             {"Ctrl+L", "قفل البرنامج"}, {"Ctrl+E", "إخفاء المبالغ أو إظهارها"}, {"F1", "هذه القائمة"},
+43:             {"Tab / Shift+Tab", "التنقل بين الحقول"}, {"Enter", "الحفظ في نماذج التسجيل والموافقة في النوافذ"}, {"Esc", "إغلاق النافذة"},
+44:             {"PageUp / PageDown", "تمرير الشاشة"}};
+45: 
+46:     static void help(Component parent) {
+47:         JPanel g = new JPanel(new GridLayout(0, 1, 0, 4));
+48:         g.setOpaque(false);
+49:         String mod = Ui.MAC ? "Cmd" : "Ctrl";
+50:         for (String[] k : KEYS) {
+51:             JLabel key = Ui.label(k[0].replace("Ctrl", mod), 13.5f, Ui.primaryInk, true);
+52:             key.setPreferredSize(new Dimension(170, 22));
+53:             JPanel r = new JPanel(new BorderLayout(14, 0));
+54:             r.setOpaque(false);
+55:             r.add(key, BorderLayout.LINE_START);
+56:             r.add(Ui.label(k[1], 13.5f, Ui.ink, false), BorderLayout.CENTER);
+57:             g.add(r);
+58:         }
+59:         JOptionPane.showMessageDialog(Ui.win(parent), Ui.rtl(g), "اختصارات لوحة المفاتيح", JOptionPane.PLAIN_MESSAGE);
+60:     }
+61: 
+62:     static List<Item> items(App app) {
+63:         List<Item> l = new ArrayList<>();
+64:         for (String[] s : App.SECTIONS) {
+65:             if ("-".equals(s[0]) || !app.navAllowed(s[0]) || !app.allowed(s[0])) continue;
+66:             final String k = s[0];
+67:             l.add(new Item(s[1], "قسم", () -> app.go(k)));
+68:         }
+69:         if (app.allowed("fx")) l.add(new Item("تسجيل حركة قص عملات", "إجراء", () -> app.go("fx")));
+70:         if (app.allowed("xfer")) l.add(new Item("تسجيل حركة بين مكتبين", "إجراء", () -> app.go("xfer")));
+71:         l.add(new Item("مزامنة الآن", "إجراء", () -> SyncView.now(app)));
+72:         l.add(new Item("اختصارات لوحة المفاتيح", "مساعدة", () -> help(App.frame)));
+73:         // 10.18: الإعدادات والمهام بالاسم، ليجدها المستخدم الجديد بالكتابة
+74:         l.add(new Item("رجوع إلى الشاشة السابقة", "إجراء", app::back));
+75:         l.add(new Item("نسخة احتياطية الآن", "إجراء", () -> app.go("backup")));
+76:         l.add(new Item("إخفاء المبالغ أو إظهارها", "إجراء", () -> {
+77:             app.toggleHidden();
+78:             app.refreshCurrent();
+79:         }));
+80:         l.add(new Item("الوضع الليلي / النهاري والألوان والخط (مظهري)", "إعداد", app::myColors));
+81:         l.add(new Item("قفل البرنامج الآن", "إجراء", app::lockNow));
+82:         String[][] set = {{"تصميم رسالة مطابقة الرصيد", "settings"}, {"الإشعارات والتذكيرات", "settings"}, {"سجل الإشعارات", "notifs"}, {"توقيت المكتب الموحّد والساعة", "settings"},
+83:                 {"قفل البرنامج بكلمة سر", "settings"}, {"مصدر أسعار الصرف", "settings"}, {"العملات", "settings"}, {"الإقفال المحاسبي", "settings"},
+84:                 {"اعتماد الحركات الكبيرة", "settings"}, {"مفتاح الذكاء الاصطناعي واستخراج الرسائل", "settings"}, {"مساعد النقل من برنامج آخر", "backup"},
+85:                 {"استعادة نسخة احتياطية", "backup"}, {"النسخ التلقائي وكلمة مروره", "backup"}, {"المستخدمون والصلاحيات", "users"},
+86:                 {"رسالة إلى المحاسبين", "users"}, {"فرز المكاتب بين المحاسبين", "team"}, {"أجهزة المزامنة وتسميتها", "sync"}, {"تعارضات المزامنة وتنبيهاتها", "sync"},
+87:                 {"سجل العمليات (من فعل ماذا)", "reports"}, {"فحص صحة البيانات", "reports"}, {"تخصيص الصفحة الرئيسية", "home"}, {"الأمانات والمبالغ المجمّدة", "holds"},
+88:                 {"تقرير اليوم وإقفال اليومية", "daily"}, {"أرصدة كل المكاتب", "balances"}, {"الحركات بانتظار الاعتماد", "log"}};
+89:         for (String[] x : set) {
+90:             final String k = x[1];
+91:             if (!"notifs".equals(k) && !"holds".equals(k) && !"home".equals(k) && (!app.allowed(k) || !app.navAllowed(k) && !"team".equals(k))) continue;
+92:             l.add(new Item(x[0], "إعداد / مهمة", () -> {
+93:                 if ("notifs".equals(k)) NotifLog.open(App.frame, app.db);
+94:                 else if ("holds".equals(k)) app.go("balances");
+95:                 else app.go(k, "الحركات بانتظار الاعتماد".equals(x[0]) ? "pending" : null);
+96:             }));
+97:         }
+98:         if (app.can(Auth.Perm.VIEW)) {
+99:             for (Model.Office o : app.db.offices()) {
+100:                 final long id = o.id;
+101:                 l.add(new Item(o.name, o.active ? "مكتب — فتح صفحته" : "مكتب موقوف", () -> app.go("office", id)));
+102:                 l.add(new Item("كشف " + o.name, "كشف حساب", () -> app.go("statement", id)));
+103:                 if (o.active && app.can(Auth.Perm.TX_ADD)) l.add(new Item("حركة لـ " + o.name, "تسجيل حركة", () -> app.go("tx", new TxView.Prefill(id))));
+104:             }
+105:         }
+106:         return l;
+107:     }
+108: 
+109:     static void open(App app) { open(app, ""); }
+110: 
+111:     static void open(App app, String initial) {
+112:         if (app.locked) return;
+113:         final List<Item> all = items(app);
+114:         final JDialog d = new JDialog(App.frame, "الانتقال السريع", Dialog.ModalityType.APPLICATION_MODAL);
+115:         d.setUndecorated(true);
+116:         final Ui.Field q = Ui.field("اكتب اسم قسم أو مكتب…  (↑ ↓ ثم Enter، وEsc للإغلاق)");
+117:         final DefaultListModel<Item> m = new DefaultListModel<>();
+118:         final JList<Item> list = new JList<>(m);
+119:         list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+120:         list.setFixedCellHeight(34);
+121:         list.setCellRenderer((jl, it, i, sel, foc) -> {
+122:             JPanel r = new JPanel(new BorderLayout(10, 0));
+123:             r.setBorder(new EmptyBorder(0, 12, 0, 12));
+124:             r.setBackground(sel ? Ui.primarySoft : Ui.surface);
+125:             r.add(Ui.label(it.label, 14.5f, Ui.ink, sel), BorderLayout.CENTER);
+126:             r.add(Ui.label(it.hint, 12, Ui.muted, false), BorderLayout.LINE_END);
+127:             r.applyComponentOrientation(Ui.RTL);
+128:             return r;
+129:         });
+130:         final Runnable fill = () -> {
+131:             String f = OwnerReports.norm(q.getText());
+132:             m.clear();
+133:             List<Item> starts = new ArrayList<>(), has = new ArrayList<>();
+134:             for (Item it : all) {
+135:                 if (f.isEmpty() || it.norm.startsWith(f)) starts.add(it);
+136:                 else {
+137:                     boolean allW = true;
+138:                     for (String wq : f.split(" ")) allW &= wq.isEmpty() || it.norm.contains(wq);
+139:                     if (allW) has.add(it);
+140:                 }
+141:             }
+142:             // بلا كتابة: الأقسام والإجراءات فقط (المكاتب تظهر بالكتابة)
+143:             for (Item it : starts) if (!f.isEmpty() || !it.hint.contains("مكتب") && !it.hint.contains("كشف حساب") && !it.hint.contains("تسجيل حركة") && !it.hint.contains("إعداد")) m.addElement(it);
+144:             for (Item it : has) m.addElement(it);

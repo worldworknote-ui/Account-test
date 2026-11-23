@@ -1,0 +1,123 @@
+507:                 "سعر البرنامج بين عملتين من أسعار الدولار المحفوظة، وبالاتجاه العكسي");
+508:         healthy(db, "بعد المقاصات");
+509: 
+510:         System.out.println("== 10.8: فرز المكاتب بين المحاسبين — من يسجّل ومن يتحقق");
+511:         as(db, admin);
+512:         long r1 = db.addUser("محاسب أول", Auth.CUSTOM, "VIEW,TX_ADD,VERIFY,EXPORT", "5151");
+513:         long r2 = db.addUser("محاسب ثان", Auth.CUSTOM, "VIEW,TX_ADD,VERIFY,EXPORT", "5252");
+514:         long r3 = db.addUser("محاسب ثالث", Auth.CUSTOM, "VIEW,TX_ADD,VERIFY", "5353");
+515:         // تنظيف تخصيصات الأقسام السابقة حتى يبدأ الفرز من الصفر
+516:         for (Model.User u : db.users(false)) if (!Auth.isAdmin(u)) db.setUserOffices(u.id, new HashSet<>());
+517:         Map<Long, String> q1 = new HashMap<>(), q2 = new HashMap<>(), q3 = new HashMap<>();
+518:         q1.put(A, Db.ROLE_OWN);
+519:         q2.put(B, Db.ROLE_OWN);
+520:         q3.put(D, Db.ROLE_OWN);
+521:         db.setUserOffices(r1, q1);
+522:         db.setUserOffices(r2, q2);
+523:         db.setUserOffices(r3, q3);
+524:         check(!db.teamMode(), "قبل تحديد من يتحقق: لا فرز (سلوك 10.5)");
+525:         int auto = db.autoCheckers();
+526:         Map<Long, Db.Team> tm = new HashMap<>();
+527:         for (Db.Team tq : db.teams()) tm.put(tq.office.id, tq);
+528:         Set<Long> chA = new HashSet<>();
+529:         for (Model.User u : tm.get(A).checkers) chA.add(u.id);
+530:         boolean threeWay = auto >= 3 && tm.get(A).owners.size() == 1 && tm.get(A).owners.get(0).id == r1 && chA.contains(r2) && chA.contains(r3) && !chA.contains(r1);
+531:         check(db.teamMode() && threeWay, "ثلاثة محاسبين: كل اثنين يتحققان من مكتب الثالث");
+532:         check(throwsMsg(() -> db.setOfficeTeam(A, new HashSet<>(Arrays.asList(r1)), new HashSet<>(Arrays.asList(r1, r2))), "لا يسجّل ويتحقق"), "لا يجمع محاسب الدورين في مكتب واحد");
+533:         as(db, r1);
+534:         long own1 = db.addTx(txIn(A, Model.TYPE_DEBIT, 777, "USD"), null);
+535:         check(throwsMsg(() -> db.verifyTx(own1), "أدخلتها أنت"), "المسجّل لا يتحقق مما أدخله");
+536:         as(db, r2);
+537:         long otherTx = db.addTx(txIn(A, Model.TYPE_CREDIT, 555, "USD"), null);
+538:         as(db, r1);
+539:         check(throwsMsg(() -> db.verifyTx(otherTx), "أنت من يسجّل حركات هذا المكتب"), "من يسجّل المكتب لا يتحقق من حركاته ولو أدخلها غيره: " );
+540:         as(db, r2);
+541:         boolean seen = false;
+542:         for (Model.Tx w8 : db.awaitingMyCheck(60, 500)) {
+543:             if (w8.id == own1) seen = true;
+544:             check(w8.officeId != B, "«بانتظار تحققي» لا يعرض مكتبي الذي أسجّله");
+545:         }
+546:         db.verifyTx(own1);
+547:         check(seen && db.verified(db.tx(own1)), "المحاسب الثاني يرى حركة الأول في «بانتظار تحققي» ويتحقق منها");
+548:         check(throwsMsg(() -> db.verifyTx(db.addTx(txIn(B, Model.TYPE_DEBIT, 10, "USD"), null)), "أدخلتها أنت"), "ويسجّل في مكتبه هو");
+549:         check(db.myOffices().size() == 1 && db.myOffices().get(0).id == B && db.myCheckOffices().size() == 2, "«مكاتبي»: يسجّل مكتبًا ويتحقق من مكتبين");
+550:         // المطابقة: ينشئها المسجّل ويتحقق منها غيره
+551:         as(db, r1);
+552:         long rc = db.createRecon(A);
+553:         check(throwsMsg(() -> db.verifyRecon(rc), "أنشأتها أنت"), "من أنشأ المطابقة لا يتحقق منها");
+554:         as(db, r2);
+555:         boolean rseen = false;
+556:         for (Model.Recon r : db.awaitingMyRecons(60, 50)) if (r.id == rc) rseen = true;
+557:         db.verifyRecon(rc);
+558:         Model.Recon rv8 = db.recon(rc);
+559:         check(rseen && rv8.checkedBy != null && rv8.checkedBy == r2 && db.reconPeople(rv8).contains("محاسب ثان") && db.reconPeople(rv8).contains("محاسب أول"),
+560:                 "المطابقة تظهر في «بانتظار تحققي» ويُسجَّل من تحقق منها: " + db.reconPeople(rv8));
+561:         healthy(db, "بعد الفرز والتحقق");
+562: 
+563:         System.out.println("== 10.8: حذف حساب محاسب دون المساس بما سجّله");
+564:         as(db, admin);
+565:         Map<String, Long> balA = new java.util.TreeMap<>(db.balances(A));
+566:         int txBefore = db.recentTx(5000).size();
+567:         db.deleteUser(r1);
+568:         Model.User gone = db.user(r1);
+569:         boolean listed = false;
+570:         for (Model.User u : db.users(false)) if (u.id == r1) listed = true;
+571:         check(gone != null && gone.deleted && !gone.active && !listed && db.userOffices(r1).isEmpty(), "الحساب محذوف: لا يظهر في القوائم ولا في المكاتب");
+572:         check(balA.equals(new java.util.TreeMap<>(db.balances(A))) && db.recentTx(5000).size() == txBefore && db.tx(own1).isActive(), "الأرصدة والحركات كما هي تمامًا");
+573:         check(db.txPeople(db.tx(own1)).get(0).contains("محاسب أول (حساب محذوف)") && db.verified(db.tx(own1)), "اسمه باقٍ على ما أدخله «(حساب محذوف)»، والتحقق باقٍ");
+574:         check(db.userByName("محاسب أول") == null && !db.verifyPin(r1, "5151"), "لا دخول بعد الحذف (لا اسم ولا رمز)");
+575:         check(throwsMsg(() -> db.deleteUser(admin), "داخل به"), "لا يحذف المستخدم حسابه وهو داخل به");
+576:         as(db, mgr);
+577:         check(throwsMsg(() -> db.deleteUser(admin), "المدير"), "حساب المدير لا يحذفه إلا مدير");
+578:         as(db, admin);
+579:         healthy(db, "بعد حذف الحساب");
+580: 
+581:         System.out.println("== 10.12: تفضيلات المظهر لكل مستخدم وحده");
+582:         as(db, admin);
+583:         String officeName0 = db.setting("office_name", "");
+584:         String globalTabs = db.globalSetting("tabs", "X");
+585:         db.setSettingQuiet("tabs", "home,offices,tx");
+586:         db.setSettingQuiet("theme_mode", "dark");
+587:         db.setSettingQuiet("primary_color", "#AA0000");
+588:         check("home,offices,tx".equals(db.setting("tabs", "")) && "dark".equals(db.setting("theme_mode", "light")), "المدير يرى شريطه ووضعه");
+589:         check(globalTabs.equals(db.globalSetting("tabs", "X")), "القيمة العامة لم تتغير بتخصيص المدير");
+590:         as(db, r2);
+591:         check(globalTabs.equals(db.setting("tabs", "X")) && !"dark".equals(db.setting("theme_mode", "light")) && !"#AA0000".equals(db.setting("primary_color", "")),
+592:                 "المحاسب لا يتأثر بشريط المدير ولا وضعه ولا ألوانه (يرى القيمة السابقة)");
+593:         db.setSettingQuiet("tabs", "home,log");
+594:         db.setSettingQuiet("haptics", "off");
+595:         as(db, admin);
+596:         check("home,offices,tx".equals(db.setting("tabs", "")) && "on".equals(db.setting("haptics", "on")), "وتخصيص المحاسب لا يغيّر شريط المدير ولا اهتزازه");
+597:         db.deleteSetting("primary_color");
+598:         check("#0B6B53".equals(db.setting("primary_color", "#0B6B53")), "«الافتراضي» لمستخدم = القيمة الافتراضية لا العامة");
+599:         as(db, r2);
+600:         check("home,log".equals(db.setting("tabs", "")), "ويبقى للمحاسب شريطه");
+601:         db.setSettingQuiet("office_name", "مكتب الاختبار المشترك");
+602:         as(db, admin);
+603:         check("مكتب الاختبار المشترك".equals(db.setting("office_name", "")), "اسم المكتب مشترك بين الجميع (ليس تفضيلًا شخصيًا)");
+604:         db.setSettingQuiet("office_name", officeName0);
+605:         Model.User keep = SmartApp.currentUser;
+606:         SmartApp.currentUser = null;
+607:         check(globalTabs.equals(db.setting("tabs", "X")), "بلا مستخدم داخل: القيمة العامة كما كانت");
+608:         SmartApp.currentUser = keep;
+609:         try {
+610:             java.lang.reflect.Method loc = Class.forName("com.smart.hawala.SyncStore").getDeclaredMethod("localSetting", String.class);
+611:             loc.setAccessible(true);
+612:             check((Boolean) loc.invoke(null, "u" + r2 + ".tabs") && !(Boolean) loc.invoke(null, "u" + r2 + ".primary_color")
+613:                     && Db.baseKey("u12.tabs").equals("tabs") && Db.baseKey("usd_rate").equals("usd_rate"),
+614:                     "المزامنة: الشريط يبقى لكل جهاز، والألوان تنتقل مع المستخدم إلى أجهزته");
+615:         } catch (Exception e) {
+616:             check(false, "localSetting: " + e);
+617:         }
+618: 
+619:         System.out.println("== 10.12: تقارير جديدة");
+620:         as(db, admin);
+621:         ReportBuilder.Data bd = db.builderData();
+622:         int xfer = 0, xferHit = 0, fxHit = 0, fxBoth = 0;
+623:         ReportBuilder.Spec sx = new ReportBuilder.Spec(), sf = new ReportBuilder.Spec();
+624:         sx.kind = ReportBuilder.K_XFER;
+625:         sf.kind = ReportBuilder.K_FX;
+626:         for (Model.Tx tq : db.recentTx(5000)) {
+627:             if (tq.isTransfer() && tq.isActive()) xfer++;
+628:             boolean hx = ReportBuilder.matches(sx, bd, tq, 0, 0), hf = ReportBuilder.matches(sf, bd, tq, 0, 0);
+629:             if (hx) xferHit++;

@@ -1,0 +1,159 @@
+1: package com.smart.hawala;
+2: 
+3: import java.math.BigDecimal;
+4: import java.math.RoundingMode;
+5: import java.util.LinkedHashSet;
+6: import java.util.Map;
+7: import java.util.Set;
+8: import java.util.TreeMap;
+9: 
+10: /**
+11:  * حسابات الإجماليات والتقويم بالدولار. منطق حسابي بحت (بدون أندرويد) حتى يُختبر على الكمبيوتر.
+12:  *
+13:  * <p>القاعدة الأساسية: لا تقاصّ بين المكاتب. إذا كان لنا على المكتب (أ) 1000 وعلينا للمكتب (ب) 700،
+14:  * فالنتيجة «مجموع لنا 1000» و«مجموع علينا 700»، والصافي 300 يُعرض منفصلًا وبوضوح.
+15:  */
+16: public final class Ledger {
+17:     private Ledger() {}
+18: 
+19:     /** إجمالي عملة واحدة عبر كل المكاتب. القيم بالوحدة الصغرى (سنت، قرش...). */
+20:     public static final class CurrencyTotal {
+21:         public final String code;
+22:         public long receivable; // مجموع «لنا»
+23:         public long payable;    // مجموع «علينا» (قيمة موجبة)
+24:         public int officesReceivable;
+25:         public int officesPayable;
+26: 
+27:         CurrencyTotal(String code) { this.code = code; }
+28: 
+29:         public long net() { return receivable - payable; }
+30:     }
+31: 
+32:     /**
+33:      * @param officeBalances لكل مكتب: العملة ← الرصيد (موجب = لنا، سالب = علينا)
+34:      */
+35:     public static Map<String, CurrencyTotal> totals(Map<Long, Map<String, Long>> officeBalances) {
+36:         Map<String, CurrencyTotal> out = new TreeMap<>();
+37:         for (Map<String, Long> perOffice : officeBalances.values()) {
+38:             for (Map.Entry<String, Long> e : perOffice.entrySet()) {
+39:                 long v = e.getValue() == null ? 0 : e.getValue();
+40:                 CurrencyTotal t = out.get(e.getKey());
+41:                 if (t == null) {
+42:                     t = new CurrencyTotal(e.getKey());
+43:                     out.put(e.getKey(), t);
+44:                 }
+45:                 if (v > 0) {
+46:                     t.receivable = Math.addExact(t.receivable, v);
+47:                     t.officesReceivable++;
+48:                 } else if (v < 0) {
+49:                     t.payable = Math.addExact(t.payable, -v);
+50:                     t.officesPayable++;
+51:                 }
+52:             }
+53:         }
+54:         return out;
+55:     }
+56: 
+57:     /** نتيجة تقويم بالدولار: «لنا» و«علينا» منفصلان، مع العملات التي لا يوجد لها سعر. */
+58:     public static final class Valuation {
+59:         public BigDecimal receivableUsd = BigDecimal.ZERO;
+60:         public BigDecimal payableUsd = BigDecimal.ZERO;
+61:         public final Set<String> missingRates = new LinkedHashSet<>();
+62:         /** 12.5: معادن «بالوزن فقط» (اختيار المحاسب): خارج التقويم بالدولار، وليست «بلا سعر». */
+63:         public final Set<String> weightOnly = new LinkedHashSet<>();
+64: 
+65:         public BigDecimal netUsd() { return receivableUsd.subtract(payableUsd); }
+66:     }
+67: 
+68:     /**
+69:      * يقوّم مبلغًا (بالوحدة الصغرى) بالدولار.
+70:      * @param usdPerUnit قيمة وحدة واحدة من العملة بالدولار
+71:      */
+72:     public static BigDecimal toUsd(long minor, int decimals, BigDecimal usdPerUnit) {
+73:         return BigDecimal.valueOf(minor, decimals).multiply(usdPerUnit);
+74:     }
+75: 
+76:     /** تقويم إجماليات كل العملات. */
+77:     public static Valuation value(Map<String, CurrencyTotal> totals, Map<String, BigDecimal> usdRates, Map<String, Integer> decimals) {
+78:         Valuation v = new Valuation();
+79:         for (CurrencyTotal t : totals.values()) {
+80:             if (t.receivable == 0 && t.payable == 0) continue;
+81:             if (Metals.notValued(t.code)) {
+82:                 v.weightOnly.add(t.code);
+83:                 continue;
+84:             }
+85:             BigDecimal rate = rateFor(t.code, usdRates);
+86:             if (rate == null) {
+87:                 v.missingRates.add(t.code);
+88:                 continue;
+89:             }
+90:             int dec = decimalsFor(t.code, decimals);
+91:             v.receivableUsd = v.receivableUsd.add(toUsd(t.receivable, dec, rate));
+92:             v.payableUsd = v.payableUsd.add(toUsd(t.payable, dec, rate));
+93:         }
+94:         v.receivableUsd = v.receivableUsd.setScale(2, RoundingMode.HALF_EVEN);
+95:         v.payableUsd = v.payableUsd.setScale(2, RoundingMode.HALF_EVEN);
+96:         return v;
+97:     }
+98: 
+99:     /** تقويم أرصدة مكتب واحد: العملات الموجبة في «لنا» والسالبة في «علينا» دون تقاصّ بينها. */
+100:     public static Valuation valueOffice(Map<String, Long> balances, Map<String, BigDecimal> usdRates, Map<String, Integer> decimals) {
+101:         Valuation v = new Valuation();
+102:         for (Map.Entry<String, Long> e : balances.entrySet()) {
+103:             long b = e.getValue() == null ? 0 : e.getValue();
+104:             if (b == 0) continue;
+105:             if (Metals.notValued(e.getKey())) {
+106:                 v.weightOnly.add(e.getKey());
+107:                 continue;
+108:             }
+109:             BigDecimal rate = rateFor(e.getKey(), usdRates);
+110:             if (rate == null) {
+111:                 v.missingRates.add(e.getKey());
+112:                 continue;
+113:             }
+114:             BigDecimal usd = toUsd(Math.abs(b), decimalsFor(e.getKey(), decimals), rate);
+115:             if (b > 0) v.receivableUsd = v.receivableUsd.add(usd);
+116:             else v.payableUsd = v.payableUsd.add(usd);
+117:         }
+118:         v.receivableUsd = v.receivableUsd.setScale(2, RoundingMode.HALF_EVEN);
+119:         v.payableUsd = v.payableUsd.setScale(2, RoundingMode.HALF_EVEN);
+120:         return v;
+121:     }
+122: 
+123:     private static BigDecimal rateFor(String code, Map<String, BigDecimal> rates) {
+124:         if ("USD".equals(code)) return BigDecimal.ONE;
+125:         BigDecimal r = rates.get(code);
+126:         return (r == null || r.signum() <= 0) ? null : r;
+127:     }
+128: 
+129:     private static int decimalsFor(String code, Map<String, Integer> decimals) {
+130:         Integer d = decimals.get(code);
+131:         return d == null ? 2 : d;
+132:     }
+133: 
+134:     /** تحذير حد: النوع («لنا»/«علينا») والقيمة والحد. */
+135:     public static final class LimitBreach {
+136:         public final String currency; // "USD≈" للتقويم الإجمالي
+137:         public final boolean receivable;
+138:         public final long amount;
+139:         public final long limit;
+140: 
+141:         public LimitBreach(String currency, boolean receivable, long amount, long limit) {
+142:             this.currency = currency;
+143:             this.receivable = receivable;
+144:             this.amount = amount;
+145:             this.limit = limit;
+146:         }
+147:     }
+148: 
+149:     /** يفحص رصيد عملة مقابل حد «لنا» وحد «علينا» (null = بلا حد). */
+150:     public static LimitBreach check(String currency, long balance, Long limitReceivable, Long limitPayable) {
+151:         if (balance > 0 && limitReceivable != null && limitReceivable > 0 && balance > limitReceivable) {
+152:             return new LimitBreach(currency, true, balance, limitReceivable);
+153:         }
+154:         if (balance < 0 && limitPayable != null && limitPayable > 0 && -balance > limitPayable) {
+155:             return new LimitBreach(currency, false, -balance, limitPayable);
+156:         }
+157:         return null;
+158:     }
+159: }

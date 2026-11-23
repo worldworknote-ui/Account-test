@@ -1,0 +1,141 @@
+954:                 if (on) sel.add(o.id);
+955:                 else sel.remove(o.id);
+956:                 update.run();
+957:             });
+958:             card.setOnClickListener(v -> cb.toggle());
+959:             boxes.add(cb);
+960:         }
+961:         LinearLayout foot = a.row();
+962:         go[0] = a.makeButton("متابعة", a.primary, v -> {
+963:             prep.keep = new java.util.HashSet<>(sel);
+964:             replacePreview(file, temporary, prep);
+965:         });
+966:         foot.addView(go[0], new LinearLayout.LayoutParams(0, a.dp(50), 1));
+967:         LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-2, a.dp(50));
+968:         cp.setMargins(a.dp(8), 0, 0, 0);
+969:         foot.addView(a.makeButton("إلغاء", Color.rgb(130, 130, 130), v -> cancel.run()), cp);
+970:         a.footer(foot);
+971:         update.run();
+972:     }
+973: 
+974:     private void replacePreview(final File file, final boolean temporary, final BackupManager.Prepared prep) {
+975:         BackupFormat.Report r = prep.report;
+976:         final long maxOff = License.current.maxOffices();
+977:         if (maxOff != Entitlements.UNLIMITED && r.offices > maxOff && (prep.keep == null || prep.keep.size() > maxOff)) {
+978:             pickOffices(file, temporary, prep, maxOff, null);
+979:             return;
+980:         }
+981:         StringBuilder sb = new StringBuilder();
+982:         sb.append("تاريخ النسخة: ").append(r.createdAt > 0 ? Model.date(r.createdAt) : "غير معروف")
+983:                 .append("\nإصدار التطبيق: ").append(r.appVersion.isEmpty() ? "—" : r.appVersion).append(" (صيغة ").append(r.format).append(")")
+984:                 .append("\nالمكاتب: ").append(r.offices).append(prep.keep != null ? " — تُستعاد " + prep.keep.size() + " مختارة فقط" : "")
+985:                 .append("\nالحركات: ").append(r.txActive).append(" نشطة + ").append(r.txCancelled).append(" ملغاة")
+986:                 .append("\nالصور: ").append(r.attachments)
+987:                 .append("\nالعملات: ").append(r.currencies)
+988:                 .append(r.cashMoves > 0 ? "\nحركات صندوق المكتب: " + r.cashMoves : "")
+989:                 .append("\n\n✓ القيود متوازنة والعلاقات سليمة.");
+990:         for (String w : r.warnings) sb.append("\n⚠ ").append(w);
+991:         sb.append("\n\nبياناتك الحالية: ").append(a.db.officeCount()).append(" مكتب و ").append(a.db.txCount()).append(" حركة؛ ستُحفظ منها نسخة أمان ثم تُستبدل.");
+992:         // 10.13: مع تفضيلات المظهر التي في النسخة أو بدونها (يبقى مظهر كل مستخدم كما هو الآن)
+993:         final android.widget.CheckBox look = new android.widget.CheckBox(a);
+994:         look.setText("استعادة تفضيلات المظهر من النسخة (الألوان، الوضع، الخط، الشريط، الرئيسية)");
+995:         look.setChecked(true);
+996:         look.setTextSize(14);
+997:         android.widget.LinearLayout lv = new android.widget.LinearLayout(a);
+998:         lv.setPadding(a.dp(20), a.dp(4), a.dp(20), 0);
+999:         lv.addView(look);
+1000:         new AlertDialog.Builder(a).setTitle("معاينة النسخة قبل الاستعادة").setMessage(sb.toString()).setView(lv).setCancelable(false)
+1001:                 .setPositiveButton("استعادة الآن", (d, w) -> a.busy("جارٍ الاستعادة…", p -> {
+1002:                     prep.keepLook = !look.isChecked();
+1003:                     BackupManager.applyRestore(a, a.db, prep, p);
+1004:                     return null;
+1005:                 }, res -> {
+1006:                     if (temporary) file.delete();
+1007:                     a.restoreInput = null;
+1008:                     a.db.recordBackup("RESTORE", "تمت الاستعادة", file.getName(), file.length(), a.db.counts(), true, "");
+1009:                     new AlertDialog.Builder(a).setTitle("تمت الاستعادة ✓")
+1010:                             .setMessage("تم استبدال البيانات بمحتوى النسخة. إن لم تكن هذه النسخة المطلوبة، يمكنك التراجع من «الإعدادات ← النسخ الاحتياطي ← التراجع عن آخر استعادة».")
+1011:                             .setPositiveButton("حسنًا", null).show();
+1012:                     afterDataReplaced();
+1013:                 }))
+1014:                 .setNeutralButton(prep.keep != null ? "تغيير المكاتب" : null, prep.keep == null ? null : (d, w) -> pickOffices(file, temporary, prep, maxOff, null))
+1015:                 .setNegativeButton("إلغاء", (d, w) -> {
+1016:                     BackupManager.clearStaging(a);
+1017:                     if (temporary) file.delete();
+1018:                     a.restoreInput = null;
+1019:                 }).show();
+1020:     }
+1021: 
+1022:     // ===================================================================================
+1023:     // نتائج اختيار الملفات والمجلدات
+1024:     // ===================================================================================
+1025: 
+1026:     /** يفتح منتقي ملف النسخة للاستعادة مباشرة (من شاشة «مفتاح التشفير غير متاح» مثلًا). */
+1027:     void pickRestoreFile() {
+1028:         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+1029:         i.addCategory(Intent.CATEGORY_OPENABLE);
+1030:         i.setType("*/*");
+1031:         a.startForResult(i, MainActivity.OPEN_BACKUP);
+1032:     }
+1033: 
+1034:     void onResult(int r, int c, Intent data) {
+1035:         if (c != Activity.RESULT_OK) {
+1036:             if (r == MainActivity.CREATE_BACKUP) a.toast("لم يتم اختيار مكان؛ النسخة ما زالت محفوظة داخل التطبيق.");
+1037:             if (r == MainActivity.AUTO_TREE) a.toast("لم يتم اختيار مجلد.");
+1038:             if (r == MainActivity.DRIVE_FILE) a.toast("لم يتم اختيار ملف في Google Drive.");
+1039:             return;
+1040:         }
+1041:         if (r == MainActivity.DRIVE_FILE) {
+1042:             Uri file = data == null ? null : data.getData();
+1043:             if (file == null) {
+1044:                 a.error(new Exception("لم يتم اختيار ملف."));
+1045:                 return;
+1046:             }
+1047:             onDriveChosen(file);
+1048:             return;
+1049:         }
+1050:         if (r == MainActivity.AUTO_TREE) {
+1051:             Uri tree = data == null ? null : data.getData();
+1052:             if (tree == null) {
+1053:                 a.error(new Exception("لم يتم اختيار مجلد."));
+1054:                 return;
+1055:             }
+1056:             onTreeChosen(tree);
+1057:         } else if (r == MainActivity.CREATE_BACKUP) {
+1058:             final Uri target = data == null ? null : data.getData();
+1059:             final String path = a.db.setting("pending_backup_file", "");
+1060:             final File src = path.isEmpty() ? null : new File(path);
+1061:             if (target == null || src == null || !src.exists()) {
+1062:                 a.error(new Exception("تعذر إكمال الحفظ: ملف النسخة غير موجود. أنشئ نسخة جديدة."));
+1063:                 return;
+1064:             }
+1065:             a.busy("جارٍ حفظ النسخة والتحقق منها في المكان المختار…", p -> BackupManager.copyToUri(a, src, target), res -> {
+1066:                 BackupManager.Delivery d = (BackupManager.Delivery) res;
+1067:                 String name = BackupManager.displayName(a, target);
+1068:                 a.db.deleteSetting("pending_backup_file");
+1069:                 if (d.verified) {
+1070:                     a.db.recordBackup("SAVE", "تم الحفظ والتحقق", name, d.size, a.db.counts(), true, "");
+1071:                     a.markBackupDone("verified");
+1072:                     new AlertDialog.Builder(a).setTitle("تم الحفظ ✓")
+1073:                             .setMessage("تم حفظ النسخة باسم:\n" + name + "\n\nوأُعيدت قراءتها من المكان المختار وطابقت الأصل تمامًا.")
+1074:                             .setPositiveButton("حسنًا", null).show();
+1075:                 } else {
+1076:                     a.db.recordBackup("SAVE", "حُفظت دون تحقق", name, d.size, a.db.counts(), false, d.note);
+1077:                     a.markBackupDone("unverified");
+1078:                     new AlertDialog.Builder(a).setTitle("تم الإرسال").setMessage(d.note).setPositiveButton("حسنًا", null).show();
+1079:                 }
+1080:                 if (!a.onHome) show();
+1081:             });
+1082:         } else if (r == MainActivity.OPEN_BACKUP) {
+1083:             final Uri src = data == null ? null : data.getData();
+1084:             if (src == null) {
+1085:                 a.error(new Exception("لم يتم اختيار ملف"));
+1086:                 return;
+1087:             }
+1088:             a.busy("جارٍ قراءة الملف…", p -> BackupManager.copyIn(a, src), res -> {
+1089:                 a.restoreInput = (File) res;
+1090:                 restorePasswordDialog(a.restoreInput, true);
+1091:             });
+1092:         }
+1093:     }
+1094: }

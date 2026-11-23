@@ -1,0 +1,199 @@
+388:             say("جارٍ قراءة ما في المربع…");
+389:             final Rectangle in = inner();
+390:             new Thread(() -> {
+391:                 Bubbles.Result r = null;
+392:                 String err = null;
+393:                 try {
+394:                     r = Reader.readBox(in);
+395:                 } catch (Throwable t) {
+396:                     err = t.getMessage() == null ? t.toString() : t.getMessage();
+397:                 }
+398:                 final Bubbles.Result fr = r;
+399:                 final String fe = err;
+400:                 SwingUtilities.invokeLater(() -> {
+401:                     reading = false;
+402:                     if (fr == null || fr.bubbles.isEmpty()) {
+403:                         say(fe != null ? fe : MAC ? "لم أقرأ نصًا. كبّر المربع قليلًا، أو اسمح بـ«تسجيل الشاشة» للبرنامج."
+404:                                 : "لم أقرأ نصًا تحت المربع. كبّره قليلًا حول الرسالة.");
+405:                         return;
+406:                     }
+407:                     List<WaText.Msg> l = new ArrayList<>();
+408:                     l.add(fr.bubbles.get(0).msg());
+409:                     chat = fr.chat == null ? "" : fr.chat;
+410:                     deliver(l);
+411:                     String t = fr.bubbles.get(0).text.replace('\n', ' ');
+412:                     say("نُقل: " + (t.length() > 60 ? t.substring(0, 60) + "…" : t));
+413:                 });
+414:             }, "capture-box").start();
+415:         }
+416: 
+417:         // ------------------------------- الأرقام -------------------------------
+418: 
+419:         void clearBadges() {
+420:             for (JWindow w : badgeWins) w.dispose();
+421:             badgeWins.clear();
+422:             badgeBtns.clear();
+423:             if (hovering) {
+424:                 hovering = false;
+425:                 status.setText(idle);
+426:             }
+427:         }
+428: 
+429:         /** أزرار الأرقام الظاهرة (للتجارب). */
+430:         List<JButton> badges() { return new ArrayList<>(badgeBtns); }
+431: 
+432:         void layoutBadges() {
+433:             clearBadges();
+434:             if (!isShowing()) return;
+435:             Rectangle in = inner();
+436:             int mid = in.x + in.width / 2;
+437:             for (final Bubbles.Bubble b : bubbles) {
+438:                 final JButton badge = new JButton(String.valueOf(b.number));
+439:                 badge.setName("badge-" + b.number);
+440:                 badge.setFont(badge.getFont().deriveFont(Font.BOLD, 13f));
+441:                 badge.setMargin(new Insets(0, 0, 0, 0));
+442:                 badge.setFocusable(false);
+443:                 badge.setBackground(chosen.contains(b.number) ? PICKED : ACCENT);
+444:                 badge.setForeground(Color.WHITE);
+445:                 badge.setOpaque(true);
+446:                 badge.setBorder(BorderFactory.createLineBorder(Color.WHITE, 2));
+447:                 badge.addActionListener(e -> pick(b));
+448:                 badge.addMouseListener(new MouseAdapter() {
+449:                     @Override public void mouseEntered(MouseEvent e) {
+450:                         hovering = true;
+451:                         status.setText(b.number + ": " + preview(b.text));
+452:                     }
+453: 
+454:                     @Override public void mouseExited(MouseEvent e) {
+455:                         hovering = false;
+456:                         status.setText(idle);
+457:                         lastSig = null;
+458:                     }
+459:                 });
+460:                 // 12.5: بجانب الفقاعة من جهتها الخارجية (حيث صورة المرسل) لا فوق نصها؛ وإن لم يتسع المكان فعلى زاويتها
+461:                 boolean incoming = b.x + b.w / 2 < mid;
+462:                 int x = incoming ? b.x - BADGE - 4 : b.x + b.w + 4;
+463:                 if (x < in.x || x + BADGE > in.x + in.width) x = incoming ? b.x + 2 : b.x + b.w - BADGE - 2;
+464:                 x = Math.max(in.x, Math.min(in.x + in.width - BADGE, x));
+465:                 int y = Math.max(in.y, Math.min(in.y + in.height - BADGE, b.y + 2));
+466:                 JWindow w = new JWindow(this);
+467:                 w.setAlwaysOnTop(true);
+468:                 w.setFocusableWindowState(false);
+469:                 w.setContentPane(badge);
+470:                 w.setBounds(x, y, BADGE, BADGE);
+471:                 w.setVisible(true);
+472:                 badgeWins.add(w);
+473:                 badgeBtns.add(badge);
+474:             }
+475:         }
+476: 
+477:         private static String preview(String t) {
+478:             String s = t.replace('\n', ' ');
+479:             return s.length() > 90 ? s.substring(0, 90) + "…" : s;
+480:         }
+481: 
+482:         void pick(Bubbles.Bubble b) {
+483:             if (multi.isSelected()) {
+484:                 if (!chosen.remove(b.number)) chosen.add(b.number);
+485:                 refreshSend();
+486:                 for (JButton x : badgeBtns) x.setBackground(chosen.contains(Integer.parseInt(x.getText())) ? PICKED : ACCENT);
+487:                 return;
+488:             }
+489:             List<WaText.Msg> l = new ArrayList<>();
+490:             l.add(b.msg());
+491:             deliver(l);
+492:             say("نُقلت الرسالة " + b.number + ". اضغط رقمًا آخر أو أغلق الإطار.");
+493:         }
+494: 
+495:         void sendChosen() {
+496:             List<WaText.Msg> l = new ArrayList<>();
+497:             for (Bubbles.Bubble b : bubbles) if (chosen.contains(b.number)) l.add(b.msg());
+498:             if (l.isEmpty()) return;
+499:             chosen.clear();
+500:             multi.setSelected(false);
+501:             refreshSend();
+502:             layoutBadges();
+503:             deliver(l);
+504:             say("نُقلت " + l.size() + " رسائل إلى البرنامج.");
+505:         }
+506: 
+507:         private void deliver(List<WaText.Msg> l) {
+508:             final WaMove.Picked c = cb;
+509:             final String ch = chat;
+510:             if (c == null) return;
+511:             SwingUtilities.invokeLater(() -> c.picked(l, ch));
+512:         }
+513: 
+514:         // ------------------------------- القراءة -------------------------------
+515: 
+516:         void read() {
+517:             if (reading || !isShowing()) return;
+518:             reading = true;
+519:             settle.stop();
+520:             boolean had = !badgeWins.isEmpty();
+521:             clearBadges();
+522:             say("جارٍ القراءة…");
+523:             final Rectangle in = inner();
+524:             final double scale = scaleOf(this);
+525:             final Rectangle bar = getBounds();
+526:             new Thread(() -> {
+527:                 Bubbles.Result r = null;
+528:                 String err = null;
+529:                 try {
+530:                     // تختفي الأرقام من الشاشة قبل التصوير
+531:                     if (had) Thread.sleep(150);
+532:                     r = Reader.read(in, scale, bar);
+533:                 } catch (Throwable t) {
+534:                     err = t.getMessage() == null ? t.toString() : t.getMessage();
+535:                 }
+536:                 final Bubbles.Result fr = r;
+537:                 final String fe = err;
+538:                 SwingUtilities.invokeLater(() -> {
+539:                     reading = false;
+540:                     shown(fr, fe);
+541:                     lastSig = null;
+542:                     pending = false;
+543:                 });
+544:             }, "capture-read").start();
+545:         }
+546: 
+547:         void shown(Bubbles.Result r, String err) {
+548:             bubbles.clear();
+549:             chosen.clear();
+550:             refreshSend();
+551:             if (!isDisplayable()) return;
+552:             if (r == null) {
+553:                 say(err == null ? "تعذّرت القراءة." : err);
+554:                 return;
+555:             }
+556:             bubbles.addAll(r.bubbles);
+557:             chat = r.chat == null ? "" : r.chat;
+558:             if (bubbles.isEmpty()) {
+559:                 say(MAC ? "لم أجد رسائل. اسمح بـ«تسجيل الشاشة» للبرنامج من إعدادات الماك ← الخصوصية والأمان، ثم «اقرأ»."
+560:                         : "لم أجد رسائل داخل الإطار. اضغط «حدد النافذة» واختر نافذة واتساب.");
+561:                 return;
+562:             }
+563:             say((chat.isEmpty() ? "" : "«" + chat + "» • ") + bubbles.size() + (bubbles.size() == 1 ? " رسالة" : " رسائل") + ": اضغط رقم الرسالة لنقلها");
+564:             layoutBadges();
+565:         }
+566: 
+567:         /** «نافذة واتساب»: يغطي الإطار نافذة واتساب كلها ثم يقرأ. */
+568:         void fitWindow() {
+569:             if (reading) return;
+570:             reading = true;
+571:             say("أبحث عن نافذة واتساب…");
+572:             final double scale = scaleOf(this);
+573:             final Rectangle bar = getBounds();
+574:             new Thread(() -> {
+575:                 Rectangle w = null;
+576:                 String err = null;
+577:                 try {
+578:                     w = Reader.whatsappWindow(scale, bar);
+579:                 } catch (Throwable t) {
+580:                     err = t.getMessage();
+581:                 }
+582:                 final Rectangle fw = w;
+583:                 final String fe = err;
+584:                 SwingUtilities.invokeLater(() -> {
+585:                     reading = false;
+586:                     if (fw == null) {

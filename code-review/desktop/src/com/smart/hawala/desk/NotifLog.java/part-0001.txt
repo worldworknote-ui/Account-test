@@ -1,0 +1,56 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.util.List;
+6: import javax.swing.*;
+7: import javax.swing.table.DefaultTableModel;
+8: 
+9: /**
+10:  * 10.18: سجل الإشعارات على هذا الجهاز: كل إشعار ظهر (مزامنة، تعارض، دخول جهاز، رسالة مدير، تذكير، نسخ) يبقى هنا بتاريخه،
+11:  * ومعه سجل تنبيهات المزامنة كلها (المفتوح وما عُلّم «تمت»). لا يضيع الإشعار بالضغط عليه.
+12:  */
+13: final class NotifLog {
+14:     private NotifLog() {}
+15: 
+16:     static void open(Component parent, Db db) {
+17:         JTabbedPane tabs = new JTabbedPane();
+18:         tabs.setFont(Ui.font(13.5f, true));
+19:         tabs.setComponentOrientation(Ui.RTL);
+20:         tabs.addTab("كل الإشعارات", table(new String[]{"الوقت", "العنوان", "النص"}, db.notifLog(500), new int[]{140, 220, 560}));
+21:         java.util.List<String[]> rows = new java.util.ArrayList<>();
+22:         for (String[] c : SyncEngine.noticeHistory(db, 500)) rows.add(new String[]{Model.date(Long.parseLong(c[1])), SyncStore.kindName(c[2]), c[5], "1".equals(c[7]) ? "تمت" : "مفتوح"});
+23:         tabs.addTab("تنبيهات المزامنة", table(new String[]{"الوقت", "النوع", "التفاصيل", "الحالة"}, rows, new int[]{140, 200, 500, 80}));
+24:         tabs.setPreferredSize(new Dimension(980, 560));
+25:         JOptionPane p = new JOptionPane(tabs, JOptionPane.PLAIN_MESSAGE, JOptionPane.DEFAULT_OPTION, null, new Object[]{"إغلاق", "مسح سجل الإشعارات"}, "إغلاق");
+26:         Ui.show(parent, p, "سجل الإشعارات");
+27:         if ("مسح سجل الإشعارات".equals(p.getValue()) && Ui.confirm(parent, "مسح سجل الإشعارات", "يُمسح سجل الإشعارات على هذا الجهاز. تنبيهات المزامنة تبقى.", "مسح")) {
+28:             db.clearNotifLog();
+29:             Ui.toast("مُسح سجل الإشعارات");
+30:         }
+31:     }
+32: 
+33:     private static JComponent table(String[] cols, List<String[]> rows, int[] widths) {
+34:         DefaultTableModel m = new DefaultTableModel(cols, 0) {
+35:             @Override public boolean isCellEditable(int r, int c) { return false; }
+36:         };
+37:         for (String[] r : rows) m.addRow(r);
+38:         JTable t = Ui.table(m);
+39:         Ui.widths(t, widths);
+40:         t.applyComponentOrientation(Ui.RTL);
+41:         // النص الكامل عند الوقوف على السطر (الإشعار قد يكون طويلًا)
+42:         t.addMouseMotionListener(new java.awt.event.MouseMotionAdapter() {
+43:             @Override public void mouseMoved(java.awt.event.MouseEvent e) {
+44:                 int r = t.rowAtPoint(e.getPoint());
+45:                 t.setToolTipText(r < 0 ? null : "<html><div style='width:420px'>" + Ui.esc(String.valueOf(t.getValueAt(r, 2))) + "</div></html>");
+46:             }
+47:         });
+48:         JScrollPane sp = Ui.tableBox(t);
+49:         if (rows.isEmpty()) {
+50:             JPanel e = Ui.column();
+51:             e.add(Ui.label("لا شيء بعد.", 14, Ui.muted, false));
+52:             return e;
+53:         }
+54:         return sp;
+55:     }
+56: }

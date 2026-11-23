@@ -1,0 +1,155 @@
+469:         // ---- 10.16: تصميم أسطر العملات والأجزاء الظاهرة ----
+470:         a.title("شكل سطر العملة");
+471:         a.hint(Reconcile.LINE_HELP);
+472:         final EditText line = a.input("شكل السطر");
+473:         line.setText(t.lineFormat);
+474:         a.button("اختيار شكل جاهز", Color.rgb(120, 120, 120), v -> {
+475:             String[] names = new String[Reconcile.LINE_PRESETS.length];
+476:             Reconcile.Template ex = new Reconcile.Template();
+477:             for (int i = 0; i < names.length; i++) {
+478:                 ex.lineFormat = Reconcile.LINE_PRESETS[i][1];
+479:                 ex.bold = false;
+480:                 names[i] = Reconcile.LINE_PRESETS[i][0] + "\n" + Reconcile.line(ex, Reconcile.sampleRows().get(1));
+481:             }
+482:             new AlertDialog.Builder(a).setTitle("شكل سطر العملة").setItems(names, (dg, w) -> line.setText(Reconcile.LINE_PRESETS[w][1])).show();
+483:         });
+484:         // موضع «لنا/لكم» من الرقم، ولونهما
+485:         a.add(a.label("موضع «لنا / لكم» من الرقم"));
+486:         final Ui.Seg pos = a.new Seg(Reconcile.WORD_POS, null, Reconcile.wordPos(t.lineFormat), false);
+487:         a.body.addView(pos.view, a.lp(-1, -2, 2));
+488:         pos.listener = i -> line.setText(Reconcile.withWordPos(line.getText().toString(), i));
+489:         final CheckBox colored = new CheckBox(a);
+490:         colored.setText("تلوين «لنا» و«لكم» (في الصورة، وبالدائرة الملوّنة في نص واتساب)");
+491:         colored.setChecked(t.colored);
+492:         a.body.addView(colored);
+493:         final String[] cPlus = {t.colorPlus}, cMinus = {t.colorMinus};
+494:         final Runnable[] afterColor = new Runnable[1];
+495:         LinearLayout colr = a.row();
+496:         final android.widget.Button bPlus = a.smallButton("لون «لنا»", Reconcile.rgb(cPlus[0], a.green), null);
+497:         final android.widget.Button bMinus = a.smallButton("لون «لكم»", Reconcile.rgb(cMinus[0], a.red), null);
+498:         colr.addView(bPlus, a.weight(44, 1, 2));
+499:         colr.addView(bMinus, a.weight(44, 1, 2));
+500:         a.body.addView(colr);
+501:         final String[] colorNames = new String[Reconcile.COLORS.length];
+502:         for (int i = 0; i < colorNames.length; i++) colorNames[i] = Reconcile.COLORS[i][2] + "  " + Reconcile.COLORS[i][0];
+503:         final CheckBox trim = new CheckBox(a);
+504:         trim.setText("حذف الأصفار العشرية (59,450 بدل 59,450.00)");
+505:         trim.setChecked(t.trimZeros);
+506:         final CheckBox gap = new CheckBox(a);
+507:         gap.setText("سطر فارغ بين كل عملة وأخرى");
+508:         gap.setChecked(t.gap);
+509:         final CheckBox boldName = new CheckBox(a);
+510:         boldName.setText("خط عريض لاسم العملة أيضًا");
+511:         boldName.setChecked(t.boldName);
+512:         final CheckBox showDate = new CheckBox(a);
+513:         showDate.setText("إظهار سطر التاريخ");
+514:         showDate.setChecked(t.showDate);
+515:         final CheckBox showOffice = new CheckBox(a);
+516:         showOffice.setText("إظهار سطر اسم المكتب");
+517:         showOffice.setChecked(t.showOffice);
+518:         final CheckBox showSep = new CheckBox(a);
+519:         showSep.setText("إظهار الخط الفاصل قبل الأرصدة وبعدها");
+520:         showSep.setChecked(t.showSeparator);
+521:         final CheckBox[] more = {trim, gap, boldName, showDate, showOffice, showSep};
+522:         for (CheckBox cb : more) a.body.addView(cb);
+523:         a.add(a.label("العلامات قبل كل سطر: لنا • لكم • صفر (اتركها فارغة لحذفها)"));
+524:         LinearLayout mr = a.row();
+525:         final EditText mPlus = a.field("🟢"), mMinus = a.field("🔴"), mZero = a.field("⚪");
+526:         mPlus.setText(t.markPlus);
+527:         mMinus.setText(t.markMinus);
+528:         mZero.setText(t.markZero);
+529:         mr.addView(mPlus, a.weight(50, 1, 2));
+530:         mr.addView(mMinus, a.weight(50, 1, 2));
+531:         mr.addView(mZero, a.weight(50, 1, 2));
+532:         a.body.addView(mr);
+533:         LinearLayout lr = a.row();
+534:         final EditText dateLabel = a.field("قبل التاريخ: 📅 التاريخ:");
+535:         dateLabel.setText(t.dateLabel);
+536:         final EditText officeMark = a.field("قبل المكتب: 🏢");
+537:         officeMark.setText(t.officeMark);
+538:         lr.addView(dateLabel, a.weight(50, 1.4f, 2));
+539:         lr.addView(officeMark, a.weight(50, 1, 2));
+540:         a.body.addView(lr);
+541:         final EditText sepText = a.input("الخط الفاصل (أي رموز تريدها)");
+542:         sepText.setText(t.separator);
+543:         LinearLayout zr = a.row();
+544:         final EditText zeroWord = a.field("كلمة الرصيد الصفري: صفر");
+545:         zeroWord.setText(t.zeroWord);
+546:         zr.addView(zeroWord, a.weight(50, 1, 2));
+547:         a.body.addView(zr);
+548:         final EditText emptyText = a.input("النص عند عدم وجود أرصدة");
+549:         emptyText.setText(t.emptyText);
+550:         // اختيار اللون يضبط الدائرة المطابقة له في نص واتساب (ويبقى تعديلها باليد ممكنًا)
+551:         bPlus.setOnClickListener(v -> new AlertDialog.Builder(a).setTitle("لون «لنا»").setItems(colorNames, (dg, w) -> {
+552:             cPlus[0] = Reconcile.COLORS[w][1];
+553:             mPlus.setText(Reconcile.COLORS[w][2]);
+554:             bPlus.setBackground(a.round(Reconcile.rgb(cPlus[0], a.green), Reconcile.rgb(cPlus[0], a.green), 12));
+555:             if (afterColor[0] != null) afterColor[0].run();
+556:         }).show());
+557:         bMinus.setOnClickListener(v -> new AlertDialog.Builder(a).setTitle("لون «لكم»").setItems(colorNames, (dg, w) -> {
+558:             cMinus[0] = Reconcile.COLORS[w][1];
+559:             mMinus.setText(Reconcile.COLORS[w][2]);
+560:             bMinus.setBackground(a.round(Reconcile.rgb(cMinus[0], a.red), Reconcile.rgb(cMinus[0], a.red), 12));
+561:             if (afterColor[0] != null) afterColor[0].run();
+562:         }).show());
+563: 
+564:         a.title("المعاينة");
+565:         final TextView txt = a.add(a.text("", 14, a.dark, false));
+566:         txt.setBackground(a.round(Color.rgb(231, 246, 227), Color.rgb(200, 225, 195), 10));
+567:         txt.setPadding(a.dp(12), a.dp(10), a.dp(12), a.dp(10));
+568:         final ImageView img = new ImageView(a);
+569:         img.setAdjustViewBounds(true);
+570:         a.body.addView(img, a.lp(-1, -2, 6));
+571:         final Runnable read = () -> {
+572:             t.greeting = greeting.getText().toString();
+573:             t.title = title.getText().toString().trim().isEmpty() ? "مطابقة رصيد" : title.getText().toString();
+574:             t.ornament = orn.getText().toString();
+575:             t.salutation = sal.getText().toString();
+576:             t.honorific = hon.getText().toString();
+577:             t.plusWord = plus.getText().toString().trim().isEmpty() ? "لنا" : plus.getText().toString().trim();
+578:             t.minusWord = minus.getText().toString().trim().isEmpty() ? "لكم" : minus.getText().toString().trim();
+579:             t.footer = footer.getText().toString();
+580:             t.bold = bold.isChecked();
+581:             t.showIssuer = issuer.isChecked();
+582:             t.showCode = code.isChecked();
+583:             t.showZero = zero.isChecked();
+584:             t.lineFormat = Reconcile.validLine(line.getText().toString());
+585:             t.colored = colored.isChecked();
+586:             t.colorPlus = cPlus[0];
+587:             t.colorMinus = cMinus[0];
+588:             t.trimZeros = trim.isChecked();
+589:             t.gap = gap.isChecked();
+590:             t.boldName = boldName.isChecked();
+591:             t.showDate = showDate.isChecked();
+592:             t.showOffice = showOffice.isChecked();
+593:             t.showSeparator = showSep.isChecked();
+594:             t.markPlus = mPlus.getText().toString();
+595:             t.markMinus = mMinus.getText().toString();
+596:             t.markZero = mZero.getText().toString();
+597:             t.dateLabel = dateLabel.getText().toString();
+598:             t.officeMark = officeMark.getText().toString();
+599:             t.separator = sepText.getText().toString();
+600:             t.zeroWord = zeroWord.getText().toString();
+601:             t.emptyText = emptyText.getText().toString().trim().isEmpty() ? new Reconcile.Template().emptyText : emptyText.getText().toString();
+602:         };
+603:         final Runnable refreshText = () -> {
+604:             read.run();
+605:             txt.setText(Reconcile.text(t, "كاش شام", issuer(), Clock.now(), Reconcile.sampleRows()));
+606:         };
+607:         final Runnable refreshImage = () -> {
+608:             read.run();
+609:             try {
+610:                 img.setImageBitmap(BalanceCard.render(t, "كاش شام", issuer(), Clock.now(), Reconcile.sampleRows(), accent(), a.homeLogo()));
+611:             } catch (Throwable e) {
+612:                 img.setImageDrawable(null);
+613:             }
+614:         };
+615:         for (EditText e : new EditText[]{greeting, title, orn, sal, hon, plus, minus, footer, line, mPlus, mMinus, mZero, dateLabel, officeMark, sepText, zeroWord, emptyText})
+616:             e.addTextChangedListener(Ui.watcher(refreshText));
+617:         for (CheckBox cb : more) cb.setOnCheckedChangeListener((b, x) -> {
+618:             refreshText.run();
+619:             refreshImage.run();
+620:         });
+621:         colored.setOnCheckedChangeListener((b, x) -> refreshImage.run());
+622:         afterColor[0] = () -> {
+623:             refreshText.run();

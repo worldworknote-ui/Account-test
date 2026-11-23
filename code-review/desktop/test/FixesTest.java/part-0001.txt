@@ -1,0 +1,157 @@
+1: import android.content.Context;
+2: import com.smart.hawala.*;
+3: import java.util.*;
+4: 
+5: /**
+6:  * 10.5: إصلاحات المال والصلاحيات على Db الحقيقي (sqlite-jdbc)، وكل رقم يُقارن بقيمة محسوبة باليد:
+7:  * AUDIT-017 (تصحيح حركة مرتبطة بالصندوق)، 028 (الجرد مع المعلّق)، 029 (حذف مكتب)، 018-أ (اعتماد التبديل)،
+8:  * 023 (صلاحية المستخدمين وحساب المدير)، 027 (تغيير الرمز الشخصي)، 003 (إذن المزامنة خاص بخيطها).
+9:  */
+10: public class FixesTest {
+11:     static int fails, passes;
+12: 
+13:     static void check(boolean c, String m) {
+14:         if (c) passes++;
+15:         else fails++;
+16:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+17:     }
+18: 
+19:     static long b(Map<String, Long> m, String c) {
+20:         Long v = m.get(c);
+21:         return v == null ? 0 : v;
+22:     }
+23: 
+24:     interface Io { void run() throws Exception; }
+25: 
+26:     static boolean throwsMsg(Io r, String part) {
+27:         try {
+28:             r.run();
+29:             System.out.println("      (لم يُرفض)");
+30:             return false;
+31:         } catch (Exception e) {
+32:             StringBuilder all = new StringBuilder();
+33:             for (Throwable t = e; t != null; t = t.getCause()) all.append(t.getMessage()).append(" | ");
+34:             boolean ok = part == null || all.toString().contains(part);
+35:             if (!ok) System.out.println("      رسالة: " + all);
+36:             return ok;
+37:         }
+38:     }
+39: 
+40:     static boolean healthy(Db db, String label) {
+41:         boolean all = true;
+42:         for (Db.Check c : db.healthCheck(true)) {
+43:             if (!c.ok) {
+44:                 all = false;
+45:                 System.out.println("      ✗ " + c.title + ": " + c.detail);
+46:             }
+47:         }
+48:         check(all, label + ": فحص الصحة الكامل سليم");
+49:         return all;
+50:     }
+51: 
+52:     static CashBox.Input cashIn(long office, String cur, long amount, boolean in) {
+53:         CashBox.Input i = new CashBox.Input();
+54:         i.kind = in ? CashBox.IN : CashBox.OUT;
+55:         i.currency = cur;
+56:         i.amount = amount;
+57:         i.officeId = office;
+58:         i.party = "زبون";
+59:         i.when = System.currentTimeMillis() - 5000;
+60:         return i;
+61:     }
+62: 
+63:     static Db.TxInput txIn(long office, String type, long amount, String cur) {
+64:         Db.TxInput t = new Db.TxInput();
+65:         t.office = office;
+66:         t.type = type;
+67:         t.amount = amount;
+68:         t.currency = cur;
+69:         t.person = "زبون";
+70:         t.when = System.currentTimeMillis() - 4000;
+71:         return t;
+72:     }
+73: 
+74:     static CashBox.Move moveOf(Db db, long txId) {
+75:         for (CashBox.Move m : db.cashMoves()) if (m.txId != null && m.txId == txId) return m;
+76:         return null;
+77:     }
+78: 
+79:     static void as(Db db, long uid) { SmartApp.currentUser = db.user(uid); Db.currentUserName = SmartApp.currentUser.name; }
+80: 
+81:     public static void main(String[] a) throws Exception {
+82:         System.setProperty("sa.secrets", "file");
+83:         Object[] dv = DeskCoreTest.device("fixes");
+84:         Db db = (Db) dv[1];
+85:         License.current = Entitlements.of(DeskCoreTest.fullGrant(), BuildInfo.BUILD_DATE);
+86:         List<String> ue = Arrays.asList("USD", "EUR");
+87:         long A = db.addOffice("البلسم", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+88:         long B = db.addOffice("النور", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+89:         long C = db.addOffice("الأمل", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+90:         Map<String, Long> op = new HashMap<>();
+91:         op.put("USD", 1000000L);
+92:         op.put("EUR", 100000L);
+93:         db.cashSetup("الصندوق", ue, op, false, true);
+94:         long admin = db.addUser("المدير", Auth.ADMIN, null, "123456");
+95:         as(db, admin);
+96:         long clerk = db.addUser("سامر", Auth.CUSTOM, "VIEW,TX_ADD,TX_EDIT,CASH,REVIEW", "1111");
+97:         long acct = db.addUser("رنا", Auth.CUSTOM, "VIEW,TX_ADD,TX_EDIT,TX_CANCEL,APPROVE,CASH", "2222");
+98:         long noCash = db.addUser("خالد", Auth.CUSTOM, "VIEW,APPROVE", "3333");
+99:         long mgr = db.addUser("مدير الموظفين", Auth.CUSTOM, "VIEW,USERS", "4444");
+100: 
+101:         System.out.println("== AUDIT-017: تصحيح واعتماد حركة مسجّلة من الصندوق");
+102:         as(db, clerk);
+103:         db.addCashMove(cashIn(A, "USD", 100000, true));    // استلام 1,000 لحساب البلسم (معلّق)
+104:         Model.Tx p1 = db.pendingTx().get(0);
+105:         check(p1.isPending() && b(db.balances(A), "USD") == 0, "حركة الموظف معلّقة ولا أثر لها في رصيد المكتب");
+106:         check(b(db.cashBalances(), "USD") == 1000000 && b(db.cashPending(1), "USD") == 100000, "النقد المعلّق ظاهر منفصلًا ولا يدخل الرصيد: " + db.cashPending(1));
+107:         as(db, noCash);
+108:         Db.TxInput fix = txIn(B, Model.TYPE_CREDIT, 90000, "USD");
+109:         check(throwsMsg(() -> db.approveEdited(p1.id, fix, null, null), "الصندوق"), "معتمد بلا صلاحية الصندوق لا يصحح حركة صندوق (يعتمد أو يرفض فقط)");
+110:         check(db.tx(p1.id).isPending() && b(db.balances(B), "USD") == 0, "ولم يتغير شيء بعد الرفض (العملية ذرية)");
+111:         as(db, acct);
+112:         db.approveEdited(p1.id, fix, null, null);
+113:         CashBox.Move m1 = moveOf(db, p1.id);
+114:         check(b(db.balances(A), "USD") == 0 && b(db.balances(B), "USD") == -90000, "المكتب صُحّح: البلسم 0، النور علينا 900");
+115:         check(m1 != null && m1.amount == 90000 && m1.officeId == B && m1.dir == 1 && m1.counts(), "حركة الصندوق صُحّحت معها: 900 لحساب النور وداخلة ومحسوبة");
+116:         check(b(db.cashBalances(), "USD") == 1000000 + 90000, "النقد = 10,000 + 900 (لا 1,000 القديمة)");
+117:         healthy(db, "بعد تصحيح المبلغ والمكتب");
+118:         // قلب النوع: استلام صار تسليمًا
+119:         as(db, clerk);
+120:         db.addCashMove(cashIn(A, "USD", 50000, true));
+121:         Model.Tx p2 = db.pendingTx().get(0);
+122:         as(db, acct);
+123:         db.approveEdited(p2.id, txIn(A, Model.TYPE_DEBIT, 50000, "USD"), null, null);
+124:         CashBox.Move m2 = moveOf(db, p2.id);
+125:         check(m2.dir == -1 && CashBox.OUT.equals(m2.kind) && b(db.balances(A), "USD") == 50000, "قلب «علينا» إلى «لنا»: النقد صار خارجًا والمكتب لنا 500");
+126:         check(b(db.cashBalances(), "USD") == 1000000 + 90000 - 50000, "النقد = 10,900 − 500");
+127:         // عملة غير مفعّلة في الصندوق: يُرفض ولا يتغير شيء
+128:         as(db, admin);
+129:         db.saveCurrency("TRY", "ليرة تركية", 2, true);
+130:         db.updateOffice(A, "البلسم", "", "", "", "", "", true, null, null, Arrays.asList("USD", "EUR", "TRY"), new HashMap<>());
+131:         as(db, clerk);
+132:         db.addCashMove(cashIn(A, "USD", 20000, true));
+133:         Model.Tx p3 = db.pendingTx().get(0);
+134:         as(db, acct);
+135:         check(throwsMsg(() -> db.approveEdited(p3.id, txIn(A, Model.TYPE_CREDIT, 20000, "TRY"), null, null), "غير مفعّلة"), "تصحيح إلى عملة ليست في الصندوق يُرفض برسالة تشرح البديل");
+136:         check(db.tx(p3.id).isPending() && "USD".equals(moveOf(db, p3.id).currency), "ولم يُكتب شيء (الحركة معلّقة وحركة الصندوق كما هي)");
+137:         db.approveTx(p3.id);
+138:         // التعديل العادي لحركة نافذة مسجّلة من الصندوق
+139:         long nid = db.editTx(p3.id, txIn(A, Model.TYPE_CREDIT, 25000, "EUR"), null, null, "عملة خاطئة");
+140:         CashBox.Move m3 = moveOf(db, nid);
+141:         check(m3 != null && m3.amount == 25000 && "EUR".equals(m3.currency) && moveOf(db, p3.id) == null, "التعديل ينقل حركة الصندوق إلى الحركة الجديدة بالمبلغ والعملة الجديدين");
+142:         check(b(db.cashBalances(), "EUR") == 100000 + 25000 && b(db.cashBalances(), "USD") == 1000000 + 90000 - 50000, "النقد: EUR +250 وUSD بلا أثر للحركة القديمة");
+143:         check(b(db.balances(A), "EUR") == -25000 && b(db.balances(A), "USD") == 50000, "المكتب: علينا 250 EUR ولنا 500 USD");
+144:         healthy(db, "بعد التعديل");
+145: 
+146:         System.out.println("== AUDIT-028: الجرد قبل اعتماد حركة صندوق معلّقة");
+147:         as(db, clerk);
+148:         db.addCashMove(cashIn(A, "USD", 30000, true));
+149:         Model.Tx p4 = db.pendingTx().get(0);
+150:         Map<String, Long> expected = db.cashExpected(1);
+151:         check(b(expected, "USD") == b(db.cashBalances(), "USD") + 30000, "المتوقع في الصندوق = الرصيد + 300 معلّقة");
+152:         Map<String, Long> counted = new HashMap<>();
+153:         counted.put("USD", b(expected, "USD"));
+154:         CashBox.Count cnt = db.cashCount(1, counted, "جرد", null);
+155:         check(cnt.adjusted == 0 && cnt.lines.get(0).pending == 30000, "المعدود يطابق المتوقع: لا تسوية، والمعلّق محفوظ في سجل الجرد");
+156:         as(db, acct);
+157:         db.approveTx(p4.id);

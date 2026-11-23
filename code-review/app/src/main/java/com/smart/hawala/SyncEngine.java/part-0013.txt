@@ -1,0 +1,150 @@
+1886:         int applied = 0;
+1887:         boolean progress = true;
+1888:         Set<String> blocked = new HashSet<>();
+1889:         Map<String, String> why = new java.util.HashMap<>();
+1890:         while (progress) {
+1891:             progress = false;
+1892:             for (String dev : members.keySet()) {
+1893:                 if (dev.equals(me) || blocked.contains(dev)) continue;
+1894:                 while (true) {
+1895:                     long cur = 0;
+1896:                     String curHash = "";
+1897:                     try (Cursor c = d.rawQuery("SELECT seq,hash FROM sync_cursor WHERE dev=?", new String[]{dev})) {
+1898:                         if (c.moveToFirst()) {
+1899:                             cur = c.getLong(0);
+1900:                             curHash = c.getString(1);
+1901:                         }
+1902:                     }
+1903:                     long next = cur + 1;
+1904:                     if (caps.containsKey(dev) && next > caps.get(dev)) break;   // أُزيل: لا شيء بعد آخر حزمة له
+1905:                     String name = keys.fileName("p-", dev + ":" + next);
+1906:                     byte[] sealed = folder.read(name);
+1907:                     if (sealed == null) {
+1908:                         why.put(dev, "missing");
+1909:                         break;
+1910:                     }
+1911:                     JSONObject p;
+1912:                     try {
+1913:                         p = new JSONObject(new String(keys.openFile("p", name, sealed), StandardCharsets.UTF_8));
+1914:                     } catch (Exception e) {
+1915:                         devError(res, dev, "حزمة تالفة أو معدَّلة من جهاز «" + members.get(dev).optString("name") + "» (رقم " + next + "): لم تُطبَّق. "
+1916:                                 + "قد يكون وصولها لم يكتمل بعد.");
+1917:                         why.put(dev, "bad");
+1918:                         blocked.add(dev);
+1919:                         break;
+1920:                     }
+1921:                     if (!dev.equals(p.optString("dev")) || p.optLong("seq") != next || !keys.vaultId.equals(p.optString("vault"))) {
+1922:                         devError(res, dev, "حزمة في غير مكانها من جهاز «" + members.get(dev).optString("name") + "»: لم تُطبَّق.");
+1923:                         why.put(dev, "bad");
+1924:                         blocked.add(dev);
+1925:                         break;
+1926:                     }
+1927:                     if (!curHash.equals(p.optString("prev"))) {
+1928:                         devError(res, dev, "سلسلة حزم جهاز «" + members.get(dev).optString("name") + "» منقطعة عند الحزمة " + next
+1929:                                 + " (حُذفت حزمة أو عُدّلت): توقفت مزامنة هذا الجهاز للحماية.");
+1930:                         why.put(dev, "chain");
+1931:                         blocked.add(dev);
+1932:                         break;
+1933:                     }
+1934:                     if (p.optInt("schema") > Db.VER) {
+1935:                         devError(res, dev, "جهاز «" + members.get(dev).optString("name") + "» يعمل بإصدار أحدث (" + p.optString("app") + "). حدّث التطبيق هنا لتصل حزمه.");
+1936:                         why.put(dev, "newer");
+1937:                         blocked.add(dev);
+1938:                         break;
+1939:                     }
+1940:                     if (!depsMet(d, p.optJSONObject("deps"), me)) {
+1941:                         why.put(dev, "waiting");
+1942:                         res.waiting++;
+1943:                         break;
+1944:                     }
+1945:                     try {
+1946:                         if (!prepareBlobs(keys, p, dev, res)) {
+1947:                             why.put(dev, "image");
+1948:                             break;
+1949:                         }
+1950:                     } catch (Exception e) {
+1951:                         devError(res, dev, "صورة في حزمة من جهاز «" + members.get(dev).optString("name") + "» لم تُقرأ: " + e.getMessage());
+1952:                         why.put(dev, "bad");
+1953:                         blocked.add(dev);
+1954:                         break;
+1955:                     }
+1956:                     SyncStore.Applied a;
+1957:                     d.beginTransaction();
+1958:                     try {
+1959:                         SyncStore.capture(d, false);
+1960:                         Hlc clock = clock(d);
+1961:                         clock.observe(p.getString("hlc"), Clock.now());
+1962:                         SyncStore.setMeta(d, "hlc", Hlc.format(clock.wall, clock.counter, me));
+1963:                         a = SyncStore.apply(db, d, p.getJSONArray("ops"), p.getString("hlc"), dev, myPrefix);
+1964:                         // 10.4: بصمات الصور التي وصلت (لا تُحسب من جديد عند اللقطة)
+1965:                         JSONArray ops = p.getJSONArray("ops");
+1966:                         for (int i = 0; i < ops.length(); i++) {
+1967:                             JSONObject r = ops.getJSONObject(i).optJSONObject("r");
+1968:                             if ("attachments".equals(ops.getJSONObject(i).optString("t")) && r != null && r.has("_sha") && r.has("_file"))
+1969:                                 d.execSQL("INSERT OR REPLACE INTO sync_blobs(att_id,sha) VALUES(?,?)", new Object[]{r.optLong("id"), r.getString("_sha")});
+1970:                         }
+1971:                         d.execSQL("INSERT OR REPLACE INTO sync_cursor(dev,seq,hash) VALUES(?,?,?)", new Object[]{dev, next, SyncCrypto.hex(SyncCrypto.sha256(sealed))});
+1972:                         SyncStore.capture(d, true);
+1973:                         d.setTransactionSuccessful();
+1974:                     } finally {
+1975:                         d.endTransaction();
+1976:                     }
+1977:                     why.remove(dev);
+1978:                     res.received++;
+1979:                     res.gotFrom.merge(dev, 1, Integer::sum);
+1980:                     res.rows += a.rows;
+1981:                     res.duplicates += a.duplicates;
+1982:                     res.conflicts += a.conflicts;
+1983:                     res.dupTx += a.dupTx;
+1984:                     res.notices += a.notices;
+1985:                     res.newTx.addAll(a.newTx);
+1986:                     applied++;
+1987:                     progress = true;
+1988:                     // تعارض تعديل خسره هذا الجهاز: يلغي حركته بقيد عكسي عادي يصل للجميع
+1989:                     for (long loser : a.loseMine) {
+1990:                         boolean sys = db.isSystem();
+1991:                         db.setSystem(true);
+1992:                         try {
+1993:                             Model.Tx t = db.tx(loser);
+1994:                             if (t != null && Model.STATUS_ACTIVE.equals(t.status)) db.cancelTx(loser, "تعارض مزامنة: عُدّلت الحركة الأصلية من جهاز آخر أولًا");
+1995:                             else if (t != null && Model.STATUS_PENDING.equals(t.status)) db.rejectTx(loser, "تعارض مزامنة");
+1996:                         } catch (Exception e) {
+1997:                             res.errors.add("تعذر إلغاء الحركة المتعارضة " + loser + ": " + e.getMessage());
+1998:                         } finally {
+1999:                             db.setSystem(sys);
+2000:                         }
+2001:                     }
+2002:                 }
+2003:             }
+2004:         }
+2005:         // تشخيص لكل جهاز: كم حزمة أعلنها، وكم وصل منها هنا، ولماذا توقف الباقي
+2006:         JSONArray peers = new JSONArray();
+2007:         Map<String, Long> cur = SyncStore.cursors(d);
+2008:         Map<String, JSONObject> removedNow = removedMap();
+2009:         for (Map.Entry<String, JSONObject> e : members.entrySet()) {
+2010:             if (e.getKey().equals(me) || removedNow.containsKey(e.getKey())) continue;
+2011:             JSONObject x = new JSONObject();
+2012:             long have = cur.containsKey(e.getKey()) ? cur.get(e.getKey()) : 0, announced = e.getValue().optLong("seq");
+2013:             x.put("dev", e.getKey());
+2014:             x.put("announced", announced);
+2015:             x.put("have", have);
+2016:             String w = why.get(e.getKey());
+2017:             x.put("state", have >= announced ? (w == null || "missing".equals(w) ? "ok" : w) : (w == null ? "missing" : w));
+2018:             peers.put(x);
+2019:         }
+2020:         res.peers = peers;
+2021:         return applied;
+2022:     }
+2023: 
+2024:     /** نص حالة جهاز آخر للواجهة (من تشخيص آخر جولة). */
+2025:     public static String peerText(JSONObject p, String provider) {
+2026:         if (p == null) return "";
+2027:         long a = p.optLong("announced"), h = p.optLong("have");
+2028:         String base = "وصل هنا " + h + " من " + a + " حزمة";
+2029:         switch (p.optString("state")) {
+2030:             case "ok": return h >= a ? "✓ كل حزمه وصلت (" + h + ")" : base;
+2031:             case "missing": return base + " — الحزمة " + (h + 1) + " لم تظهر في المجلد على هذا الجهاز بعد"
+2032:                     + (provider.isEmpty() ? "" : " (" + provider + " لم يُنزّلها)");
+2033:             case "waiting": return base + " — تنتظر حزمًا من جهاز آخر أولًا";
+2034:             case "image": return base + " — تنتظر وصول صورة مرفقة إلى هذا الجهاز";
+2035:             case "bad": return base + " — الحزمة التالية لم يكتمل وصولها أو تالفة؛ يُعاد المحاولة";

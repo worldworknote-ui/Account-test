@@ -1,0 +1,152 @@
+356:             r.setPadding(0, a.dp(4), 0, a.dp(4));
+357:             String nm = names.get(e.getKey());
+358:             r.addView(plain(nm == null || nm.isEmpty() ? e.getKey() : nm + " · " + e.getKey(), 14, Color.WHITE, false), new LinearLayout.LayoutParams(0, -2, 1));
+359:             TextView amt = plain(a.mf(Math.abs(v), d), 19, Color.WHITE, true);
+360:             amt.setTextDirection(View.TEXT_DIRECTION_LTR);
+361:             r.addView(amt, new LinearLayout.LayoutParams(-2, -2));
+362:             TextView chip = plain(v > 0 ? "لنا" : v < 0 ? "علينا" : "صفر", 12, v > 0 ? Color.rgb(20, 92, 53) : v < 0 ? Color.rgb(142, 31, 39) : Color.rgb(70, 80, 76), true);
+363:             chip.setPadding(a.dp(10), a.dp(1), a.dp(10), a.dp(2));
+364:             GradientDrawable cg = new GradientDrawable();
+365:             cg.setColor(v > 0 ? Color.rgb(227, 241, 232) : v < 0 ? Color.rgb(248, 227, 228) : Color.rgb(235, 235, 230));
+366:             cg.setCornerRadius(a.dp(50));
+367:             chip.setBackground(cg);
+368:             LinearLayout.LayoutParams chp = new LinearLayout.LayoutParams(-2, -2);
+369:             chp.setMargins(a.dp(8), 0, 0, 0);
+370:             r.addView(chip, chp);
+371:             card.addView(r);
+372:             shown++;
+373:         }
+374:         if (shown == 0) card.addView(plain("لا توجد عملات مفعّلة لهذا المكتب", 14, Color.WHITE, false));
+375:         // 10.18: الأمانات والمبالغ المجمّدة تحت الرصيد
+376:         for (String hl : a.db.holdLines(o.id)) card.addView(plain("🔒 " + a.m(hl), 13, Color.WHITE, false));
+377:         // 12.4: الحركات الخاصة القائمة (المحسوبة داخلة في الرصيد أعلاه، وغير المحسوبة خارجه)
+378:         int spIn = 0, spOut = 0;
+379:         for (Model.Tx t : a.db.specials(o.id)) if (t.isUnposted()) spOut++; else if (t.isActive()) spIn++;
+380:         if (spIn + spOut > 0) card.addView(plain("⏳ حركات خاصة: " + (spIn > 0 ? spIn + " داخلة في الرصيد" : "") + (spIn > 0 && spOut > 0 ? "، " : "")
+381:                 + (spOut > 0 ? spOut + " خارجه" : "") + " — في «أمانات وخاصة»", 13, Color.WHITE, false));
+382:         String ul = usdLine(bal, a.db.decimalsMap(), a.db.usdRates());
+383:         if (ul != null) {
+384:             TextView ut = plain(ul, 15, Color.WHITE, true);
+385:             ut.setPadding(0, a.dp(6), 0, 0);
+386:             card.addView(ut);
+387:         }
+388:         View div = new View(a);
+389:         div.setBackgroundColor(Color.argb(46, 255, 255, 255));
+390:         LinearLayout.LayoutParams dvp = new LinearLayout.LayoutParams(-1, Math.max(1, a.dp(1)));
+391:         dvp.setMargins(0, a.dp(8), 0, a.dp(6));
+392:         card.addView(div, dvp);
+393:         final Model.Recon last = a.db.lastRecon(o.id, false);
+394:         card.addView(plain(last == null ? "لم تُرسل مطابقة رصيد لهذا المكتب بعد" : "آخر مطابقة: " + Model.date(last.createdAt) + " — " + ReconScreen.statusText(last), 12, soft, false));
+395:         a.body.addView(card, a.lp(-1, -2, 4));
+396: 
+397:         if (!o.active) a.notice(R.drawable.ic_warn, "هذا المكتب موقوف: لا يظهر في تسجيل الحركات ولا تُقبل عليه حركات جديدة.", true,
+398:                 a.can(Auth.Perm.OFFICES) ? "تفعيل" : null, a.can(Auth.Perm.OFFICES) ? v -> {
+399:                     a.db.setOfficeActive(o.id, true);
+400:                     a.toast("تم تفعيل المكتب «" + o.name + "»");
+401:                     showOffice(o);
+402:                 } : null);
+403:         List<String> alerts = a.officesScreen.limitAlerts(o);
+404:         if (!alerts.isEmpty()) a.notice(R.drawable.ic_warn, "تجاوز الحد:\n" + Model.join(alerts, "\n"), true, null, null);
+405:         if (last != null && Model.RECON_SENT.equals(last.status) && a.can(Auth.Perm.TX_ADD)) {
+406:             LinearLayout rc = a.row();
+407:             rc.addView(a.smallButton("✓ أكّد المكتب المطابقة", a.green, v -> a.reconScreen.statusDialog(last, Model.RECON_CONFIRMED, refresh)), a.weight(42, 1.2f, 2));
+408:             rc.addView(a.smallButton("✗ غير مطابق", a.red, v -> a.reconScreen.statusDialog(last, Model.RECON_DISPUTED, refresh)), a.weight(42, 1, 2));
+409:             a.body.addView(rc);
+410:         }
+411: 
+412:         // الإجراءات السريعة
+413:         LinearLayout acts = a.row();
+414:         acts.setPadding(0, a.dp(6), 0, a.dp(2));
+415:         if (o.active && a.can(Auth.Perm.TX_ADD)) acts.addView(action(R.drawable.ic_plus, "حركة جديدة", true, v -> a.txScreen.showForOffice(o)), a.weight(-2, 1, 4));
+416:         if (a.can(Auth.Perm.STATEMENT)) acts.addView(action(R.drawable.ic_doc, "كشف", false, v -> a.statementScreen.show(o)), a.weight(-2, 1, 4));
+417:         if (a.can(Auth.Perm.EXPORT)) {
+418:             if (a.can(Auth.Perm.RECON)) acts.addView(action(R.drawable.ic_check2, "مطابقة رصيد", false, v -> a.reconScreen.sendDialog(o, refresh)), a.weight(-2, 1, 4));
+419:             acts.addView(action(R.drawable.ic_share, "مشاركة", false, v -> a.exportUi.statementDialog(o, StatementScreen.Period.all(), null)), a.weight(-2, 1, 4));
+420:         }
+421:         if (o.active && a.can(Auth.Perm.CASH) && a.db.cashConfig().on) {
+422:             acts.addView(action(R.drawable.ic_cash, "الصندوق", false, v -> new android.app.AlertDialog.Builder(a).setTitle("عبر صندوق المكتب — " + o.name)
+423:                     .setItems(new String[]{"تسليم من الصندوق لحسابه (لنا على المكتب)", "استلام إلى الصندوق لحسابه (علينا للمكتب)"},
+424:                             (d, w) -> a.cashScreen.form(w == 0 ? CashBox.OUT : CashBox.IN, o)).show()), a.weight(-2, 1, 4));
+425:         }
+426:         a.body.addView(acts, new LinearLayout.LayoutParams(-1, -2));
+427: 
+428:         // التبويبات الداخلية
+429:         final String[] tabs = {"الحركات", "المطابقات", "أمانات وخاصة", "البيانات"};
+430:         LinearLayout seg = a.row();
+431:         seg.setPadding(a.dp(4), a.dp(4), a.dp(4), a.dp(4));
+432:         int track = a.night ? Ui.mix(a.surface, Color.BLACK, 0.25f) : Color.rgb(236, 231, 220);
+433:         GradientDrawable tg = new GradientDrawable();
+434:         tg.setColor(track);
+435:         tg.setCornerRadius(a.dp(14));
+436:         seg.setBackground(tg);
+437:         final LinearLayout content = new LinearLayout(a);
+438:         content.setOrientation(LinearLayout.VERTICAL);
+439:         final List<TextView> tabViews = new ArrayList<>();
+440:         final Runnable[] render = new Runnable[1];
+441:         for (int i = 0; i < tabs.length; i++) {
+442:             final int k = i;
+443:             TextView t = a.text(tabs[i], 13, a.muted, true);
+444:             t.setGravity(Gravity.CENTER);
+445:             t.setOnClickListener(v -> {
+446:                 innerTab = k;
+447:                 render[0].run();
+448:             });
+449:             tabViews.add(t);
+450:             seg.addView(t, new LinearLayout.LayoutParams(0, a.dp(38), 1));
+451:         }
+452:         LinearLayout.LayoutParams sp = a.lp(-1, -2, 10);
+453:         a.body.addView(seg, sp);
+454:         a.body.addView(content);
+455:         render[0] = () -> {
+456:             for (int i = 0; i < tabViews.size(); i++) {
+457:                 TextView t = tabViews.get(i);
+458:                 boolean on = i == innerTab;
+459:                 t.setTextColor(on ? a.primaryInk : a.muted);
+460:                 if (on) {
+461:                     GradientDrawable sg = new GradientDrawable();
+462:                     sg.setColor(a.surface);
+463:                     sg.setCornerRadius(a.dp(11));
+464:                     t.setBackground(sg);
+465:                 } else t.setBackground(null);
+466:             }
+467:             content.removeAllViews();
+468:             if (innerTab == 0) txTab(o, content, refresh);
+469:             else if (innerTab == 1) reconTab(o, content, refresh);
+470:             else if (innerTab == 2) holdsTab(o, content, refresh);
+471:             else infoTab(o, content);
+472:         };
+473:         render[0].run();
+474:     }
+475: 
+476:     private TextView plain(String s, int size, int color, boolean bold) {
+477:         TextView t = new TextView(a);
+478:         t.setText(s);
+479:         t.setTextSize(size);
+480:         t.setTextColor(color);
+481:         t.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+482:         if (bold) Ui.bold(t);
+483:         return t;
+484:     }
+485: 
+486:     private View action(int icon, String label, boolean main, View.OnClickListener l) {
+487:         LinearLayout b = new LinearLayout(a);
+488:         b.setOrientation(LinearLayout.VERTICAL);
+489:         b.setGravity(Gravity.CENTER);
+490:         b.setPadding(a.dp(4), a.dp(12), a.dp(4), a.dp(10));
+491:         int fill = main ? a.accent : a.surface;
+492:         int fg = main ? Color.rgb(42, 28, 0) : a.ink;
+493:         b.setBackground(a.ripple(a.round(fill, main ? fill : a.line, 16), 16));
+494:         b.addView(a.icon(icon, fg, 22), new LinearLayout.LayoutParams(a.dp(22), a.dp(22)));
+495:         TextView t = plain(label, 12, fg, true);
+496:         t.setGravity(Gravity.CENTER);
+497:         t.setPadding(0, a.dp(5), 0, 0);
+498:         b.addView(t, new LinearLayout.LayoutParams(-2, -2));
+499:         b.setOnClickListener(l);
+500:         return b;
+501:     }
+502: 
+503:     /** 10.18: العملة المختارة لتصفية حركات المكتب (null = الكل) — معها يظهر «الرصيد بعدها» تحت كل حركة. */
+504:     private String txCur;
+505:     private long txCurOffice;
+506: 
+507:     private void txTab(final Model.Office o, LinearLayout content, final Runnable refresh) {

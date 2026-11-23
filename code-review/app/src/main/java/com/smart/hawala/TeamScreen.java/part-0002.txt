@@ -1,0 +1,38 @@
+151:             b.append("\nويتحقق من كل مكتب المحاسبون الآخرون الذين لهم صلاحية «التحقق من الحركات».\nتنبيه: من يُخصَّص له مكاتب يرى مكاتبه فقط.");
+152:             new AlertDialog.Builder(a).setTitle("توزيع المكاتب غير الموزّعة").setMessage(b.toString()).setPositiveButton("توزيع", (d, w) -> {
+153:                 try {
+154:                     for (Db.TeamPlan p : fresh) {
+155:                         a.db.applyTeamPlan(p);
+156:                         done[0]++;
+157:                     }
+158:                 } catch (Exception e) {
+159:                     a.error(e);
+160:                 }
+161:                 askOld(old, 0, done);
+162:             }).setNeutralButton("تخطّي غير الموزّعة", (d, w) -> askOld(old, 0, done)).setNegativeButton("إلغاء", null).show();
+163:         } catch (Exception e) {
+164:             a.error(e);
+165:         }
+166:     }
+167: 
+168:     private void askOld(final List<Db.TeamPlan> old, final int i, final int[] done) {
+169:         if (i >= old.size()) {
+170:             a.toast(done[0] == 0 ? "لم يتغير شيء" : "وُزّع " + done[0] + " مكتب");
+171:             show();
+172:             return;
+173:         }
+174:         final Db.TeamPlan p = old.get(i);
+175:         String msg = "الحالي:\n  يسجّل: " + names(p.curOwners) + "\n  يتحقق: " + (p.curCheckers.isEmpty() ? "لا أحد" : names(p.curCheckers))
+176:                 + "\n\nالمقترح:\n  يسجّل: " + names(p.owners) + " (كما هو)\n  يتحقق: " + (p.checkers.isEmpty() ? "لا أحد" : names(p.checkers));
+177:         new AlertDialog.Builder(a).setTitle(p.office.name + " (" + (i + 1) + " من " + old.size() + ")").setMessage(msg).setCancelable(false)
+178:                 .setPositiveButton("اعتماد المقترح", (d, w) -> {
+179:                     try {
+180:                         a.db.applyTeamPlan(p);
+181:                         done[0]++;
+182:                     } catch (Exception e) {
+183:                         a.error(e);
+184:                     }
+185:                     askOld(old, i + 1, done);
+186:                 }).setNeutralButton("إبقاء كما هو", (d, w) -> askOld(old, i + 1, done)).setNegativeButton("إيقاف", (d, w) -> askOld(old, old.size(), done)).show();
+187:     }
+188: }

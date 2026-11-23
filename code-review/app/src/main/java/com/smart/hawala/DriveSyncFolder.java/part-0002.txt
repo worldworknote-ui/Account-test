@@ -1,0 +1,160 @@
+191:         final String old = ids.containsKey(name) ? ids.get(name)[0] : null;
+192:         // استبدال ملف = ملف جديد بالاسم نفسه ثم حذف القديم (القارئ يأخذ الأحدث إن رأى الاثنين لحظة)
+193:         authed(tok -> {
+194:             JSONObject r = data.length > SIMPLE_MAX ? resumable(tok, null, name, data) : simple(tok, null, name, data);
+195:             ids.put(name, new String[]{r.optString("id"), r.optString("modifiedTime", "9999"), "" + data.length});
+196:             return null;
+197:         });
+198:         if (old != null) {
+199:             try {
+200:                 authed(tok -> {
+201:                     HttpURLConnection c = open(api + "/drive/v3/files/" + URLEncoder.encode(old, "UTF-8"), "DELETE", tok);
+202:                     try {
+203:                         int code = c.getResponseCode();
+204:                 learnClock(c);
+205:                         if (code == 401) throw new Unauthorized();
+206:                         return null;
+207:                     } finally {
+208:                         c.disconnect();
+209:                     }
+210:                 });
+211:             } catch (IOException ignored) {
+212:                 // يبقى القديم؛ الأحدث يفوز عند القراءة
+213:             }
+214:         }
+215:     }
+216: 
+217:     @Override public boolean canDelete() { return true; }
+218: 
+219:     @Override public void delete(String name) throws IOException {
+220:         if (!listed) refresh();
+221:         String[] x = ids.get(name);
+222:         if (x == null) return;
+223:         final String fid = x[0];
+224:         authed(tok -> {
+225:             HttpURLConnection c = open(api + "/drive/v3/files/" + URLEncoder.encode(fid, "UTF-8"), "DELETE", tok);
+226:             try {
+227:                 int code = c.getResponseCode();
+228:                 learnClock(c);
+229:                 if (code == 401) throw new Unauthorized();
+230:                 if (code != 204 && code != 200 && code != 404) throw fail(c, code);
+231:                 return null;
+232:             } finally {
+233:                 c.disconnect();
+234:             }
+235:         });
+236:         ids.remove(name);
+237:     }
+238: 
+239:     @Override public Map<String, long[]> stat(String prefix) throws IOException {
+240:         refresh();
+241:         Map<String, long[]> out = new HashMap<>();
+242:         for (Map.Entry<String, String[]> e : ids.entrySet()) {
+243:             if (!e.getKey().startsWith(prefix)) continue;
+244:             long size = 0, at = 0;
+245:             try {
+246:                 size = Long.parseLong(e.getValue().length > 2 ? e.getValue()[2] : "0");
+247:             } catch (Exception ignored) {
+248:                 // بلا حجم
+249:             }
+250:             at = rfc3339(e.getValue()[1]);
+251:             out.put(e.getKey(), new long[]{size, at});
+252:         }
+253:         return out;
+254:     }
+255: 
+256:     /** وقت Drive (2026-10-23T10:15:30.123Z) بالميلي ثانية، أو 0. */
+257:     static long rfc3339(String s) {
+258:         try {
+259:             java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US);
+260:             f.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+261:             return f.parse(s.length() >= 19 ? s.substring(0, 19) : s).getTime();
+262:         } catch (Exception e) {
+263:             return 0;
+264:         }
+265:     }
+266: 
+267:     private JSONObject result(HttpURLConnection c) throws IOException {
+268:         try {
+269:             int code = c.getResponseCode();
+270:                 learnClock(c);
+271:             if (code != 200 && code != 201) throw fail(c, code);
+272:             return new JSONObject(new String(HttpSyncFolder.readAll(c.getInputStream()), StandardCharsets.UTF_8));
+273:         } catch (org.json.JSONException e) {
+274:             return new JSONObject();
+275:         } finally {
+276:             c.disconnect();
+277:         }
+278:     }
+279: 
+280:     private static JSONObject meta(String name, boolean create) throws IOException {
+281:         JSONObject meta = new JSONObject();
+282:         try {
+283:             if (create) {
+284:                 meta.put("name", name);
+285:                 meta.put("parents", new JSONArray().put("appDataFolder"));
+286:             }
+287:         } catch (org.json.JSONException e) {
+288:             throw new IOException(e);
+289:         }
+290:         return meta;
+291:     }
+292: 
+293:     /** طلب PATCH عبر POST (HttpURLConnection في جافا لا يدعم PATCH؛ واجهات Google تقبل الترويسة البديلة). */
+294:     private HttpURLConnection openWrite(String url, String tok, boolean update) throws IOException {
+295:         HttpURLConnection c = open(url, "POST", tok);
+296:         if (update) c.setRequestProperty("X-HTTP-Method-Override", "PATCH");
+297:         c.setDoOutput(true);
+298:         return c;
+299:     }
+300: 
+301:     private JSONObject simple(String tok, String fid, String name, byte[] data) throws IOException {
+302:         String boundary = "sa" + Long.toHexString(System.nanoTime());
+303:         ByteArrayOutputStream b = new ByteArrayOutputStream(data.length + 512);
+304:         b.write(("--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" + meta(name, fid == null) + "\r\n--" + boundary
+305:                 + "\r\nContent-Type: application/octet-stream\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+306:         b.write(data);
+307:         b.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+308:         byte[] body = b.toByteArray();
+309:         String url = api + "/upload/drive/v3/files" + (fid == null ? "" : "/" + URLEncoder.encode(fid, "UTF-8")) + "?uploadType=multipart&fields=id,name,modifiedTime";
+310:         HttpURLConnection c = openWrite(url, tok, false);
+311:         c.setRequestProperty("Content-Type", "multipart/related; boundary=" + boundary);
+312:         c.setFixedLengthStreamingMode(body.length);
+313:         try (OutputStream o = c.getOutputStream()) {
+314:             o.write(body);
+315:         }
+316:         return result(c);
+317:     }
+318: 
+319:     private JSONObject resumable(String tok, String fid, String name, byte[] data) throws IOException {
+320:         String url = api + "/upload/drive/v3/files" + (fid == null ? "" : "/" + URLEncoder.encode(fid, "UTF-8")) + "?uploadType=resumable&fields=id,name,modifiedTime";
+321:         HttpURLConnection c = openWrite(url, tok, false);
+322:         byte[] m = meta(name, fid == null).toString().getBytes(StandardCharsets.UTF_8);
+323:         c.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+324:         c.setRequestProperty("X-Upload-Content-Type", "application/octet-stream");
+325:         c.setRequestProperty("X-Upload-Content-Length", "" + data.length);
+326:         c.setFixedLengthStreamingMode(m.length);
+327:         try (OutputStream o = c.getOutputStream()) {
+328:             o.write(m);
+329:         }
+330:         String session;
+331:         try {
+332:             int code = c.getResponseCode();
+333:                 learnClock(c);
+334:             if (code != 200) throw fail(c, code);
+335:             session = c.getHeaderField("Location");
+336:             HttpSyncFolder.readAll(c.getInputStream());
+337:         } finally {
+338:             c.disconnect();
+339:         }
+340:         if (session == null) throw new IOException("لم يبدأ الرفع إلى Google Drive");
+341:         HttpURLConnection u = open(session, "PUT", tok);
+342:         u.setDoOutput(true);
+343:         u.setRequestProperty("Content-Type", "application/octet-stream");
+344:         u.setFixedLengthStreamingMode(data.length);
+345:         try (OutputStream o = u.getOutputStream()) {
+346:             o.write(data);
+347:         }
+348:         return result(u);
+349:     }
+350: }

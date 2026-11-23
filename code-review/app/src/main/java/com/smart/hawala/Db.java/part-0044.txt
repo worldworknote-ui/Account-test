@@ -1,0 +1,138 @@
+6636:         Set<Long> off = new HashSet<>();
+6637:         for (String x : setting("notif_idle_off", "").split(",")) try {
+6638:             off.add(Long.parseLong(x.trim()));
+6639:         } catch (NumberFormatException ignored) {
+6640:             // تجاهل
+6641:         }
+6642:         Map<Long, long[]> use = officeUsage();
+6643:         List<Model.Office> out = new ArrayList<>();
+6644:         for (Model.Office o : offices()) {
+6645:             if (!o.active || off.contains(o.id)) continue;
+6646:             long[] u = use.get(o.id);
+6647:             if (u == null || u[2] <= 0) continue;
+6648:             if (now - u[2] > 86400000L && now - u[2] < 30L * 86400000L) out.add(o);
+6649:         }
+6650:         return out;
+6651:     }
+6652: 
+6653:     /** المكاتب النشطة ذات الرصيد غير الصفري التي لم تُرسل لها مطابقة منذ days يومًا. */
+6654:     public List<Model.Office> reconDue(long now, int days) {
+6655:         Set<Long> off = new HashSet<>();
+6656:         for (String x : setting("notif_recon_off", "").split(",")) try {
+6657:             off.add(Long.parseLong(x.trim()));
+6658:         } catch (NumberFormatException ignored) {
+6659:             // تجاهل
+6660:         }
+6661:         Map<Long, Model.Recon> last = lastReconsByOffice();
+6662:         Map<Long, Map<String, Long>> bal = officeBalances();
+6663:         List<Model.Office> out = new ArrayList<>();
+6664:         for (Model.Office o : offices()) {
+6665:             if (!o.active || off.contains(o.id)) continue;
+6666:             Map<String, Long> b = bal.get(o.id);
+6667:             boolean nonZero = false;
+6668:             if (b != null) for (long v : b.values()) if (v != 0) nonZero = true;
+6669:             if (!nonZero) continue;
+6670:             Model.Recon r = last.get(o.id);
+6671:             long since = r == null ? 0 : r.createdAt;
+6672:             if (now - since > days * 86400000L) out.add(o);
+6673:         }
+6674:         return out;
+6675:     }
+6676: 
+6677:     /** تشغيل/إيقاف تنبيه نوع معيّن لمكتب واحد (key: notif_idle_off أو notif_recon_off). */
+6678:     public void setOfficeNotif(String key, long officeId, boolean on) {
+6679:         List<String> l = new ArrayList<>();
+6680:         for (String x : setting(key, "").split(",")) if (!x.trim().isEmpty() && !x.trim().equals("" + officeId)) l.add(x.trim());
+6681:         if (!on) l.add("" + officeId);
+6682:         setSettingQuiet(key, Model.join(l, ","));
+6683:     }
+6684: 
+6685:     public boolean officeNotif(String key, long officeId) {
+6686:         for (String x : setting(key, "").split(",")) if (x.trim().equals("" + officeId)) return false;
+6687:         return true;
+6688:     }
+6689: 
+6690:     // ===================================================================================
+6691:     // الاستعادة
+6692:     // ===================================================================================
+6693: 
+6694:     public void importBackup(BackupFormat.Parsed p) throws Exception { importBackup(p, null); }
+6695: 
+6696:     /**
+6697:      * 10.13: عند الاستعادة: true = تبقى تفضيلات المظهر الحالية لكل المستخدمين (الألوان، الوضع، الخط، الشريط، الرئيسية…)
+6698:      * وتُتجاهل تفضيلات النسخة؛ false (الافتراضي) = تُستعاد مع النسخة. البيانات المالية تُستعاد كاملة في الحالتين.
+6699:      */
+6700:     public boolean restoreKeepLook;
+6701: 
+6702:     /**
+6703:      * keep: المكاتب التي تُستعاد من النسخة (null = كلها). 9.0: النسخة المجانية تختار حتى 9 مكاتب من نسخة فيها أكثر:
+6704:      * تُستعاد النسخة كاملة داخل المعاملة ثم يُحذف ما لم يُختر بكل ما يخصه، فتبقى القيود متوازنة والأرصدة مطابقة للنسخة.
+6705:      */
+6706:     public void importBackup(BackupFormat.Parsed p, Set<Long> keep) throws Exception {
+6707:         require(Auth.Perm.RESTORE);
+6708:         // 10.16: نسخة من إصدار أحدث لا تُستعاد بتطبيق أقدم (كانت أعمدتها الجديدة تُتجاوز بصمت فتضيع بياناتها)
+6709:         if (p.schema() > VER) throw new IllegalStateException("هذه النسخة أُخذت بإصدار أحدث من هذا التطبيق (مخطط " + p.schema() + "، وهذا الإصدار يعرف حتى "
+6710:                 + VER + "). حدّث التطبيق أولًا ثم استعدها؛ لم يُغيَّر شيء.");
+6711:         SQLiteDatabase d = getWritableDatabase();
+6712:         File dir = evidenceDir();
+6713:         if (!dir.exists() && !dir.mkdirs()) throw new IOException("تعذر إنشاء مجلد الصور");
+6714:         Map<String, Set<String>> cols = new HashMap<>();
+6715:         for (String t : BackupFormat.TABLES) cols.put(t, columnsOf(d, t));
+6716:         Map<String, String> keepDevice = new HashMap<>();
+6717:         for (String k : DEVICE_SETTINGS) {
+6718:             String v = rawSetting(d, k);
+6719:             if (v != null) keepDevice.put(k, v);
+6720:         }
+6721:         final boolean keepLook = restoreKeepLook;
+6722:         if (keepLook) try (Cursor c = d.rawQuery("SELECT k,v FROM settings", null)) {
+6723:             while (c.moveToNext()) if (personal(baseKey(c.getString(0))) && c.getString(1) != null) keepDevice.put(c.getString(0), c.getString(1));
+6724:         }
+6725:         boolean hasUsersTable = p.tables.containsKey("users");
+6726:         // نسخة بلا مستخدمين (ملف نقل): مستخدمو الهاتف يبقون ومعهم سرّ رموزهم
+6727:         if (!hasUsersTable) for (String k : ENCRYPTED_SETTINGS) {
+6728:             String v = rawSetting(d, k);
+6729:             if (v != null) keepDevice.put(k, v);
+6730:         }
+6731:         List<File[]> moved = new ArrayList<>();
+6732:         d.beginTransaction();
+6733:         try {
+6734:             // 8.0: الإقفال المحاسبي لا يُفك بالاستعادة (يبقى الأحدث بين الحالي والمستعاد)، وسجل العمليات الحالي يُؤرشف لا يُحذف
+6735:             long lockNow = lockBefore(d);
+6736:             // 10.0: الاستعادة تستبدل البيانات: يخرج هذا الجهاز من المزامنة (ينضم من جديد من «المزامنة»)
+6737:             if (!restoringForSync) {
+6738:                 SyncStore.leave(d, "استُعيدت نسخة احتياطية على هذا الجهاز");
+6739:                 syncPrefix = 0;
+6740:             }
+6741:             d.execSQL("INSERT INTO audit_archive(orig_id,action,entity,entity_id,user_name,reason,created_at,prev_hash,row_hash,archived_at) "
+6742:                     + "SELECT id,action,entity,entity_id,user_name,reason,created_at,prev_hash,row_hash," + Clock.now() + " FROM audit_logs");
+6743:             String[] del = {"notif_log", "office_holds", "admin_msg_state", "admin_msgs", "audit_feed", "office_work", "tx_checks", "wa_marks", "user_offices", "client_moves", "cash_clients", "cash_counts", "cash_moves", "cash_boxes", "reconciliation_lines", "reconciliations", "journal_lines", "journal_entries", "attachments", "opening_balances", "tx", "office_currencies", "offices",
+6744:                     "exchange_rates", "audit_logs", "settings", "currencies"};
+6745:             for (String t : del) d.delete(t, null, null);
+6746:             if (hasUsersTable) d.delete("users", null, null);
+6747:             for (String table : BackupFormat.TABLES) {
+6748:                 if (table.equals("users") && !hasUsersTable) continue;
+6749:                 Set<String> allowed = cols.get(table);
+6750:                 List<String> sensitive = SENSITIVE.get(table);
+6751:                 for (JSONObject row : p.table(table)) {
+6752:                     if (table.equals("settings") && DEVICE_SETTINGS.contains(row.optString("k"))) continue;
+6753:                     if (keepLook && table.equals("settings") && personal(baseKey(row.optString("k")))) continue;
+6754:                     if (table.equals("settings") && ENCRYPTED_SETTINGS.contains(row.optString("k"))) {
+6755:                         // سرّ رموز المستخدمين يتبع جدول المستخدمين: بلا مستخدمين في النسخة يبقى سرّ هذا الهاتف
+6756:                         if (hasUsersTable && !row.isNull("v")) d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES(?,?)", new Object[]{row.optString("k"), Crypto.enc(row.optString("v"))});
+6757:                         continue;
+6758:                     }
+6759:                     ContentValues v = new ContentValues();
+6760:                     Iterator<String> it = row.keys();
+6761:                     while (it.hasNext()) {
+6762:                         String k = it.next();
+6763:                         if (!allowed.contains(k.toLowerCase(Locale.US))) continue;
+6764:                         Object val = row.opt(k);
+6765:                         if (val == null || val == JSONObject.NULL) v.putNull(k);
+6766:                         else if (val instanceof Boolean) v.put(k, ((Boolean) val) ? 1 : 0);
+6767:                         else if (val instanceof Double || val instanceof Float || val instanceof BigDecimal) {
+6768:                             double dv = ((Number) val).doubleValue();
+6769:                             if (dv == Math.rint(dv) && Math.abs(dv) < 9.0E15) v.put(k, (long) dv);
+6770:                             else v.put(k, dv);
+6771:                         } else if (val instanceof Number) v.put(k, ((Number) val).longValue());
+6772:                         else {
+6773:                             String sv = String.valueOf(val);

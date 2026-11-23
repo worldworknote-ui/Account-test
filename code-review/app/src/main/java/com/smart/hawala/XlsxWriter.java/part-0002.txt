@@ -1,0 +1,168 @@
+176:         put(zip, "xl/_rels/workbook.xml.rels", rels.toString());
+177:         put(zip, "xl/styles.xml", styles());
+178:         zip.finish();
+179:         zip.flush();
+180:     }
+181: 
+182:     private static String sheetName(String raw, Set<String> used, int idx) {
+183:         String n = raw.replaceAll("[\\[\\]:*?/\\\\]", " ").trim();
+184:         if (n.length() > 28) n = n.substring(0, 28);
+185:         if (n.isEmpty()) n = "ورقة " + idx;
+186:         String base = n;
+187:         int k = 2;
+188:         while (used.contains(n.toLowerCase())) n = base + " " + (k++);
+189:         used.add(n.toLowerCase());
+190:         return n;
+191:     }
+192: 
+193:     private String sheet(Report r, Report.Section s, boolean firstSheet, TimeZone tz) {
+194:         int ncols = Math.max(2, s.cols.size());
+195:         List<String> rows = new ArrayList<>();
+196:         List<String> merges = new ArrayList<>();
+197:         double[] width = new double[ncols];
+198:         for (int i = 0; i < ncols; i++) width[i] = 10;
+199:         int sTitle = style(F_TITLE, FILL_NONE, 0, null, "right", false);
+200:         int sSub = style(F_SUBTLE, FILL_NONE, 0, null, "right", false);
+201:         int sHead = s.accent != 0 ? style(F_HEADER, fillOf(s.accent), 1, null, "center", true) : style(F_HEADER, FILL_HEADER, 1, null, "center", true);
+202:         int sLabel = style(F_BOLD, FILL_LABEL, 1, null, "right", false);
+203:         int rn = 0;
+204: 
+205:         rn++;
+206:         rows.add(rowXml(rn, cellStr(0, rn, firstSheet ? r.title : r.title + " — " + s.heading, sTitle)));
+207:         merges.add(ref(0, rn) + ":" + ref(ncols - 1, rn));
+208:         if (!r.watermark.isEmpty()) {
+209:             rn++;
+210:             rows.add(rowXml(rn, cellStr(0, rn, r.watermark, style(F_BOLD, FILL_NONE, 0, null, "right", false))));
+211:             merges.add(ref(0, rn) + ":" + ref(ncols - 1, rn));
+212:         }
+213:         if (firstSheet) {
+214:             for (String h : r.headerLines) {
+215:                 rn++;
+216:                 rows.add(rowXml(rn, cellStr(0, rn, h, sSub)));
+217:                 merges.add(ref(0, rn) + ":" + ref(ncols - 1, rn));
+218:             }
+219:         }
+220:         if (firstSheet && !s.heading.isEmpty()) {
+221:             rn++;
+222:             rows.add(rowXml(rn, cellStr(0, rn, s.heading, style(F_BOLD, FILL_NONE, 0, null, "right", false))));
+223:             merges.add(ref(0, rn) + ":" + ref(ncols - 1, rn));
+224:         }
+225:         for (Report.Kv kv : s.summary) {
+226:             rn++;
+227:             String v = valueCell(1, rn, kv.value, kv.emphasis ? F_BOLD : F_NORMAL, kv.emphasis ? FILL_TOTAL : FILL_NONE, 1, tz, width);
+228:             rows.add(rowXml(rn, cellStr(0, rn, kv.label, sLabel) + v));
+229:             width[0] = Math.max(width[0], len(kv.label));
+230:         }
+231:         if (!s.note.isEmpty()) {
+232:             rn++;
+233:             rows.add(rowXml(rn, cellStr(0, rn, s.note, sSub)));
+234:             merges.add(ref(0, rn) + ":" + ref(ncols - 1, rn));
+235:         }
+236:         int freeze = 0;
+237:         if (!s.cols.isEmpty()) {
+238:             rn++;
+239:             StringBuilder hr = new StringBuilder();
+240:             for (int c = 0; c < s.cols.size(); c++) {
+241:                 hr.append(cellStr(c, rn, s.cols.get(c).title, sHead));
+242:                 width[c] = Math.max(width[c], len(s.cols.get(c).title) + 2);
+243:             }
+244:             rows.add(rowXml(rn, hr.toString()));
+245:             freeze = rn;
+246:             for (Report.Row row : s.rows) {
+247:                 rn++;
+248:                 int font = row.style == Report.TOTAL || row.style == Report.BOLD ? F_BOLD : (row.style == Report.MUTED ? F_SUBTLE : F_NORMAL);
+249:                 int fill = row.style == Report.SHADED ? FILL_SHADE : (row.style == Report.TOTAL ? FILL_TOTAL : FILL_NONE);
+250:                 int tint = row.tint != 0 ? row.tint : (row.style == Report.TOTAL ? s.accent : 0);
+251:                 int numFont = font;
+252:                 if (tint != 0 && row.style != Report.MUTED) {
+253:                     // صف بلون عملته: خلفية خفيفة وأرقام بلون العملة
+254:                     fill = fillOf(blend(tint, row.style == Report.TOTAL ? 0.22f : row.style == Report.SHADED ? 0.15f : 0.08f));
+255:                     numFont = fontOf(darker(tint), false);
+256:                 }
+257:                 StringBuilder cells = new StringBuilder();
+258:                 for (int c = 0; c < s.cols.size() && c < row.cells.length; c++) {
+259:                     Object v = row.cells[c];
+260:                     if (v == null || (v instanceof String && ((String) v).isEmpty())) {
+261:                         if (fill != FILL_NONE) cells.append("<c r=\"").append(ref(c, rn)).append("\" s=\"").append(style(font, fill, 1, null, null, false)).append("\"/>");
+262:                         continue;
+263:                     }
+264:                     boolean num = v instanceof Report.Money || v instanceof Report.Bal;
+265:                     cells.append(valueCell(c, rn, v, num ? numFont : font, fill, 1, tz, width));
+266:                 }
+267:                 rows.add(rowXml(rn, cells.toString()));
+268:             }
+269:         }
+270:         StringBuilder x = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+271:                 + "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
+272:                 + "<sheetPr><pageSetUpPr fitToPage=\"1\"/></sheetPr>");
+273:         x.append("<sheetViews><sheetView rightToLeft=\"1\" workbookViewId=\"0\"");
+274:         if (firstSheet) x.append(" tabSelected=\"1\"");
+275:         x.append(">");
+276:         if (freeze > 0) {
+277:             x.append("<pane ySplit=\"").append(freeze).append("\" topLeftCell=\"A").append(freeze + 1).append("\" activePane=\"bottomLeft\" state=\"frozen\"/>");
+278:         }
+279:         x.append("</sheetView></sheetViews><sheetFormatPr defaultRowHeight=\"15\"/><cols>");
+280:         for (int c = 0; c < ncols; c++) {
+281:             double w = Math.min(60, Math.max(8, width[c] * 1.15 + 2));
+282:             x.append("<col min=\"").append(c + 1).append("\" max=\"").append(c + 1).append("\" width=\"").append(String.format(java.util.Locale.US, "%.1f", w)).append("\" customWidth=\"1\"/>");
+283:         }
+284:         x.append("</cols><sheetData>");
+285:         for (String row : rows) x.append(row);
+286:         x.append("</sheetData>");
+287:         if (!merges.isEmpty()) {
+288:             x.append("<mergeCells count=\"").append(merges.size()).append("\">");
+289:             for (String m : merges) x.append("<mergeCell ref=\"").append(m).append("\"/>");
+290:             x.append("</mergeCells>");
+291:         }
+292:         x.append("<pageMargins left=\"0.4\" right=\"0.4\" top=\"0.5\" bottom=\"0.5\" header=\"0.3\" footer=\"0.3\"/>");
+293:         x.append("<pageSetup paperSize=\"9\" orientation=\"").append(ncols > 6 ? "landscape" : "portrait").append("\" fitToWidth=\"1\" fitToHeight=\"0\"/>");
+294:         if (!r.watermark.isEmpty()) x.append("<headerFooter><oddFooter>&amp;C").append(esc(r.watermark)).append("</oddFooter></headerFooter>");
+295:         x.append("</worksheet>");
+296:         return x.toString();
+297:     }
+298: 
+299:     private String valueCell(int c, int rn, Object v, int font, int fill, int border, TimeZone tz, double[] width) {
+300:         String r = ref(c, rn);
+301:         if (v instanceof Report.Money) {
+302:             Report.Money m = (Report.Money) v;
+303:             track(width, c, Model.fmt(m.v, m.dec));
+304:             return "<c r=\"" + r + "\" s=\"" + style(font, fill, border, moneyFmt(m.dec), "center", false) + "\"><v>" + BigDecimal.valueOf(m.v, m.dec).toPlainString() + "</v></c>";
+305:         }
+306:         if (v instanceof Report.Bal) {
+307:             Report.Bal b = (Report.Bal) v;
+308:             track(width, c, Model.bal(b.v, b.dec));
+309:             return "<c r=\"" + r + "\" s=\"" + style(font, fill, border, balFmt(b.dec), "center", false) + "\"><v>" + BigDecimal.valueOf(b.v, b.dec).toPlainString() + "</v></c>";
+310:         }
+311:         if (v instanceof Report.DateV) {
+312:             long t = ((Report.DateV) v).t;
+313:             double serial = (t + tz.getOffset(t)) / 86400000.0 + 25569.0;
+314:             track(width, c, "0000/00/00 00:00");
+315:             return "<c r=\"" + r + "\" s=\"" + style(font, fill, border, DATE_FMT, "center", false) + "\"><v>" + String.format(java.util.Locale.US, "%.8f", serial) + "</v></c>";
+316:         }
+317:         if (v instanceof Long || v instanceof Integer) {
+318:             track(width, c, String.valueOf(v));
+319:             return "<c r=\"" + r + "\" s=\"" + style(font, fill, border, null, "center", false) + "\"><v>" + v + "</v></c>";
+320:         }
+321:         String s = String.valueOf(v);
+322:         for (String line : s.split("\n")) track(width, c, line);
+323:         return cellStr(c, rn, s, style(font, fill, border, null, "right", s.contains("\n")));
+324:     }
+325: 
+326:     private static void track(double[] width, int c, String text) {
+327:         if (c < width.length) width[c] = Math.max(width[c], len(text));
+328:     }
+329: 
+330:     private static int len(String s) { return s == null ? 0 : s.length(); }
+331: 
+332:     private static String cellStr(int c, int rn, String text, int style) {
+333:         return "<c r=\"" + ref(c, rn) + "\" t=\"inlineStr\" s=\"" + style + "\"><is><t xml:space=\"preserve\">" + esc(text) + "</t></is></c>";
+334:     }
+335: 
+336:     private static String rowXml(int rn, String cells) {
+337:         return "<row r=\"" + rn + "\">" + cells + "</row>";
+338:     }
+339: 
+340:     static String ref(int col, int row) {
+341:         StringBuilder s = new StringBuilder();
+342:         int c = col + 1;
+343:         while (c > 0) {

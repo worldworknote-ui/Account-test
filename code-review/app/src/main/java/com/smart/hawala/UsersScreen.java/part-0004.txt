@@ -1,0 +1,161 @@
+504:         int offices = roles.isEmpty() ? 0 : a.db.officeRoles(u.id).size();
+505:         String title = Auth.isAdmin(u) ? "المكاتب" : "الصلاحيات والمكاتب";
+506:         head.addView(a.text(title + (offices > 0 ? " (" + offices + " مكتب)" : ""), 14, a.primaryInk, true), new LinearLayout.LayoutParams(0, -2, 1));
+507:         head.setContentDescription("تفاصيل " + u.name);
+508:         final LinearLayout body = new LinearLayout(a);
+509:         body.setOrientation(LinearLayout.VERTICAL);
+510:         if (!Auth.isAdmin(u) || roles.isEmpty()) body.addView(a.text(perms, 13, a.dark, false));
+511:         if (!roles.isEmpty()) body.addView(a.text(roles, 13, a.goldInk, false));
+512:         body.setVisibility(android.view.View.GONE);
+513:         head.setOnClickListener(v -> {
+514:             boolean o = body.getVisibility() != android.view.View.VISIBLE;
+515:             body.setVisibility(o ? android.view.View.VISIBLE : android.view.View.GONE);
+516:             arrow.setText(o ? "▾" : "◂");
+517:         });
+518:         wrap.addView(head);
+519:         wrap.addView(body);
+520:         if (Auth.isAdmin(u)) wrap.addView(a.text(perms, 13, a.dark, false), 0);
+521:         return wrap;
+522:     }
+523: 
+524:     private void createRecovery() {
+525:         String code = a.db.newRecoveryCode();
+526:         showRecoveryCode(code, "رمز استرداد المدير الجديد (أي رمز سابق توقف):", () -> {
+527:             if (!a.onHome) showManager();
+528:             else a.showHome();
+529:         });
+530:     }
+531: 
+532:     /** يُستدعى من بطاقة التنبيه في الصفحة الرئيسية. */
+533:     void createRecoveryFromHome() { confirmAdmin("رمز استرداد المدير", this::createRecovery); }
+534: 
+535:     // ===================================================================================
+536:     // 11.6: قوالب الصلاحيات المحفوظة (الاسم ← الصلاحيات)، في الإعدادات فتنتقل بالمزامنة
+537:     // ===================================================================================
+538: 
+539:     static final String PRESETS = "perm_presets";
+540: 
+541:     java.util.Map<String, String> presets() {
+542:         java.util.Map<String, String> m = new java.util.LinkedHashMap<>();
+543:         try {
+544:             org.json.JSONObject j = new org.json.JSONObject(a.db.setting(PRESETS, "{}"));
+545:             java.util.Iterator<String> it = j.keys();
+546:             while (it.hasNext()) {
+547:                 String k = it.next();
+548:                 m.put(k, j.optString(k));
+549:             }
+550:         } catch (Exception ignored) {
+551:             // فارغ
+552:         }
+553:         return m;
+554:     }
+555: 
+556:     private void storePresets(java.util.Map<String, String> m) {
+557:         try {
+558:             org.json.JSONObject j = new org.json.JSONObject();
+559:             for (java.util.Map.Entry<String, String> e : m.entrySet()) j.put(e.getKey(), e.getValue());
+560:             a.db.setSetting(PRESETS, j.toString());
+561:         } catch (Exception e) {
+562:             a.error(e);
+563:         }
+564:     }
+565: 
+566:     private static java.util.Set<String> chosen(java.util.Map<Auth.Perm, CheckBox> boxes, CheckBox review) {
+567:         java.util.Set<String> c = new java.util.LinkedHashSet<>();
+568:         for (java.util.Map.Entry<Auth.Perm, CheckBox> e : boxes.entrySet()) if (e.getValue().isChecked()) c.add(e.getKey().name());
+569:         if (review.isChecked() && boxes.get(Auth.Perm.TX_ADD).isChecked()) c.add(Auth.REVIEW);
+570:         if (!c.isEmpty()) {
+571:             c.add(Auth.DETAILED);
+572:             c.add(Auth.DETAILED126);
+573:         }
+574:         return c;
+575:     }
+576: 
+577:     private void savePreset(final java.util.Map<Auth.Perm, CheckBox> boxes, final CheckBox review) {
+578:         final java.util.Set<String> c = chosen(boxes, review);
+579:         if (c.isEmpty()) {
+580:             a.toast("اختر صلاحية واحدة على الأقل");
+581:             return;
+582:         }
+583:         final EditText name = a.field("اسم القالب، مثل: محاسب فرع");
+584:         LinearLayout l = new LinearLayout(a);
+585:         l.setOrientation(LinearLayout.VERTICAL);
+586:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+587:         l.addView(name, a.lp(-1, 50, 4));
+588:         l.addView(a.text((c.size() - 1) + " صلاحية. إن وُجد قالب بالاسم نفسه يُستبدل.", 12, a.muted, false));
+589:         new AlertDialog.Builder(a).setTitle("حفظ قالب صلاحيات").setView(l).setPositiveButton("حفظ", (d, w) -> {
+590:             String n = name.getText().toString().trim();
+591:             if (n.isEmpty()) {
+592:                 a.toast("اكتب اسمًا للقالب");
+593:                 return;
+594:             }
+595:             java.util.Map<String, String> m = presets();
+596:             m.put(n, Auth.csv(c));
+597:             storePresets(m);
+598:             a.toast("حُفظ القالب «" + n + "»");
+599:         }).setNegativeButton("إلغاء", null).show();
+600:     }
+601: 
+602:     private void applyPreset(final java.util.Map<Auth.Perm, CheckBox> boxes, final CheckBox review) {
+603:         final java.util.Map<String, String> m = presets();
+604:         if (m.isEmpty()) {
+605:             a.toast("لا قوالب محفوظة بعد: اختر الصلاحيات ثم «حفظ كقالب…»");
+606:             return;
+607:         }
+608:         final String[] names = m.keySet().toArray(new String[0]);
+609:         new AlertDialog.Builder(a).setTitle("تطبيق قالب صلاحيات").setItems(names, (d, w) -> {
+610:             java.util.Set<String> p = Auth.expand(Auth.parse(m.get(names[w])));
+611:             for (java.util.Map.Entry<Auth.Perm, CheckBox> e : boxes.entrySet()) e.getValue().setChecked(p.contains(e.getKey().name()));
+612:             review.setChecked(p.contains(Auth.REVIEW));
+613:             a.toast("طُبّق القالب «" + names[w] + "». راجع ثم احفظ.");
+614:         }).setNeutralButton("حذف قالب…", (d, w) -> new AlertDialog.Builder(a).setTitle("حذف قالب").setItems(names, (d2, w2) -> {
+615:             m.remove(names[w2]);
+616:             storePresets(m);
+617:             a.toast("حُذف القالب «" + names[w2] + "»");
+618:         }).setNegativeButton("إلغاء", null).show()).setNegativeButton("إلغاء", null).show();
+619:     }
+620: 
+621:     private static boolean pinOk(String role, String pin) {
+622:         return Auth.ADMIN.equals(role) ? Pin.validAdmin(pin) : Pin.valid(pin);
+623:     }
+624: 
+625:     private static String pinRule(String role) {
+626:         return Auth.ADMIN.equals(role) ? "رمز المدير من 6 إلى 8 أرقام" : "الرمز من 4 إلى 8 أرقام";
+627:     }
+628: 
+629:     private void userDialog(final Model.User old, final boolean firstAdmin) {
+630:         LinearLayout l = new LinearLayout(a);
+631:         l.setOrientation(LinearLayout.VERTICAL);
+632:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), a.dp(4));
+633:         l.addView(a.text(old == null ? (firstAdmin ? "حساب المدير" : "مستخدم جديد") : "تعديل «" + old.name + "»", 19, a.primaryInk, true));
+634:         final EditText name = a.field("اسم المستخدم");
+635:         if (old != null) name.setText(old.name);
+636:         l.addView(name, a.lp(-1, 50, 4));
+637:         // 10.17: الاسم الظاهر لبقية المحاسبين بدل اسم الدخول (اختياري)
+638:         final EditText nick = a.field("الاسم الظاهر للآخرين (اختياري)");
+639:         if (old != null) nick.setText(old.nick);
+640:         l.addView(nick, a.lp(-1, 50, 4));
+641:         l.addView(a.text("يراه بقية المحاسبين في السجل والتفاصيل بدل اسم الدخول. المدير يرى اسم الدخول دائمًا.", 12, a.muted, false));
+642:         final CheckBox admin = new CheckBox(a);
+643:         admin.setText("مدير — كل الصلاحيات");
+644:         admin.setTextSize(16);
+645:         admin.setChecked(firstAdmin || Auth.isAdmin(old));
+646:         // 10.5 (AUDIT-023): صفة «مدير» يمنحها أو يسحبها المدير وحده
+647:         boolean iAmAdmin = SmartApp.currentUser == null || Auth.isAdmin(a.db.user(SmartApp.currentUser.id));
+648:         admin.setEnabled(!firstAdmin && iAmAdmin);
+649:         l.addView(admin);
+650:         final LinearLayout permBox = new LinearLayout(a);
+651:         permBox.setOrientation(LinearLayout.VERTICAL);
+652:         permBox.addView(a.text("الصلاحيات (اختر ما يناسب هذا الشخص):", 14, a.primaryInk, true));
+653:         final java.util.Map<Auth.Perm, CheckBox> boxes = new java.util.LinkedHashMap<>();
+654:         java.util.Set<String> cur = old == null ? Auth.parse("VIEW,TX_ADD") : Auth.perms(old);
+655:         final CheckBox review = new CheckBox(a);
+656:         // 11.6: قوالب صلاحيات محفوظة بأسماء يختارها المدير (تُطبَّق على مستخدم جديد أو قائم)
+657:         LinearLayout pr = a.row();
+658:         pr.addView(a.smallButton("تطبيق قالب محفوظ…", a.accent, v -> applyPreset(boxes, review)), a.weight(40, 1, 2));
+659:         pr.addView(a.smallButton("حفظ كقالب…", Color.rgb(120, 120, 120), v -> savePreset(boxes, review)), a.weight(40, 1, 2));
+660:         permBox.addView(pr);
+661:         // 12.0: الصلاحيات حسب أقسام التطبيق، كل قسم يُفتح بسهم ومعه عدد المختار و«الكل/لا شيء»
+662:         for (int si = 0; si < Auth.SECTIONS.length; si++) {
+663:             final Object[] sec = Auth.SECTIONS[si];
+664:             final Auth.Perm[] ps = (Auth.Perm[]) sec[1];

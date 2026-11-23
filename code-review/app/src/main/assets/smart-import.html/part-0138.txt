@@ -1,0 +1,98 @@
+3505:     if (st && st.excluded) facts.push(n(st.excluded) + " صفًا لا تُنقل (الخطوة 4)");
+3506:     if (facts.length) h += '<div class="facts">' + facts.join(" · ") + "</div>";
+3507:     // الأدوار
+3508:     h += '<div class="roles">';
+3509:     ROLE_ORDER.forEach(function (role) {
+3510:       if (r[role] !== undefined) h += '<span class="role">' + ROLE_LABEL[role] + ": <b>" + esc(t.names[r[role] - t.c0]) + "</b></span>";
+3511:     });
+3512:     if (r.wide) h += '<span class="role">أعمدة العملات: <b>' + r.wide.map(function (w) { return esc(w.h); }).join("، ") + "</b></span>";
+3513:     var isJ = t.kind === "journal" || t.kind === "journal-noaccount" || t.kind === "derived";
+3514:     if ((isJ || t.kind === "balances" || t.kind === "summary") && r.account === undefined) {
+3515:       h += t.sheetAccount ? '<span class="role">الحساب: <b>' + esc(t.sheetAccount) + "</b> (من اسم " + (t.accountFrom === "file" ? "الملف" : t.accountFrom === "custom" ? "كتبتَه" : "الورقة") + ")</span>"
+3516:         : '<span class="role miss">لا يوجد عمود حساب</span>';
+3517:     }
+3518:     if ((isJ || t.kind === "balances") && r.currency === undefined && !r.wide) {
+3519:       h += '<span class="role">العملة: <b>' + esc(S.cfg.fixedCurrency[t.id] || t.sheetCurrency || S.cfg.defaultCurrency) + "</b> لكل الجدول</span>";
+3520:     }
+3521:     if (t.signed && (isJ || t.kind === "balances")) h += '<span class="role">الاتجاه: <b>من إشارة المبلغ</b> (الخطوة 3)</span>';
+3522:     if (r.notes && r.notes.length && t.kind !== "other") h += '<span class="role">في ملاحظات الحركة: <b>' + r.notes.map(function (c) { return esc(t.names[c - t.c0]); }).join("، ") + "</b></span>";
+3523:     h += "</div>";
+3524:     // شرح
+3525:     if (t.kind === "derived") {
+3526:       var src = tableById(t.derivedFrom);
+3527:       var accs = {};
+3528:       if (r.account !== undefined) for (var q = t.first; q <= t.last; q++) { var v = C.text((t.rows[q] || [])[r.account]); if (v) accs[X.key(v)] = C.clean(v); }
+3529:       var al = Object.keys(accs);
+3530:       h += '<p class="hint">' + n(t.derivedHits) + " من صفوفه موجودة كما هي في «" + esc(src ? src.label : "") + "»" + (al.length === 1 ? " (لحساب واحد: «" + esc(accs[al[0]]) + "»)" : "") +
+3531:         "، فهو نسخة مفلترة منه. لا يُنقل حتى لا تتكرر الحركات، ويُستخدم للتحقق في الخطوة 5.</p>";
+3532:     }
+3533:     if (t.unsure === "allPositive") {
+3534:       h += '<p class="hint">كل المبالغ موجبة ولا يوجد عمود اتجاه (لنا/علينا)، فلم أنقله تلقائيًا. إن كانت كلها في اتجاه واحد ففعّل النقل وحدّد معنى المبلغ الموجب في الخطوة 3، أو حدّد عمود الاتجاه من «تعديل الأعمدة».</p>';
+3535:     }
+3536:     if (t.kind === "summary") {
+3537:       h += '<p class="hint">' + (t.summaryWhy === "formulas" ? "أرصدته محسوبة بمعادلات من الحركات" : "قيمه تطابق نتيجة الحركات") +
+3538:         "، فهو ملخص لها لا أرصدة قبلها. لا يُنقل حتى لا تتضاعف الأرصدة، ويُقارن كل رصيد فيه برصيد المكتب بعد النقل في الخطوة 5.</p>";
+3539:     }
+3540:     if (t.kind === "journal-noaccount" || ((isJ || t.kind === "balances") && r.account === undefined && t.kind !== "derived")) {
+3541:       var af = S.accFrom[t.id] || { from: t.accountFrom || "", name: t.accountFrom === "custom" ? t.sheetAccount : "" };
+3542:       h += '<div class="grid" style="margin:6px 0"><label class="f">اسم الحساب لكل صفوف هذا الجدول<select data-accfrom="' + t.id + '">' +
+3543:         '<option value="">— اختر —</option><option value="sheet"' + (af.from === "sheet" ? " selected" : "") + ">اسم الورقة: " + esc(t.fromSheet.name) + "</option>" +
+3544:         '<option value="file"' + (af.from === "file" ? " selected" : "") + ">اسم الملف: " + esc(t.fromFile.name) + "</option>" +
+3545:         '<option value="custom"' + (af.from === "custom" ? " selected" : "") + ">اسم أكتبه…</option></select></label>" +
+3546:         (af.from === "custom" ? '<label class="f">الاسم<input type="text" data-accname="' + t.id + '" value="' + esc(af.name || "") + '"></label>' : "") + "</div>";
+3547:     }
+3548:     if ((isJ || t.kind === "balances") && r.currency === undefined && !r.wide && t.kind !== "derived") {
+3549:       h += '<div class="grid" style="margin:6px 0"><label class="f">عملة هذا الجدول <small>لا يوجد فيه عمود عملة</small><select data-fixcur="' + t.id + '">' +
+3550:         codeOptions(S.cfg.fixedCurrency[t.id] || t.sheetCurrency || S.cfg.defaultCurrency) + "</select></label></div>";
+3551:     }
+3552:     // الاستخدام
+3553:     if (t.kind !== "other") {
+3554:       var useLabel = t.kind === "derived" ? "انقله أيضًا (غير منصوح: حركاته موجودة في الجدول الأصلي فتتكرر)"
+3555:         : t.kind === "summary" ? "انقله كأرصدة سابقة (غير منصوح: يضاعف الأرصدة إن كان نتيجة الحركات)"
+3556:         : t.kind === "journal-noaccount" ? "انقل هذا الجدول (اختر اسم الحساب أولًا)" : "انقل هذا الجدول";
+3557:       h += '<label class="check"><input type="checkbox" data-use="' + t.id + '"' + (t.use ? " checked" : "") + (t.kind === "journal-noaccount" ? " disabled" : "") + "> " + useLabel + "</label>";
+3558:     }
+3559:     // تعديل الأعمدة
+3560:     h += '<details class="box" data-k="roles-' + t.id + '"><summary>تعديل الأعمدة<span class="hint">إن أخطأتُ في فهم عمود</span></summary><div><div class="grid">';
+3561:     ROLE_ORDER.forEach(function (role) {
+3562:       h += '<label class="f">' + ROLE_LABEL[role] + '<select data-role="' + t.id + "|" + role + '"><option value="">— لا يوجد —</option>';
+3563:       for (var c = t.c0; c <= t.c1; c++) h += '<option value="' + c + '"' + (r[role] === c ? " selected" : "") + ">" + esc(colLabel(t, c)) + "</option>";
+3564:       h += "</select></label>";
+3565:     });
+3566:     h += '</div><p class="hint">يكفي للحركات: الحساب، والمبلغ مع الاتجاه (أو عمودا لنا/علينا، أو مبلغ موقّع)، والتاريخ. الأعمدة التي لا دور لها تُحفظ في ملاحظات كل حركة.</p></div></details>';
+3567:     return h + "</div>";
+3568:   }
+3569: 
+3570:   function renderValues() {
+3571:     var a = S.a, v = a.values, html = "";
+3572:     var dk = Object.keys(v.dirs);
+3573:     if (dk.length) {
+3574:       html += '<h3>الاتجاه (لنا / علينا)</h3><div class="mapgrid"><span class="h">القيمة في ملفك</span><span class="h">صفوف</span><span class="h">معناها في التطبيق</span>';
+3575:       dk.sort(function (x, y) { return v.dirs[y].n - v.dirs[x].n; }).forEach(function (k) {
+3576:         var d = v.dirs[k], cur = S.cfg.dirMap[k] || "";
+3577:         html += "<b>" + esc(d.text) + '</b><span class="hint">' + n(d.n) + '</span><select data-dirmap="' + esc(k) + '">' +
+3578:           [["", "— اختر —"], ["D", "لنا — مدين: يزيد ما لنا عنده"], ["C", "علينا — دائن: يزيد ما علينا له"], ["X", "استبعاد هذه الصفوف"]].map(function (o) {
+3579:             return '<option value="' + o[0] + '"' + (cur === o[0] ? " selected" : "") + ">" + o[1] + "</option>";
+3580:           }).join("") + "</select>";
+3581:       });
+3582:       html += '</div><p class="hint">طابقتُها من الكلمات نفسها (مدين/لنا ← لنا، دائن/لكم/علينا ← علينا)، وهي القاعدة التي تجمع بها معادلات ملفك. المبلغ السالب يعكس الاتجاه، كما في Excel.</p>';
+3583:     }
+3584:     var ck = Object.keys(v.curs);
+3585:     if (ck.length) {
+3586:       html += '<h3>العملات</h3><div class="mapgrid"><span class="h">القيمة في ملفك</span><span class="h">صفوف</span><span class="h">العملة في التطبيق</span>';
+3587:       ck.sort(function (x, y) { return v.curs[y].n - v.curs[x].n; }).forEach(function (k) {
+3588:         var c = v.curs[k];
+3589:         html += "<b class=\"ltr\">" + esc(c.text) + '</b><span class="hint">' + (c.listed && !c.n ? "قائمة" : n(c.n)) + '</span><select data-curmap="' + esc(k) + '">' +
+3590:           codeOptions(S.cfg.curMap[k] || "", '<option value="">— اختر —</option><option value="__skip"' + (S.cfg.curMap[k] === "__skip" ? " selected" : "") + ">استبعاد هذه العملة</option>") + "</select>";
+3591:       });
+3592:       html += "</div>";
+3593:     }
+3594:     var codes = usedCodes();
+3595:     if (codes.length) {
+3596:       html += '<h3>تعريف العملات</h3><div class="curdefs"><span class="hint">الرمز</span><span class="hint">الاسم في التطبيق</span><span class="hint">المنازل العشرية</span>';
+3597:       codes.sort().forEach(function (c) {
+3598:         var d = S.cfg.currencies[c];
+3599:         html += '<b class="ltr">' + esc(c) + '</b><input type="text" data-curname="' + c + '" value="' + esc(d.name) + '"><select data-curdec="' + c + '">' +
+3600:           [0, 1, 2, 3, 4, 5, 6].map(function (x) { return "<option" + (d.dec === x ? " selected" : "") + ">" + x + "</option>"; }).join("") + "</select>";
+3601:       });
+3602:       html += '</div><p class="hint">المنازل = الأكبر بين المعتاد للعملة وما في ملفك' +

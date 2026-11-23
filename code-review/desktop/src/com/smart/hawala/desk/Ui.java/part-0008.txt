@@ -1,0 +1,212 @@
+1352:         } catch (Exception ignored) {
+1353:             // الحجم الافتراضي
+1354:         }
+1355:         d.setVisible(true);
+1356:         d.dispose();
+1357:     }
+1358: 
+1359:     // ===================================================================================
+1360:     // العمل في الخلفية
+1361:     // ===================================================================================
+1362: 
+1363:     interface Progress {
+1364:         void update(String msg);
+1365:     }
+1366: 
+1367:     interface Work<T> {
+1368:         T run(Progress p) throws Exception;
+1369:     }
+1370: 
+1371:     /** ينفذ عملًا بطيئًا في خيط خلفي مع نافذة انتظار، ثم done على خيط الواجهة (أو رسالة خطأ واضحة). */
+1372:     static <T> void busy(Component parent, String msg, Work<T> work, Consumer<T> done) {
+1373:         Window owner = win(parent);
+1374:         final JDialog d = new JDialog(owner, "يرجى الانتظار", Dialog.ModalityType.APPLICATION_MODAL);
+1375:         d.setUndecorated(true);
+1376:         Card c = card();
+1377:         c.setBorder(new EmptyBorder(22, 28, 22, 28));
+1378:         final JLabel l = label(msg, 15, ink, true);
+1379:         JProgressBar bar = new JProgressBar();
+1380:         bar.setIndeterminate(true);
+1381:         bar.setAlignmentX(Component.RIGHT_ALIGNMENT);
+1382:         c.add(l);
+1383:         c.add(gap(12));
+1384:         c.add(bar);
+1385:         JPanel root = new JPanel(new BorderLayout());
+1386:         root.setBackground(surface);
+1387:         root.setBorder(BorderFactory.createLineBorder(line));
+1388:         root.add(c);
+1389:         d.setContentPane(rtl(root));
+1390:         d.pack();
+1391:         d.setSize(Math.max(360, d.getWidth()), d.getHeight());
+1392:         d.setLocationRelativeTo(owner);
+1393:         SwingWorker<T, String> w = new SwingWorker<T, String>() {
+1394:             @Override protected T doInBackground() throws Exception { return work.run(m -> publish(m)); }
+1395: 
+1396:             @Override protected void process(List<String> chunks) { l.setText(chunks.get(chunks.size() - 1)); }
+1397: 
+1398:             @Override protected void done() {
+1399:                 d.dispose();
+1400:                 try {
+1401:                     T r = get();
+1402:                     if (done != null) done.accept(r);
+1403:                 } catch (java.util.concurrent.ExecutionException e) {
+1404:                     error(parent, e.getCause());
+1405:                 } catch (Exception e) {
+1406:                     error(parent, e);
+1407:                 }
+1408:             }
+1409:         };
+1410:         w.execute();
+1411:         Timer t = new Timer(250, e -> {
+1412:             if (!w.isDone()) d.setVisible(true);
+1413:         });
+1414:         t.setRepeats(false);
+1415:         t.start();
+1416:     }
+1417: 
+1418:     /** إشعار قصير أسفل النافذة يختفي وحده. */
+1419:     static void toast(String msg) {
+1420:         if (App.frame == null) return;
+1421:         JWindow w = new JWindow(App.frame);
+1422:         JLabel l = label(msg, 14, Color.WHITE, true);
+1423:         l.setBorder(new EmptyBorder(10, 18, 10, 18));
+1424:         JPanel p = new JPanel(new BorderLayout()) {
+1425:             @Override protected void paintComponent(Graphics g) {
+1426:                 Graphics2D g2 = (Graphics2D) g.create();
+1427:                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+1428:                 g2.setColor(dark ? new Color(58, 74, 68, 245) : new Color(23, 36, 31, 238));
+1429:                 g2.fill(new RoundRectangle2D.Float(0, 0, getWidth(), getHeight(), 16, 16));
+1430:                 g2.dispose();
+1431:             }
+1432:         };
+1433:         p.setOpaque(false);
+1434:         p.add(l);
+1435:         w.setBackground(new Color(0, 0, 0, 0));
+1436:         w.setContentPane(p);
+1437:         w.pack();
+1438:         Rectangle f = App.frame.getBounds();
+1439:         w.setLocation(f.x + (f.width - w.getWidth()) / 2, f.y + f.height - w.getHeight() - 40);
+1440:         w.setVisible(true);
+1441:         Timer t = new Timer(2800, e -> w.dispose());
+1442:         t.setRepeats(false);
+1443:         t.start();
+1444:     }
+1445: 
+1446:     // ===================================================================================
+1447:     // التاريخ
+1448:     // ===================================================================================
+1449: 
+1450:     /** حقل تاريخ yyyy/MM/dd مع زر تقويم. */
+1451:     static final class DateField extends JPanel {
+1452:         final Field f = new Field("سنة/شهر/يوم");
+1453:         Runnable onChange;
+1454: 
+1455:         DateField(long t) {
+1456:             setLayout(new BorderLayout(6, 0));
+1457:             setOpaque(false);
+1458:             setAlignmentX(Component.RIGHT_ALIGNMENT);
+1459:             set(t);
+1460:             Btn b = ghost("", e -> pick());
+1461:             b.setIcon(new Icons("daily", 18, primaryInk));
+1462:             b.setBorder(new EmptyBorder(4, 10, 4, 10));
+1463:             add(f, BorderLayout.CENTER);
+1464:             add(b, BorderLayout.LINE_END);
+1465:             setComponentOrientation(RTL);
+1466:             f.addFocusListener(new FocusAdapter() {
+1467:                 @Override public void focusLost(FocusEvent e) {
+1468:                     if (onChange != null) onChange.run();
+1469:                 }
+1470:             });
+1471:             f.addActionListener(e -> {
+1472:                 if (onChange != null) onChange.run();
+1473:             });
+1474:         }
+1475: 
+1476:         @Override public Dimension getMaximumSize() { return new Dimension(Integer.MAX_VALUE, getPreferredSize().height); }
+1477: 
+1478:         void set(long t) { f.setText(t <= 0 ? "" : Model.day(t)); }
+1479: 
+1480:         /** بداية اليوم المكتوب، أو 0 إن كان فارغًا؛ يرمي إن كان غير صالح. */
+1481:         long start() {
+1482:             String s = f.getText().trim().replace('-', '/').replace('.', '/');
+1483:             if (s.isEmpty()) return 0;
+1484:             String[] p = s.split("/");
+1485:             if (p.length != 3) throw new IllegalArgumentException("اكتب التاريخ بالشكل سنة/شهر/يوم، مثل 2026/10/15");
+1486:             int y = Integer.parseInt(digits(p[0])), m = Integer.parseInt(digits(p[1])), d = Integer.parseInt(digits(p[2]));
+1487:             if (y < 100) y += 2000;
+1488:             Calendar c = com.smart.hawala.Model.cal();
+1489:             c.setLenient(false);
+1490:             c.clear();
+1491:             c.set(y, m - 1, d, 0, 0, 0);
+1492:             return c.getTimeInMillis();
+1493:         }
+1494: 
+1495:         long endExclusive() {
+1496:             long s = start();
+1497:             if (s == 0) return 0;
+1498:             Calendar c = com.smart.hawala.Model.cal();
+1499:             c.setTimeInMillis(s);
+1500:             c.add(Calendar.DAY_OF_MONTH, 1);
+1501:             return c.getTimeInMillis();
+1502:         }
+1503: 
+1504:         void pick() {
+1505:             long cur;
+1506:             try {
+1507:                 cur = start();
+1508:             } catch (Exception e) {
+1509:                 cur = 0;
+1510:             }
+1511:             Calendar c = com.smart.hawala.Model.cal();
+1512:             if (cur > 0) c.setTimeInMillis(cur);
+1513:             CalendarPopup cp = new CalendarPopup(c, t -> {
+1514:                 set(t);
+1515:                 if (onChange != null) onChange.run();
+1516:             });
+1517:             cp.show(this, 0, getHeight());
+1518:         }
+1519:     }
+1520: 
+1521:     static String digits(String s) {
+1522:         StringBuilder b = new StringBuilder();
+1523:         for (char ch : s.trim().toCharArray()) {
+1524:             if (ch >= '٠' && ch <= '٩') b.append((char) ('0' + ch - '٠'));
+1525:             else if (ch >= '0' && ch <= '9') b.append(ch);
+1526:         }
+1527:         if (b.length() == 0) throw new IllegalArgumentException("تاريخ غير صالح");
+1528:         return b.toString();
+1529:     }
+1530: 
+1531:     static final class CalendarPopup extends JPopupMenu {
+1532:         final Calendar shown;
+1533:         final Consumer<Long> pick;
+1534:         final JPanel grid = new JPanel(new GridLayout(0, 7, 2, 2));
+1535:         final JLabel head = label("", 14, ink, true);
+1536:         static final String[] DAYS = {"س", "ح", "ن", "ث", "ر", "خ", "ج"};
+1537: 
+1538:         CalendarPopup(Calendar start, Consumer<Long> pick) {
+1539:             this.pick = pick;
+1540:             shown = (Calendar) start.clone();
+1541:             shown.set(Calendar.DAY_OF_MONTH, 1);
+1542:             JPanel p = new JPanel(new BorderLayout(4, 6));
+1543:             p.setBorder(new EmptyBorder(8, 8, 8, 8));
+1544:             p.setBackground(surface);
+1545:             Btn prev = ghost("›", e -> move(-1)), next = ghost("‹", e -> move(1));
+1546:             JPanel top = new JPanel(new BorderLayout());
+1547:             top.setOpaque(false);
+1548:             top.add(prev, BorderLayout.EAST);
+1549:             top.add(next, BorderLayout.WEST);
+1550:             head.setHorizontalAlignment(SwingConstants.CENTER);
+1551:             top.add(head, BorderLayout.CENTER);
+1552:             p.add(top, BorderLayout.NORTH);
+1553:             grid.setOpaque(false);
+1554:             p.add(grid, BorderLayout.CENTER);
+1555:             Btn today = ghost("اليوم", e -> {
+1556:                 setVisible(false);
+1557:                 Calendar t = com.smart.hawala.Model.cal();
+1558:                 t.set(Calendar.HOUR_OF_DAY, 0);
+1559:                 t.set(Calendar.MINUTE, 0);
+1560:                 t.set(Calendar.SECOND, 0);
+1561:                 t.set(Calendar.MILLISECOND, 0);
+1562:                 pick.accept(t.getTimeInMillis());
+1563:             });

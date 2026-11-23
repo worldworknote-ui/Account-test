@@ -1,0 +1,58 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.Application;
+4: 
+5: public class SmartApp extends Application {
+6:     public static volatile Db db;
+7:     /** المستخدم الداخل حاليًا (null = لا يوجد نظام مستخدمين أو لم يدخل أحد). */
+8:     public static volatile Model.User currentUser;
+9: 
+10:     @Override
+11:     public void onCreate() {
+12:         super.onCreate();
+13:         // أول شيء: تسجيل أي انهيار في ملف حتى نعرف سببه بدل أن يُغلق التطبيق بصمت
+14:         CrashGuard.install(this);
+15:         // 8.0 (ت13): في نسخ التطوير فقط: سجلّ لكل قراءة أو كتابة على خيط الواجهة وكل مورد لم يُغلق (لا يغيّر النسخة النهائية)
+16:         if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+17:             android.os.StrictMode.setThreadPolicy(new android.os.StrictMode.ThreadPolicy.Builder().detectDiskReads().detectDiskWrites().detectNetwork().penaltyLog().build());
+18:             android.os.StrictMode.setVmPolicy(new android.os.StrictMode.VmPolicy.Builder().detectLeakedClosableObjects().detectLeakedSqlLiteObjects().penaltyLog().build());
+19:         }
+20:         try {
+21:             CrashGuard.version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+22:         } catch (Exception ignored) {
+23:             // غير مهم
+24:         }
+25:         // مفتاح البيانات للحقول المشفرة (سريع)، قبل فتح قاعدة البيانات
+26:         Crypto.init(this);
+27:         // 12.7: قاعدة كبيرة قديمة تُشفَّر لأول مرة في الخلفية بشاشة تقدم (MainActivity)، لا هنا على خيط الواجهة
+28:         if (Db.needsEncryption(this)) return;
+29:         db = new Db(this);
+30:         afterDb(this);
+31:     }
+32: 
+33:     /** 12.7: ما يلي فتح القاعدة (هنا عند الإقلاع، أو بعد تشفيرها الأول في الخلفية). */
+34:     static void afterDb(android.content.Context ctx) {
+35:         Db db = SmartApp.db;
+36:         Application app = (Application) ctx.getApplicationContext();
+37:         // ما يحق لهذه النسخة (مجانية أو مرخّصة). لا يرمي ولا يحجز شيئًا؛ الفشل = حدود المجاني فقط.
+38:         License.load(app, db);
+39:         if (Crypto.fast()) {
+40:             final Db d0 = db;
+41:             Thread t = new Thread(() -> {
+42:                 try {
+43:                     Thread.sleep(6000);
+44:                     d0.reencryptLegacy();
+45:                 } catch (Throwable ignored) {
+46:                     // يُستكمل في التشغيل التالي
+47:                 }
+48:             }, "reencrypt");
+49:             t.setPriority(Thread.MIN_PRIORITY);
+50:             t.start();
+51:         }
+52:         try {
+53:             if (AutoBackup.enabled(db)) AutoBackup.schedule(app);
+54:         } catch (Throwable ignored) {
+55:             // الجدولة تُعاد عند فتح شاشة النسخ
+56:         }
+57:     }
+58: }

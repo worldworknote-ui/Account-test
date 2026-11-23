@@ -1,0 +1,145 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.awt.datatransfer.StringSelection;
+6: import java.util.*;
+7: import javax.swing.*;
+8: 
+9: /**
+10:  * الترخيص على الماك: المجاني (9 مكاتب و700 حركة جديدة لكل مكتب، بلا مدة) أو الكامل برمز من البائع مربوط بهذا الجهاز.
+11:  * الخطوات كالهاتف: رقم الطلب ← «إنشاء طلب التفعيل» ← يُرسل للبائع ← يصل رمز ← «تفعيل». ولا شيء هنا يحجز البيانات.
+12:  */
+13: final class LicenseView extends View {
+14:     LicenseView(App app) {
+15:         super(app, "الترخيص");
+16:     }
+17: 
+18:     @Override void refresh() {
+19:         clear();
+20:         int w = textWidth();
+21:         Entitlements e = License.current;
+22:         Ui.Card s = Ui.tinted(e.pro ? Ui.creditBg : Ui.goldSoft, null);
+23:         s.add(Ui.label(e.pro ? "✓ النسخة الكاملة" + (e.lid.isEmpty() ? "" : " — " + e.lid) : AboutText.FREE_TITLE, 18, e.pro ? Ui.green : Ui.goldInk, true));
+24:         if (!e.pro) {
+25:             s.add(Ui.para(AboutText.FREE_LINE, 14.5f, Ui.ink, w));
+26:             s.add(Ui.para(AboutText.BUY_LINE, 14.5f, Ui.goldInk, w));
+27:         }
+28:         if (e.pro) {
+29:             s.add(Ui.label(e.edition(), 14, Ui.ink, false));
+30:             if (!e.updatesUntil().isEmpty()) s.add(Ui.label("التحديثات حتى: " + e.updatesUntil(), 13.5f, Ui.muted, false));
+31:         } else {
+32:             QuotaState q = db.quotaNow();
+33:             long[] wa = db.waUsage();
+34:             s.add(Ui.label("المكاتب: " + q.offices + " من " + e.maxOffices() + " (حذف مكتب يعيد مكانه)   •   الحركات: " + e.maxTxPerOffice() + " حركة جديدة لكل مكتب"
+35:                     + "   •   رسائل واتساب اليوم: " + wa[0] + " من " + wa[1], 14, Ui.ink, false));
+36:             Map<Long, String> names = db.officeNames();
+37:             StringBuilder b = new StringBuilder();
+38:             for (Map.Entry<Long, String> n : names.entrySet()) {
+39:                 long used = q.txOf(n.getKey());
+40:                 if (used == 0) continue;
+41:                 b.append(n.getValue()).append(": ").append(used).append(" من ").append(e.maxTxPerOffice()).append("   ");
+42:             }
+43:             if (b.length() > 0) s.add(Ui.para(b.toString(), 12.5f, Ui.muted, w));
+44:             s.add(Ui.gap(4));
+45:             s.add(Ui.para("عند الحد تتوقف الإضافة فقط: كل البيانات تبقى متاحة للعرض والتقارير والتصدير والنسخ الاحتياطي والاستعادة. "
+46:                     + "النسخة الكاملة: مكاتب وحركات بلا حد، مستخدمون بأدوار، تصدير بلا علامة «نسخة مجانية»، نسخ تلقائي حتى كل 6 ساعات، والقراءة الذكية السحابية المدفوعة الخاصة (ذكاء اصطناعي عبر الإنترنت).", 13.5f, Ui.ink, w));
+47:         }
+48:         if (e.note != null && !e.note.isEmpty()) s.add(Ui.para("! " + e.note, 13.5f, Ui.red, w));
+49:         add(s);
+50:         space(12);
+51: 
+52:         Ui.Card req = Ui.card();
+53:         req.add(Ui.heading(e.pro ? "نقل الرخصة إلى جهاز آخر" : "التفعيل"));
+54:         if (!e.pro) {
+55:             req.add(Ui.para("1) خذ «رقم الطلب» من البائع.  2) اكتبه هنا واضغط «إنشاء طلب التفعيل» وأرسل النص للبائع (واتساب أو بريد).  3) الصق الرمز الذي يصلك واضغط «تفعيل».\n"
+56:                     + "الرخصة مربوطة بهذا الكمبيوتر؛ رخصة الهاتف لا تعمل هنا والعكس (كل جهاز يُفعَّل بطلبه).", 13.5f, Ui.ink, w));
+57:             Ui.Field order = Ui.field("رقم الطلب من البائع");
+58:             order.setMaximumSize(new Dimension(320, 40));
+59:             req.add(Ui.row(order, Ui.primary("إنشاء طلب التفعيل", ev -> {
+60:                 try {
+61:                     String t = License.requestText(app.ctx, db, order.val());
+62:                     showText("طلب التفعيل", "أرسل هذا النص كاملًا للبائع:", t);
+63:                 } catch (Exception ex) {
+64:                     Ui.error(this, ex);
+65:                 }
+66:             })));
+67:             req.add(Ui.gap(10));
+68:             JTextArea token = Ui.area(3);
+69:             JScrollPane ts = Ui.areaBox(token);
+70:             ts.setPreferredSize(new Dimension(600, 80));
+71:             ts.setMaximumSize(new Dimension(Integer.MAX_VALUE, 90));
+72:             req.add(Ui.labeled("رمز الترخيص من البائع", ts));
+73:             req.add(Ui.gap(6));
+74:             req.add(Ui.flow(Ui.primary("تفعيل", ev -> {
+75:                 try {
+76:                     Entitlements r = License.activate(app.ctx, db, token.getText().trim());
+77:                     app.updateFoot();
+78:                     Ui.info(this, "تم التفعيل ✓", "النسخة الكاملة مفعّلة: " + r.edition());
+79:                     refresh();
+80:                 } catch (Exception ex) {
+81:                     Ui.error(this, ex);
+82:                 }
+83:             })));
+84:         } else {
+85:             req.add(Ui.para("لنقل الرخصة: اضغط «إلغاء التفعيل على هذا الجهاز» فتأخذ «إيصال تحرير» موقّعًا، أرسله للبائع مع طلب من الجهاز الجديد. "
+86:                     + "بعد الإلغاء يعود هذا الجهاز للنسخة المجانية وتبقى بياناته كما هي.", 13.5f, Ui.ink, w));
+87:             req.add(Ui.flow(Ui.danger("إلغاء التفعيل على هذا الجهاز…", ev -> {
+88:                 if (!Ui.confirm(this, "إلغاء التفعيل", "يعود هذا الجهاز للنسخة المجانية فورًا وتأخذ إيصالًا للبائع. متابعة؟", "إلغاء التفعيل")) return;
+89:                 try {
+90:                     String rel = License.release(app.ctx, db);
+91:                     app.updateFoot();
+92:                     showText("إيصال التحرير", "أرسل هذا الإيصال للبائع لنقل الرخصة:", rel);
+93:                     refresh();
+94:                 } catch (Exception ex) {
+95:                     Ui.error(this, ex);
+96:                 }
+97:             })));
+98:         }
+99:         add(req);
+100:         space(12);
+101: 
+102:         Ui.Card srv = Ui.card();
+103:         srv.add(Ui.heading("خادم الترخيص (اختياري)"));
+104:         srv.add(Ui.para("إن أنشأت خادم الترخيص (license-server في المشروع) اكتب عنوانه هنا: يسأله البرنامج كل 7 أيام عن الرخص الملغاة. فشل الاتصال لا يوقف شيئًا.", 13, Ui.muted, w));
+105:         Ui.Field url = Ui.field("https://…");
+106:         url.setText(db.setting("license_server", ""));
+107:         srv.add(Ui.row(url, Ui.ghost("حفظ", ev -> {
+108:             String u = url.val();
+109:             if (!u.isEmpty() && !u.startsWith("https://") && !u.startsWith("http://")) {
+110:                 Ui.toast("العنوان يبدأ بـ https://");
+111:                 return;
+112:             }
+113:             db.setSettingQuiet("license_server", u);
+114:             Ui.toast("حُفظ");
+115:         }), Ui.ghost("فحص الآن", ev -> Ui.busy(this, "جارٍ الاتصال…", p -> License.checkOnline(app.ctx, db), m -> {
+116:             Ui.info(this, "خادم الترخيص", m);
+117:             refresh();
+118:         }))));
+119:         // 12.7: خادم الترخيص مخفي (الكود باقٍ)؛ بدلًا منه هوية المكتب وتأكيد الوقت
+120:         if (com.smart.hawala.LicenseScreenFlags.SHOW_SERVER) add(srv);
+121:         Ui.Card idc = Ui.card();
+122:         idc.add(Ui.heading("هوية المكتب والوقت"));
+123:         long lt = com.smart.hawala.LicenseScreenFlags.lastTrusted(db);
+124:         idc.add(Ui.para("هوية بيانات هذا المكتب: " + com.smart.hawala.LicenseScreenFlags.officeUid(db)
+125:                 + "\nالرخصة تعمل على بيانات مكتبها فقط. على جهاز ينضم للمزامنة: انضم أولًا ثم اطلب التفعيل."
+126:                 + "\nآخر تأكيد للوقت من الإنترنت: " + (lt <= 0 ? "لم يُؤكَّد بعد" : com.smart.hawala.Model.date(lt))
+127:                 + (com.smart.hawala.LicenseScreenFlags.note().isEmpty() ? "" : "\n⚠ " + com.smart.hawala.LicenseScreenFlags.note()), 13, Ui.muted, w));
+128:         idc.add(Ui.ghost("تأكيد الوقت الآن", ev -> Ui.busy(this, "جارٍ تأكيد الوقت…", p -> com.smart.hawala.LicenseScreenFlags.fetch(app.ctx, db), m -> {
+129:             Ui.info(this, "الوقت", (Boolean) m ? "تأكّد الوقت ✓" : "تعذّر الاتصال الآن. لا يتوقف شيء؛ يُعاد تلقائيًا.");
+130:             refresh();
+131:         })));
+132:         add(idc);
+133:         done();
+134:     }
+135: 
+136:     void showText(String title, String intro, String text) {
+137:         JPanel c = Ui.column();
+138:         c.add(Ui.para(intro, 13.5f, Ui.ink, 480));
+139:         c.add(Ui.gap(6));
+140:         JTextArea a = new JTextArea(text, 8, 40);
+141:         a.setLineWrap(true);
+142:         a.setEditable(false);
+143:         a.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+144:         a.setComponentOrientation(ComponentOrientation.LEFT_TO_RIGHT);
+145:         JScrollPane sp = new JScrollPane(a);

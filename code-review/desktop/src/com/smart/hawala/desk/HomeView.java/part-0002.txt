@@ -1,0 +1,165 @@
+188:         g.add(Ui.labeled("لنا", Ui.label(mny("$" + Db.fmtUsd(v.receivableUsd)), 18, Ui.green, true)));
+189:         g.add(Ui.labeled("علينا", Ui.label(mny("$" + Db.fmtUsd(v.payableUsd)), 18, Ui.red, true)));
+190:         g.add(Ui.labeled("الصافي", Ui.label(mny("$" + Db.fmtUsd(v.netUsd())), 18, v.netUsd().signum() >= 0 ? Ui.green : Ui.red, true)));
+191:         c.add(g);
+192:         if (!v.missingRates.isEmpty()) c.add(Ui.label("بدون سعر صرف (غير محسوبة): " + v.missingRates, 12.5f, Ui.warnInk, false));
+193:         c.add(Ui.label("تقريبي للمتابعة فقط؛ الأرصدة الحقيقية بعملاتها.", 12, Ui.muted, false));
+194:         add(c);
+195:         space(16);
+196:     }
+197: 
+198:     void today(Map<String, Integer> dec) {
+199:         // اليوم
+200:         long today = Ui.startOfDay(Clock.now());
+201:         Map<String, long[]> st = db.dailyStats(today, Ui.addDays(today, 1));
+202:         Ui.Card day = Ui.card();
+203:         day.add(Ui.heading("حركات اليوم"));
+204:         if (st.isEmpty()) day.add(Ui.label("لا حركات اليوم بعد.", 14, Ui.muted, false));
+205:         for (Map.Entry<String, long[]> e : st.entrySet()) {
+206:             int d = dec.getOrDefault(e.getKey(), 2);
+207:             long[] v = e.getValue();
+208:             day.add(Ui.label("بـ" + e.getKey() + ":  " + v[4] + " حركة · لنا " + Model.fmt(v[0], d) + " · علينا " + Model.fmt(v[1], d)
+209:                     + (v[2] + v[3] > 0 ? " · أجور لنا " + Model.fmt(v[2], d) + " وعلينا " + Model.fmt(v[3], d) : ""), 14, Ui.ink, false));
+210:         }
+211:         add(day);
+212:         space(16);
+213: 
+214:     }
+215: 
+216:     /** تنبيهات حدود المكاتب (لكل عملة، ومقوّمة بالدولار) كما في الهاتف. */
+217:     static List<String> limitAlerts(Db db, Model.Office o) {
+218:         List<String> out = new ArrayList<>();
+219:         Map<String, Long> b = db.balances(o.id);
+220:         Map<String, Db.Limit> limits = db.officeLimits(o.id);
+221:         for (Map.Entry<String, Long> e : b.entrySet()) {
+222:             Db.Limit l = limits.get(e.getKey());
+223:             if (l == null) continue;
+224:             Ledger.LimitBreach br = Ledger.check(e.getKey(), e.getValue(), l.receivable, l.payable);
+225:             if (br == null) continue;
+226:             int d = db.decimals(e.getKey());
+227:             out.add(o.name + " — " + e.getKey() + ": " + (br.receivable ? "لنا " : "علينا ") + Db.fmt(br.amount, d) + " (الحد " + Db.fmt(br.limit, d) + ")");
+228:         }
+229:         if (o.usdLimit != null || o.usdOweLimit != null) {
+230:             Ledger.Valuation v = Ledger.valueOffice(b, db.usdRates(), db.decimalsMap());
+231:             long us = v.receivableUsd.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValue();
+232:             long them = v.payableUsd.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValue();
+233:             if (o.usdLimit != null && o.usdLimit > 0 && us > o.usdLimit) out.add(o.name + " — مجموع «لنا» مقوّمًا ≈ " + Db.fmt(us, 2) + " USD (الحد " + Db.fmt(o.usdLimit, 2) + ")");
+234:             if (o.usdOweLimit != null && o.usdOweLimit > 0 && them > o.usdOweLimit)
+235:                 out.add(o.name + " — مجموع «علينا» مقوّمًا ≈ " + Db.fmt(them, 2) + " USD (الحد " + Db.fmt(o.usdOweLimit, 2) + ")");
+236:         }
+237:         return out;
+238:     }
+239: 
+240:     void limits(int w) {
+241:         if (!can(Auth.Perm.VIEW)) return;
+242:         List<String> all = new ArrayList<>();
+243:         for (Model.Office o : db.offices()) all.addAll(limitAlerts(db, o));
+244:         if (all.isEmpty()) return;
+245:         Ui.Card c = Ui.tinted(Ui.debitBg, null);
+246:         c.add(Ui.row(Ui.label("تجاوز حدود المكاتب (" + all.size() + ")", 15, Ui.red, true), Box.createHorizontalGlue(), Ui.ghost("الأرصدة", e -> app.go("balances"))));
+247:         for (int i = 0; i < all.size() && i < 8; i++) c.add(Ui.label("• " + mny(all.get(i)), 13.5f, Ui.red, false));
+248:         if (all.size() > 8) c.add(Ui.label("و" + (all.size() - 8) + " أخرى…", 13, Ui.red, false));
+249:         add(c);
+250:         space(16);
+251:     }
+252: 
+253:     void reconPending() {
+254:         if (!can(Auth.Perm.VIEW)) return;
+255:         List<Object[]> pend = new ArrayList<>();
+256:         for (Map.Entry<Long, Model.Recon> e : db.lastReconsByOffice().entrySet()) {
+257:             if (!Model.RECON_SENT.equals(e.getValue().status)) continue;
+258:             Model.Office o = db.office(e.getKey());
+259:             if (o != null) pend.add(new Object[]{o, e.getValue()});
+260:         }
+261:         if (pend.isEmpty()) return;
+262:         Ui.Card c = Ui.card();
+263:         c.add(Ui.heading("المطابقات بانتظار التأكيد (" + pend.size() + ")"));
+264:         JPanel f = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 6));
+265:         f.setOpaque(false);
+266:         f.setAlignmentX(Component.RIGHT_ALIGNMENT);
+267:         for (Object[] x : pend) {
+268:             final Model.Office o = (Model.Office) x[0];
+269:             Ui.Btn b = Ui.ghost(o.name + " — " + Model.day(((Model.Recon) x[1]).createdAt), e -> app.go("office", o.id));
+270:             f.add(b);
+271:         }
+272:         f.applyComponentOrientation(Ui.RTL);
+273:         c.add(f);
+274:         add(c);
+275:         space(16);
+276:     }
+277: 
+278:     void recentOffices() {
+279:         if (!can(Auth.Perm.VIEW)) return;
+280:         Map<Long, Long> opened = OfficeOrder.parseOpened(db.setting("office_opened", ""));
+281:         List<Long> ids = new ArrayList<>(opened.keySet());
+282:         ids.sort((x, y) -> Long.compare(opened.get(y), opened.get(x)));
+283:         List<Model.Office> list = new ArrayList<>();
+284:         for (long id : ids) {
+285:             Model.Office o = db.office(id);
+286:             if (o != null && o.active && list.size() < 8) list.add(o);
+287:         }
+288:         if (list.isEmpty()) return;
+289:         add(Ui.row(Ui.heading("آخر المكاتب"), Box.createHorizontalGlue(), Ui.ghost("كل المكاتب", e -> app.go("offices"))));
+290:         JPanel f = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 6));
+291:         f.setOpaque(false);
+292:         f.setAlignmentX(Component.RIGHT_ALIGNMENT);
+293:         for (final Model.Office o : list) f.add(Ui.ghost(o.name, e -> app.go("office", o.id)));
+294:         f.applyComponentOrientation(Ui.RTL);
+295:         add(f);
+296:         space(12);
+297:     }
+298: 
+299:     void shortcuts() {
+300:         String[][] sc = {{"tx", "تسجيل حركة", "Ctrl+N"}, {"fx", "قص عملات", "Ctrl+Shift+N"}, {"xfer", "بين مكتبين", "Ctrl+Shift+T"}, {"log", "سجل الحركات", "Ctrl+F"},
+301:                 {"statement", "كشف حساب", ""}, {"balances", "الأرصدة", ""}, {"daily", "اليومي", ""}, {"cash", "الصندوق", ""}, {"mine", "مكاتبي", ""}, {"backup", "النسخ الاحتياطي", "Ctrl+B"}};
+302:         JPanel g = new JPanel(new GridLayout(0, 5, 10, 10));
+303:         g.setOpaque(false);
+304:         g.setAlignmentX(Component.RIGHT_ALIGNMENT);
+305:         String mod = Ui.MAC ? "Cmd" : "Ctrl";
+306:         for (final String[] x : sc) {
+307:             if (!app.allowed(x[0]) || ("cash".equals(x[0]) || "mine".equals(x[0])) && !app.navAllowed(x[0])) continue;
+308:             Ui.Btn b = Ui.ghost(x[1], e -> app.go(x[0]));
+309:             if (!x[2].isEmpty()) b.setToolTipText(x[2].replace("Ctrl", mod));
+310:             g.add(b);
+311:         }
+312:         if (g.getComponentCount() == 0) return;
+313:         add(Ui.row(Ui.heading("اختصارات"), Box.createHorizontalGlue(), Ui.ghost("انتقال سريع (" + mod + "+K)", e -> QuickJump.open(app))));
+314:         space(8);
+315:         add(g);
+316:         space(16);
+317:     }
+318: 
+319:     void paste(int w) {
+320:         if (!can(Auth.Perm.TX_ADD)) return;
+321:         Ui.Card c = Ui.card();
+322:         c.add(Ui.row(Ui.heading("اللصق من واتساب"), Box.createHorizontalGlue(), Ui.primary("لصق رسالة وتسجيلها", e -> {
+323:             app.go("tx");
+324:             View v = app.views.get("tx");
+325:             if (v instanceof TxView) ((TxView) v).pasteClipboard();
+326:         })));
+327:         String clip = clipText(db);
+328:         if (clip != null) {
+329:             c.add(Ui.label("في الحافظة الآن:", 13, Ui.goldInk, true));
+330:             c.add(Ui.para("«" + Ui.cut(clip.replace('\n', ' '), 220) + "»", 13.5f, Ui.ink, w));
+331:         } else c.add(Ui.para("انسخ رسالة الحوالة من واتساب ثم اضغط الزر: تُفتح شاشة التسجيل وتُستخرج منها البيانات لتراجعها قبل الحفظ.", 13.5f, Ui.muted, w));
+332:         add(c);
+333:         space(16);
+334:     }
+335: 
+336:     /** نص الحافظة إن كان يشبه رسالة حوالة (فيه رقم) ومفتاح العرض مفعّل؛ وإلا null. لا يُحفظ ولا يُرسل. */
+337:     static String clipText(Db db) {
+338:         if ("0".equals(db.setting("desk_clip_peek", "1"))) return null;
+339:         try {
+340:             Object o = Toolkit.getDefaultToolkit().getSystemClipboard().getData(java.awt.datatransfer.DataFlavor.stringFlavor);
+341:             String s = o == null ? "" : o.toString().trim();
+342:             if (s.length() < 6 || s.length() > 4000 || !s.matches("(?s).*[0-9٠-٩].*")) return null;
+343:             return s;
+344:         } catch (Throwable e) {
+345:             return null;
+346:         }
+347:     }
+348: 
+349:     void rates() {
+350:         if (!can(Auth.Perm.VIEW)) return;
+351:         Map<String, Db.Rate> rates = db.rates();
+352:         Ui.Card c = Ui.card();

@@ -1,0 +1,128 @@
+1: package android.widget;
+2: 
+3: import android.content.Context;
+4: import android.content.res.ColorStateList;
+5: import android.graphics.*;
+6: import android.graphics.drawable.*;
+7: import android.view.View;
+8: 
+9: public class ImageView extends View {
+10:     public enum ScaleType { MATRIX, FIT_XY, FIT_START, FIT_CENTER, FIT_END, CENTER, CENTER_CROP, CENTER_INSIDE }
+11:     private Drawable d;
+12:     private ScaleType scale = ScaleType.FIT_CENTER;
+13:     private ColorStateList tint;
+14:     private ColorFilter filter;
+15:     private boolean adjust;
+16:     private int maxW = Integer.MAX_VALUE, maxH = Integer.MAX_VALUE;
+17:     private int alpha = 255;
+18:     private Matrix matrix;
+19: 
+20:     public ImageView(Context c) { super(c); }
+21:     public ImageView(Context c, android.util.AttributeSet a) { super(c); }
+22: 
+23:     public void setImageResource(int res) { setImageDrawable(res == 0 ? null : getContext().getDrawable(res)); }
+24:     public void setImageDrawable(Drawable dr) {
+25:         if (d == dr) return;
+26:         if (d != null) d.setCallback(null);
+27:         int ow = d == null ? -1 : d.getIntrinsicWidth(), oh = d == null ? -1 : d.getIntrinsicHeight();
+28:         d = dr;
+29:         if (dr != null) {
+30:             dr.setCallback(this);
+31:             if (tint != null) dr.setTintList(tint);
+32:             if (filter != null) dr.setColorFilter(filter);
+33:             dr.setState(getDrawableState());
+34:         }
+35:         if (dr == null || ow != dr.getIntrinsicWidth() || oh != dr.getIntrinsicHeight()) requestLayout();
+36:         invalidate();
+37:     }
+38:     public void setImageBitmap(Bitmap b) { setImageDrawable(b == null ? null : new BitmapDrawable(getResources(), b)); }
+39:     public void setImageIcon(Icon i) {}
+40:     public void setImageURI(android.net.Uri u) {
+41:         if (u == null) { setImageDrawable(null); return; }
+42:         try (java.io.InputStream in = getContext().getContentResolver().openInputStream(u)) {
+43:             setImageBitmap(BitmapFactory.decodeStream(in));
+44:         } catch (Exception e) {
+45:             setImageDrawable(null);
+46:         }
+47:     }
+48:     public Drawable getDrawable() { return d; }
+49:     public void setScaleType(ScaleType s) { scale = s; requestLayout(); invalidate(); }
+50:     public ScaleType getScaleType() { return scale; }
+51:     public void setImageTintList(ColorStateList t) { tint = t; if (d != null) d.setTintList(t); invalidate(); }
+52:     public ColorStateList getImageTintList() { return tint; }
+53:     public void setImageTintMode(PorterDuff.Mode m) {}
+54:     public void setColorFilter(int c) { setColorFilter(new PorterDuffColorFilter(c, PorterDuff.Mode.SRC_ATOP)); }
+55:     public void setColorFilter(int c, PorterDuff.Mode m) { setColorFilter(new PorterDuffColorFilter(c, m)); }
+56:     public void setColorFilter(ColorFilter f) { filter = f; if (d != null) d.setColorFilter(f); invalidate(); }
+57:     public void clearColorFilter() { setColorFilter(null); }
+58:     public void setAdjustViewBounds(boolean a) { adjust = a; requestLayout(); }
+59:     public void setMaxWidth(int w) { maxW = w; requestLayout(); }
+60:     public void setMaxHeight(int h) { maxH = h; requestLayout(); }
+61:     public void setImageAlpha(int a) { alpha = a; invalidate(); }
+62:     public void setImageMatrix(Matrix m) { matrix = m; invalidate(); }
+63:     public Matrix getImageMatrix() { return matrix == null ? new Matrix() : matrix; }
+64:     public void setCropToPadding(boolean c) {}
+65:     @Override protected boolean verifyDrawable(Drawable who) { return who == d || super.verifyDrawable(who); }
+66:     @Override protected void drawableStateChanged() { super.drawableStateChanged(); if (d != null && d.setState(getDrawableState())) invalidate(); }
+67: 
+68:     @Override protected void onMeasure(int ws, int hs) {
+69:         int iw = d == null ? 0 : Math.max(0, d.getIntrinsicWidth()), ih = d == null ? 0 : Math.max(0, d.getIntrinsicHeight());
+70:         int pw = getPaddingLeft() + getPaddingRight(), ph = getPaddingTop() + getPaddingBottom();
+71:         int w = Math.max(iw + pw, getSuggestedMinimumWidth()), h = Math.max(ih + ph, getSuggestedMinimumHeight());
+72:         int wm = MeasureSpec.getMode(ws), hm = MeasureSpec.getMode(hs);
+73:         if (adjust && iw > 0 && ih > 0) {
+74:             float ratio = iw / (float) ih;
+75:             if (wm == MeasureSpec.EXACTLY && hm != MeasureSpec.EXACTLY) {
+76:                 int ww = MeasureSpec.getSize(ws);
+77:                 int hh = Math.round((ww - pw) / ratio) + ph;
+78:                 setMeasuredDimension(ww, resolveSize(Math.min(hh, maxH), hs));
+79:                 return;
+80:             }
+81:             if (hm == MeasureSpec.EXACTLY && wm != MeasureSpec.EXACTLY) {
+82:                 int hh = MeasureSpec.getSize(hs);
+83:                 int ww = Math.round((hh - ph) * ratio) + pw;
+84:                 setMeasuredDimension(resolveSize(Math.min(ww, maxW), ws), hh);
+85:                 return;
+86:             }
+87:             if (wm == MeasureSpec.AT_MOST && w > MeasureSpec.getSize(ws)) {
+88:                 int ww = MeasureSpec.getSize(ws);
+89:                 setMeasuredDimension(ww, resolveSize(Math.round((ww - pw) / ratio) + ph, hs));
+90:                 return;
+91:             }
+92:         }
+93:         setMeasuredDimension(resolveSize(Math.min(w, maxW), ws), resolveSize(Math.min(h, maxH), hs));
+94:     }
+95: 
+96:     @Override protected void onDraw(Canvas c) {
+97:         if (d == null) return;
+98:         int pl = getPaddingLeft(), pt = getPaddingTop();
+99:         int aw = getWidth() - pl - getPaddingRight(), ah = getHeight() - pt - getPaddingBottom();
+100:         if (aw <= 0 || ah <= 0) return;
+101:         int iw = d.getIntrinsicWidth(), ih = d.getIntrinsicHeight();
+102:         float old = c.alpha;
+103:         c.alpha = old * alpha / 255f;
+104:         c.save();
+105:         c.clipRect(pl, pt, pl + aw, pt + ah);
+106:         if (iw <= 0 || ih <= 0 || scale == ScaleType.FIT_XY) {
+107:             d.setBounds(pl, pt, pl + aw, pt + ah);
+108:         } else {
+109:             float s;
+110:             switch (scale) {
+111:                 case CENTER: s = 1f; break;
+112:                 case CENTER_CROP: s = Math.max(aw / (float) iw, ah / (float) ih); break;
+113:                 case CENTER_INSIDE: s = Math.min(1f, Math.min(aw / (float) iw, ah / (float) ih)); break;
+114:                 case MATRIX: s = 1f; break;
+115:                 default: s = Math.min(aw / (float) iw, ah / (float) ih); break;
+116:             }
+117:             int w = Math.round(iw * s), h = Math.round(ih * s);
+118:             int x = pl + (aw - w) / 2, y = pt + (ah - h) / 2;
+119:             if (scale == ScaleType.FIT_START || scale == ScaleType.MATRIX) { x = pl; y = pt; }
+120:             if (scale == ScaleType.FIT_END) { x = pl + aw - w; y = pt + ah - h; }
+121:             d.setBounds(x, y, x + w, y + h);
+122:         }
+123:         if (matrix != null && scale == ScaleType.MATRIX) c.concat(matrix);
+124:         d.draw(c);
+125:         c.restore();
+126:         c.alpha = old;
+127:     }
+128: }

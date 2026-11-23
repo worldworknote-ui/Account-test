@@ -1,0 +1,31 @@
+1: import com.smart.hawala.*;
+2: import java.io.*;
+3: import java.util.*;
+4: public class ListTest {
+5:   static int fails = 0;
+6:   static void check(boolean c, String m) { System.out.println((c ? "  PASS " : "  FAIL ") + m); if (!c) fails++; }
+7:   static Model.Tx tx(long id, String type, long amt, String cur, String status) {
+8:     Model.Tx t = new Model.Tx(); t.id = id; t.officeId = 1; t.type = type; t.amount = amt; t.currency = cur; t.status = status;
+9:     t.person = "شخص " + id; t.description = "بيان"; t.notes = ""; t.uuid = "abcd-" + id; t.feeType = Model.FEE_NONE; t.feeCurrency = cur; t.createdAt = 1760000000000L + id * 1000; t.userName = "";
+10:     return t; }
+11:   public static void main(String[] a) throws Exception {
+12:     List<Model.Tx> txs = Arrays.asList(tx(1, Model.TYPE_DEBIT, 1000, "USD", "ACTIVE"), tx(2, Model.TYPE_CREDIT, 500, "USD", "CANCELLED"));
+13:     Map<Long,String> names = new HashMap<>(); names.put(1L, "مكتب");
+14:     Map<String,Integer> dec = new HashMap<>(); dec.put("USD", 2);
+15:     Map<Long,List<Long>> att = new HashMap<>(); att.put(1L, Arrays.asList(7L, 8L));
+16:     Report r = Reports.txList("نتائج البحث", Arrays.asList("بحث: x"), txs, names, dec, "مكتبي", 1760000000000L, att);
+17:     check(r.dataRows() == 2, "txList has 2 rows");
+18:     Report.Section s = r.sections.get(0);
+19:     check(s.rows.get(0).images != null && s.rows.get(0).images.size() == 2, "images attached to tx row 1");
+20:     check(s.rows.get(1).images == null, "no images for row 2");
+21:     Report r2 = Reports.txList("سجل", new ArrayList<String>(), txs, names, dec, "", 1760000000000L);
+22:     check(r2.sections.get(0).rows.get(0).images == null, "old overload: no images");
+23:     Map<String,long[]> stats = new TreeMap<>(); stats.put("USD", new long[]{1000, 0, 0, 0, 1});
+24:     Report d = Reports.daily("2025/10/09", stats, txs, names, dec, "مكتبي", 1760000000000L, att);
+25:     check(d.dataRows() == 3, "daily has stats + 2 tx rows: " + d.dataRows());
+26:     try (OutputStream o = new FileOutputStream(a[0] + "/list.xlsx")) { XlsxWriter.write(r, o, "FF0B6B53", TimeZone.getTimeZone("Asia/Damascus")); }
+27:     try (OutputStream o = new FileOutputStream(a[0] + "/daily.xlsx")) { XlsxWriter.write(d, o, "FF0B6B53", TimeZone.getTimeZone("Asia/Damascus")); }
+28:     System.out.println(fails == 0 ? "ALL PASS" : fails + " FAILED");
+29:     System.exit(fails == 0 ? 0 : 1);
+30:   }
+31: }

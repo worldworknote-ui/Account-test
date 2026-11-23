@@ -1,0 +1,198 @@
+773:         for (String k : (raw == null ? "" : raw).split(",")) if (!k.trim().isEmpty()) s.add(k.trim());
+774:         s.remove("settings");
+775:         return s;
+776:     }
+777: 
+778:     static Map<String, String> parseColors(String raw) {
+779:         Map<String, String> m = new HashMap<>();
+780:         for (String part : (raw == null ? "" : raw).split(";")) {
+781:             int i = part.indexOf('=');
+782:             if (i > 0) m.put(part.substring(0, i).trim(), part.substring(i + 1).trim());
+783:         }
+784:         return m;
+785:     }
+786: 
+787:     static String joinColors(Map<String, String> m) {
+788:         StringBuilder sb = new StringBuilder();
+789:         for (Map.Entry<String, String> e : m.entrySet()) {
+790:             if (e.getValue() == null || e.getValue().isEmpty()) continue;
+791:             if (sb.length() > 0) sb.append(';');
+792:             sb.append(e.getKey()).append('=').append(e.getValue());
+793:         }
+794:         return sb.toString();
+795:     }
+796: 
+797:     static String welcomeText(String template, String office) {
+798:         String t = template == null ? "" : template;
+799:         String o = office == null ? "" : office.trim();
+800:         return t.replace("{المكتب}", o).replace("{office}", o).trim();
+801:     }
+802: 
+803:     Auth.Perm permFor(String key) {
+804:         switch (key) {
+805:             case "tx": return Auth.Perm.TX_ADD;
+806:             case "office": return Auth.Perm.OFFICES;
+807:             case "currency": return Auth.Perm.CURRENCIES;
+808:             case "backup": return Auth.Perm.BACKUP;
+809:             case "cash": return Auth.Perm.VIEW;
+810:             case "settings": return null;
+811:             default: return Auth.Perm.VIEW;
+812:         }
+813:     }
+814: 
+815:     void openHome(String k) {
+816:         switch (k) {
+817:             case "tx": txScreen.showNew(); break;
+818:             case "log": logScreen.show(false); break;
+819:             case "statement": officePicker(statementScreen::show); break;
+820:             case "totals": balancesScreen.show(); break;
+821:             case "daily": dailyScreen.show(Clock.now()); break;
+822:             case "search": logScreen.show(true); break;
+823:             case "office": officeHub.showList(); break;
+824:             case "currency": officesScreen.showCurrencies(); break;
+825:             case "backup": backupScreen.backupDialog(); break;
+826:             case "cash": cashScreen.show(); break;
+827:             case "reports": reportsScreen.show(); break;
+828:             case "mine": mineScreen.show(); break;
+829:             default: settingsScreen.show(); break;
+830:         }
+831:     }
+832: 
+833:     @Override void openTab(String key) {
+834:         switch (key) {
+835:             case "home": showHome(); break;
+836:             case "offices": officeHub.showList(); break;
+837:             case "tx": txScreen.showNew(); break;
+838:             case "log": logScreen.show(false); break;
+839:             case "cash": cashScreen.show(); break;
+840:             case "clients": cashScreen.clients.list(); break;
+841:             case "mine": mineScreen.show(); break;
+842:             case "reports": reportsScreen.show(); break;
+843:             case "balances": balancesScreen.show(); break;
+844:             case "daily": dailyScreen.show(Clock.now()); break;
+845:             default: moreScreen.show(); break;
+846:         }
+847:     }
+848: 
+849:     /** 10.6: خيارات زر «تسجيل» المتاحة لهذا المستخدم. */
+850:     @Override java.util.List<RecordMenu.Item> recordItems() { return RecordMenu.allowed(this::can); }
+851: 
+852:     @Override void openRecord(String key, Model.Office office) {
+853:         if (office != null && office.active) db.setSettingQuiet("last_office", "" + office.id);
+854:         if (RecordMenu.FX.equals(key)) fxScreen.show(null);
+855:         else if (RecordMenu.XFER.equals(key)) fxScreen.transfer(null, office);
+856:         else txScreen.showNew();
+857:     }
+858: 
+859:     // ===================================================================================
+860:     // 10.15: قائمة «+» المروحية فوق زر «تسجيل» في الشريط الزجاجي (من «أموالي»)
+861:     // ===================================================================================
+862: 
+863:     private FanMenu fan;
+864: 
+865:     /** هل يملك المستخدم ما يفعله زر القائمة؟ (القواعد نفسها تُفرض مرة أخرى في طبقة البيانات عند الحفظ) */
+866:     boolean fanAllowed(String k) {
+867:         switch (k) {
+868:             case "TX": case "XFER": case "WA": return can(Auth.Perm.TX_ADD);
+869:             case "FX": return can(Auth.Perm.TX_ADD) && can(Auth.Perm.TX_EDIT);
+870:             case "DAILY": return can(Auth.Perm.VIEW);
+871:             default: return can(Auth.Perm.CASH);
+872:         }
+873:     }
+874: 
+875:     static int fanIcon(String k) {
+876:         switch (k) {
+877:             case "TX": return R.drawable.ic_plus;
+878:             case "FX": case "SELL": case "BUY": return R.drawable.ic_coins;
+879:             case "XFER": return R.drawable.ic_transfer;
+880:             case "WA": return R.drawable.ic_paste;
+881:             case "CASH_IN": return R.drawable.ic_download;
+882:             case "CASH_OUT": return R.drawable.ic_upload;
+883:             case "EXP": return R.drawable.ic_tag;
+884:             case "COUNT": return R.drawable.ic_check2;
+885:             default: return R.drawable.ic_calendar;
+886:         }
+887:     }
+888: 
+889:     /** أزرار الصندوق: الصندوق غير مهيأ ← شاشة تهيئته؛ مقفل ← يُفتح أولًا. */
+890:     private void cashDo(Runnable r) {
+891:         if (!require(Auth.Perm.CASH)) return;
+892:         if (!db.cashConfig().on) cashScreen.show();
+893:         else cashScreen.guard(r);
+894:     }
+895: 
+896:     void fanAction(String k) {
+897:         switch (k) {
+898:             case "TX": openRecord(RecordMenu.TX, null); break;
+899:             case "FX": openRecord(RecordMenu.FX, null); break;
+900:             case "XFER": openRecord(RecordMenu.XFER, null); break;
+901:             case "WA": homeScreen.pasteFromClipboard(); break;
+902:             case "CASH_IN": cashScreen.form(CashBox.IN, null); break;
+903:             case "CASH_OUT": cashScreen.form(CashBox.OUT, null); break;
+904:             case "SELL": cashDo(() -> cashScreen.trade(CashBox.SELL)); break;
+905:             case "BUY": cashDo(() -> cashScreen.trade(CashBox.BUY)); break;
+906:             case "EXP": cashDo(cashScreen::expense); break;
+907:             case "COUNT": cashDo(cashScreen::count); break;
+908:             default: dailyScreen.show(Clock.now());
+909:         }
+910:     }
+911: 
+912:     /** أزرار القائمة المتاحة لهذا المستخدم بالترتيب الذي اختاره. */
+913:     java.util.List<String> fanKeys() {
+914:         java.util.List<String> out = new java.util.ArrayList<>();
+915:         for (String k : nav().fan) if (fanAllowed(k)) out.add(k);
+916:         return out;
+917:     }
+918: 
+919:     @Override void plusPressed(final NotchBar nb, final int center, final int activeIdx) {
+920:         if (fan != null && (fan.getParent() == null || fan.isClosing())) fan = null;
+921:         if (fan != null) {
+922:             fan.close(null);
+923:             return;
+924:         }
+925:         final java.util.List<String> keys = fanKeys();
+926:         // القائمة مطفأة، أو لا يبقى فيها زران للمستخدم: صفحة التسجيل مباشرة كما كانت
+927:         if (!nav().plusMenu || keys.size() < 2 || frame == null) {
+928:             if (keys.size() == 1 && nav().plusMenu) fanAction(keys.get(0));
+929:             else openTab("tx");
+930:             return;
+931:         }
+932:         nb.slideTo(center);
+933:         final boolean[] chosen = {false};
+934:         java.util.List<FanMenu.Item> items = new java.util.ArrayList<>();
+935:         for (final String k : keys) {
+936:             android.graphics.drawable.Drawable ic = getDrawable(fanIcon(k));
+937:             items.add(new FanMenu.Item(NavPrefs.itemName(k), ic, nav().itemColor(k), true, () -> {
+938:                 chosen[0] = true;
+939:                 fanAction(k);
+940:             }));
+941:         }
+942:         final FanMenu f = new FanMenu(this, items, () -> {
+943:             float[] cc = nb.circleCenter(center);
+944:             return new float[]{cc[0] + nb.getX(), cc[1] + nb.getY()};
+945:         }, text("ا", 10, ink, true).getTypeface(), nav(), () -> {
+946:             fan = null;
+947:             if (!chosen[0]) nb.slideTo(activeIdx);
+948:         });
+949:         fan = f;
+950:         // المروحة تحت الشريط في الترتيب حتى يبقى الزر ظاهرًا فوق العتمة
+951:         int at = frame.indexOfChild(nb);
+952:         frame.addView(f, at < 0 ? frame.getChildCount() : at, new android.widget.FrameLayout.LayoutParams(-1, -1));
+953:         f.open();
+954:     }
+955: 
+956:     /** زر الرجوع يغلق القائمة المفتوحة أولًا. */
+957:     boolean closeFan() {
+958:         if (fan != null && (fan.getParent() == null || fan.isClosing())) fan = null;
+959:         if (fan == null) return false;
+960:         fan.close(null);
+961:         return true;
+962:     }
+963: 
+964:     /** 10.2: هل يملك المستخدم الحالي ما يفتحه هذا التبويب؟ (ما لا يملكه لا يظهر له أصلًا) */
+965:     boolean tabAllowed(String k) {
+966:         switch (k) {
+967:             case "tx": return can(Auth.Perm.TX_ADD);
+968:             case "cash": case "clients": return can(Auth.Perm.CASH);
+969:             case "mine": return mineScreen.available();
+970:             case "log": return can(Auth.Perm.VIEW) || can(Auth.Perm.TX_ADD);

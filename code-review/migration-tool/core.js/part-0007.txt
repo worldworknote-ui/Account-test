@@ -1,0 +1,148 @@
+999:           notes: st.account.code ? "رمز الحساب في البرنامج السابق: " + st.account.code : "" });
+1000:       }
+1001:       var o = model.offices[i];
+1002:       o.variants[clean(name)] = true;
+1003:       model.used[code] = true;
+1004:       var files = model.lastBalance = model.lastBalance || {};
+1005:       files[accKey + "|" + code] = { minor: -chk.final, src: st.footer ? st.footer.src : st.src };
+1006:       var preDt = st.pre ? parseDate(st.pre.date, order, serialToDate) : null;
+1007:       var firstAt = rowsAt.filter(Boolean)[0] || null;
+1008:       var startDt = preDt || st.from || firstAt;
+1009:       var openWhen = startDt ? new Date(startDt.y, startDt.m - 1, startDt.d, 0, 0, 0).getTime() - 60000 : (cfg.openingDate || cfg.now);
+1010:       if (opt.balancesOnly) {
+1011:         // الأرصدة النهائية فقط: رصيد واحد بتاريخ نهاية الكشف
+1012:         var endDt = st.to || rowsAt.filter(Boolean).slice(-1)[0] || preDt;
+1013:         var endWhen = endDt ? new Date(endDt.y, endDt.m - 1, endDt.d, 23, 0, 0).getTime() : cfg.now;
+1014:         if (endWhen > cfg.now) endWhen = cfg.now;
+1015:         if (chk.final !== 0n) {
+1016:           model.openings.push({ office: i, code: code, minor: -chk.final, when: endWhen, src: st.src });
+1017:           o.openings++;
+1018:         } else o.emptyOk = true;
+1019:         return;
+1020:       }
+1021:       if (chk.s0 !== 0n) {
+1022:         model.openings.push({ office: i, code: code, minor: -chk.s0, when: openWhen, src: st.pre ? st.pre.src : st.src, inline: true });
+1023:         o.openings++;
+1024:       }
+1025:       var last = null;
+1026:       chk.rows.forEach(function (r, k) {
+1027:         if (r.x.carry) { skip(model, r.x.src, "رصيد منقول (للتحقق فقط)"); return; }
+1028:         var when = epoch(rowsAt[k], 12);
+1029:         var parts = [];
+1030:         if (r.d > 0n) parts.push(["D", r.d]);
+1031:         if (r.c > 0n) parts.push(["C", r.c]);
+1032:         if (!parts.length) { skip(model, r.x.src, "صف بلا مبلغ"); return; }
+1033:         if (parts.length === 2) model.both++;
+1034:         // «Com فلان» بعد حركة «فلان» في اليوم نفسه: أجرتها (اختياري)
+1035:         var cm = opt.mergeCom && parts.length === 1 ? r.x.desc.match(/^\s*com\.?\s+(.+)$/i) : null;
+1036:         if (cm && last && last.when === when && !last.fee && clean(last.desc) === clean(cm[1])) {
+1037:           last.fee = parts[0][1];
+1038:           last.feeDir = parts[0][0];
+1039:           last.notes += " • الأجرة من صف " + r.x.src.row;
+1040:           return;
+1041:         }
+1042:         parts.forEach(function (p) {
+1043:           var t = { office: i, when: when, dir: p[0], minor: p[1], code: code, person: "", desc: r.x.desc,
+1044:             notes: "منقولة من: " + r.x.src.sheet + " — صف " + r.x.src.row, fee: 0n, feeDir: "D", src: r.x.src, seq: model.txs.length };
+1045:           model.txs.push(t);
+1046:           o.tx++;
+1047:           last = parts.length === 1 ? t : null;
+1048:         });
+1049:         model.rowsRead++;
+1050:       });
+1051:     });
+1052:     model.offices.forEach(function (o) {
+1053:       var v = Object.keys(o.variants);
+1054:       if (v.length > 1) model.warnings.push("الحساب «" + o.name + "» مكتوب بأكثر من اسم في الكشوفات: " + v.join(" / ") + " (جُمع برمز الحساب).");
+1055:     });
+1056:     if (model.both > 0) model.warnings.push(model.both + " صف فيه مبلغ «لنا» ومبلغ «علينا» معًا: سُجّل كل منها حركة مستقلة.");
+1057:     return model;
+1058:   }
+1059: 
+1060:   // ===================================================================================
+1061:   // جداول النسخة الاحتياطية (مطابقة لما يكتبه التطبيق في Db.addOffice و Db.addTx)
+1062:   // ===================================================================================
+1063: 
+1064:   var TYPE_DEBIT = "مدين / لنا", TYPE_CREDIT = "دائن / علينا";
+1065:   var FEE_NONE = "بدون أجرة", FEE_US = "الأجرة لنا", FEE_THEM = "الأجرة علينا";
+1066:   var TABLE_ORDER = ["currencies", "offices", "office_currencies", "tx", "journal_entries", "journal_lines",
+1067:     "opening_balances", "exchange_rates", "settings", "audit_logs", "reconciliations", "reconciliation_lines"];
+1068: 
+1069:   function num(b) {
+1070:     var n = Number(b);
+1071:     if (!Number.isSafeInteger(n)) throw new Error("مبلغ أكبر من الحد المسموح");
+1072:     return n;
+1073:   }
+1074: 
+1075:   function uuid(rand) {
+1076:     var b = rand(16);
+1077:     b[6] = (b[6] & 0x0f) | 0x40;
+1078:     b[8] = (b[8] & 0x3f) | 0x80;
+1079:     var h = Array.prototype.map.call(b, function (x) { return (x < 16 ? "0" : "") + x.toString(16); }).join("");
+1080:     return h.slice(0, 8) + "-" + h.slice(8, 12) + "-" + h.slice(12, 16) + "-" + h.slice(16, 20) + "-" + h.slice(20);
+1081:   }
+1082: 
+1083:   function tables(model, cfg, rand) {
+1084:     var T = {};
+1085:     TABLE_ORDER.forEach(function (t) { T[t] = []; });
+1086:     // العملات: الافتراضية + المستخدمة
+1087:     var codes = DEFAULT_CODES.slice();
+1088:     Object.keys(model.used).forEach(function (c) { if (codes.indexOf(c) < 0) codes.push(c); });
+1089:     codes.forEach(function (c) {
+1090:       var d = curDef(cfg, c) || { name: c, dec: 2 };
+1091:       T.currencies.push({ code: c, name: d.name || c, decimals: d.dec, active: 1 });
+1092:     });
+1093:     // المكاتب وعملاتها
+1094:     var officeCur = model.offices.map(function () { return {}; });
+1095:     model.openings.forEach(function (o) { officeCur[o.office][o.code] = true; });
+1096:     model.txs.forEach(function (t) { officeCur[t.office][t.code] = true; });
+1097:     model.offices.forEach(function (o, i) {
+1098:       T.offices.push({ id: i + 1, name: o.name, short_name: "", phone: o.phone || "", location: "", contact: "", notes: o.notes || "",
+1099:         active: 1, usd_limit_minor: null, usd_owe_limit_minor: null, pinned: 0 });
+1100:       var cs = Object.keys(officeCur[i]).sort();
+1101:       if (cs.length === 0) cs = [cfg.defaultCurrency || "USD"];
+1102:       cs.forEach(function (c) { T.office_currencies.push({ office_id: i + 1, code: c, limit_minor: null, limit_owe_minor: null }); });
+1103:     });
+1104:     var entryId = 0, lineId = 0;
+1105:     function post(txId, kind, office, cur, debit, credit, when) {
+1106:       // مثل Db.postEntry: سطر المكتب + سطر الحساب المقابل بقيمة معاكسة
+1107:       if (debit < 0n || credit < 0n || debit === credit) throw new Error("قيد غير صالح");
+1108:       var eid = ++entryId;
+1109:       T.journal_entries.push({ id: eid, tx_id: txId, kind: kind, created_at: when, reverses_id: null, status: "POSTED" });
+1110:       T.journal_lines.push({ id: ++lineId, entry_id: eid, account: "OFFICE", office_id: office, currency: cur, debit_minor: num(debit), credit_minor: num(credit) });
+1111:       var contra = kind === "FEE" ? (debit > 0n ? "FEE_REVENUE" : "FEE_EXPENSE") : (kind === "OPENING" ? "OPENING" : "SETTLEMENT");
+1112:       T.journal_lines.push({ id: ++lineId, entry_id: eid, account: contra, office_id: null, currency: cur, debit_minor: num(credit), credit_minor: num(debit) });
+1113:       return eid;
+1114:     }
+1115:     // الأرصدة الافتتاحية أولًا (بترتيب التاريخ)
+1116:     var opens = model.openings.slice().sort(function (a, b) { return a.when - b.when; });
+1117:     var obId = 0;
+1118:     opens.forEach(function (o) {
+1119:       var us = o.minor > 0n;
+1120:       var amt = us ? o.minor : -o.minor;
+1121:       var eid = post(null, "OPENING", o.office + 1, o.code, us ? amt : 0n, us ? 0n : amt, o.when);
+1122:       T.opening_balances.push({ id: ++obId, office_id: o.office + 1, currency: o.code, type: us ? "لنا" : "علينا", amount_minor: num(amt), entry_id: eid });
+1123:     });
+1124:     // الحركات بترتيب التاريخ ثم ترتيبها في الملف
+1125:     var txs = model.txs.slice().sort(function (a, b) { return a.when - b.when || a.seq - b.seq; });
+1126:     var txId = 0;
+1127:     var user = cfg.userName || "نقل من البرنامج السابق";
+1128:     txs.forEach(function (t) {
+1129:       var id = ++txId;
+1130:       var hasFee = t.fee > 0n;
+1131:       var feeType = hasFee ? (t.feeDir === "D" ? FEE_US : FEE_THEM) : FEE_NONE;
+1132:       T.tx.push({ id: id, uuid: uuid(rand), office_id: t.office + 1, type: t.dir === "D" ? TYPE_DEBIT : TYPE_CREDIT, person: t.person || "",
+1133:         amount_minor: num(t.minor), currency: t.code, fee_type: feeType, fee_minor: hasFee ? num(t.fee) : 0, fee_currency: t.code,
+1134:         description: t.desc || "", notes: t.notes || "", created_at: t.when, user_name: user, status: "ACTIVE", replaces_id: null });
+1135:       post(id, "PRINCIPAL", t.office + 1, t.code, t.dir === "D" ? t.minor : 0n, t.dir === "C" ? t.minor : 0n, t.when);
+1136:       if (hasFee) post(id, "FEE", t.office + 1, t.code, t.feeDir === "D" ? t.fee : 0n, t.feeDir === "C" ? t.fee : 0n, t.when);
+1137:     });
+1138:     if (cfg.officeName) T.settings.push({ k: "office_name", v: cfg.officeName });
+1139:     T.settings.push({ k: "migrated_at", v: String(cfg.now) });
+1140:     T.audit_logs.push({ id: 1, action: "MIGRATION", entity: "import", entity_id: 0, user_name: user,
+1141:       reason: "نقل من " + (cfg.sourceName || "ملف Excel") + ": " + T.offices.length + " مكتب، " + T.tx.length + " حركة، " + T.opening_balances.length + " رصيد سابق",
+1142:       created_at: cfg.now });
+1143:     return T;
+1144:   }
+1145: 
+1146:   /** الأرصدة من أسطر القيود تمامًا كما يحسبها التطبيق: مجموع (مدين − دائن) لحساب المكتب. */

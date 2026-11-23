@@ -1,0 +1,174 @@
+1382:         }
+1383:         if (grew) saveRemoved(removed);
+1384:         for (String dev : removed.keySet()) all.remove(dev);
+1385:         // 10.17: تسميات الأجهزة (من المدير أو من الجهاز نفسه): تُدمج من كل البطاقات، والأحدث يفوز
+1386:         try {
+1387:             Map<String, JSONObject> rn = renamesMap();
+1388:             boolean newer = false;
+1389:             for (JSONObject m : all.values()) {
+1390:                 JSONObject r = m.optJSONObject("renames");
+1391:                 if (r == null) continue;
+1392:                 for (java.util.Iterator<String> it = r.keys(); it.hasNext(); ) {
+1393:                     String k = it.next();
+1394:                     JSONObject x = r.optJSONObject(k), have = rn.get(k);
+1395:                     if (x == null || x.optString("name").trim().isEmpty()) continue;
+1396:                     if (have == null || x.optLong("at") > have.optLong("at")) {
+1397:                         rn.put(k, x);
+1398:                         newer = true;
+1399:                     }
+1400:                 }
+1401:             }
+1402:             if (newer) saveRenames(rn);
+1403:             String me = nz(SyncStore.meta(db.getReadableDatabase(), "device"));
+1404:             for (Map.Entry<String, JSONObject> e : rn.entrySet()) {
+1405:                 String nm = e.getValue().optString("name").trim();
+1406:                 if (nm.isEmpty()) continue;
+1407:                 JSONObject card = all.get(e.getKey());
+1408:                 if (card != null) card.put("name", nm);
+1409:                 // هذا الجهاز سمّاه المدير: يعتمد الاسم (وتحمله بطاقته من الجولة التالية)
+1410:                 if (e.getKey().equals(me) && !nm.equals(SyncStore.meta(db.getReadableDatabase(), "device_name"))) SyncStore.setMeta(db.getWritableDatabase(), "device_name", nm);
+1411:             }
+1412:         } catch (Exception ignored) {
+1413:             // التسمية للعرض فقط
+1414:         }
+1415:         return all;
+1416:     }
+1417: 
+1418:     Map<String, JSONObject> removedMap() {
+1419:         Map<String, JSONObject> out = new TreeMap<>();
+1420:         try {
+1421:             String s = SyncStore.meta(db.getReadableDatabase(), "removed");
+1422:             JSONArray a = new JSONArray(s == null ? "[]" : s);
+1423:             for (int i = 0; i < a.length(); i++) out.put(a.getJSONObject(i).optString("dev"), a.getJSONObject(i));
+1424:         } catch (Exception ignored) {
+1425:             // فارغة
+1426:         }
+1427:         return out;
+1428:     }
+1429: 
+1430:     void saveRemoved(Map<String, JSONObject> removed) {
+1431:         JSONArray a = new JSONArray();
+1432:         for (JSONObject x : removed.values()) a.put(x);
+1433:         SyncStore.setMeta(db.getWritableDatabase(), "removed", a.toString());
+1434:     }
+1435: 
+1436:     /** 10.4: بطاقات الأعضاء تُقرأ مرة واحدة في الجولة (طلبات أقل إلى Drive والخادم والمجلد). */
+1437:     private Map<String, JSONObject> roundMembers;
+1438: 
+1439:     Map<String, JSONObject> readMembersRaw(SyncCrypto.Keys keys) throws IOException {
+1440:         if (roundMembers != null) return new TreeMap<>(roundMembers);
+1441:         Map<String, JSONObject> out = new TreeMap<>();
+1442:         membersIncomplete = false;
+1443:         for (String n : folder.list("m-")) {
+1444:             byte[] b = null;
+1445:             // 10.18: بطاقة لم تُقرأ (تُستبدل الآن على جهاز صاحبها، أو تعثّر التنزيل) تُعاد محاولتها؛ وإن بقيت ناقصة فالقائمة «غير مكتملة»:
+1446:             // لا يُعلن خروج جهاز ولا يُحذف شيء من الخزنة اعتمادًا عليها
+1447:             for (int attempt = 0; attempt < 3 && b == null; attempt++) {
+1448:                 try {
+1449:                     b = folder.read(n);
+1450:                 } catch (IOException e) {
+1451:                     b = null;
+1452:                 }
+1453:                 if (b == null && attempt < 2) try {
+1454:                     Thread.sleep(400L * (attempt + 1));
+1455:                 } catch (InterruptedException ie) {
+1456:                     Thread.currentThread().interrupt();
+1457:                 }
+1458:             }
+1459:             if (b == null) {
+1460:                 membersIncomplete = true;
+1461:                 continue;
+1462:             }
+1463:             try {
+1464:                 JSONObject m = new JSONObject(new String(keys.openFile("m", n, b), StandardCharsets.UTF_8));
+1465:                 if (!keys.vaultId.equals(m.optString("vault"))) continue;
+1466:                 if (!n.equals(keys.fileName("m-", "member:" + m.optString("dev")))) continue;
+1467:                 out.put(m.getString("dev"), m);
+1468:             } catch (Exception e) {
+1469:                 // ملف عضو لم يكتمل وصوله أو من خزنة أخرى: يُتجاهل، والقائمة تُعد غير مكتملة
+1470:                 membersIncomplete = true;
+1471:             }
+1472:         }
+1473:         return out;
+1474:     }
+1475: 
+1476:     /** 10.18: آخر قراءة لبطاقات الأجهزة لم تكتمل (بطاقة لم تُقرأ أو لم تُفك). */
+1477:     private boolean membersIncomplete;
+1478: 
+1479:     void writeMember() throws Exception {
+1480:         SyncCrypto.Keys keys = keys();
+1481:         SQLiteDatabase d = db.getReadableDatabase();
+1482:         String dev = SyncStore.meta(d, "device");
+1483:         JSONObject m = new JSONObject();
+1484:         m.put("vault", keys.vaultId);
+1485:         m.put("dev", dev);
+1486:         m.put("name", nz(SyncStore.meta(d, "device_name")));
+1487:         m.put("platform", platform());
+1488:         m.put("app", BuildInfo.VERSION);
+1489:         m.put("prefix", lng(SyncStore.meta(d, "prefix")));
+1490:         m.put("seq", lng(SyncStore.meta(d, "my_seq")));
+1491:         m.put("hash", nz(SyncStore.meta(d, "my_hash")));
+1492:         m.put("cursors", new JSONObject(SyncStore.cursors(d)));
+1493:         m.put("digest", SyncStore.digest(d));
+1494:         m.put("at", Clock.now());
+1495:         JSONObject rnj = new JSONObject();
+1496:         for (Map.Entry<String, JSONObject> e : renamesMap().entrySet()) rnj.put(e.getKey(), e.getValue());
+1497:         m.put("renames", rnj);
+1498:         m.put("fmt", FORMAT);
+1499:         String snap = SyncStore.meta(d, "snap");
+1500:         if (snap != null) m.put("snap", new JSONObject(snap));
+1501:         // 10.4: الأجهزة المُزالة تنتقل من بطاقة إلى بطاقة فلا تُنسى
+1502:         Map<String, JSONObject> removed = removedMap();
+1503:         if (!removed.isEmpty()) {
+1504:             JSONArray ra = new JSONArray();
+1505:             for (JSONObject x : removed.values()) ra.put(x);
+1506:             m.put("removed", ra);
+1507:         }
+1508:         String name = keys.fileName("m-", "member:" + dev);
+1509:         folder.write(name, keys.sealFile("m", name, m.toString().getBytes(StandardCharsets.UTF_8)));
+1510:         if (roundMembers != null) roundMembers.put(dev, m);
+1511:     }
+1512: 
+1513:     /** لقطة كاملة لحالة هذا الجهاز مع مؤشراته (يبدأ منها المنضم). تُختم الحزم المعلّقة قبلها فتكون اللقطة = ما حتى my_seq. */
+1514:     void writeSnapshot() throws Exception {
+1515:         sealPending();
+1516:         SyncCrypto.Keys keys = keys();
+1517:         SQLiteDatabase d = db.getWritableDatabase();
+1518:         JSONObject cursors = new JSONObject(), hashes = new JSONObject();
+1519:         List<Object[]> atts = new ArrayList<>();
+1520:         byte[] zip, zipInside = null;
+1521:         File copy = null;
+1522:         String dev;
+1523:         long mySeq;
+1524:         d.beginTransaction();
+1525:         try {
+1526:             // داخل معاملة كتابة: لا يتغير شيء بين قراءة المؤشرات وكتابة اللقطة
+1527:             dev = SyncStore.meta(d, "device");
+1528:             mySeq = lng(SyncStore.meta(d, "my_seq"));
+1529:             try (Cursor c = d.rawQuery("SELECT dev,seq,hash FROM sync_cursor", null)) {
+1530:                 while (c.moveToNext()) {
+1531:                     cursors.put(c.getString(0), c.getLong(1));
+1532:                     hashes.put(c.getString(0), c.getString(2));
+1533:                 }
+1534:             }
+1535:             cursors.put(dev, mySeq);
+1536:             hashes.put(dev, nz(SyncStore.meta(d, "my_hash")));
+1537:             // 10.4: اللقطة بلا صور (الصور ملفات مستقلة تشير إليها اللقطة ببصمتها)
+1538:             try (Cursor c = d.rawQuery("SELECT id,tx_id,path,mime,created_at FROM attachments ORDER BY id", null)) {
+1539:                 while (c.moveToNext()) atts.add(new Object[]{c.getLong(0), c.getLong(1), c.getString(2), c.getString(3), c.isNull(4) ? 0L : c.getLong(4)});
+1540:             }
+1541:             // 12.7: نسخة من الملف داخل المعاملة (لحظات)، وبناء اللقطة منها خارجها: لا تنتظر الشاشة ولا الحركات الجديدة
+1542:             copy = db.copyForRead("snap");
+1543:             if (copy == null) {
+1544:                 ByteArrayOutputStream o = new ByteArrayOutputStream();
+1545:                 BackupFormat.write(withoutAttachments(db.backupSource()), o, BuildInfo.VERSION, Db.VER);
+1546:                 zipInside = o.toByteArray();
+1547:             }
+1548:             d.setTransactionSuccessful();
+1549:         } finally {
+1550:             d.endTransaction();
+1551:         }
+1552:         if (zipInside != null) zip = zipInside;
+1553:         else {
+1554:             try {
+1555:                 SQLiteDatabase src = db.openReadCopy(copy);

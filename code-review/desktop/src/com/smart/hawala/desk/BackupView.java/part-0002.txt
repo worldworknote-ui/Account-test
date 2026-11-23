@@ -1,0 +1,154 @@
+130:                 + "النسخ المأخوذة بعد تفعيله لا تفتحها الإصدارات الأقدم من 10.14.", 12.5f, Ui.muted, w));
+131:         add(rc);
+132:         space(12);
+133: 
+134:         // تمرين الاستعادة
+135:         Ui.Card dr = Ui.card();
+136:         dr.add(Ui.heading("تمرين الاستعادة"));
+137:         String ds = db.setting("restore_drill_status", "");
+138:         dr.add(Ui.para(ds.isEmpty() ? "لم تُجرَّب استعادة أي نسخة بعد. النسخة التي لم تُجرَّب لا تُعدّ نسخة: اختر ملف نسخة لفكه وفحصه كاملًا دون تغيير بياناتك."
+139:                 : ds.substring(ds.indexOf('|') + 1) + " — " + Model.date(db.settingLong("restore_drill_at", 0)), 13.5f, Ui.ink, w));
+140:         dr.add(Ui.flow(Ui.ghost("جرّب استعادة نسخة (دون تغيير شيء)…", e -> drill())));
+141:         add(dr);
+142:         space(12);
+143: 
+144:         // نسخ الأمان
+145:         Ui.Card sn = Ui.card();
+146:         sn.add(Ui.heading("نسخ الأمان (التراجع)"));
+147:         sn.add(Ui.para("تُحفظ تلقائيًا قبل كل استعادة أو دمج أو حذف مكتب أو إضافة ملف نقل (آخر 3).", 13, Ui.muted, w));
+148:         List<Snapshot.Info> snaps = Snapshot.list(app.ctx);
+149:         if (snaps.isEmpty()) sn.add(Ui.label("لا توجد نسخ أمان بعد.", 13.5f, Ui.muted, false));
+150:         for (Snapshot.Info x : snaps) {
+151:             JPanel r = Ui.row(Ui.label(Model.date(x.time) + " — قبل " + (x.label.isEmpty() ? "آخر استعادة" : x.label), 14, Ui.ink, false), Box.createHorizontalGlue(),
+152:                     Ui.ghost("تراجع إليها", e -> revert(x)));
+153:             sn.add(r);
+154:         }
+155:         add(sn);
+156:         done();
+157:     }
+158: 
+159:     // ===================================================================================
+160:     // إنشاء نسخة يدوية
+161:     // ===================================================================================
+162: 
+163:     static char[][] askNewPassword(Component parent, String title) {
+164:         JPanel c = Ui.column();
+165:         JPasswordField p1 = Ui.password(), p2 = Ui.password();
+166:         c.add(Ui.labeled("كلمة المرور (8 محارف على الأقل)", p1));
+167:         c.add(Ui.gap(8));
+168:         c.add(Ui.labeled("أعد كتابتها", p2));
+169:         c.add(Ui.gap(8));
+170:         c.add(Ui.para("احفظها خارج الجهاز (ورقة أو مدير كلمات مرور). بدونها لا تُستعاد النسخة على أي جهاز.", 12.5f, Ui.red, 360));
+171:         c.setPreferredSize(new Dimension(400, c.getPreferredSize().height));
+172:         while (Ui.form(parent, title, Ui.rtl(c), "متابعة")) {
+173:             char[] a = p1.getPassword(), b = p2.getPassword();
+174:             if (a.length < 8) {
+175:                 Ui.toast("كلمة المرور يجب ألا تقل عن 8 محارف");
+176:                 continue;
+177:             }
+178:             if (!Arrays.equals(a, b)) {
+179:                 Ui.toast("كلمتا المرور غير متطابقتين");
+180:                 continue;
+181:             }
+182:             Arrays.fill(b, '\0');
+183:             return new char[][]{a};
+184:         }
+185:         return null;
+186:     }
+187: 
+188:     void create() {
+189:         if (!require(Auth.Perm.BACKUP)) return;
+190:         if (!Crypto.healthy(app.ctx)) {
+191:             Ui.message(this, "مفتاح التشفير غير متاح", "لا تُنشأ نسخة جديدة حتى لا تحل محل السليمة. استعد آخر نسخة احتياطية.", JOptionPane.WARNING_MESSAGE);
+192:             return;
+193:         }
+194:         char[][] pw = askNewPassword(this, "نسخة احتياطية جديدة");
+195:         if (pw == null) return;
+196:         File target = Export.save(this, db, "smart-accountant", ".sba");
+197:         if (target == null) {
+198:             Arrays.fill(pw[0], '\0');
+199:             return;
+200:         }
+201:         Ui.busy(this, "جارٍ التجهيز…", p -> {
+202:             try {
+203:                 BackupManager.Created c = BackupManager.createLocal(app.ctx, db, pw[0], BuildInfo.VERSION + "-mac", p::update);
+204:                 p.update("جارٍ الحفظ وإعادة القراءة للتحقق…");
+205:                 BackupManager.Delivery d = BackupManager.copyToFile(c.file, target);
+206:                 db.recordBackup("SAVE", d.verified ? "تم الحفظ والتحقق (ماك)" : "حُفظت دون تحقق (ماك)", target.getAbsolutePath(), d.size, c.counts, d.verified, d.note);
+207:                 long now = Clock.now();
+208:                 db.setSettingQuiet("last_backup", "" + now);
+209:                 db.setSettingQuiet("last_backup_tx", "" + db.txCount());
+210:                 db.setSettingQuiet("last_backup_status", d.verified ? "verified" : "unverified");
+211:                 return c;
+212:             } finally {
+213:                 Arrays.fill(pw[0], '\0');
+214:             }
+215:         }, c -> {
+216:             Ui.info(this, "تمت النسخة ✓", "حُفظت النسخة وتحقق البرنامج منها بفكها كاملة وإعادة قراءتها من مكان الحفظ.\n\n" + target.getName() + "\n" + BackupManager.size(c.size)
+217:                     + "\n\nتُستعاد على الكمبيوتر أو الهاتف بكلمة المرور نفسها.");
+218:             refresh();
+219:             app.updateFoot();
+220:         });
+221:     }
+222: 
+223:     // ===================================================================================
+224:     // الاستعادة (استبدال أو إضافة ملف نقل)
+225:     // ===================================================================================
+226: 
+227:     void restoreFromFile() {
+228:         if (!require(Auth.Perm.RESTORE)) return;
+229:         File f = Export.open(this, db, "اختر ملف النسخة (.sba)", ".sba");
+230:         if (f == null) return;
+231:         restoreFile(f);
+232:     }
+233: 
+234:     /** استعادة ملف محدد (من نافذة الاختيار أو بالنقر المزدوج على ملف .sba في Finder). */
+235:     void restoreFile(File f) {
+236:         if (!require(Auth.Perm.RESTORE)) return;
+237:         JPasswordField p = Ui.password();
+238:         JPanel c = Ui.column();
+239:         c.add(Ui.para("سيتم فك النسخة وفحصها كاملة وعرض محتواها قبل أي تغيير على بياناتك.", 13.5f, Ui.ink, 360));
+240:         c.add(Ui.gap(8));
+241:         c.add(Ui.labeled("كلمة مرور النسخة أو رمز استرداد النسخ", p));
+242:         if (!Ui.form(this, "كلمة مرور النسخة", Ui.rtl(c), "فك وفحص")) return;
+243:         char[] pw = p.getPassword();
+244:         Ui.busy(this, "جارٍ فك النسخة وفحصها…", pr -> {
+245:             try {
+246:                 return BackupManager.prepareRestore(app.ctx, f, pw, pr::update);
+247:             } finally {
+248:                 Arrays.fill(pw, '\0');
+249:             }
+250:         }, prep -> preview(f, prep));
+251:     }
+252: 
+253:     void preview(File f, BackupManager.Prepared prep) {
+254:         BackupFormat.Report r = prep.report;
+255:         if ("migration".equals(prep.parsed.manifest.optString("source"))) {
+256:             int k = Ui.choose(this, "ملف من أداة النقل", "في الملف " + r.offices + " مكتب و " + r.txActive + " حركة.\n\nكيف تريد استخدامه؟\n\n"
+257:                     + "• إضافة إلى بياناتي الحالية (موصى به): تبقى مكاتبك وحركاتك كما هي، وتُضاف أرصدة الملف وحركاته.\n\n"
+258:                     + "• استبدال كل بياناتي: يحل محتوى الملف محل كل البيانات.", new String[]{"إضافة إلى بياناتي", "استبدال الكل", "إلغاء"});
+259:             if (k == 0) {
+260:                 merge(prep);
+261:                 return;
+262:             }
+263:             if (k != 1) {
+264:                 BackupManager.clearStaging(app.ctx);
+265:                 return;
+266:             }
+267:         }
+268:         // 9.0: النسخة المجانية تتسع لـ 9 مكاتب: يختار المستخدم المكاتب التي تُستعاد من نسخة فيها أكثر
+269:         long maxOff = License.current.maxOffices();
+270:         if (maxOff != Entitlements.UNLIMITED && r.offices > maxOff) {
+271:             List<BackupFormat.OfficeInfo> infos = BackupFormat.officeSummaries(prep.parsed);
+272:             infos.sort((x, y) -> x.txCount != y.txCount ? Long.compare(y.txCount, x.txCount) : Long.compare(y.lastTx, x.lastTx));
+273:             List<Long> ids = new ArrayList<>();
+274:             List<String> labels = new ArrayList<>();
+275:             Map<String, Integer> dec = db.decimalsMap();
+276:             for (BackupFormat.OfficeInfo o : infos) {
+277:                 ids.add(o.id);
+278:                 List<String> parts = new ArrayList<>();
+279:                 for (Map.Entry<String, Long> e : o.balances.entrySet())
+280:                     if (e.getValue() != 0) parts.add(Model.bal(e.getValue(), dec.getOrDefault(e.getKey(), 2)) + " " + e.getKey());
+281:                 labels.add((o.name.isEmpty() ? "مكتب #" + o.id : o.name) + " — " + o.txCount + " حركة" + (parts.isEmpty() ? "" : " — " + String.join("، ", parts)));
+282:             }
+283:             Set<Long> keep = pick("اختر المكاتب (" + maxOff + " كحد أقصى)", "في النسخة " + infos.size() + " مكتبًا، والنسخة المجانية تتسع لـ " + maxOff

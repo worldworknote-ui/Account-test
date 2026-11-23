@@ -1,0 +1,30 @@
+1: #!/usr/bin/env python3
+2: """يجمع «الاستيراد الذكي» في ملف HTML واحد يعمل بدون إنترنت: app/src/main/assets/smart-import.html
+3: يستخدم core.js ومكتبة SheetJS من أداة النقل كما هما (للقراءة فقط)."""
+4: import os
+5: import sys
+6: 
+7: HERE = os.path.dirname(os.path.abspath(__file__))
+8: MT = os.path.join(HERE, "..", "migration-tool")
+9: OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "app", "src", "main", "assets", "smart-import.html")
+10: 
+11: 
+12: def read(p):
+13:     with open(p, encoding="utf-8") as f:
+14:         return f.read()
+15: 
+16: 
+17: def safe_js(s):
+18:     return s.replace("</script", "<\\/script").replace("<!--", "<\\!--")
+19: 
+20: 
+21: html = read(os.path.join(HERE, "template.html"))
+22: html = html.replace("{{STYLE}}", read(os.path.join(HERE, "style.css")))
+23: html = html.replace("{{XLSX}}", safe_js(read(os.path.join(MT, "vendor", "xlsx.full.min.js"))))
+24: html = html.replace("{{CORE}}", safe_js(read(os.path.join(MT, "core.js"))))
+25: html = html.replace("{{ENGINE}}", safe_js(read(os.path.join(HERE, "engine.js"))))
+26: html = html.replace("{{UI}}", safe_js(read(os.path.join(HERE, "ui.js"))))
+27: os.makedirs(os.path.dirname(os.path.abspath(OUT)), exist_ok=True)
+28: with open(OUT, "w", encoding="utf-8") as f:
+29:     f.write(html)
+30: print("wrote", os.path.abspath(OUT), len(html.encode("utf-8")), "bytes")

@@ -1,0 +1,176 @@
+172:     }
+173:     public void setDescendantFocusability(int f) { descendantFocus = f; }
+174:     public int getDescendantFocusability() { return descendantFocus; }
+175:     public View getFocusedChild() { for (View c : children) if (c.findFocus() != null) return c; return null; }
+176:     @Override public void clearFocus() { View f = findFocus(); if (f != null && f != this) f.clearFocus(); else super.clearFocus(); }
+177: 
+178:     @Override protected void dispatchSetPressed(boolean p) {
+179:         for (View c : children) if (c.duplicatesParentState()) c.setPressed(p);
+180:     }
+181:     void childDrawableStateChanged(View child) { if (addStatesFromChildren) refreshDrawableState(); }
+182:     public void setAddStatesFromChildren(boolean a) { addStatesFromChildren = a; }
+183:     @Override public void setEnabled(boolean e) { super.setEnabled(e); }
+184: 
+185:     // ------------------------------------------------------------------ القياس
+186:     public static int getChildMeasureSpec(int spec, int padding, int childDim) {
+187:         int mode = MeasureSpec.getMode(spec), size = Math.max(0, MeasureSpec.getSize(spec) - padding);
+188:         int rs = 0, rm = 0;
+189:         switch (mode) {
+190:             case MeasureSpec.EXACTLY:
+191:                 if (childDim >= 0) { rs = childDim; rm = MeasureSpec.EXACTLY; }
+192:                 else if (childDim == LayoutParams.MATCH_PARENT) { rs = size; rm = MeasureSpec.EXACTLY; }
+193:                 else { rs = size; rm = MeasureSpec.AT_MOST; }
+194:                 break;
+195:             case MeasureSpec.AT_MOST:
+196:                 if (childDim >= 0) { rs = childDim; rm = MeasureSpec.EXACTLY; }
+197:                 else { rs = size; rm = MeasureSpec.AT_MOST; }
+198:                 break;
+199:             default:
+200:                 if (childDim >= 0) { rs = childDim; rm = MeasureSpec.EXACTLY; }
+201:                 else { rs = size; rm = MeasureSpec.UNSPECIFIED; }
+202:                 break;
+203:         }
+204:         return MeasureSpec.makeMeasureSpec(rs, rm);
+205:     }
+206:     protected void measureChildren(int ws, int hs) { for (View c : children) if (c.getVisibility() != GONE) measureChild(c, ws, hs); }
+207:     protected void measureChild(View c, int ws, int hs) {
+208:         LayoutParams p = c.getLayoutParams();
+209:         c.measure(getChildMeasureSpec(ws, getPaddingLeft() + getPaddingRight(), p.width), getChildMeasureSpec(hs, getPaddingTop() + getPaddingBottom(), p.height));
+210:     }
+211:     protected void measureChildWithMargins(View c, int ws, int usedW, int hs, int usedH) {
+212:         MarginLayoutParams p = margins(c);
+213:         c.measure(getChildMeasureSpec(ws, getPaddingLeft() + getPaddingRight() + p.leftMargin + p.rightMargin + usedW, p.width),
+214:                 getChildMeasureSpec(hs, getPaddingTop() + getPaddingBottom() + p.topMargin + p.bottomMargin + usedH, p.height));
+215:     }
+216:     /** هوامش الابن بعد حل البداية/النهاية حسب الاتجاه. */
+217:     protected MarginLayoutParams margins(View c) {
+218:         LayoutParams p = c.getLayoutParams();
+219:         MarginLayoutParams m = p instanceof MarginLayoutParams ? (MarginLayoutParams) p : new MarginLayoutParams(p);
+220:         m.resolveLayoutDirection(getLayoutDirection());
+221:         return m;
+222:     }
+223: 
+224:     @Override public void requestLayout() { super.requestLayout(); }
+225:     @Override public void requestDisallowInterceptTouchEvent(boolean d) {
+226:         disallowIntercept = d;
+227:         if (parent != null) parent.requestDisallowInterceptTouchEvent(d);
+228:     }
+229:     @Override public boolean requestChildRectangleOnScreen(View child, Rect r, boolean immediate) { return false; }
+230: 
+231:     // ------------------------------------------------------------------ القص والرسم
+232:     public void setClipChildren(boolean c) { clipChildren = c; invalidate(); }
+233:     public boolean getClipChildren() { return clipChildren; }
+234:     public void setClipToPadding(boolean c) { clipToPadding = c; invalidate(); }
+235:     public boolean getClipToPadding() { return clipToPadding; }
+236:     public void setLayoutTransition(android.animation.LayoutTransition t) { transition = t; }
+237:     public android.animation.LayoutTransition getLayoutTransition() { return transition; }
+238:     public void setLayoutAnimation(android.view.animation.LayoutAnimationController c) {}
+239:     public void setMotionEventSplittingEnabled(boolean s) {}
+240:     public void setChildrenDrawingOrderEnabled(boolean e) {}
+241:     public void setTouchscreenBlocksFocus(boolean b) {}
+242:     public void setTransitionGroup(boolean g) {}
+243:     public void setLayoutMode(int m) {}
+244:     public boolean shouldDelayChildPressedState() { return false; }
+245:     public void startViewTransition(View v) {}
+246:     public void endViewTransition(View v) {}
+247:     public void suppressLayout(boolean s) {}
+248: 
+249:     /** ترتيب الرسم: حسب الارتفاع (Z) ثم الترتيب. */
+250:     List<View> drawOrder() {
+251:         boolean z = false;
+252:         for (View c : children) if (c.getZ() != 0) { z = true; break; }
+253:         if (!z) return children;
+254:         List<View> l = new ArrayList<>(children);
+255:         l.sort((a, b) -> Float.compare(a.getZ(), b.getZ()));
+256:         return l;
+257:     }
+258: 
+259:     @Override protected void dispatchDraw(Canvas c) {
+260:         boolean clip = clipToPadding && (getPaddingLeft() | getPaddingTop() | getPaddingRight() | getPaddingBottom()) != 0;
+261:         if (clip) {
+262:             c.save();
+263:             c.clipRect(mScrollX + getPaddingLeft(), mScrollY + getPaddingTop(), mScrollX + getWidth() - getPaddingRight(), mScrollY + getHeight() - getPaddingBottom());
+264:         }
+265:         java.awt.Rectangle vis = c.graphics().getClipBounds();
+266:         for (View ch : new ArrayList<>(drawOrder())) {
+267:             if (ch.getVisibility() != VISIBLE) continue;
+268:             if (vis != null && ch.hasIdentityTransform() && ch.getZ() <= 0 && clipChildren) {
+269:                 float l = ch.getLeft() + ch.getTranslationX(), t = ch.getTop() + ch.getTranslationY();
+270:                 if (l > vis.x + vis.width || t > vis.y + vis.height || l + ch.getWidth() < vis.x || t + ch.getHeight() < vis.y) continue;
+271:             }
+272:             drawChild(c, ch, 0);
+273:         }
+274:         if (clip) c.restore();
+275:     }
+276: 
+277:     protected boolean drawChild(Canvas c, View ch, long time) {
+278:         float a = ch.getAlpha();
+279:         if (a <= 0.003f) return false;
+280:         c.save();
+281:         c.translate(ch.getLeft() + ch.getTranslationX(), ch.getTop() + ch.getTranslationY());
+282:         if (!ch.hasIdentityTransform()) {
+283:             float pvx = ch.getPivotX(), pvy = ch.getPivotY();
+284:             c.translate(pvx, pvy);
+285:             if (ch.getRotation() != 0) c.rotate(ch.getRotation());
+286:             c.scale(ch.getScaleX(), ch.getScaleY());
+287:             c.translate(-pvx, -pvy);
+288:         }
+289:         float z = ch.getZ();
+290:         if (z > 0.5f) Shadows.draw(c, ch, z, a);
+291:         c.alpha *= a;
+292:         if (clipChildren) c.clipRect(0, 0, ch.getWidth(), ch.getHeight());
+293:         ch.draw(c);
+294:         c.restore();
+295:         return false;
+296:     }
+297: 
+298:     // ------------------------------------------------------------------ اللمس
+299:     public boolean onInterceptTouchEvent(MotionEvent e) { return false; }
+300: 
+301:     /** الابن تحت النقطة (إحداثيات العنصر بعد التمرير)، ويضع إحداثيات الابن في p. */
+302:     View childAt(float x, float y, float[] p) {
+303:         List<View> order = drawOrder();
+304:         for (int i = order.size() - 1; i >= 0; i--) {
+305:             View c = order.get(i);
+306:             if (c.getVisibility() != VISIBLE || c.getAlpha() <= 0.003f) continue;
+307:             float[] q = {x + mScrollX, y + mScrollY};
+308:             c.parentToLocal(q);
+309:             if (q[0] >= 0 && q[1] >= 0 && q[0] < c.getWidth() && q[1] < c.getHeight()) {
+310:                 p[0] = q[0]; p[1] = q[1];
+311:                 return c;
+312:             }
+313:         }
+314:         return null;
+315:     }
+316: 
+317:     @Override public boolean dispatchTouchEvent(MotionEvent e) {
+318:         int act = e.getActionMasked();
+319:         if (act == MotionEvent.ACTION_DOWN) {
+320:             touchTarget = null;
+321:             selfTouch = false;
+322:             disallowIntercept = false;
+323:         }
+324:         if (selfTouch) return super.dispatchTouchEvent(e);
+325:         boolean intercepted = false;
+326:         if (act == MotionEvent.ACTION_DOWN || touchTarget != null) {
+327:             intercepted = !disallowIntercept && onInterceptTouchEvent(e);
+328:         }
+329:         if (intercepted) {
+330:             if (touchTarget != null) {
+331:                 MotionEvent cancel = MotionEvent.obtain(e);
+332:                 cancel.setAction(MotionEvent.ACTION_CANCEL);
+333:                 deliver(touchTarget, cancel);
+334:                 touchTarget = null;
+335:             }
+336:             selfTouch = true;
+337:             boolean r = super.dispatchTouchEvent(e);
+338:             if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) selfTouch = false;
+339:             return r;
+340:         }
+341:         if (act == MotionEvent.ACTION_DOWN) {
+342:             List<View> order = drawOrder();
+343:             for (int i = order.size() - 1; i >= 0; i--) {
+344:                 View c = order.get(i);
+345:                 if (c.getVisibility() != VISIBLE || c.getAlpha() <= 0.003f) continue;
+346:                 float[] q = {e.getX() + mScrollX, e.getY() + mScrollY};
+347:                 c.parentToLocal(q);

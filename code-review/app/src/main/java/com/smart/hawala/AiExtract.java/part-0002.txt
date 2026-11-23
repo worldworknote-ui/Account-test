@@ -1,0 +1,171 @@
+144:         body.put("temperature", 0);
+145:         body.put("messages", new JSONArray()
+146:                 .put(new JSONObject().put("role", "system").put("content", sys))
+147:                 .put(new JSONObject().put("role", "user").put("content", userText(message))));
+148:         return body;
+149:     }
+150: 
+151:     // ===================================================================================
+152:     // الرد
+153:     // ===================================================================================
+154: 
+155:     /** يستخرج كائن JSON من نص الرد (قد يحيط به كلام أو ```json). */
+156:     static JSONObject jsonIn(String text) throws Exception {
+157:         if (text == null) throw new Exception("رد فارغ من خدمة الذكاء الاصطناعي.");
+158:         int a = text.indexOf('{'), b = text.lastIndexOf('}');
+159:         if (a < 0 || b <= a) throw new Exception("رد خدمة الذكاء الاصطناعي ليس بالصيغة المتوقعة.");
+160:         return new JSONObject(text.substring(a, b + 1));
+161:     }
+162: 
+163:     public static MessageParser.Result parseResponse(Config c, String body, List<MessageParser.Cur> curs) throws Exception {
+164:         try {
+165:             return parseResponse0(c, body, curs);
+166:         } catch (JSONException e) {
+167:             throw new Exception("رد خدمة الذكاء الاصطناعي ليس بالصيغة المتوقعة.");
+168:         }
+169:     }
+170: 
+171:     private static MessageParser.Result parseResponse0(Config c, String body, List<MessageParser.Cur> curs) throws Exception {
+172:         JSONObject root = new JSONObject(body);
+173:         String text = null;
+174:         if (c.claude()) {
+175:             if ("refusal".equals(root.optString("stop_reason"))) throw new Exception("رفضت الخدمة قراءة هذه الرسالة.");
+176:             boolean cut = "max_tokens".equals(root.optString("stop_reason"));
+177:             JSONArray content = root.optJSONArray("content");
+178:             if (content != null) {
+179:                 for (int i = 0; i < content.length(); i++) {
+180:                     JSONObject b = content.getJSONObject(i);
+181:                     if ("text".equals(b.optString("type"))) {
+182:                         text = b.optString("text");
+183:                         break;
+184:                     }
+185:                 }
+186:             }
+187:             if (cut && (text == null || text.indexOf('}') < 0)) throw new Exception("انقطع رد خدمة الذكاء الاصطناعي قبل اكتماله؛ أعد المحاولة أو أدخل المعلومات بيدك.");
+188:         } else {
+189:             JSONArray ch = root.optJSONArray("choices");
+190:             if (ch != null && ch.length() > 0) {
+191:                 JSONObject m = ch.getJSONObject(0).optJSONObject("message");
+192:                 if (m != null) text = m.optString("content", null);
+193:             }
+194:         }
+195:         return fromJson(jsonIn(text), curs);
+196:     }
+197: 
+198:     private static String str(JSONObject o, String k, int max) {
+199:         Object v = o.opt(k);
+200:         if (v == null || v == JSONObject.NULL) return "";
+201:         String s = MessageParser.clean(String.valueOf(v)).trim();
+202:         if (s.equalsIgnoreCase("null") || s.equalsIgnoreCase("none") || s.equals("-")) return "";
+203:         return s.length() > max ? s.substring(0, max).trim() : s;
+204:     }
+205: 
+206:     /** رقم المبلغ كما يقبله النموذج: «2500»، «1,500.50»، «1.500»؛ وإلا فارغ. */
+207:     static String amount(String raw) {
+208:         String s = MessageParser.digits(raw == null ? "" : raw).replaceAll("[\\s'’_]", "");
+209:         if (s.isEmpty()) return "";
+210:         BigDecimal v = MessageParser.number(s);
+211:         if (v == null) {
+212:             try {
+213:                 v = new BigDecimal(s.replace(",", ""));
+214:             } catch (NumberFormatException e) {
+215:                 return "";
+216:             }
+217:         }
+218:         return v.signum() > 0 ? v.stripTrailingZeros().toPlainString() : "";
+219:     }
+220: 
+221:     static MessageParser.Result fromJson(JSONObject o, List<MessageParser.Cur> curs) {
+222:         MessageParser.Result r = new MessageParser.Result();
+223:         r.person = MessageParser.titleCase(str(o, "person", 80));
+224:         r.amount = amount(str(o, "amount", 40));
+225:         r.phone = str(o, "phone", 40);
+226:         r.city = str(o, "city", 60);
+227:         r.sender = str(o, "sender", 80);
+228:         r.fee = amount(str(o, "fee", 40));
+229:         r.net = o.optBoolean("net", false);
+230:         String code = str(o, "currency", 20).toUpperCase(Locale.ROOT);
+231:         String word = str(o, "currency_word", 30);
+232:         Set<String> codes = new HashSet<>();
+233:         for (MessageParser.Cur c : curs) codes.add(c.code);
+234:         if (!code.isEmpty() && codes.contains(code)) {
+235:             r.currency = code;
+236:             r.currencyWord = word.isEmpty() ? code : word;
+237:         } else {
+238:             r.currency = null;
+239:             r.currencyWord = !code.isEmpty() ? code : word;
+240:         }
+241:         return r;
+242:     }
+243: 
+244:     // ===================================================================================
+245:     // الاتصال
+246:     // ===================================================================================
+247: 
+248:     static String read(InputStream in) throws IOException {
+249:         if (in == null) return "";
+250:         try (InputStream i = in; ByteArrayOutputStream o = new ByteArrayOutputStream()) {
+251:             byte[] b = new byte[8192];
+252:             int n;
+253:             while ((n = i.read(b)) > 0) o.write(b, 0, n);
+254:             return new String(o.toByteArray(), StandardCharsets.UTF_8);
+255:         }
+256:     }
+257: 
+258:     /** رسالة خطأ مفهومة بالعربية، مع رمز HTTP ورسالة الخدمة المختصرة للتشخيص. */
+259:     static String friendlyError(int code, String body) {
+260:         String detail = "";
+261:         try {
+262:             JSONObject e = new JSONObject(body).optJSONObject("error");
+263:             if (e != null) detail = e.optString("message", "");
+264:         } catch (Exception ignored) {
+265:             detail = body == null ? "" : body;
+266:         }
+267:         detail = detail.replaceAll("\\s+", " ").trim();
+268:         if (detail.length() > 160) detail = detail.substring(0, 160) + "…";
+269:         String low = detail.toLowerCase(Locale.ROOT);
+270:         String m;
+271:         if (code == 401) m = "مفتاح الخدمة غير صحيح أو منتهٍ. تحقق منه في الإعدادات.";
+272:         else if (code == 403) m = "رفضت الخدمة الطلب. قد لا تكون متاحة في بلدك، أو لا يملك المفتاح صلاحية.";
+273:         else if (code == 404) m = "اسم النموذج أو عنوان الخدمة غير صحيح.";
+274:         else if (code == 429) m = "تجاوزت حد الاستخدام أو نفد الرصيد. انتظر قليلًا أو اشحن حسابك لدى الخدمة.";
+275:         else if (low.contains("credit") || low.contains("balance") || low.contains("quota") || low.contains("billing"))
+276:             m = "رصيد حسابك لدى خدمة الذكاء الاصطناعي لا يكفي.";
+277:         else if (code == 529 || code >= 500) m = "خدمة الذكاء الاصطناعي مشغولة الآن. أعد المحاولة بعد قليل.";
+278:         else if (code == 400) m = "لم تقبل الخدمة الطلب. تحقق من اسم النموذج.";
+279:         else m = "تعذرت القراءة الذكية السحابية لهذه الرسالة.";
+280:         return m + " (HTTP " + code + (detail.isEmpty() ? "" : ": " + detail) + ")";
+281:     }
+282: 
+283:     /** يرسل الرسالة ويعيد النتيجة. يعمل في الخلفية فقط. */
+284:     public static MessageParser.Result call(Config c, String message, List<MessageParser.Cur> curs, Map<String, List<String>> aliases) throws Exception {
+285:         String p = c.problem();
+286:         if (p != null) throw new Exception(p);
+287:         JSONObject body = c.claude() ? claudeBody(c, message, curs, aliases) : openAiBody(c, message, curs, aliases);
+288:         String[] res = post(c, body);
+289:         int code = Integer.parseInt(res[0]);
+290:         if (code == 400 && c.claude() && !friendlyError(code, res[1]).startsWith("رصيد")) {
+291:             // احتياط: إن لم يقبل النموذج «output_config» نطلب JSON بالتعليمات فقط
+292:             body.remove("output_config");
+293:             body.put("system", body.getString("system") + "\nReply with one JSON object only, with exactly these keys: "
+294:                     + String.join(", ", FIELDS) + " (strings) and net (boolean).");
+295:             res = post(c, body);
+296:             code = Integer.parseInt(res[0]);
+297:         }
+298:         if (code != 200) throw new Exception(friendlyError(code, res[1]));
+299:         return parseResponse(c, res[1], curs);
+300:     }
+301: 
+302:     /** {رمز HTTP، نص الرد}. */
+303:     private static String[] post(Config c, JSONObject body) throws Exception {
+304:         HttpURLConnection h;
+305:         try {
+306:             h = (HttpURLConnection) new URL(c.endpoint()).openConnection();
+307:         } catch (Exception e) {
+308:             throw new Exception("عنوان خدمة الذكاء الاصطناعي غير صحيح.");
+309:         }
+310:         try {
+311:             h.setConnectTimeout(15000);
+312:             h.setReadTimeout(60000);
+313:             h.setRequestMethod("POST");
+314:             h.setDoOutput(true);

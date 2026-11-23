@@ -1,0 +1,162 @@
+309:         SYN.put("KWD", new String[]{"دينار كويتي", "كويتي", "kwd", "kuwaiti dinar"});
+310:         SYN.put("EGP", new String[]{"جنيه مصري", "مصري", "جنيه", "egp", "egyptian pound", "egyptian pounds", "mısır lirası"});
+311:         SYN.put("GBP", new String[]{"استرليني", "جنيه استرليني", "باوند", "gbp", "£", "pound", "pounds", "sterling", "pound sterling", "sterlin",
+312:                 "ingiliz sterlini", "liră sterlină", "lire sterline", "livre sterling", "pfund", "libra esterlina", "фунт", "фунтов"});
+313:         SYN.put("QAR", new String[]{"ريال قطري", "قطري", "qar", "qatari riyal"});
+314:         SYN.put("LBP", new String[]{"ليرة لبنانية", "لبناني", "lbp", "lebanese pound", "lebanese lira", "lübnan lirası"});
+315:         SYN.put("USDT", new String[]{"usdt", "تيثر", "تيذر", "التيثر", "tether", "يو اس دي تي", "₮"});
+316:         SYN.put("RON", new String[]{"ron", "lei", "leu", "lei românești", "lei romanesti", "romanian lei", "romanian leu", "rumänische lei", "лей",
+317:                 "ليو روماني", "لي روماني", "ليرة رومانية"});
+318:         SYN.put("CHF", new String[]{"chf", "swiss franc", "swiss francs", "franc elvețian", "franci elvețieni", "isviçre frangı", "franken",
+319:                 "franc suisse", "francs suisses", "فرنك سويسري"});
+320:         SYN.put("SEK", new String[]{"sek", "kronor", "krona", "swedish krona", "isveç kronu", "coroane suedeze", "كرون سويدي"});
+321:         SYN.put("PLN", new String[]{"pln", "zloty", "zlotys", "złoty", "zł", "zlot", "زلوتي"});
+322:         SYN.put("RUB", new String[]{"rub", "ruble", "rubles", "rouble", "roubles", "ruble rusești", "rus rublesi", "рубль", "рублей", "рубля",
+323:                 "روبل"});
+324:         SYN.put("CAD", new String[]{"cad", "canadian dollar", "canadian dollars", "دولار كندي"});
+325:         SYN.put("AUD", new String[]{"aud", "australian dollar", "australian dollars", "دولار استرالي"});
+326:         SYN.put("XAU", new String[]{"xau", "gold", "altın", "aur", "ذهب", "غرام ذهب", "غرامات ذهب"});
+327:         SYN.put("XAG", new String[]{"xag", "silver", "gümüş", "argint", "فضة", "فضه"});
+328:     }
+329: 
+330:     private static final Set<String> SYMBOLS = new HashSet<>(Arrays.asList("$", "€", "₺", "£", "₮"));
+331:     private static final Set<String> GENERIC_NAME_WORDS = set("ليرة", "ليره", "عملة", "دينار", "ريال", "جديد", "قديم", "جديدة", "قديمة");
+332: 
+333:     // ===================================================================================
+334:     // العملات
+335:     // ===================================================================================
+336: 
+337:     private static final class Kw {
+338:         final String word;
+339:         final int weight;
+340: 
+341:         Kw(String w, int weight) {
+342:             this.word = w;
+343:             this.weight = weight;
+344:         }
+345:     }
+346: 
+347:     /** الكلمة (مطبّعة) ← رمز العملة التي يعرفها البرنامج بها. */
+348:     private static final Map<String, String> SYN_OWNER = new LinkedHashMap<>();
+349: 
+350:     static {
+351:         for (Map.Entry<String, String[]> e : SYN.entrySet()) {
+352:             for (String s : e.getValue()) {
+353:                 String n = String.join(" ", words(norm(s)));
+354:                 if (SYMBOLS.contains(s)) n = s;
+355:                 if (!n.isEmpty() && !SYN_OWNER.containsKey(n)) SYN_OWNER.put(n, e.getKey());
+356:             }
+357:         }
+358:     }
+359: 
+360:     private static Map<String, List<Kw>> keywords(List<Cur> curs, Map<String, List<String>> aliases) {
+361:         Map<String, List<Kw>> m = new LinkedHashMap<>();
+362:         Set<String> codes = new HashSet<>();
+363:         for (Cur c : curs) codes.add(c.code.toUpperCase(Locale.ROOT));
+364:         // كلمة في اسم عملة واحدة فقط (مثل «جديد») تميّزها عن غيرها، فوزنها أعلى
+365:         Map<String, Integer> freq = new LinkedHashMap<>();
+366:         for (Cur c : curs) {
+367:             for (String w : new HashSet<>(words(norm(c.name)))) freq.put(w, freq.containsKey(w) ? freq.get(w) + 1 : 1);
+368:         }
+369:         for (Cur c : curs) {
+370:             List<Kw> k = new ArrayList<>();
+371:             String code = c.code.toUpperCase(Locale.ROOT);
+372:             k.add(new Kw(norm(code), 3));
+373:             // كلمات أضافها المستخدم لهذه العملة (مثل «يوز» = USDT): أوضح دلالة
+374:             List<String> mine = aliases == null ? null : aliases.get(c.code);
+375:             if (mine != null) {
+376:                 for (String s : mine) {
+377:                     String n = SYMBOLS.contains(s.trim()) ? s.trim() : String.join(" ", words(norm(s)));
+378:                     if (!n.isEmpty()) k.add(new Kw(n, 4));
+379:                 }
+380:             }
+381:             String[] syn = SYN.get(code);
+382:             if (syn != null) {
+383:                 for (String s : syn) {
+384:                     String n = norm(s);
+385:                     int w = SYMBOLS.contains(s) ? 3 : words(n).size() > 1 ? 3 : 2;
+386:                     k.add(new Kw(n, w));
+387:                 }
+388:             }
+389:             String nn = norm(c.name);
+390:             if (!nn.isEmpty()) {
+391:                 k.add(new Kw(String.join(" ", words(nn)), 4));
+392:                 for (String w : words(nn)) {
+393:                     if (w.length() < 3) continue;
+394:                     boolean distinct = freq.containsKey(w) && freq.get(w) == 1 && curs.size() > 1;
+395:                     String owner = SYN_OWNER.get(w);
+396:                     // «دولار» في اسم «دولار تيثر» لا يجعلها تنافس الدولار الأمريكي على كلمة «دولار»
+397:                     boolean othersWord = owner != null && !owner.equals(code) && codes.contains(owner);
+398:                     k.add(new Kw(w, othersWord ? 1 : distinct ? 3 : GENERIC_NAME_WORDS.contains(w) ? 1 : 2));
+399:                 }
+400:             }
+401:             if (nn.contains("ليره") || "SYP".equals(code) || "TRY".equals(code) || "LBP".equals(code)) k.add(new Kw("ليره", 1));
+402:             m.put(c.code, k);
+403:         }
+404:         return m;
+405:     }
+406: 
+407:     /** أفضل عملة يدل عليها النص، وكلمتها؛ null إن لم توجد. */
+408:     static String[] currencyIn(String normText, Map<String, List<Kw>> kws) {
+409:         List<String> w = words(normText);
+410:         String best = null, bestWord = "";
+411:         int bestScore = 0;
+412:         for (Map.Entry<String, List<Kw>> e : kws.entrySet()) {
+413:             int score = 0;
+414:             String word = "";
+415:             Set<String> seen = new HashSet<>();
+416:             for (Kw k : e.getValue()) {
+417:                 if (!seen.add(k.word)) continue;
+418:                 boolean hit;
+419:                 if (SYMBOLS.contains(k.word)) hit = normText.contains(k.word);
+420:                 else if (words(k.word).size() > 1) hit = hasPhrase(normText, k.word);
+421:                 else hit = w.contains(k.word) || prefixHit(w, k.word);
+422:                 if (hit) {
+423:                     score += k.weight;
+424:                     if (word.isEmpty() || k.weight >= 3) word = k.word;
+425:                 }
+426:             }
+427:             if (score > bestScore) {
+428:                 bestScore = score;
+429:                 best = e.getKey();
+430:                 bestWord = word;
+431:             }
+432:         }
+433:         return best == null ? null : new String[]{best, bestWord};
+434:     }
+435: 
+436:     /** «سوري» تطابق «سوريه» و«جديد» تطابق «جديده»: سابقة من 4 أحرف فأكثر. */
+437:     private static boolean prefixHit(List<String> words, String kw) {
+438:         if (kw.length() < 4) return false;
+439:         for (String w : words) {
+440:             if (w.length() < 4) continue;
+441:             if ((w.startsWith(kw) && w.length() - kw.length() <= 1) || (kw.startsWith(w) && kw.length() - w.length() <= 1)) return true;
+442:         }
+443:         return false;
+444:     }
+445: 
+446:     /** هل في النص أي كلمة عملة معروفة (حتى لو لم تكن مفعّلة في البرنامج)؟ */
+447:     static String anyCurrencyWord(String normText) { return anyCurrencyWord(normText, null); }
+448: 
+449:     /** مثلها، مع كلمات المستخدم لكل العملات (حتى غير المفعّلة للمكتب). */
+450:     static String anyCurrencyWord(String normText, Map<String, List<String>> aliases) {
+451:         List<String> w = words(normText);
+452:         if (aliases != null) {
+453:             for (List<String> l : aliases.values()) {
+454:                 for (String s : l) {
+455:                     String n = String.join(" ", words(norm(s)));
+456:                     if (n.isEmpty()) continue;
+457:                     if (SYMBOLS.contains(s.trim()) ? normText.contains(s.trim()) : words(n).size() > 1 ? hasPhrase(normText, n) : w.contains(n)) return s.trim();
+458:                 }
+459:             }
+460:         }
+461:         for (Map.Entry<String, String[]> e : SYN.entrySet()) {
+462:             for (String s : e.getValue()) {
+463:                 String n = norm(s);
+464:                 if (SYMBOLS.contains(s) ? normText.contains(n) : words(n).size() > 1 ? hasPhrase(normText, n) : w.contains(n)) return s;
+465:             }
+466:         }
+467:         return null;
+468:     }
+469: 
+470:     // ===================================================================================

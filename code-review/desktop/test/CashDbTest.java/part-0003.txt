@@ -1,0 +1,119 @@
+293:         Map<String, Long> op2 = new HashMap<>();
+294:         op2.put("USD", 50000L);
+295:         // 12.6: المجانية صندوق واحد؛ الصناديق المتعددة بالرخصة
+296:         check(throwsMsg(() -> db.addCashBox("خزنة البيت", Arrays.asList("USD"), op2), "صندوق واحد"), "12.6: المجانية لا تضيف صندوقًا ثانيًا");
+297:         License.current = Entitlements.of(DeskCoreTest.fullGrant(), BuildInfo.BUILD_DATE);
+298:         long box2 = db.addCashBox("خزنة البيت", Arrays.asList("USD"), op2);
+299:         check(box2 == 2 && b(db.cashBalances(box2), "USD") == 50000 && db.cashBalances(1).equals(c2), "صندوق ثانٍ برصيد 500 USD والأول لم يتغير");
+300:         check(throwsMsg(() -> db.addCashBox("خزنة البيت", Arrays.asList("USD"), null), "بالاسم نفسه"), "لا يتكرر اسم الصندوق");
+301:         CashBox.Input tr = in(CashBox.TRANSFER, "USD", 10000);
+302:         tr.boxId = 1;
+303:         tr.toBox = box2;
+304:         db.addCashMove(tr);
+305:         check(b(db.cashBalances(1), "USD") == b(c2, "USD") - 10000 && b(db.cashBalances(box2), "USD") == 60000, "التحويل: −100 من الأول و+100 في الثاني");
+306:         CashBox.Input tr2 = in(CashBox.TRANSFER, "EUR", 100);
+307:         tr2.boxId = 1;
+308:         tr2.toBox = box2;
+309:         check(throwsMsg(io(() -> db.addCashMove(tr2)), "غير مفعّلة"), "تحويل عملة غير مفعّلة في صندوق الوجهة يُرفض");
+310:         check(throwsMsg(() -> db.setCashBoxActive(box2, false), "رصيد"), "لا يُؤرشف صندوق فيه رصيد");
+311:         CashBox.Input back = in(CashBox.TRANSFER, "USD", 60000);
+312:         back.boxId = box2;
+313:         back.toBox = 1L;
+314:         db.addCashMove(back);
+315:         db.setCashBoxActive(box2, false);
+316:         CashBox.Input dead = in(CashBox.IN, "USD", 100);
+317:         dead.boxId = box2;
+318:         dead.category = "أخرى";
+319:         check(throwsMsg(io(() -> db.addCashMove(dead)), "معطّل"), "بعد التعطيل (رصيده صفر) لا تُسجَّل عليه حركات");
+320:         // 10.0: لكل صندوق ربطه بالمكاتب، والحذف بشروط
+321:         db.setCashBoxActive(box2, true);
+322:         db.cashSetup(1, "الصندوق الرئيسي", ue, null, true, false);
+323:         CashBox.Input free2 = in(CashBox.IN, "USD", 1000);
+324:         free2.boxId = box2;
+325:         free2.category = "أخرى";
+326:         db.addCashMove(free2);
+327:         CashBox.Input strict1 = in(CashBox.IN, "USD", 1000);
+328:         strict1.boxId = 1;
+329:         strict1.category = "أخرى";
+330:         check(throwsMsg(io(() -> db.addCashMove(strict1)), "مربوط") || throwsMsg(io(() -> db.addCashMove(strict1)), "الربط"),
+331:                 "الأول مربوط بالمكاتب يرفض الاستلام بلا حساب، والثاني الحر يقبله");
+332:         check(db.cashBox(1).strict && !db.cashBox(box2).strict, "الربط محفوظ لكل صندوق على حدة");
+333:         db.cashSetup(1, "الصندوق الرئيسي", ue, null, false, true);
+334:         check(db.cashBoxDeleteBlock(box2) != null && db.cashBoxDeleteBlock(box2).contains("رصيد"), "لا يُحذف صندوق فيه رصيد");
+335:         CashBox.Input out2 = in(CashBox.OUT, "USD", 1000);
+336:         out2.boxId = box2;
+337:         out2.category = "أخرى";
+338:         db.addCashMove(out2);
+339:         check(db.cashBoxDeleteBlock(box2) != null && db.cashBoxDeleteBlock(box2).contains("بصناديق أخرى"), "لا يُحذف صندوق فيه تحويلات مع صندوق آخر (يُعطَّل بدلًا منه)");
+340:         Map<String, Long> op3 = new HashMap<>();
+341:         op3.put("USD", 7000L);
+342:         long box3 = db.addCashBox("صندوق مؤقت", Arrays.asList("USD"), op3, true, true);
+343:         check(db.cashBox(box3).strict, "صندوق جديد مربوط من إنشائه");
+344:         CashBox.Input ex3 = in(CashBox.EXPENSE, "USD", 7000);
+345:         ex3.boxId = box3;
+346:         ex3.category = "ضيافة ونثريات";
+347:         db.addCashMove(ex3);
+348:         check(db.cashBoxDeleteBlock(box3) == null, "صندوق رصيده صفر بلا روابط يجوز حذفه");
+349:         Map<String, Long> b1before = db.cashBalances(1);
+350:         db.deleteCashBox(box3);
+351:         check(!db.cashMoves(box3).isEmpty() == false && db.cashBalances(1).equals(b1before), "الحذف يزيل الصندوق وحركاته ولا يمس غيره");
+352:         check(b(db.cashBalances(1), "USD") == b(c2, "USD") + 50000 && db.currentBox() == 1, "عاد كل نقده للأول: +500 (الافتتاحي) والمفتوح هو الأول");
+353:         healthy(db, "بعد الصناديق");
+354: 
+355:         System.out.println("== 9.3) 9.0.1: الجرد: زيادة عملة يقابلها عجز أخرى");
+356:         db.setManualRate("EUR", new java.math.BigDecimal("1.08"));
+357:         Map<String, Long> c3 = db.cashBalances(1);
+358:         Map<String, Long> cnt = new LinkedHashMap<>();
+359:         cnt.put("USD", b(c3, "USD") - 10000);    // عجز 100 USD
+360:         cnt.put("EUR", b(c3, "EUR") + 9200);     // زيادة 92 EUR ≈ 99.36 USD
+361:         List<CashBox.CountLine> lines = new ArrayList<>();
+362:         for (Map.Entry<String, Long> e : cnt.entrySet()) lines.add(new CashBox.CountLine(e.getKey(), b(c3, e.getKey()), e.getValue()));
+363:         List<CashBox.Suggestion> sg = CashBox.analyze(lines, db.usdRates(), db.decimalsMap());
+364:         check(sg.size() == 1 && sg.get(0).soldCur.equals("USD") && sg.get(0).sold == 10000 && sg.get(0).gotCur.equals("EUR") && sg.get(0).got == 9200
+365:                 && sg.get(0).rate.compareTo(new java.math.BigDecimal("0.92")) == 0, "الاقتراح: بيع 100 USD بـ 92 EUR (بسعر 0.92) لم يُسجَّل");
+366:         CashBox.Count cc = db.cashCount(1, cnt, "جرد الخميس", sg);
+367:         Map<String, Long> c4 = db.cashBalances(1);
+368:         check(cc.adjusted == 0 && b(c4, "USD") == cnt.get("USD") && b(c4, "EUR") == cnt.get("EUR"), "سُجّل بيعًا: لا تسويات والصندوق مطابق للمعدود " + c4);
+369:         List<CashBox.Count> log = db.cashCounts(1);
+370:         CashBox.Count last = log.get(0);
+371:         check(last.note.equals("جرد الخميس") && last.sales.contains("بيع") && last.lines.size() == 2 && last.lines.get(0).diff() == -10000,
+372:                 "سجل الجرد يحفظ المسجّل والمعدود قبل التسوية وما سُجّل بيعًا");
+373:         List<CashBox.CountLine> no = Arrays.asList(new CashBox.CountLine("USD", 10000, 0), new CashBox.CountLine("EUR", 0, 5000));
+374:         check(CashBox.analyze(no, db.usdRates(), db.decimalsMap()).isEmpty(), "زيادة 50 EUR لا تعادل عجز 100 USD: لا اقتراح");
+375:         check(log.size() >= 2, "سجل الجرد فيه الجرد السابق أيضًا: " + log.size());
+376:         healthy(db, "بعد الجرد");
+377: 
+378:         System.out.println("== 9.4) 9.0.1: حسابات العملاء");
+379:         ClientBook.Client kc = new ClientBook.Client();
+380:         kc.name = "أبو خالد";
+381:         kc.phone = "0999";
+382:         long kid = db.saveClient(kc);
+383:         ClientBook.Client k2 = new ClientBook.Client();
+384:         k2.name = "أبو خالد";
+385:         check(throwsMsg(() -> db.saveClient(k2), "بالاسم نفسه"), "لا يتكرر اسم العميل");
+386:         Map<String, Long> c5 = db.cashBalances(1);
+387:         CashBox.Input ci = in(CashBox.IN, "EUR", 10000);           // استلمنا منه 100 EUR
+388:         ci.clientId = kid;
+389:         ci.clientCurrency = "EUR";
+390:         ci.clientAmount = 10000;
+391:         db.addCashMove(ci);
+392:         check(b(ClientBook.balances(db.clientMoves(kid)), "EUR") == -10000 && b(db.cashBalances(1), "EUR") == b(c5, "EUR") + 10000,
+393:                 "استلام منه: EUR الصندوق +100 والعميل: علينا له 100 EUR");
+394:         CashBox.Input co = in(CashBox.OUT, "USD", 10800);          // يأخذ 108 USD بدل الـ 100 EUR
+395:         co.clientId = kid;
+396:         co.clientCurrency = "EUR";
+397:         co.clientAmount = 10000;
+398:         long coId = db.addCashMove(co);
+399:         check(ClientBook.balances(db.clientMoves(kid)).isEmpty() && b(db.cashBalances(1), "USD") == b(c5, "USD") - 10800,
+400:                 "أخذ 108 USD مكان الـ 100 EUR: حسابه صفر، وخرج 108 USD من الصندوق");
+401:         ClientBook.Move cash2 = null;
+402:         for (ClientBook.Move x : db.clientMoves(kid)) if (x.cashUuid != null && "USD".equals(x.cashCurrency)) cash2 = x;
+403:         check(cash2 != null && "1.08".equals(cash2.rate) && cash2.cashAmount == 10800 && ClientBook.text(cash2, db.decimalsMap()).contains("1 EUR = 1.08 USD"),
+404:                 "السعر محفوظ ويظهر في الكشف: " + (cash2 == null ? "" : ClientBook.text(cash2, db.decimalsMap())));
+405:         CashBox.Input bad3 = in(CashBox.OUT, "USD", 100);
+406:         bad3.clientId = kid;
+407:         bad3.clientCurrency = "USD";
+408:         bad3.clientAmount = 200;
+409:         check(throwsMsg(io(() -> db.addCashMove(bad3)), "المبلغ نفسه"), "بالعملة نفسها يُقيَّد المبلغ نفسه");
+410:         db.addClientEntry(kid, "USD", 5000, 1, "دين قديم", System.currentTimeMillis() - 500);
+411:         check(b(ClientBook.balances(db.clientMoves(kid)), "USD") == 5000, "قيد بلا نقد: لنا عليه 50 USD (الصندوق لم يتغير)");

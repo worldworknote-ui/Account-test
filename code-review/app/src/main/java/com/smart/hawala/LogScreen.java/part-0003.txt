@@ -1,0 +1,127 @@
+353:         if (filter.includeCancelled) d.add("مع الملغاة");
+354:         if (kindSel > 0) d.add("النوع: " + KINDS[kindSel]);
+355:         if (whoSel != null) d.add("المحاسب: " + whoSel);
+356:         return d;
+357:     }
+358: 
+359:     /**
+360:      * بطاقة حركة تُستخدم في السجل والكشف والتقرير اليومي وصفحة المكتب:
+361:      * المستفيد والمبلغ بلون النوع (لنا أخضر / علينا أحمر)، ثم البيان مختصرًا، ثم التاريخ والتفاصيل.
+362:      */
+363:     LinearLayout txRow(Model.Tx t, String officeName, Integer attachments) {
+364:         int dec = a.db.decimals(t.currency);
+365:         boolean us = Model.TYPE_DEBIT.equals(t.type);
+366:         boolean active = t.isActive();
+367:         LinearLayout box = new LinearLayout(a);
+368:         box.setOrientation(LinearLayout.VERTICAL);
+369:         LinearLayout top = a.row();
+370:         String who = !t.person.isEmpty() ? t.person : officeName != null ? officeName : "—";
+371:         TextView name = a.text(who, 15, active ? a.ink : a.muted, true);
+372:         name.setSingleLine(true);
+373:         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+374:         name.setPadding(a.dp(2), 0, a.dp(4), 0);
+375:         top.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+376:         TextView amt = a.text("\u2066" + Model.fmt(t.amount, dec) + " " + t.currency + "\u2069", 15, active ? (us ? a.green : a.red) : a.muted, true);
+377:         amt.setPadding(a.dp(4), 0, a.dp(4), 0);
+378:         if (!active) amt.setPaintFlags(amt.getPaintFlags() | android.graphics.Paint.STRIKE_THRU_TEXT_FLAG);
+379:         top.addView(amt, new LinearLayout.LayoutParams(-2, -2));
+380:         top.addView(active ? a.chip(us ? "لنا" : "علينا", us ? a.green : a.red, us ? a.creditBg : a.debitBg)
+381:                 : t.isPending() ? a.chip("بانتظار الاعتماد", a.warnInk, a.warnBg)
+382:                 : a.chip(t.isRejected() ? "مرفوضة" : a.db.replacementOf(t.id) != null ? "معدّلة" : "ملغاة", a.muted, a.night ? a.line : Color.rgb(236, 233, 226)));
+383:         box.addView(top);
+384:         String desc = MessageParser.compact(t.description, t.person);
+385:         if (!desc.isEmpty()) {
+386:             TextView d = a.text(desc, 13, a.muted, false);
+387:             d.setMaxLines(2);
+388:             d.setEllipsize(android.text.TextUtils.TruncateAt.END);
+389:             d.setPadding(a.dp(2), a.dp(2), a.dp(2), 0);
+390:             box.addView(d);
+391:         }
+392:         List<String> meta = new ArrayList<>();
+393:         meta.add(Model.date(t.createdAt));
+394:         if (officeName != null && !t.person.isEmpty()) meta.add(officeName);
+395:         if (t.hasFee()) meta.add(t.feeType + " " + Model.fmt(t.fee, a.db.decimals(t.feeCurrency)) + " " + t.feeCurrency);
+396:         if (attachments != null && attachments > 0) meta.add("الصور: " + attachments);
+397:         if (!t.service.isEmpty()) meta.add(t.service);
+398:         if (!t.dest.isEmpty()) meta.add("إلى " + t.dest);
+399:         if (active && t.replacesId != null) meta.add("تعديل لحركة سابقة");
+400:         TextView m = a.text(Model.join(meta, " • "), 12, Ui.mix(a.muted, a.surface, 0.15f), false);
+401:         m.setPadding(a.dp(2), a.dp(2), a.dp(2), 0);
+402:         box.addView(m);
+403:         return box;
+404:     }
+405: 
+406:     // ===================================================================================
+407:     // تفاصيل الحركة
+408:     // ===================================================================================
+409: 
+410:     /** 12.4: تحويل الخاصة لعادية: بتاريخها الأصلي أو بتاريخ اليوم. */
+411:     private void convertDialog(final Model.Tx t, final Runnable refresh) {
+412:         if (Model.day(t.createdAt).equals(Model.day(Clock.now()))) {
+413:             a.txScreen.showConvert(t, true, refresh);
+414:             return;
+415:         }
+416:         new AlertDialog.Builder(a).setTitle("بأي تاريخ تنزل بالكشف والمطابقة؟")
+417:                 .setItems(new String[]{"بتاريخها الأصلي: " + Model.day(t.createdAt), "بتاريخ اليوم: " + Model.day(Clock.now())},
+418:                         (d, w) -> a.txScreen.showConvert(t, w == 0, refresh))
+419:                 .setNegativeButton("إلغاء", null).show();
+420:     }
+421: 
+422:     void details(final Model.Tx t0, final Runnable refresh) {
+423:         final Model.Tx t = a.db.tx(t0.id) == null ? t0 : a.db.tx(t0.id);
+424:         Model.Office o = a.db.office(t.officeId);
+425:         int dec = a.db.decimals(t.currency);
+426:         StringBuilder sb = new StringBuilder();
+427:         sb.append("المكتب: ").append(o == null ? "—" : o.name)
+428:                 .append("\nالتاريخ: ").append(Model.date(t.createdAt))
+429:                 .append("\nالنوع: ").append(t.type)
+430:                 .append("\nالشخص: ").append(t.person)
+431:                 .append("\n").append(Metals.qtyWord(t.currency)).append(": ").append(Metals.show(Model.fmt(t.amount, dec), t.currency));
+432:         if (t.hasFee()) sb.append("\n").append(t.feeType).append(": ").append(Metals.show(Model.fmt(t.fee, a.db.decimals(t.feeCurrency)), t.feeCurrency));
+433:         if (!t.description.isEmpty()) sb.append("\nالبيان: ").append(t.description);
+434:         if (!t.notes.isEmpty()) sb.append("\nالملاحظات: ").append(t.notes);
+435:         if (!t.service.isEmpty()) sb.append("\nالخدمة: ").append(t.service);
+436:         if (!t.dest.isEmpty()) sb.append("\nالوجهة: ").append(t.dest);
+437:         if (t.isFx()) sb.append("\nساق من عملية تبديل عملة بسعر ").append(t.fxRate).append(" (تُعدَّل الساقان وتُلغيان معًا)");
+438:         else if (t.isTransfer()) sb.append("\nساق من تحويل بين مكتبين").append(Model.nz(t.dest).isEmpty() ? "" : " (الطرف الآخر: «" + t.dest + "»)").append(" — تُلغى وتُعتمد الساقان معًا، ولا تُعدَّل");
+439:         // 10.5 (§7): من أدخلها ومن اعتمدها ومن تحقق منها ومتى (بأرقام المستخدمين الثابتة)
+440:         for (String line : a.db.txPeople(t)) sb.append("\n").append(line);
+441:         sb.append("\nالمرجع: ").append(t.uuid);
+442:         if (t.replacesId != null) sb.append("\nهذه الحركة تعديل لحركة سابقة.");
+443:         final Long rep = t.isActive() ? null : a.db.replacementOf(t.id);
+444:         if (t.isSpecial()) sb.append("\nحركة خاصة: ").append(t.special).append(t.isUnposted() ? " (لا تُحسب في الرصيد)" : t.isPending() ? "" : " (تُحسب في الرصيد، «معلّقة» في الكشف)");
+445:         if (t.isPending()) sb.append("\nالحالة: بانتظار اعتماد المحاسب (لا أثر لها في الأرصدة بعد)");
+446:         else if (t.isUnposted()) sb.append("\nالحالة: خاصة غير محسوبة (لا أثر لها في الأرصدة ولا الكشف بعد)");
+447:         else if (Model.STATUS_CONVERTED.equals(t.status)) sb.append("\nالحالة: حُوّلت إلى حركة عادية");
+448:         else if (Model.STATUS_VOIDED.equals(t.status)) sb.append("\nالحالة: خاصة أُلغيت قبل أن تُحسب");
+449:         else if (t.isRejected()) sb.append("\nالحالة: مرفوضة (لم تدخل الأرصدة)");
+450:         else if (!t.isActive()) sb.append("\nالحالة: ").append(rep != null ? "معدّلة (حلّت محلها حركة جديدة)" : "ملغاة بقيد عكسي");
+451:         else sb.append("\nالحالة: نشطة");
+452:         final List<Long> att = a.db.attachmentIds(t.id);
+453:         List<String> acts = new ArrayList<>();
+454:         if (!att.isEmpty()) acts.add("عرض الصور (" + att.size() + ")");
+455:         if (t.isActive() && a.can(Auth.Perm.VERIFY) && a.db.usersEnabled()) acts.add("تم التحقق ✓");
+456:         if (t.isActive() && !t.isLinked() && a.can(Auth.Perm.TX_EDIT) && !t.isSpecial()) acts.add("تعديل الحركة");
+457:         // 12.4: الحركات الخاصة
+458:         if (a.can(Auth.Perm.SPECIAL) && t.isSpecial() && !t.isPending()) {
+459:             acts.add("تحويل لحركة عادية");
+460:             acts.add("تعديل الحركة الخاصة");
+461:         }
+462:         if (a.can(Auth.Perm.SPECIAL) && t.isActive() && !t.isLinked() && !t.isSpecial()) acts.add("تعليم كحركة خاصة");
+463:         if (a.can(Auth.Perm.SPECIAL) && t.isUnposted()) acts.add("إلغاء الحركة الخاصة");
+464:         // 10.18: قص العملات يُعدَّل بساقيه معًا من شاشة القص
+465:         if (t.isActive() && t.isFx() && a.can(Auth.Perm.TX_EDIT) && a.can(Auth.Perm.TX_ADD)) acts.add("تعديل القص");
+466:         if (t.isActive() && a.can(Auth.Perm.TX_CANCEL)) acts.add("إلغاء الحركة بقيد عكسي");
+467:         if (t.isPending() && a.can(Auth.Perm.APPROVE)) {
+468:             acts.add("اعتماد الحركة");
+469:             acts.add("رفض الحركة");
+470:         }
+471:         if (t.replacesId != null) acts.add("عرض الحركة الأصلية قبل التعديل");
+472:         if (rep != null) acts.add("عرض الحركة البديلة بعد التعديل");
+473:         if (o != null) acts.add("فتح كشف المكتب");
+474:         final List<String> fa = acts;
+475:         final Model.Office office = o;
+476:         LinearLayout l = new LinearLayout(a);
+477:         l.setOrientation(LinearLayout.VERTICAL);
+478:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), a.dp(4));
+479:         TextView info = a.text(sb.toString(), 15, a.dark, false);

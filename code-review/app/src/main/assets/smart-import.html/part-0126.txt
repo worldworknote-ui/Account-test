@@ -1,0 +1,167 @@
+1508:       });
+1509:     });
+1510:     return { rows: rows, totals: Object.keys(totals).sort().map(function (k) { return totals[k]; }) };
+1511:   }
+1512: 
+1513:   // ===================================================================================
+1514:   // ZIP بدون ضغط (يقرؤه ZipInputStream في التطبيق)
+1515:   // ===================================================================================
+1516: 
+1517:   var CRC_TABLE = (function () {
+1518:     var t = new Uint32Array(256);
+1519:     for (var n = 0; n < 256; n++) {
+1520:       var c = n;
+1521:       for (var k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+1522:       t[n] = c >>> 0;
+1523:     }
+1524:     return t;
+1525:   })();
+1526: 
+1527:   function crc32(b) {
+1528:     var c = 0xffffffff;
+1529:     for (var i = 0; i < b.length; i++) c = CRC_TABLE[(c ^ b[i]) & 0xff] ^ (c >>> 8);
+1530:     return (c ^ 0xffffffff) >>> 0;
+1531:   }
+1532: 
+1533:   function utf8(s) { return new TextEncoder().encode(s); }
+1534: 
+1535:   function zipStored(files, when) {
+1536:     var d = new Date(when);
+1537:     var dosTime = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+1538:     var dosDate = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+1539:     var parts = [], central = [], offset = 0;
+1540:     files.forEach(function (f) {
+1541:       var name = utf8(f.name), data = f.bytes, crc = crc32(data);
+1542:       var h = new DataView(new ArrayBuffer(30));
+1543:       h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint16(8, 0, true);
+1544:       h.setUint16(10, dosTime, true); h.setUint16(12, dosDate, true); h.setUint32(14, crc, true);
+1545:       h.setUint32(18, data.length, true); h.setUint32(22, data.length, true); h.setUint16(26, name.length, true); h.setUint16(28, 0, true);
+1546:       parts.push(new Uint8Array(h.buffer), name, data);
+1547:       var c = new DataView(new ArrayBuffer(46));
+1548:       c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint16(10, 0, true);
+1549:       c.setUint16(12, dosTime, true); c.setUint16(14, dosDate, true); c.setUint32(16, crc, true); c.setUint32(20, data.length, true);
+1550:       c.setUint32(24, data.length, true); c.setUint16(28, name.length, true); c.setUint16(30, 0, true); c.setUint16(32, 0, true);
+1551:       c.setUint16(34, 0, true); c.setUint16(36, 0, true); c.setUint32(38, 0, true); c.setUint32(42, offset, true);
+1552:       central.push(new Uint8Array(c.buffer), name);
+1553:       offset += 30 + name.length + data.length;
+1554:     });
+1555:     var cdSize = central.reduce(function (s, x) { return s + x.length; }, 0);
+1556:     var e = new DataView(new ArrayBuffer(22));
+1557:     e.setUint32(0, 0x06054b50, true); e.setUint16(4, 0, true); e.setUint16(6, 0, true); e.setUint16(8, files.length, true);
+1558:     e.setUint16(10, files.length, true); e.setUint32(12, cdSize, true); e.setUint32(16, offset, true); e.setUint16(20, 0, true);
+1559:     return concat(parts.concat(central, [new Uint8Array(e.buffer)]));
+1560:   }
+1561: 
+1562:   function concat(arrs) {
+1563:     var n = arrs.reduce(function (s, a) { return s + a.length; }, 0);
+1564:     var out = new Uint8Array(n), p = 0;
+1565:     arrs.forEach(function (a) { out.set(a, p); p += a.length; });
+1566:     return out;
+1567:   }
+1568: 
+1569:   /** محتوى النسخة: manifest + الجداول + فهرس الصور (فارغ) + summary في النهاية. */
+1570:   function backupZip(T, cfg) {
+1571:     var files = [];
+1572:     var counts = { offices: T.offices.length, tx: T.tx.length, attachments: 0, currencies: T.currencies.length };
+1573:     var manifest = { format: 5, app: "smart-accountant-hawala", appName: "المحاسب الذكي لمكاتب الحوالات",
+1574:       appVersion: "أداة النقل 1.1", schema: 6, createdAt: cfg.now, counts: counts, source: "migration" };
+1575:     files.push({ name: "manifest.json", bytes: utf8(JSON.stringify(manifest, null, 1)) });
+1576:     var rows = {};
+1577:     TABLE_ORDER.forEach(function (t) {
+1578:       var lines = T[t].map(function (r) { return JSON.stringify(r) + "\n"; }).join("");
+1579:       files.push({ name: "tables/" + t + ".ndjson", bytes: utf8(lines) });
+1580:       rows[t] = T[t].length;
+1581:     });
+1582:     files.push({ name: "attachments/index.ndjson", bytes: new Uint8Array(0) });
+1583:     var summary = { rows: rows, attachments: 0, skippedAttachments: 0,
+1584:       warnings: ["ملف نقل من: " + (cfg.sourceName || "ملف Excel") + " — راجع أرصدة المكاتب بعد الاستعادة وقارنها بالبرنامج السابق"],
+1585:       completedAt: cfg.now };
+1586:     files.push({ name: "summary.json", bytes: utf8(JSON.stringify(summary, null, 1)) });
+1587:     return zipStored(files, cfg.now);
+1588:   }
+1589: 
+1590:   // ===================================================================================
+1591:   // التشفير: SMARTBK5 (مطابق لـ SecureStreams.EncryptingOutputStream)
+1592:   // ===================================================================================
+1593: 
+1594:   function be32(v) { return new Uint8Array([(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255]); }
+1595: 
+1596:   function iv(prefix, counter) {
+1597:     var out = new Uint8Array(12);
+1598:     out.set(prefix, 0);
+1599:     out.set(be32(counter >>> 0), 8);
+1600:     return out;
+1601:   }
+1602: 
+1603:   async function encrypt(plain, password, opts, subtle, rand) {
+1604:     opts = opts || {};
+1605:     var iterations = opts.iterations || 310000;
+1606:     var chunk = opts.chunk || 262144;
+1607:     var salt = opts.salt || rand(16);
+1608:     var prefix = opts.prefix || rand(8);
+1609:     var header = concat([utf8("SMARTBK5"), be32(1), be32(iterations), be32(16), salt, be32(8), prefix, be32(chunk)]);
+1610:     var base = await subtle.importKey("raw", utf8(password), "PBKDF2", false, ["deriveKey"]);
+1611:     var key = await subtle.deriveKey({ name: "PBKDF2", hash: "SHA-256", salt: salt, iterations: iterations }, base,
+1612:       { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+1613:     var out = [header];
+1614:     var v = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv: iv(prefix, 0xffffffff), additionalData: concat([header, utf8("VERIFY")]), tagLength: 128 },
+1615:       key, new Uint8Array(16)));
+1616:     out.push(be32(v.length), v);
+1617:     var count = Math.max(1, Math.ceil(plain.length / chunk));
+1618:     for (var i = 0; i < count; i++) {
+1619:       var last = i === count - 1 ? 1 : 0;
+1620:       var part = plain.subarray(i * chunk, Math.min(plain.length, (i + 1) * chunk));
+1621:       var aad = new Uint8Array(header.length + 9);
+1622:       aad.set(header, 0);
+1623:       // رقم الجزء 8 بايت (long) ثم علامة «الأخير»
+1624:       aad.set(be32(0), header.length);
+1625:       aad.set(be32(i), header.length + 4);
+1626:       aad[header.length + 8] = last;
+1627:       var ct = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv: iv(prefix, i), additionalData: aad, tagLength: 128 }, key, part));
+1628:       out.push(new Uint8Array([last]), be32(ct.length), ct);
+1629:     }
+1630:     return concat(out);
+1631:   }
+1632: 
+1633:   async function makeBackup(T, cfg, password, subtle, rand, opts) {
+1634:     var zip = backupZip(T, cfg);
+1635:     return encrypt(zip, password, opts, subtle, rand);
+1636:   }
+1637: 
+1638:   // ===================================================================================
+1639:   // تقرير CSV (يفتح في Excel بالعربية)
+1640:   // ===================================================================================
+1641: 
+1642:   function csvCell(s) {
+1643:     s = String(s === null || s === undefined ? "" : s);
+1644:     return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+1645:   }
+1646: 
+1647:   function balWord(m, dec) {
+1648:     if (m === 0n) return "0";
+1649:     return (m > 0n ? "لنا " : "علينا ") + fmtMinor(m > 0n ? m : -m, dec);
+1650:   }
+1651: 
+1652:   function reportCsv(rep, model) {
+1653:     var lines = [];
+1654:     lines.push(["المكتب", "العملة", "الرصيد السابق", "حركات لنا (مدين)", "حركات علينا (دائن)", "الرصيد النهائي", "الرصيد في الملف", "المطابقة"].map(csvCell).join(","));
+1655:     rep.rows.forEach(function (r) {
+1656:       lines.push([r.office, r.code, balWord(r.opening, r.dec), fmtMinor(r.debit, r.dec), fmtMinor(r.credit, r.dec), balWord(r.balance, r.dec),
+1657:         r.expected === null ? "" : balWord(r.expected, r.dec), r.match === null ? "" : (r.match ? "مطابق" : "غير مطابق")].map(csvCell).join(","));
+1658:     });
+1659:     lines.push("");
+1660:     lines.push(["العملة", "مجموع ما لنا", "عدد المكاتب", "مجموع ما علينا", "عدد المكاتب", "الصافي"].map(csvCell).join(","));
+1661:     rep.totals.forEach(function (t) {
+1662:       lines.push([t.code, fmtMinor(t.receivable, t.dec), t.nr, fmtMinor(t.payable, t.dec), t.np, balWord(t.receivable - t.payable, t.dec)].map(csvCell).join(","));
+1663:     });
+1664:     if (model.errors.length || model.skipped.length) {
+1665:       lines.push("");
+1666:       lines.push(["الورقة", "الصف", "الحالة", "السبب"].map(csvCell).join(","));
+1667:       model.errors.forEach(function (e) { lines.push([e.sheet, e.row, "خطأ", e.msg].map(csvCell).join(",")); });
+1668:       model.skipped.forEach(function (e) { lines.push([e.sheet, e.row, "تخطٍّ", e.reason].map(csvCell).join(",")); });
+1669:     }
+1670:     return "﻿" + lines.join("\r\n");
+1671:   }
+1672: 
+1673:   return {
+1674:     normDigits: normDigits, clean: clean, officeKey: officeKey, looseKey: looseKey, headerKey: headerKey,

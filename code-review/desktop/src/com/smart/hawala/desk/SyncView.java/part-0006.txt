@@ -1,0 +1,137 @@
+738:         Ui.busy(this, "جارٍ نقل ملفات الخزنة المشفّرة…", p -> {
+739:             try {
+740:                 return new SyncEngine(db, src).moveTo(dst);
+741:             } catch (Exception e) {
+742:                 if (keep != null) for (int i = 0; i < TKEYS.length; i++) db.setSettingQuiet(TKEYS[i], keep[i]);
+743:                 throw new IllegalStateException("لم يكتمل النقل، وبقيت المزامنة على مكانها السابق: " + Ui.friendly(e));
+744:             }
+745:         }, n -> {
+746:             db.setSettingQuiet("sync_transport", k);
+747:             Ui.toast("نُقلت المزامنة ✓ (" + n + " ملفًا). افعل الشيء نفسه على أجهزتك الأخرى.");
+748:             now(app);
+749:             refresh();
+750:         });
+751:     }
+752: 
+753:     void repair() {
+754:         if (!app.require(Auth.Perm.SYNC)) return;
+755:         boolean pw = SyncEngine.repairNeedsPassword(db);
+756:         JPanel c = Ui.column();
+757:         c.add(Ui.para("يكتب هذا الجهاز ملفات المزامنة المشفّرة في المكان المختار الآن: رأس الخزنة ولقطة كاملة وحزمه. بياناتك لا تتغير. "
+758:                 + "بعدها اختر المكان نفسه على الأجهزة الأخرى.", 13.5f, Ui.ink, 440));
+759:         JPasswordField p = Ui.password();
+760:         if (pw) {
+761:             c.add(Ui.labeled("كلمة سر المزامنة (8 محارف على الأقل)", p));
+762:             c.add(Ui.para("يُكتب رأس جديد بكلمة السر هذه، ويظهر رمز استرداد جديد.", 12, Ui.muted, 440));
+763:         }
+764:         if (!Ui.form(this, "إصلاح مكان المزامنة", Ui.rtl(c), "إصلاح")) return;
+765:         char[] s = pw ? p.getPassword() : null;
+766:         Ui.busy(this, "جارٍ كتابة ملفات المزامنة…", x -> new SyncEngine(db, folder(db)).repair(s), rc -> {
+767:             if (!rc.isEmpty()) Ui.info(this, "رمز الاسترداد الجديد — احفظه", rc);
+768:             Ui.toast("أُصلح مكان المزامنة ✓");
+769:             now(app);
+770:             refresh();
+771:         });
+772:     }
+773: 
+774:     void help(String kind) {
+775:         String[] ks = {"drive", "server", "folder"};
+776:         StringBuilder b = new StringBuilder();
+777:         b.append("قبل أي طريقة:\n");
+778:         for (String x : SyncHelp.BASICS) b.append("• ").append(x).append("\n");
+779:         for (String k : ks) {
+780:             SyncHelp.Guide g = "drive".equals(k) ? SyncHelp.drive(false) : "server".equals(k) ? SyncHelp.server() : SyncHelp.folder(false);
+781:             b.append("\n———————— ").append(g.title).append(k.equals(kind) ? "  (الطريقة الحالية)" : "").append(" ————————\n").append(g.intro).append("\n\nالخطوات:\n");
+782:             for (int i = 0; i < g.steps.length; i++) b.append(i + 1).append(") ").append(g.steps[i]).append("\n");
+783:             b.append("\nإن واجهتك مشكلة:\n");
+784:             for (String x : g.notes) b.append("• ").append(x).append("\n");
+785:         }
+786:         JTextArea a = Ui.area(14);
+787:         a.setText(b.toString());
+788:         a.setEditable(false);
+789:         a.setCaretPosition(0);
+790:         a.setComponentOrientation(ComponentOrientation.RIGHT_TO_LEFT);
+791:         JScrollPane sp = Ui.areaBox(a);
+792:         sp.setPreferredSize(new Dimension(640, 520));
+793:         Ui.form(this, "شرح تفعيل المزامنة", sp, "إغلاق");
+794:     }
+795: 
+796:     static String kind(String k) { return SyncStore.kindName(k); }
+797: 
+798:     void changePw() {
+799:         JPasswordField o = Ui.password(), n1 = Ui.password(), n2 = Ui.password();
+800:         JPanel c = Ui.column();
+801:         c.add(Ui.labeled("الحالية", o));
+802:         c.add(Ui.labeled("الجديدة (8 محارف على الأقل)", n1));
+803:         c.add(Ui.labeled("أعد كتابة الجديدة", n2));
+804:         if (!Ui.form(this, "تغيير كلمة سر المزامنة", Ui.rtl(c), "حفظ")) return;
+805:         if (!new String(n1.getPassword()).equals(new String(n2.getPassword()))) {
+806:             Ui.info(this, "تغيير كلمة السر", "غير متطابقتين");
+807:             return;
+808:         }
+809:         Ui.busy(this, "جارٍ إعادة تغليف المفتاح…", p -> {
+810:             new SyncEngine(db, folder(db)).changePassword(o.getPassword(), n1.getPassword());
+811:             return true;
+812:         }, ok -> Ui.toast("غُيّرت كلمة سر المزامنة ✓"));
+813:     }
+814: 
+815:     // ===================================================================================
+816:     // 10.14: تغيير حساب Google، تعيين كلمة سر جديدة، حذف ملفات المزامنة
+817:     // ===================================================================================
+818: 
+819:     static String driveEmail(String target) {
+820:         String p = "Google Drive: ";
+821:         return target != null && target.startsWith(p) ? target.substring(p.length()).trim() : "";
+822:     }
+823: 
+824:     void changeAccount(String cur) {
+825:         if (!app.require(Auth.Perm.SYNC)) return;
+826:         JComboBox<String> how = Ui.combo(new String[]{"نقل المزامنة إلى الحساب الجديد (موصى به)", "بداية جديدة في الحساب الجديد"});
+827:         JPanel c = Ui.column();
+828:         c.add(Ui.labeled("الطريقة", how));
+829:         c.add(Ui.para("• النقل: تُنسخ الخزنة المشفّرة كما هي إلى الحساب الجديد، ويُترك في القديم علامة «نُقلت»: كل جهاز آخر يتوقف عن الإرسال إليه ويطلب الدخول بالحساب الجديد (بياناته لا تتغير). "
+830:                 + "بعد أن تنتقل كل الأجهزة احذف الخزنة من الحساب القديم.\n"
+831:                 + "• البداية الجديدة: مزامنة جديدة من بيانات هذا الجهاز بكلمة سر ورمز جديدين؛ كل جهاز آخر ينضم إليها فتُستبدل بياناته. استعملها فقط إن كانت كل الأجهزة متزامنة الآن.", 12.5f, Ui.muted, 460));
+832:         if (!Ui.form(this, "تغيير حساب Google", Ui.rtl(c), "اختيار الحساب الجديد…")) return;
+833:         boolean fresh = how.getSelectedIndex() == 1;
+834:         char[][] pw = {null};
+835:         if (fresh) {
+836:             JPasswordField p1 = Ui.password(), p2 = Ui.password();
+837:             JPanel q = Ui.column();
+838:             q.add(Ui.labeled("كلمة سر المزامنة الجديدة (8 محارف على الأقل)", p1));
+839:             q.add(Ui.labeled("أعد كتابتها", p2));
+840:             if (!Ui.form(this, "مزامنة جديدة", Ui.rtl(q), "متابعة")) return;
+841:             if (p1.getPassword().length < 8 || !new String(p1.getPassword()).equals(new String(p2.getPassword()))) {
+842:                 Ui.info(this, "مزامنة جديدة", p1.getPassword().length < 8 ? "كلمة السر 8 محارف على الأقل" : "كلمتا السر غير متطابقتين");
+843:                 return;
+844:             }
+845:             pw[0] = p1.getPassword();
+846:         }
+847:         UsersView.confirmAdmin(this, db, fresh ? "بداية جديدة في حساب آخر" : "نقل المزامنة إلى حساب آخر", () -> {
+848:             Ui.toast("سيُفتح المتصفح: اختر الحساب الجديد ووافق، ثم ارجع إلى البرنامج.");
+849:             Ui.busy(this, "بانتظار الدخول بالحساب الجديد في المتصفح…", p -> DeskDriveAuth.login(db, DeskDriveAuth.NEW, ""), email -> {
+850:                 if (!cur.isEmpty() && email.equalsIgnoreCase(cur)) {
+851:                     DeskDriveAuth.drop(DeskDriveAuth.NEW);
+852:                     Ui.info(this, "تغيير الحساب", "هذا هو الحساب الحالي. اختر حسابًا آخر.");
+853:                     return;
+854:                 }
+855:                 String to = email.isEmpty() ? "حساب Google آخر" : email;
+856:                 String dn = SyncEngine.status(db).deviceName;
+857:                 Ui.busy(this, fresh ? "جارٍ إنشاء المزامنة الجديدة…" : "جارٍ نقل الخزنة المشفّرة إلى " + to + "…", p -> {
+858:                     SyncFolder src = new DriveSyncFolder(new DeskDriveAuth(db)), dst = new DriveSyncFolder(new DeskDriveAuth(db, DeskDriveAuth.NEW));
+859:                     if (SyncEngine.sameFolder(src, dst)) throw new IllegalStateException("الحساب المختار هو الحساب المتصل حاليًا. اختر حسابًا آخر.");
+860:                     if (fresh) {
+861:                         new SyncEngine(db, src).retire("Google Drive: " + email, true, false);
+862:                         new SyncEngine(db, src).leave();
+863:                         return new SyncEngine(db, dst).create(pw[0], dn);
+864:                     }
+865:                     int n = new SyncEngine(db, src).moveTo(dst);
+866:                     new SyncEngine(db, src).retire("Google Drive: " + email, false, false);
+867:                     return "" + n;
+868:                 }, res -> {
+869:                     try {
+870:                         DeskDriveAuth.promote(DeskDriveAuth.REFRESH, DeskDriveAuth.OLD);
+871:                         DeskDriveAuth.promote(DeskDriveAuth.NEW, DeskDriveAuth.REFRESH);
+872:                     } catch (Exception ex) {
+873:                         Ui.error(this, ex);
+874:                     }

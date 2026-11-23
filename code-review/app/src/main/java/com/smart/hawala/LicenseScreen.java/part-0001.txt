@@ -1,0 +1,150 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.content.ClipData;
+5: import android.content.ClipboardManager;
+6: import android.content.Context;
+7: import android.graphics.Color;
+8: import android.text.InputType;
+9: import android.view.View;
+10: import android.widget.EditText;
+11: import android.widget.LinearLayout;
+12: import android.widget.TextView;
+13: import java.util.ArrayList;
+14: import java.util.Collections;
+15: import java.util.List;
+16: import java.util.Map;
+17: 
+18: /**
+19:  * «المزيد ← الترخيص»: حالة النسخة واستهلاك حدود المجاني، والتفعيل دون إنترنت (طلب ← رمز)، ونقل الرخصة،
+20:  * وعنوان خادم الترخيص الاختياري. لا شيء هنا يحجز بيانات أو يغلق التطبيق.
+21:  */
+22: final class LicenseScreen {
+23:     /** 12.7: شاشة خادم الترخيص مخفية؛ الكود باقٍ. */
+24:     static final boolean SHOW_SERVER = false;
+25: 
+26:     private final MainActivity a;
+27: 
+28:     LicenseScreen(MainActivity a) { this.a = a; }
+29: 
+30:     void show() {
+31:         if (!a.require(Auth.Perm.LICENSE)) return;   // 12.0
+32:         a.here(this::show);
+33:         a.tabbedScreen("الترخيص", a.moreScreen::show, "more");
+34:         Entitlements e = License.current;
+35: 
+36:         // ----- الحالة -----
+37:         LinearLayout st = a.card();
+38:         st.addView(a.text(e.edition(), 18, e.pro ? a.primaryInk : a.ink, true));
+39:         if (e.pro) {
+40:             st.addView(a.text("رقم الرخصة: \u2066" + e.lid + "\u2069", 14, a.ink, false));
+41:             st.addView(a.text("التحديثات مشمولة حتى: " + e.updatesUntil(), 14, a.muted, false));
+42:             if (!e.expires().isEmpty()) st.addView(a.text("الاشتراك ساري حتى: " + e.expires() + " (بعده يعمل بالمجانية دون أن يُقفل شيء)", 14, a.muted, false));
+43:         } else {
+44:             st.addView(a.text(AboutText.FREE_LINE, 15, a.ink, false));
+45:             st.addView(a.text("حدود المجانية: " + Entitlements.FREE_OFFICES + " مكتبًا، و" + Entitlements.FREE_TX_PER_OFFICE + " حركة لكل مكتب، و"
+46:                     + Entitlements.FREE_WA_PER_DAY + " رسالة واتساب تُقرأ تلقائيًا كل يوم (ومعها الالتقاط والتجميع والقص)، وصندوق واحد، و"
+47:                     + Entitlements.FREE_CLIENTS + " عميلًا، ومستخدم واحد (المالك). عند بلوغ حدٍّ تتوقف الإضافة فقط: "
+48:                     + "تبقى بياناتك كلها، وتعمل الكشوف والتقارير والتصحيح، وحذف مكتب لا تحتاجه يعيد مكانه.", 13, a.muted, false));
+49:             st.addView(a.text(AboutText.BUY_LINE, 15, a.goldInk, true));
+50:         }
+51:         if (!e.note.isEmpty()) a.notice(R.drawable.ic_info, e.note, true, null, null);
+52:         if (!License.signatureOk) {
+53:             a.notice(R.drawable.ic_shield, "هذه النسخة من التطبيق ليست موقّعة من مطوّره. ثبّت النسخة الأصلية وانقل بياناتك إليها بنسخة احتياطية.", true, null, null);
+54:         } else if (License.signatureUnknown) {
+55:             // 11.5: التعذّر لا يُعدّ إثبات أصالة؛ تبقى الرخصة عاملة ويُذكر ذلك صراحة
+56:             a.notice(R.drawable.ic_shield, "تعذّر التحقق من أن هذه النسخة موقّعة من المطوّر (خطأ في النظام أثناء الفحص). الرخصة تعمل؛ إن تكررت الرسالة فثبّت النسخة الأصلية من البائع.", true, null, null);
+57:         }
+58:         String risk = a.db.setting("risk_note", "");
+59:         if (!risk.isEmpty()) a.notice(R.drawable.ic_info, risk, false, null, null);
+60: 
+61:         usage(e);
+62: 
+63:         boolean admin = a.can(Auth.Perm.SETTINGS);
+64:         if (!admin) {
+65:             a.hint("التفعيل ونقل الرخصة للمدير وحده.");
+66:             return;
+67:         }
+68: 
+69:         // ----- التفعيل أو النقل -----
+70:         if (!e.pro) activation();
+71:         else {
+72:             upgrade();
+73:             transfer();
+74:         }
+75: 
+76:         // ----- 12.7: هوية المكتب وتأكيد الوقت (بلا خادم) -----
+77:         a.section("هوية المكتب والوقت", null, null);
+78:         LinearLayout g = a.group();
+79:         String uidNow = LicenseGuard.officeUid(a.db);
+80:         a.groupRow(g, R.drawable.ic_key, a.primaryInk, "هوية بيانات هذا المكتب", (uidNow.isEmpty() ? "لم تصل من الجهاز الرئيسي بعد (مزامنة الآن)" : uidNow)
+81:                 + "\nالرخصة تعمل على بيانات مكتبها فقط. على جهاز ينضم للمزامنة: انضم أولًا ثم اطلب التفعيل.", null, null);
+82:         long lt = LicenseGuard.lastTrusted(a.db);
+83:         a.groupRow(g, R.drawable.ic_clock, a.primaryInk, "آخر تأكيد للوقت من الإنترنت", lt <= 0 ? "لم يُؤكَّد بعد" : MainActivity.ago(lt),
+84:                 "تأكيد الآن", v -> a.busy("جارٍ تأكيد الوقت…", p -> LicenseGuard.fetchTime(a.db), res -> {
+85:                     long t = (Long) res;
+86:                     License.load(a, a.db);
+87:                     a.toast(t > 0 ? "تأكّد الوقت ✓" : "تعذّر الاتصال الآن. لا يتوقف شيء؛ يُعاد تلقائيًا.");
+88:                     show();
+89:                 }));
+90:         if (!LicenseGuard.timeNote.isEmpty()) a.hint("⚠ " + LicenseGuard.timeNote);
+91:         // 12.7: خادم الترخيص الاختياري مخفي (الكود باقٍ للاستعمال لاحقًا)
+92:         if (SHOW_SERVER) {
+93:         // ----- الخادم الاختياري -----
+94:             a.section("خادم الترخيص (اختياري)", null, null);
+95:             a.hint("يعمل التطبيق والترخيص بلا إنترنت. إن جهّزت خادمًا (المرجع مرفق مع أدوات البائع) اكتب عنوانه هنا: يُفحص كل 7 أيام "
+96:                     + "لمعرفة الرخص الملغاة. فشل الاتصال لا يوقف شيئًا.");
+97:             final EditText url = a.field("https://license.example.com");
+98:             url.setText(a.db.setting("license_server", ""));
+99:             url.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+100:             url.setTextDirection(View.TEXT_DIRECTION_LTR);
+101:             a.body.addView(url, a.lp(-1, 52, 4));
+102:             long last = a.db.settingLong("license_last_check", 0);
+103:             if (last > 0) a.hint("آخر فحص: " + MainActivity.ago(last));
+104:             a.button("حفظ العنوان", a.primary, v -> {
+105:                 String u = url.getText().toString().trim();
+106:                 if (!u.isEmpty() && !u.startsWith("https://")) {
+107:                     a.toast("العنوان يجب أن يبدأ بـ https://");
+108:                     return;
+109:                 }
+110:                 a.db.setSetting("license_server", u);
+111:                 a.toast(u.isEmpty() ? "أُزيل العنوان: لا اتصال بخادم الترخيص." : "حُفظ العنوان.");
+112:             });
+113:             if (e.pro && !a.db.setting("license_server", "").isEmpty()) {
+114:                 a.button("فحص الآن", a.accent, v -> a.busy("جارٍ الاتصال بخادم الترخيص…", p -> License.checkOnline(a, a.db), res -> {
+115:                     a.toast(String.valueOf(res));
+116:                     show();
+117:                 }));
+118:             }
+119:         }
+120:         if (!License.signals.isEmpty()) a.hint("ملاحظات البيئة: " + License.signals);
+121:     }
+122: 
+123:     /** الاستهلاك: المكاتب، والمكاتب الأقرب إلى سقف الحركات، والمستخدمون. */
+124:     private void usage(Entitlements e) {
+125:         QuotaState q;
+126:         try {
+127:             q = a.db.quotaNow();
+128:         } catch (Exception ex) {
+129:             a.hint("تعذر حساب الاستهلاك الآن: " + Ui.friendly(ex));
+130:             return;
+131:         }
+132:         a.section("الاستهلاك", null, null);
+133:         LinearLayout g = a.group();
+134:         long mo = e.maxOffices(), mt = e.maxTxPerOffice();
+135:         a.groupRow(g, R.drawable.ic_users, a.primaryInk, "المكاتب", mo == Entitlements.UNLIMITED ? "بلا حد" : "حذف أي مكتب يعيد مكانه فارغًا",
+136:                 mo == Entitlements.UNLIMITED ? "" + q.offices : q.offices + " من " + mo, null);
+137:         if (mt != Entitlements.UNLIMITED) {
+138:             List<long[]> top = new ArrayList<>();
+139:             for (Map.Entry<Long, Long> x : q.tx.entrySet()) top.add(new long[]{x.getKey(), x.getValue()});
+140:             Collections.sort(top, (p1, p2) -> Long.compare(p2[1], p1[1]));
+141:             int shown = 0;
+142:             for (long[] t : top) {
+143:                 if (shown >= 5 || t[1] < mt * 6 / 10) break;
+144:                 Model.Office o = a.db.office(t[0]);
+145:                 if (o == null) continue;
+146:                 long left = QuotaState.remaining(t[1], mt);
+147:                 a.groupRow(g, R.drawable.ic_scale, left == 0 ? a.red : a.primaryInk, Model.nz(o.name),
+148:                         left == 0 ? "بلغ السقف: التصحيح والكشف والتقارير تعمل" : "بقي " + left + " حركة", t[1] + " من " + mt, null);
+149:                 shown++;
+150:             }

@@ -1,0 +1,167 @@
+961:         for (int i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > 6) n++;
+962:         return n >= Math.max(6, a.length * 0.02);
+963:     }
+964: 
+965:     static double scaleOf(Component c) {
+966:         try {
+967:             return c.getGraphicsConfiguration().getDefaultTransform().getScaleX();
+968:         } catch (Throwable t) {
+969:             return 1;
+970:         }
+971:     }
+972: 
+973:     static String powershell() {
+974:         String root = System.getenv("SystemRoot");
+975:         if (root == null) root = "C:\\Windows";
+976:         return root + "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+977:     }
+978: 
+979:     // ===================================================================================
+980:     // القرّاء
+981:     // ===================================================================================
+982: 
+983:     static final class Reader {
+984:         private Reader() {}
+985: 
+986:         /** in: داخل الإطار، bar: مكان شريط الإطار (للمعايرة على ويندوز)، كلاهما بإحداثيات جافا. */
+987:         static Bubbles.Result read(Rectangle in, double scale, Rectangle bar) throws Exception {
+988:             String f = fake();
+989:             if (f != null) {
+990:                 List<Bubbles.Node> nodes = shift(Bubbles.parse(new String(Files.readAllBytes(new File(f).toPath()), StandardCharsets.UTF_8)), in.x, in.y);
+991:                 return Bubbles.build(nodes, new int[]{in.x, in.y, in.width, in.height});
+992:             }
+993:             if (WIN) return windows(in, scale, bar);
+994:             if (MAC) return mac(in);
+995:             throw new Exception("إطار الالتقاط متاح على ويندوز وماك فقط.");
+996:         }
+997: 
+998:         static List<Bubbles.Node> shift(List<Bubbles.Node> l, int dx, int dy) {
+999:             List<Bubbles.Node> o = new ArrayList<>();
+1000:             for (Bubbles.Node n : l) o.add(new Bubbles.Node(n.kind, n.x + dx, n.y + dy, n.w, n.h, n.text));
+1001:             return o;
+1002:         }
+1003: 
+1004:         /** 12.5: «مربع النسخ»: قراءة الصورة كلها ثم جمعها في رسالة واحدة. */
+1005:         static Bubbles.Result readBox(Rectangle in) throws Exception {
+1006:             List<Bubbles.Node> nodes = new ArrayList<>();
+1007:             String f = fake();
+1008:             if (f != null) nodes.addAll(shift(Bubbles.parse(new String(Files.readAllBytes(new File(f).toPath()), StandardCharsets.UTF_8)), in.x, in.y));
+1009:             else {
+1010:                 BufferedImage img = grab(in);
+1011:                 List<Bubbles.Node> l = WIN ? ocrWindows(img, in) : MAC ? visionLines(img, in) : null;
+1012:                 if (l == null) throw new Exception(WIN ? "تعذّرت قراءة الصورة في ويندوز." : "إطار الالتقاط متاح على ويندوز وماك فقط.");
+1013:                 nodes.addAll(l);
+1014:             }
+1015:             List<Bubbles.Node> lines = new ArrayList<>();
+1016:             for (Bubbles.Node n : nodes) if (n.kind == 'L' || n.kind == 'T' || n.kind == 'R') lines.add(new Bubbles.Node('L', n.x, n.y, n.w, n.h, n.text));
+1017:             lines.add(new Bubbles.Node('B', in.x, in.y, in.width, in.height, ""));
+1018:             return Bubbles.build(lines, new int[]{in.x, in.y, in.width, in.height});
+1019:         }
+1020: 
+1021:         /** 12.2: أشكال الفقاعات في الصورة بإحداثيات الشاشة (نوع B). */
+1022:         static List<Bubbles.Node> shapes(BufferedImage img, Rectangle in) {
+1023:             List<Bubbles.Node> o = new ArrayList<>();
+1024:             int w = img.getWidth(), h = img.getHeight();
+1025:             int[] px = img.getRGB(0, 0, w, h, null, 0, w);
+1026:             double kx = in.width / (double) w, ky = in.height / (double) h;
+1027:             for (BubbleShapes.Box b : BubbleShapes.find(px, w, h, w / (double) Math.max(1, in.width)))
+1028:                 o.add(new Bubbles.Node(b.media ? 'M' : 'B', in.x + (int) Math.round(b.x * kx), in.y + (int) Math.round(b.y * ky),
+1029:                         (int) Math.round(b.w * kx), (int) Math.round(b.h * ky), ""));
+1030:             return o;
+1031:         }
+1032: 
+1033:         // ---------------------------------- ويندوز ----------------------------------
+1034: 
+1035:         static String[] frameArgs(Rectangle in, Rectangle bar) {
+1036:             return new String[]{"-Ix", String.valueOf(in.x), "-Iy", String.valueOf(in.y), "-Iw", String.valueOf(in.width), "-Ih", String.valueOf(in.height),
+1037:                     "-Jx", String.valueOf(bar.x), "-Jy", String.valueOf(bar.y), "-Jw", String.valueOf(bar.width), "-Jh", String.valueOf(bar.height)};
+1038:         }
+1039: 
+1040:         static Bubbles.Result windows(Rectangle in, double scale, Rectangle bar) throws Exception {
+1041:             long pid = ProcessHandle.current().pid();
+1042:             List<String> args = new ArrayList<>(List.of("-SelfPid", String.valueOf(pid), "-Whole", "0"));
+1043:             args.addAll(List.of(frameArgs(in, bar)));
+1044:             String out = run(script("uia.ps1"), 40, args.toArray(new String[0]));
+1045:             List<Bubbles.Node> raw = Bubbles.parse(out);
+1046:             List<Bubbles.Node> nodes = toJava(raw, bar, scale);
+1047:             int[] fr = {in.x, in.y, in.width, in.height};
+1048:             Bubbles.Result r = Bubbles.build(nodes, fr);
+1049:             if (!r.bubbles.isEmpty()) return r;
+1050:             // لا نص من إمكانية الوصول: قراءة الصورة المدمجة في ويندوز، وتجميعها بأشكال الفقاعات
+1051:             BufferedImage img = grab(in);
+1052:             List<Bubbles.Node> ocr = ocrWindows(img, in);
+1053:             if (ocr == null) return r;
+1054:             List<Bubbles.Node> all = new ArrayList<>(ocr);
+1055:             all.addAll(shapes(img, in));
+1056:             for (Bubbles.Node n : nodes) if (n.kind == 'W' || n.kind == 'H') all.add(n);
+1057:             Bubbles.Result o = Bubbles.build(all, fr);
+1058:             if (o.chat.isEmpty()) o.chat = r.chat;
+1059:             return o;
+1060:         }
+1061: 
+1062:         /**
+1063:          * إحداثيات إمكانية الوصول (بكسل حقيقي) إلى إحداثيات جافا (قد تكون مقسومة على تكبير الشاشة):
+1064:          * شريط الإطار نفسه (F) يعطي التحويل الدقيق، وإلا نقسم على التكبير.
+1065:          */
+1066:         static List<Bubbles.Node> toJava(List<Bubbles.Node> raw, Rectangle bar, double scale) {
+1067:             Bubbles.Node self = null;
+1068:             for (Bubbles.Node n : raw) if (n.kind == 'F') self = n;
+1069:             double sx = 1 / Math.max(0.5, scale), sy = sx, ox = 0, oy = 0;
+1070:             if (self != null && self.w > 20 && self.h > 10 && bar != null) {
+1071:                 sx = bar.width / (double) self.w;
+1072:                 sy = bar.height / (double) self.h;
+1073:                 ox = bar.x - self.x * sx;
+1074:                 oy = bar.y - self.y * sy;
+1075:             }
+1076:             List<Bubbles.Node> o = new ArrayList<>();
+1077:             for (Bubbles.Node n : raw) {
+1078:                 if (n.kind == 'F') continue;
+1079:                 o.add(new Bubbles.Node(n.kind, (int) Math.round(n.x * sx + ox), (int) Math.round(n.y * sy + oy),
+1080:                         (int) Math.round(n.w * sx), (int) Math.round(n.h * sy), n.text));
+1081:             }
+1082:             return o;
+1083:         }
+1084: 
+1085:         static List<Bubbles.Node> ocrWindows(BufferedImage img, Rectangle in) {
+1086:             try {
+1087:                 File png = File.createTempFile("sa-cap-", ".png");
+1088:                 png.deleteOnExit();
+1089:                 javax.imageio.ImageIO.write(img, "png", png);
+1090:                 String out;
+1091:                 try {
+1092:                     out = run(script("ocr.ps1"), 40, "-Path", png.getAbsolutePath());
+1093:                 } finally {
+1094:                     png.delete();
+1095:                 }
+1096:                 List<Bubbles.Node> l = Bubbles.parse(out);
+1097:                 double sx = in.width / (double) img.getWidth(), sy = in.height / (double) img.getHeight();
+1098:                 List<Bubbles.Node> o = new ArrayList<>();
+1099:                 for (Bubbles.Node n : l)
+1100:                     o.add(new Bubbles.Node('L', in.x + (int) (n.x * sx), in.y + (int) (n.y * sy), (int) (n.w * sx), (int) (n.h * sy), n.text));
+1101:                 return o;
+1102:             } catch (Throwable t) {
+1103:                 return null;
+1104:             }
+1105:         }
+1106: 
+1107:         // ---------------------------------- ماك ----------------------------------
+1108: 
+1109:         static Bubbles.Result mac(Rectangle in) throws Exception {
+1110:             BufferedImage img = grab(in);
+1111:             List<Bubbles.Node> nodes = visionLines(img, in);
+1112:             nodes.addAll(shapes(img, in));
+1113:             // النافذة = الإطار نفسه: اسم المحادثة يُقرأ إن كان رأسها داخل الإطار في أعلاه
+1114:             nodes.add(new Bubbles.Node('W', in.x, in.y, in.width, in.height, ""));
+1115:             return Bubbles.build(nodes, new int[]{in.x, in.y, in.width, in.height});
+1116:         }
+1117: 
+1118:         static List<Bubbles.Node> visionLines(BufferedImage img, Rectangle in) throws Exception {
+1119:             File png = File.createTempFile("sa-cap-", ".png");
+1120:             png.deleteOnExit();
+1121:             javax.imageio.ImageIO.write(img, "png", png);
+1122:             String out;
+1123:             try {
+1124:                 out = run(script("vision.js"), 40, png.getAbsolutePath());
+1125:             } finally {
+1126:                 png.delete();
+1127:             }

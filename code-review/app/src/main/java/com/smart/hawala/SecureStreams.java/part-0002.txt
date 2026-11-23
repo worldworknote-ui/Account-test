@@ -1,0 +1,187 @@
+174:      * لا يغلق المجرى الأصلي (حتى يتمكن المستدعي من مزامنة الملف مع التخزين ثم إغلاقه).
+175:      */
+176:     public static final class EncryptingOutputStream extends OutputStream {
+177:         private final OutputStream out;
+178:         private final SecretKeySpec key;
+179:         private final byte[] header;
+180:         private final byte[] prefix;
+181:         private final byte[] buf;
+182:         private int pos;
+183:         private int index;
+184:         private boolean closed;
+185:         private long plainBytes;
+186: 
+187:         public EncryptingOutputStream(OutputStream out, char[] password) throws IOException {
+188:             this(out, password, DEFAULT_ITERATIONS, DEFAULT_CHUNK);
+189:         }
+190: 
+191:         public EncryptingOutputStream(OutputStream out, char[] password, int iterations, int chunkSize) throws IOException {
+192:             this(out, password, iterations, chunkSize, null);
+193:         }
+194: 
+195:         /** 10.14: rk ليس null = نسخة تُفتح بكلمة المرور أو برمز الاسترداد (الإصدار 2). */
+196:         public EncryptingOutputStream(OutputStream out, char[] password, RecoveryKey rk) throws IOException {
+197:             this(out, password, DEFAULT_ITERATIONS, DEFAULT_CHUNK, rk);
+198:         }
+199: 
+200:         public EncryptingOutputStream(OutputStream out, char[] password, int iterations, int chunkSize, RecoveryKey rk) throws IOException {
+201:             if (password == null || password.length == 0) throw new IOException("كلمة المرور فارغة");
+202:             if (chunkSize < 1024 || chunkSize > MAX_CHUNK) throw new IllegalArgumentException("chunk");
+203:             this.out = out;
+204:             SecureRandom rnd = new SecureRandom();
+205:             byte[] salt = new byte[SALT_BYTES];
+206:             rnd.nextBytes(salt);
+207:             prefix = new byte[PREFIX_BYTES];
+208:             rnd.nextBytes(prefix);
+209:             ByteArrayOutputStream h = new ByteArrayOutputStream();
+210:             DataOutputStream d = new DataOutputStream(h);
+211:             d.write(MAGIC);
+212:             d.writeInt(rk == null ? VERSION : VERSION_RC);
+213:             d.writeInt(iterations);
+214:             d.writeInt(salt.length);
+215:             d.write(salt);
+216:             d.writeInt(prefix.length);
+217:             d.write(prefix);
+218:             d.writeInt(chunkSize);
+219:             try {
+220:                 if (rk == null) {
+221:                     d.flush();
+222:                     header = h.toByteArray();
+223:                     key = deriveKey(password, salt, iterations);
+224:                 } else {
+225:                     // الإصدار 2: مفتاح بيانات عشوائي مغلّف بكلمة المرور وبرمز الاسترداد
+226:                     d.writeInt(rk.salt.length);
+227:                     d.write(rk.salt);
+228:                     d.writeInt(rk.iterations);
+229:                     d.flush();
+230:                     byte[] base = h.toByteArray();
+231:                     byte[] dk = new byte[32];
+232:                     rnd.nextBytes(dk);
+233:                     byte[] wp = gcm(Cipher.ENCRYPT_MODE, deriveKey(password, salt, iterations), iv(prefix, 0xFFFFFFFE), base, dk, 0, dk.length);
+234:                     byte[] wr = gcm(Cipher.ENCRYPT_MODE, rk.key, iv(prefix, 0xFFFFFFFD), base, dk, 0, dk.length);
+235:                     d.writeInt(wp.length);
+236:                     d.write(wp);
+237:                     d.writeInt(wr.length);
+238:                     d.write(wr);
+239:                     d.flush();
+240:                     header = h.toByteArray();
+241:                     key = new SecretKeySpec(dk, "AES");
+242:                     Arrays.fill(dk, (byte) 0);
+243:                 }
+244:                 byte[] v = gcm(Cipher.ENCRYPT_MODE, key, iv(prefix, 0xFFFFFFFF), concat(header, VERIFY_AAD), new byte[16], 0, 16);
+245:                 out.write(header);
+246:                 writeInt(out, v.length);
+247:                 out.write(v);
+248:             } catch (GeneralSecurityException e) {
+249:                 throw new IOException("تعذر تجهيز التشفير على هذا الهاتف: " + e.getMessage(), e);
+250:             } catch (IOException e) {
+251:                 throw e;
+252:             }
+253:             buf = new byte[chunkSize];
+254:         }
+255: 
+256:         public long plainBytes() { return plainBytes; }
+257: 
+258:         @Override public void write(int b) throws IOException {
+259:             if (closed) throw new IOException("closed");
+260:             if (pos == buf.length) emit(false);
+261:             buf[pos++] = (byte) b;
+262:             plainBytes++;
+263:         }
+264: 
+265:         @Override public void write(byte[] b, int off, int len) throws IOException {
+266:             if (closed) throw new IOException("closed");
+267:             while (len > 0) {
+268:                 if (pos == buf.length) emit(false);
+269:                 int n = Math.min(len, buf.length - pos);
+270:                 System.arraycopy(b, off, buf, pos, n);
+271:                 pos += n;
+272:                 off += n;
+273:                 len -= n;
+274:                 plainBytes += n;
+275:             }
+276:         }
+277: 
+278:         private void emit(boolean last) throws IOException {
+279:             int flag = last ? 1 : 0;
+280:             try {
+281:                 byte[] ct = gcm(Cipher.ENCRYPT_MODE, key, iv(prefix, index), chunkAad(header, index, flag), buf, 0, pos);
+282:                 out.write(flag);
+283:                 writeInt(out, ct.length);
+284:                 out.write(ct);
+285:             } catch (GeneralSecurityException e) {
+286:                 throw new IOException("فشل التشفير: " + e.getMessage(), e);
+287:             }
+288:             index++;
+289:             pos = 0;
+290:         }
+291: 
+292:         @Override public void flush() throws IOException { out.flush(); }
+293: 
+294:         /** يكتب الجزء الأخير ويفرغ المخزن المؤقت، دون إغلاق المجرى الأصلي. */
+295:         @Override public void close() throws IOException {
+296:             if (closed) return;
+297:             emit(true);
+298:             Arrays.fill(buf, (byte) 0);
+299:             out.flush();
+300:             closed = true;
+301:         }
+302: 
+303:         /** إنهاء بدون كتابة الجزء الأخير: الملف الناتج سيُرفض عند القراءة. */
+304:         public void abort() {
+305:             closed = true;
+306:             Arrays.fill(buf, (byte) 0);
+307:         }
+308:     }
+309: 
+310:     // ===================================================================================
+311:     // القراءة
+312:     // ===================================================================================
+313: 
+314:     public static final class DecryptingInputStream extends InputStream {
+315:         private final DataInputStream in;
+316:         private final SecretKeySpec key;
+317:         private final byte[] header;
+318:         private final byte[] prefix;
+319:         private final int chunkSize;
+320:         private byte[] buf = new byte[0];
+321:         private int pos;
+322:         private int index;
+323:         private boolean finished;
+324: 
+325:         public DecryptingInputStream(InputStream source, char[] password) throws IOException {
+326:             in = new DataInputStream(source);
+327:             try {
+328:                 byte[] magic = new byte[MAGIC.length];
+329:                 in.readFully(magic);
+330:                 if (!Arrays.equals(magic, MAGIC)) throw new CorruptBackupException("هذا الملف ليس نسخة احتياطية من المحاسب الذكي");
+331:                 int version = in.readInt();
+332:                 if (version != VERSION && version != VERSION_RC) throw new CorruptBackupException("إصدار النسخة غير مدعوم في هذا الإصدار من التطبيق");
+333:                 int iterations = in.readInt();
+334:                 if (iterations < MIN_ITERATIONS || iterations > MAX_ITERATIONS) throw new CorruptBackupException("معلمات حماية النسخة غير صالحة");
+335:                 int saltLen = in.readInt();
+336:                 if (saltLen != SALT_BYTES) throw new CorruptBackupException("بنية النسخة غير صالحة");
+337:                 byte[] salt = new byte[saltLen];
+338:                 in.readFully(salt);
+339:                 int prefixLen = in.readInt();
+340:                 if (prefixLen != PREFIX_BYTES) throw new CorruptBackupException("بنية النسخة غير صالحة");
+341:                 prefix = new byte[prefixLen];
+342:                 in.readFully(prefix);
+343:                 chunkSize = in.readInt();
+344:                 if (chunkSize < 1024 || chunkSize > MAX_CHUNK) throw new CorruptBackupException("بنية النسخة غير صالحة");
+345: 
+346:                 ByteArrayOutputStream h = new ByteArrayOutputStream();
+347:                 DataOutputStream d = new DataOutputStream(h);
+348:                 d.write(MAGIC);
+349:                 d.writeInt(version);
+350:                 d.writeInt(iterations);
+351:                 d.writeInt(saltLen);
+352:                 d.write(salt);
+353:                 d.writeInt(prefixLen);
+354:                 d.write(prefix);
+355:                 d.writeInt(chunkSize);
+356:                 SecretKeySpec opened = null;
+357:                 if (version == VERSION_RC) {
+358:                     // 10.14: مفتاح البيانات مغلّف بكلمة المرور وبرمز الاسترداد: يُفتح بأيهما
+359:                     int rsl = in.readInt();
+360:                     if (rsl != SALT_BYTES) throw new CorruptBackupException("بنية النسخة غير صالحة");

@@ -1,0 +1,182 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.awt.event.MouseAdapter;
+6: import java.awt.event.MouseEvent;
+7: import java.math.BigDecimal;
+8: import java.util.*;
+9: import java.util.List;
+10: import javax.swing.*;
+11: import javax.swing.border.EmptyBorder;
+12: import javax.swing.table.DefaultTableModel;
+13: 
+14: /**
+15:  * 10.0: «حسابات العملاء» على الماك والويندوز (المنطق نفسه في ClientBook وDb): قائمة العملاء بأرصدتهم، وصفحة العميل بحركاته
+16:  * والرصيد بعد كل حركة، واستلام منه وتسليم له عبر الصندوق (ولو بعملة أخرى)، وقيد بلا نقد، وتبديل عملة الرصيد، وكشف يُصدَّر.
+17:  */
+18: final class ClientsView extends View {
+19:     final Ui.Field search = Ui.field("ابحث باسم العميل أو هاتفه");
+20:     final JComboBox<String> filter = Ui.combo(new String[]{"النشطون", "لنا عليهم", "علينا لهم", "رصيد صفر", "المؤرشفون"});
+21:     final JPanel head = Ui.column();
+22:     JTable table, moves;
+23:     List<ClientBook.Client> shown = new ArrayList<>();
+24:     List<ClientBook.Move> shownMoves = new ArrayList<>();
+25:     ClientBook.Client current;
+26:     final JPanel detail = Ui.column();
+27: 
+28:     ClientsView(App app) {
+29:         super(app, "حسابات العملاء");
+30:         filter.addActionListener(e -> fill());
+31:         search.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+32:             @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { fill(); }
+33: 
+34:             @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { fill(); }
+35: 
+36:             @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { fill(); }
+37:         });
+38:     }
+39: 
+40:     String m(String s) { return app.hidden() ? "••••" : s; }
+41: 
+42:     String bal(long v, String cur) { return v == 0 ? "صفر" : ClientBook.side(v) + " " + m(Ui.ltr(Model.fmt(Math.abs(v), db.decimals(cur)) + " " + cur)); }
+43: 
+44:     @Override void build() {
+45:         JPanel center = new JPanel(new BorderLayout());
+46:         center.setBackground(Ui.bg);
+47:         head.setBorder(new EmptyBorder(4, 24, 8, 24));
+48:         center.add(head, BorderLayout.NORTH);
+49:         table = Ui.table(new DefaultTableModel());
+50:         moves = Ui.table(new DefaultTableModel());
+51:         JPanel lists = new JPanel(new GridLayout(1, 2, 16, 0));
+52:         lists.setOpaque(false);
+53:         lists.setBorder(new EmptyBorder(0, 24, 20, 24));
+54:         JPanel r = new JPanel(new BorderLayout());
+55:         r.setOpaque(false);
+56:         r.add(Ui.tableBox(table));
+57:         JPanel l = new JPanel(new BorderLayout());
+58:         l.setOpaque(false);
+59:         l.add(detail, BorderLayout.NORTH);
+60:         l.add(Ui.tableBox(moves));
+61:         lists.add(r);
+62:         lists.add(l);
+63:         lists.applyComponentOrientation(Ui.RTL);
+64:         center.add(lists, BorderLayout.CENTER);
+65:         add(center, BorderLayout.CENTER);
+66:         table.getSelectionModel().addListSelectionListener(e -> {
+67:             if (e.getValueIsAdjusting() || table.getSelectedRow() < 0) return;
+68:             current = shown.get(table.convertRowIndexToModel(table.getSelectedRow()));
+69:             showClient();
+70:         });
+71:         moves.addMouseListener(new MouseAdapter() {
+72:             @Override public void mouseClicked(MouseEvent e) {
+73:                 if (e.getClickCount() == 2 && moves.getSelectedRow() >= 0) moveDetails(shownMoves.get(moves.convertRowIndexToModel(moves.getSelectedRow())));
+74:             }
+75:         });
+76:     }
+77: 
+78:     @Override void refresh() {
+79:         actions.removeAll();
+80:         head.removeAll();
+81:         subtitle.setText("لكل عميل حساب بكل عملة («لنا» / «علينا») مستقل عن حسابات المكاتب");
+82:         if (can(Auth.Perm.CASH)) {
+83:             action(Ui.primary("+ عميل", e -> edit(null)));
+84:             action(Ui.button("استلام منه", Ui.green, e -> cashMove(CashBox.IN)));
+85:             action(Ui.button("تسليم له", Ui.red, e -> cashMove(CashBox.OUT)));
+86:             action(Ui.ghost("قيد بلا نقد", e -> entry()));
+87:             action(Ui.ghost("تبديل عملة", e -> swap()));
+88:         }
+89:         action(Ui.ghost("كشف الحساب…", e -> statement()));
+90:         action(Ui.ghost(app.hidden() ? "إظهار المبالغ" : "إخفاء المبالغ", e -> {
+91:             app.toggleHidden();
+92:             refresh();
+93:         }));
+94:         Map<String, long[]> t = ClientBook.totals(db.clientBalances());
+95:         if (!t.isEmpty()) {
+96:             JPanel row = Ui.row(Ui.label("الإجمالي:", 13, Ui.muted, true));
+97:             for (Map.Entry<String, long[]> e : t.entrySet()) {
+98:                 int d = db.decimals(e.getKey());
+99:                 row.add(Box.createHorizontalStrut(14));
+100:                 row.add(Ui.label(e.getKey() + "  لنا عليهم " + m(Ui.ltr(Model.fmt(e.getValue()[0], d))) + " • علينا لهم " + m(Ui.ltr(Model.fmt(e.getValue()[1], d))), 13, Ui.ink, true));
+101:             }
+102:             row.add(Box.createHorizontalGlue());
+103:             head.add(row);
+104:             head.add(Ui.gap(8));
+105:         }
+106:         search.setMaximumSize(new Dimension(360, 38));
+107:         filter.setMaximumSize(new Dimension(180, 38));
+108:         head.add(Ui.row(search, filter, Box.createHorizontalGlue()));
+109:         Ui.rtl(head);
+110:         fill();
+111:         showClient();
+112:         done();
+113:     }
+114: 
+115:     boolean passes(ClientBook.Client k, Map<String, Long> b) {
+116:         switch (filter.getSelectedIndex()) {
+117:             case 1:
+118:                 for (long v : b.values()) if (v > 0) return k.active;
+119:                 return false;
+120:             case 2:
+121:                 for (long v : b.values()) if (v < 0) return k.active;
+122:                 return false;
+123:             case 3: return k.active && b.isEmpty();
+124:             case 4: return !k.active;
+125:             default: return k.active;
+126:         }
+127:     }
+128: 
+129:     void fill() {
+130:         if (table == null) return;
+131:         Map<Long, Map<String, Long>> bals = db.clientBalances();
+132:         String q = search.val().toLowerCase(Locale.ROOT);
+133:         DefaultTableModel mdl = new DefaultTableModel(new Object[]{"العميل", "الهاتف", "الرصيد"}, 0) {
+134:             @Override public boolean isCellEditable(int a, int b) { return false; }
+135:         };
+136:         Ui.Keep keep = Ui.Keep.of(table, shown, k -> k.id);   // 10.5 (§6)
+137:         shown = new ArrayList<>();
+138:         for (ClientBook.Client k : db.clients()) {
+139:             Map<String, Long> b = bals.getOrDefault(k.id, new HashMap<>());
+140:             if (!q.isEmpty() && !(k.name + " " + k.phone).toLowerCase(Locale.ROOT).contains(q)) continue;
+141:             if (!passes(k, b)) continue;
+142:             shown.add(k);
+143:             List<String> parts = new ArrayList<>();
+144:             for (Map.Entry<String, Long> e : b.entrySet()) parts.add(bal(e.getValue(), e.getKey()));
+145:             mdl.addRow(new Object[]{k.name, k.phone, parts.isEmpty() ? "صفر" : String.join(" • ", parts)});
+146:         }
+147:         table.setModel(mdl);
+148:         keep.restore(table, shown, k -> k.id);
+149:         Ui.widths(table, 180, 120, 300);
+150:         table.applyComponentOrientation(Ui.RTL);
+151:     }
+152: 
+153:     void showClient() {
+154:         detail.removeAll();
+155:         if (moves == null) return;
+156:         if (current != null) current = db.client(current.id);
+157:         if (current == null) {
+158:             detail.add(Ui.para("اختر عميلًا من القائمة لتظهر حركاته ورصيده بعد كل حركة.", 13, Ui.muted, 420));
+159:             moves.setModel(new DefaultTableModel());
+160:             detail.revalidate();
+161:             return;
+162:         }
+163:         List<ClientBook.Move> list = db.clientMoves(current.id);
+164:         Map<String, Long> b = ClientBook.balances(list);
+165:         Ui.Card c = Ui.tinted(CashView.NAVY, CashView.NAVY);
+166:         c.add(Ui.label(current.name + (current.phone.isEmpty() ? "" : "   " + Ui.ltr(current.phone)) + (current.active ? "" : " — مؤرشف"), 17, Color.WHITE, true));
+167:         if (b.isEmpty()) c.add(Ui.label("الحساب مسدَّد بالكامل (صفر)", 14, new Color(214, 224, 240), false));
+168:         for (Map.Entry<String, Long> e : b.entrySet()) c.add(Ui.label(bal(e.getValue(), e.getKey()), 15, e.getValue() > 0 ? new Color(160, 230, 190) : new Color(255, 180, 180), true));
+169:         JPanel row = Ui.row(Ui.ghost("تعديل البيانات", e -> edit(current)), Ui.ghost(current.active ? "أرشفة" : "إعادة", e -> archive()), Box.createHorizontalGlue());
+170:         detail.add(c);
+171:         detail.add(Ui.gap(6));
+172:         detail.add(row);
+173:         detail.add(Ui.gap(6));
+174:         Ui.rtl(detail);
+175:         Map<String, Integer> dec = db.decimalsMap();
+176:         DefaultTableModel mdl = new DefaultTableModel(new Object[]{"التاريخ", "الحركة", "البيان", "لنا (+)", "علينا (−)", "الرصيد بعدها", "الحالة"}, 0) {
+177:             @Override public boolean isCellEditable(int a, int b) { return false; }
+178:         };
+179:         Map<String, Long> run = new HashMap<>();
+180:         String[] after = new String[list.size()];
+181:         for (int i = 0; i < list.size(); i++) {
+182:             ClientBook.Move x = list.get(i);

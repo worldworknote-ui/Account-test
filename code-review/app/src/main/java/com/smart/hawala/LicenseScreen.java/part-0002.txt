@@ -1,0 +1,119 @@
+151:             if (shown == 0) a.groupRow(g, R.drawable.ic_scale, a.primaryInk, "الحركات لكل مكتب", "لا مكتب قريب من السقف", "حتى " + mt, null);
+152:         }
+153:         long mu = e.maxUsers();
+154:         int users = 0;
+155:         for (Model.User u : a.db.users(false)) if (u.active) users++;
+156:         a.groupRow(g, R.drawable.ic_user, a.primaryInk, "المستخدمون", mu == 1 ? "المالك برمز مدير" : "بأدوار وصلاحيات",
+157:                 mu == Entitlements.UNLIMITED ? (users > 0 ? users + "" : "بلا حد") : Math.max(users, 0) + " من " + mu, null);
+158:         // 12.6: الصناديق والعملاء
+159:         long mb = e.maxCashBoxes(), mc = e.maxClients();
+160:         int boxes = 0, clients = 0;
+161:         for (CashBox.Config b : a.db.cashBoxes()) if (b.on && b.active) boxes++;
+162:         for (ClientBook.Client k : a.db.clients()) if (k.active) clients++;
+163:         a.groupRow(g, R.drawable.ic_coins, a.primaryInk, "الصناديق", mb == Entitlements.UNLIMITED ? "بلا حد" : "المفعّلة",
+164:                 mb == Entitlements.UNLIMITED ? "" + boxes : boxes + " من " + mb, null);
+165:         a.groupRow(g, R.drawable.ic_users, a.primaryInk, "حسابات العملاء", mc == Entitlements.UNLIMITED ? "بلا حد" : "النشطة (الأرشفة تعيد المكان)",
+166:                 mc == Entitlements.UNLIMITED ? "" + clients : clients + " من " + mc, null);
+167:         a.groupRow(g, R.drawable.ic_doc, a.primaryInk, "التصدير PDF و Excel", e.watermark() ? "متاح مع سطر «نسخة مجانية»" : "بلا علامة، وببصمة رقم الرخصة", null, null);
+168:         a.groupRow(g, R.drawable.ic_shield, a.primaryInk, "النسخ التلقائي", e.autoBackupEveryTx() > 0
+169:                 ? "كل " + e.autoBackupMinHours() + " ساعات أو بعد كل " + e.autoBackupEveryTx() + " حركة" : "مرة يوميًا حتى", null, null);
+170:         long[] wa = a.db.waUsage();
+171:         a.groupRow(g, R.drawable.ic_chat, a.primaryInk, "استخراج معلومات رسائل واتساب", wa[1] == Entitlements.UNLIMITED ? "بلا حد"
+172:                 : "يوميًا، ثم الإدخال اليدوي حتى الغد", wa[1] == Entitlements.UNLIMITED ? "" : wa[0] + " من " + wa[1], null);
+173:         a.groupRow(g, R.drawable.ic_sparkle, a.primaryInk, AiExtract.NAME, e.ai() ? "متاح بمفتاحك" : "موقوف في المجانية — في النسخة الكاملة", null, null);
+174:     }
+175: 
+176:     private void activation() {
+177:         a.section("تفعيل النسخة الكاملة", null, null);
+178:         LinearLayout c = a.card();
+179:         c.addView(a.text("التفعيل بلا إنترنت في ثلاث خطوات", 15, a.ink, true));
+180:         c.addView(a.text("1. احصل من البائع على «رقم الطلب».\n2. اكتبه هنا واضغط «إنشاء طلب التفعيل» ثم أرسل النص للبائع (واتساب أو بريد).\n"
+181:                 + "3. يرسل لك البائع «رمز الترخيص»: الصقه هنا واضغط «تفعيل».", 13, a.muted, false));
+182:         c.addView(a.text("الرمز مربوط بمفتاح أمني داخل هذا الهاتف لا يمكن نسخه، فلا يعمل على هاتف آخر.", 12, a.muted, false));
+183: 
+184:         a.add(a.label("رقم الطلب"));
+185:         final EditText order = a.field("مثال: 2026-0153");
+186:         order.setTextDirection(View.TEXT_DIRECTION_LTR);
+187:         a.body.addView(order, a.lp(-1, 52, 4));
+188:         a.button("إنشاء طلب التفعيل", a.accent, v -> {
+189:             final String o = order.getText().toString();
+190:             a.busy("جارٍ تجهيز مفتاح الهاتف وطلب التفعيل…", p -> License.requestText(a, a.db, o), res -> showText("طلب التفعيل",
+191:                     "الطلب طويل لأنه يحمل إثبات الهاتف الأمني. الأسهل: «إرسال كملف» (مرفق واحد لا ينقسم). أو انسخه كاملًا وأرسله في رسالة واحدة. لا يحوي أي بيانات من حساباتك.",
+192:                     String.valueOf(res), "طلب-تفعيل-" + o.replaceAll("[^A-Za-z0-9_\\-]", "") + ".sareq"));
+193:         });
+194: 
+195:         a.add(a.label("رمز الترخيص"));
+196:         final EditText token = a.field("الصق الرمز الذي أرسله البائع");
+197:         token.setTextDirection(View.TEXT_DIRECTION_LTR);
+198:         token.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+199:         token.setMinLines(3);
+200:         a.body.addView(token, a.lp(-1, -2, 4));
+201:         // 11.5: ملف المفتاح من البائع (.sakey) بدل نسخ رمز طويل قد ينقسم في عدة رسائل
+202:         a.button("التفعيل من ملف المفتاح (.sakey)", a.accent, v -> {
+203:             android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);
+204:             i.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+205:             i.setType("*/*");
+206:             a.startForResult(i, MainActivity.LICENSE_FILE);
+207:         });
+208:         // 11.6: صورة رمز QR من البائع (لقطة شاشة أو صورة وصلت في واتساب) تُقرأ هنا مباشرة
+209:         a.button("التفعيل من صورة رمز QR", a.accent, v -> {
+210:             android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);
+211:             i.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+212:             i.setType("image/*");
+213:             a.startForResult(i, MainActivity.LICENSE_QR);
+214:         });
+215:         a.button("تفعيل", a.primary, v -> {
+216:             final String t = token.getText().toString();
+217:             if (t.trim().isEmpty()) {
+218:                 a.toast("الصق رمز الترخيص أولًا");
+219:                 return;
+220:             }
+221:             a.busy("جارٍ التحقق من الرمز…", p -> License.activate(a, a.db, t), res -> {
+222:                 Entitlements n = (Entitlements) res;
+223:                 new AlertDialog.Builder(a).setTitle("تم التفعيل ✓")
+224:                         .setMessage(n.edition() + "\nرقم الرخصة: " + n.lid + "\nالتحديثات حتى: " + n.updatesUntil() + (n.note.isEmpty() ? "" : "\n\n" + n.note))
+225:                         .setPositiveButton("حسنًا", null).show();
+226:                 show();
+227:             });
+228:         });
+229:     }
+230: 
+231:     /** 12.6: رمز جديد من البائع لنفس الهاتف (مستخدم إضافي، مكاتب أكثر، تجديد الاشتراك…) يحل محل الحالي فورًا. */
+232:     private void upgrade() {
+233:         a.section("تحديث الرخصة (رمز جديد من البائع)", null, null);
+234:         a.hint("إن طلبت مستخدمًا إضافيًا أو مكاتب أكثر أو جددت الاشتراك، يرسل لك البائع رمزًا جديدًا لهذا الهاتف نفسه: الصقه هنا أو افتح ملفه. "
+235:                 + "لا تحتاج طلب تفعيل جديدًا.");
+236:         final EditText token = a.field("الصق الرمز الجديد");
+237:         token.setTextDirection(View.TEXT_DIRECTION_LTR);
+238:         token.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+239:         token.setMinLines(2);
+240:         a.body.addView(token, a.lp(-1, -2, 4));
+241:         LinearLayout r = a.row();
+242:         r.addView(a.smallButton("من ملف (.sakey)", a.accent, v -> {
+243:             android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);
+244:             i.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+245:             i.setType("*/*");
+246:             a.startForResult(i, MainActivity.LICENSE_FILE);
+247:         }), a.weight(44, 1, 3));
+248:         r.addView(a.smallButton("تحديث الرخصة", a.primary, v -> {
+249:             final String t = token.getText().toString();
+250:             if (t.trim().isEmpty()) {
+251:                 a.toast("الصق الرمز الجديد أولًا");
+252:                 return;
+253:             }
+254:             a.busy("جارٍ التحقق من الرمز…", p -> License.activate(a, a.db, t), res -> {
+255:                 Entitlements n = (Entitlements) res;
+256:                 new AlertDialog.Builder(a).setTitle("تم تحديث الرخصة ✓")
+257:                         .setMessage(n.edition() + "\nرقم الرخصة: " + n.lid + "\nالتحديثات حتى: " + n.updatesUntil()
+258:                                 + (n.expires().isEmpty() ? "" : "\nالاشتراك حتى: " + n.expires()) + (n.note.isEmpty() ? "" : "\n\n" + n.note))
+259:                         .setPositiveButton("حسنًا", null).show();
+260:                 show();
+261:             });
+262:         }), a.weight(44, 1, 3));
+263:         a.body.addView(r, a.lp(-1, -2, 2));
+264:     }
+265: 
+266:     private void transfer() {
+267:         a.section("نقل الرخصة إلى هاتف آخر", null, null);
+268:         a.hint("انقل بياناتك أولًا بنسخة احتياطية، ثم اضغط «إلغاء التفعيل على هذا الهاتف» وأرسل الإيصال للبائع مع طلب تفعيل من الهاتف الجديد. "
+269:                 + "النقل مرتان في السنة؛ وإن فُقد الهاتف القديم يُنقل بعد 7 أيام من طلبك.");

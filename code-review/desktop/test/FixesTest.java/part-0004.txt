@@ -1,0 +1,113 @@
+394:         long onA = db.addTx(txIn(A, Model.TYPE_DEBIT, 777, "USD"), null);
+395:         as(db, v1);
+396:         check(throwsMsg(() -> db.verifyTx(onA), "ليس من المكاتب التي تتحقق منها"), "وسيم لا يتحقق من مكتب ليس من مكاتبه");
+397:         List<Model.Tx> mine = db.awaitingMyCheck(30, 500);
+398:         boolean onlyB = !mine.isEmpty();
+399:         for (Model.Tx x : mine) if (x.officeId != B || x.id == vt) onlyB = false;
+400:         check(onlyB && db.myOffices().size() == 1, "«بانتظار تحققي» لوسيم: حركات «النور» التي لم يتحقق منها فقط (" + mine.size() + ")");
+401:         // التعديل
+402:         as(db, acct);
+403:         Db.TxInput sameKey = txIn(B, Model.TYPE_DEBIT, 12300, "USD");
+404:         sameKey.person = "اسم مصحح";
+405:         long vt2 = db.editTx(vt, sameKey, null, null, "الاسم");
+406:         check(db.checks(vt2).size() == 2 && db.checks(vt2).get(0).valid(), "تعديل الاسم وحده: التحقق انتقل إلى الحركة المصححة");
+407:         Db.TxInput moreMoney = txIn(B, Model.TYPE_DEBIT, 13300, "USD");
+408:         long vt3 = db.editTx(vt2, moreMoney, null, null, "المبلغ");
+409:         boolean voided = true;
+410:         for (Db.TxCheck c : db.checks(vt2)) if (c.valid() || !c.voidReason.contains("المبلغ")) voided = false;
+411:         check(db.checks(vt3).isEmpty() && voided && db.txPeople(db.tx(vt2)).toString().contains("تحقق أُبطل"), "تعديل المبلغ يُبطل التحقق ويبقيه في التاريخ بسببه");
+412:         // العملية المترابطة
+413:         Db.TransferInput tr2 = new Db.TransferInput();
+414:         tr2.from = B;
+415:         tr2.to = A;
+416:         tr2.currency = "USD";
+417:         tr2.amount = 1500;
+418:         tr2.when = System.currentTimeMillis() - 1000;
+419:         long[] tl = db.addTransfer(tr2);
+420:         as(db, v2);
+421:         db.verifyTx(tl[0]);
+422:         check(db.checks(tl[0]).size() == 1 && db.checks(tl[1]).size() == 1, "التحقق من ساق يشمل العملية كلها");
+423:         // علامة آخر رسالة
+424:         db.setWaMark(A, "حوالة 500 دولار لأحمد", "10:31");
+425:         Thread.sleep(5);
+426:         db.setWaMark(A, "حوالة 900 يورو لسامي", "11:02");
+427:         List<Db.WaMark> marks = db.waMarks(A, 10);
+428:         check(marks.size() == 2 && marks.get(0).text.equals("حوالة 900 يورو لسامي") && "هالة".equals(marks.get(0).userName) && db.lastWaMark(A).msgTime.equals("11:02"),
+429:                 "علامة آخر رسالة: الأحدث أولًا مع من حفظها، والتاريخ محفوظ");
+430:         healthy(db, "بعد التحقق والمكاتب والعلامات");
+431: 
+432:         System.out.println("== AUDIT-015: الاعتماد يعيد فحص نشاط المكتب");
+433:         as(db, clerk);
+434:         long pz = db.addTx(txIn(A, Model.TYPE_DEBIT, 300, "USD"), null);
+435:         as(db, admin);
+436:         db.setOfficeActive(A, false);
+437:         as(db, acct);
+438:         check(throwsMsg(() -> db.approveTx(pz), "موقوف") && db.tx(pz).isPending(), "حركة معلّقة لمكتب أُوقف بعدها لا تُعتمد (تبقى معلّقة)");
+439:         as(db, admin);
+440:         db.setOfficeActive(A, true);
+441:         as(db, acct);
+442:         db.approveTx(pz);
+443:         check(db.tx(pz).isActive(), "وبعد تفعيله تُعتمد");
+444: 
+445:         System.out.println("== §5: المكتب المثبّت لرسائل واتساب");
+446:         WaPin.clear(db);
+447:         check(WaPin.before(db, A) == WaPin.Need.CONFIRM_SESSION, "جلسة جديدة: يُطلب تأكيد المكتب قبل أول حفظ");
+448:         WaPin.pin(db, A);
+449:         check(WaPin.before(db, A) == WaPin.Need.NOTHING && WaPin.current(db).id == A, "بعد التأكيد: المكتب مثبّت ولا يُسأل عنه في كل رسالة");
+450:         check(WaPin.before(db, B) == WaPin.Need.CONFIRM_CHANGE, "اختيار مكتب آخر يحتاج تأكيد التغيير");
+451:         check(WaPin.changeWarning("البلسم", "النور").equals("سيتم تغيير المكتب من «البلسم» إلى «النور». الرسائل التالية ستُسجّل للمكتب الجديد"), "نص التحذير كما طُلب");
+452:         db.setSettingQuiet(WaPin.AT, "" + (System.currentTimeMillis() - WaPin.SESSION_MS - 1000));
+453:         check(WaPin.current(db) == null && WaPin.before(db, A) == WaPin.Need.CONFIRM_SESSION, "بعد انتهاء الجلسة يُطلب التأكيد من جديد");
+454:         WaPin.clear(db);
+455: 
+456:         System.out.println("== 10.8: قص العملات مقاصة أرصدة (المثال الكامل: EUR لنا 100، RON علينا 500، نبيع 200 EUR بسعر 5)");
+457:         as(db, admin);
+458:         db.saveCurrency("RON", "ليو روماني", 2, true);
+459:         long D = db.addOffice("المقاصة", "", "", "", "", "", null, null, Arrays.asList("EUR", "RON"), new HashMap<>(),
+460:                 Arrays.asList(new Db.Opening("EUR", "لنا", 10000), new Db.Opening("RON", "علينا", 50000)));
+461:         as(db, acct);
+462:         check(b(db.balances(D), "EUR") == 10000 && b(db.balances(D), "RON") == -50000, "قبل العملية: EUR لنا 100، RON علينا 500");
+463:         FxDeal fd8 = new FxDeal();
+464:         fd8.sell = "EUR";
+465:         fd8.buy = "RON";
+466:         fd8.sellAmount = 20000;
+467:         fd8.rate = FxDeal.parseRate("5");
+468:         fd8.buyPerSell = true;
+469:         long ron = fd8.buyAmount();
+470:         FxDeal inv = new FxDeal();
+471:         inv.sell = "EUR";
+472:         inv.buy = "RON";
+473:         inv.sellAmount = 20000;
+474:         inv.rate = FxDeal.parseRate("0.2");
+475:         inv.buyPerSell = false;
+476:         check(ron == 100000 && inv.buyAmount() == 100000, "صيغتا السعر (1 EUR = 5 RON و1 RON = 0.2 EUR) تعطيان 1,000 RON");
+477:         String warn = FxDeal.overdraft("EUR", b(db.balances(D), "EUR"), 20000, 2);
+478:         check(warn != null && warn.contains("200") && warn.contains("100") && warn.contains("«لنا 100 EUR»") && warn.contains("«علينا 100 EUR»"),
+479:                 "تنبيه التجاوز بالنص المطلوب: " + warn);
+480:         check(FxDeal.overdraft("EUR", 10000, 10000, 2) == null && FxDeal.overdraft("EUR", 10000, 5000, 2) == null, "بيع الرصيد كله أو أقل منه: لا تنبيه");
+481:         check(FxDeal.overdraft("EUR", 0, 5000, 2).contains("متوازن") && FxDeal.overdraft("EUR", -3000, 5000, 2).contains("«علينا 80 EUR»"),
+482:                 "الرصيد صفر أو «علينا» أصلًا: تنبيه بمقدار زيادة المديونية والرصيد النهائي");
+483:         List<Db.Preview> fp = db.preview(Arrays.asList(db.fxNetLegs(D, "EUR", 20000, "RON", ron, "5", "", System.currentTimeMillis())), null);
+484:         long cashEur = b(db.cashBalances(), "EUR"), cashRon = b(db.cashBalances(), "RON");
+485:         String[] fx = db.addFxNet(D, "EUR", 20000, "RON", ron, "5", "", System.currentTimeMillis() - 500);
+486:         check(b(db.balances(D), "EUR") == -10000 && b(db.balances(D), "RON") == 50000, "بعد العملية: EUR علينا 100 (+100−200)، RON لنا 500 (−500+1000)");
+487:         check(FxDeal.side(b(db.balances(D), "EUR"), 2).equals("علينا 100") && FxDeal.side(b(db.balances(D), "RON"), 2).equals("لنا 500") && FxDeal.side(0, 2).equals("متوازن"),
+488:                 "لنا/علينا من إشارة الرصيد النهائي، والصفر «متوازن»");
+489:         String[] row = FxDeal.row("EUR", 10000, -20000, 2);
+490:         check(fp.size() == 1 && fp.get(0).after.get("EUR") == -10000 && fp.get(0).after.get("RON") == 50000
+491:                         && row[1].equals("لنا 100") && row[2].equals("خصم 200") && row[3].equals("علينا 100"),
+492:                 "المعاينة قبل الحفظ = الرصيد الفعلي بعده، والجدول: لنا 100 | خصم 200 | علينا 100");
+493:         check(b(db.cashBalances(), "EUR") == cashEur && b(db.cashBalances(), "RON") == cashRon, "لا حركة صندوق ولا نقد");
+494:         Model.Tx fl = null;
+495:         for (Model.Tx tt : db.recentTx(20)) if (tt.isFx() && tt.officeId == D && "EUR".equals(tt.currency)) fl = tt;
+496:         check(fl != null && Model.TYPE_CREDIT.equals(fl.type) && db.legs(fl).size() == 2, "ساق العملة المباعة «علينا» (تُخصم)، والساقان بمعرّف عملية واحد");
+497:         db.cancelTx(fl.id, "تجربة الإلغاء");
+498:         check(b(db.balances(D), "EUR") == 10000 && b(db.balances(D), "RON") == -50000 && !db.tx(fl.id).isActive() && db.tx(fl.id).createdAt > 0,
+499:                 "الإلغاء يعكس الطرفين معًا ويبقى تاريخ العملية");
+500:         // عكس الاتجاه: نبيع RON ونأخذ EUR يعبر الصفر في العملتين
+501:         db.addFxNet(D, "RON", 150000, "EUR", 30000, "0.2", "", System.currentTimeMillis() - 400);
+502:         check(b(db.balances(D), "RON") == -200000 && b(db.balances(D), "EUR") == 40000, "البيع من رصيد «علينا» يزيده (RON علينا 2,000) والمشتراة تُضاف (EUR لنا 400)");
+503:         java.util.Map<String, java.math.BigDecimal> usd = new HashMap<>();
+504:         usd.put("EUR", new java.math.BigDecimal("1.08"));
+505:         usd.put("RON", new java.math.BigDecimal("0.216"));
+506:         check(FxDeal.reference(usd, "EUR", "RON").toPlainString().equals("5") && FxDeal.referenceIn(FxDeal.reference(usd, "EUR", "RON"), false).toPlainString().equals("0.2"),

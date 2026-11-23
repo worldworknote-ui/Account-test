@@ -1,0 +1,61 @@
+1: package com.smart.hawala;
+2: 
+3: /**
+4:  * 10.5 (§5): المكتب المثبّت لرسائل واتساب — يختاره المحاسب صراحة، ولا يتغير تلقائيًا (لا بالمرسل ولا بآخر مكتب).
+5:  * <ul>
+6:  *   <li>«الجلسة»: من تثبيت المكتب حتى {@link #SESSION_MS} بلا تسجيل. جلسة جديدة تطلب تأكيد المكتب قبل أول حفظ.</li>
+7:  *   <li>تغيير المكتب أثناء الجلسة يمر بتحذير صريح بالنص المطلوب، ثم تُسجَّل الرسائل التالية للمكتب الجديد.</li>
+8:  *   <li>إعداد خاص بهذا الجهاز (لا يُزامن): لكل محاسب على جهازه مكتبه المثبّت.</li>
+9:  * </ul>
+10:  * مشترك بين الهاتف والكمبيوتر، فالقواعد واحدة.
+11:  */
+12: public final class WaPin {
+13:     private WaPin() {}
+14: 
+15:     public static final String OFFICE = "wa_pin_office", AT = "wa_pin_at";
+16:     /** مدة الجلسة منذ آخر تثبيت أو حفظ. */
+17:     public static final long SESSION_MS = 8L * 3600 * 1000;
+18: 
+19:     /** المكتب المثبّت في الجلسة الحالية (نشط وموجود)، أو null: جلسة جديدة تحتاج تأكيدًا. */
+20:     public static Model.Office current(Db db) {
+21:         long id = db.settingLong(OFFICE, -1), at = db.settingLong(AT, 0);
+22:         if (id <= 0 || Clock.now() - at > SESSION_MS) return null;
+23:         Model.Office o = db.office(id);
+24:         return o != null && o.active ? o : null;
+25:     }
+26: 
+27:     /** يثبّت المكتب (قرار المحاسب) ويبدأ الجلسة أو يمددها. */
+28:     public static void pin(Db db, long office) {
+29:         db.setSettingQuiet(OFFICE, "" + office);
+30:         db.setSettingQuiet(AT, "" + Clock.now());
+31:     }
+32: 
+33:     /** بعد كل حفظ من رسالة: تمتد الجلسة. */
+34:     public static void touch(Db db) {
+35:         if (db.settingLong(OFFICE, -1) > 0) db.setSettingQuiet(AT, "" + Clock.now());
+36:     }
+37: 
+38:     public static void clear(Db db) {
+39:         db.deleteSetting(OFFICE);
+40:         db.deleteSetting(AT);
+41:     }
+42: 
+43:     /** نص التحذير عند تغيير المكتب أثناء الجلسة (كما طُلب حرفيًا). */
+44:     public static String changeWarning(String oldName, String newName) {
+45:         return "سيتم تغيير المكتب من «" + Model.nz(oldName) + "» إلى «" + Model.nz(newName) + "». الرسائل التالية ستُسجّل للمكتب الجديد";
+46:     }
+47: 
+48:     /** نص تأكيد المكتب في جلسة جديدة. */
+49:     public static String sessionQuestion(String name) {
+50:         return "جلسة رسائل واتساب جديدة. ستُسجَّل هذه الرسالة والرسائل التالية للمكتب «" + Model.nz(name) + "» حتى تغيّره بنفسك. هل هذا هو المكتب الصحيح؟";
+51:     }
+52: 
+53:     /** ما يلزم قبل حفظ رسالة واتساب لمكتب: لا شيء، أو تأكيد جلسة جديدة، أو تحذير تغيير. */
+54:     public enum Need { NOTHING, CONFIRM_SESSION, CONFIRM_CHANGE }
+55: 
+56:     public static Need before(Db db, long office) {
+57:         Model.Office p = current(db);
+58:         if (p == null) return Need.CONFIRM_SESSION;
+59:         return p.id == office ? Need.NOTHING : Need.CONFIRM_CHANGE;
+60:     }
+61: }

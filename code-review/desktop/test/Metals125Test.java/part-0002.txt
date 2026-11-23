@@ -1,0 +1,47 @@
+126:         System.out.println("== 7) المزامنة");
+127:         File shared = Files.createTempDirectory("sa-125-folder").toFile();
+128:         SyncEngine eA = new SyncEngine(A, new FileSyncFolder(shared));
+129:         eA.create("كلمة-سر-المزامنة".toCharArray(), "المحل");
+130:         Db B = new Db(new Context(Files.createTempDirectory("sa-125-B").toFile()));
+131:         SyncEngine eB = new SyncEngine(B, new FileSyncFolder(shared));
+132:         eB.join("كلمة-سر-المزامنة".toCharArray(), false, "البيت");
+133:         for (int i = 0; i < 3; i++) {
+134:             eA.sync();
+135:             eB.sync();
+136:         }
+137:         List<Metals.Metal> mb = B.metals();
+138:         Metals.Metal x = null;
+139:         for (Metals.Metal m : mb) if (m.code.equals("XAGKG")) x = m;
+140:         check(mb.size() == 3 && x != null && x.unit.equals("kg") && x.fineness == 999 && B.decimals("XAGKG") == 6, "المعادن بإعداداتها وصلت الجهاز الثاني");
+141:         check(B.balances(off).equals(A.balances(off)), "والأرصدة بالوزن متطابقة");
+142: 
+143:         System.out.println("== 8) ترحيل قاعدة 10.4 إلى المخطط " + Db.VER);
+144:         File src = new File(a[a.length - 1]);
+145:         if (!src.isDirectory()) check(false, "مجلد قاعدة 10.4 غير موجود: " + src);
+146:         else {
+147:             File home = Files.createTempDirectory("sa-125-mig").toFile();
+148:             MigrationTest.copy(src, home);
+149:             DeskCoreTest.resetCrypto();
+150:             Db M = MigrationTest.open(home);
+151:             Map<Long, Map<String, Long>> before = new TreeMap<>(M.officeBalances());
+152:             int ver;
+153:             try (Cursor c = M.getReadableDatabase().rawQuery("PRAGMA user_version", null)) {
+154:                 c.moveToFirst();
+155:                 ver = c.getInt(0);
+156:             }
+157:             check(ver == 13 && Db.VER == 13, "رقم المخطط بعد الترحيل " + ver);
+158:             check(M.metals().isEmpty(), "لا معادن في القاعدة القديمة، والعملات كلها عملات");
+159:             for (Model.User u : M.users(false)) if (Auth.isAdmin(u)) {
+160:                 SmartApp.currentUser = u;
+161:                 Db.currentUserName = u.name;
+162:             }
+163:             M.saveMetal("XAU22", "ذهب 22", Metals.GOLD, 916, "g", false, true);
+164:             check(new TreeMap<>(M.officeBalances()).equals(before) && M.metals().size() == 1, "الأرصدة كما هي، وإضافة معدن تعمل على القاعدة القديمة");
+165:             SmartApp.currentUser = null;
+166:         }
+167: 
+168:         System.out.println();
+169:         System.out.println(fails == 0 ? "نجحت اختبارات 12.5 كلها (" + passes + ")" : "فشل " + fails + " من " + (passes + fails));
+170:         System.exit(fails == 0 ? 0 : 1);
+171:     }
+172: }

@@ -1,0 +1,150 @@
+1: package android.content;
+2: 
+3: import android.content.res.Resources;
+4: import android.graphics.drawable.Drawable;
+5: import java.io.File;
+6: 
+7: /**
+8:  * Context على الكمبيوتر: مجلد بيانات التطبيق (~/Library/Application Support/SmartAccountant على الماك)، والموارد المشتركة،
+9:  * وخدمات النظام (الحافظة، الإشعارات، المهام الدورية...). الشاشات (Activity) مشتقة منه.
+10:  */
+11: public class Context {
+12:     public static final int MODE_PRIVATE = 0, MODE_APPEND = 0x8000, BIND_AUTO_CREATE = 1, RECEIVER_EXPORTED = 2, RECEIVER_NOT_EXPORTED = 4;
+13:     public static final String CLIPBOARD_SERVICE = "clipboard", INPUT_METHOD_SERVICE = "input_method", NOTIFICATION_SERVICE = "notification",
+14:             JOB_SCHEDULER_SERVICE = "jobscheduler", KEYGUARD_SERVICE = "keyguard", CONNECTIVITY_SERVICE = "connectivity", POWER_SERVICE = "power",
+15:             WINDOW_SERVICE = "window", ALARM_SERVICE = "alarm", VIBRATOR_SERVICE = "vibrator", ACCOUNT_SERVICE = "account", USER_SERVICE = "user",
+16:             LAYOUT_INFLATER_SERVICE = "layout_inflater", AUDIO_SERVICE = "audio", BIOMETRIC_SERVICE = "biometric", DOWNLOAD_SERVICE = "download",
+17:             SHORTCUT_SERVICE = "shortcut", ACTIVITY_SERVICE = "activity", STORAGE_SERVICE = "storage", VIBRATOR_MANAGER_SERVICE = "vibrator_manager";
+18: 
+19:     /** الموارد المشتركة لكل التطبيق (المقاسات تتبع اختيار المستخدم). */
+20:     public static final Resources RES = new Resources();
+21:     /** سياق التطبيق. */
+22:     public static volatile Context app;
+23: 
+24:     private File home;
+25: 
+26:     public Context(File home) {
+27:         this.home = home;
+28:         mk(home);
+29:         // سياق بمجلد صريح هو سياق التطبيق الحالي (نقل مجلد البيانات يُنشئ سياقًا جديدًا فيصبح هو المعتمد)
+30:         app = this;
+31:     }
+32:     /** للمشتقات (Activity): نفس مجلد التطبيق. */
+33:     protected Context() {
+34:         this.home = app != null ? app.home() : defaultHome();
+35:     }
+36: 
+37:     /**
+38:      * 12.0: وضع الاختبار فقط حين يكون مجلد البيانات (sa.home) مجلدًا مؤقتًا. خيارات الاختبار (فرض نتيجة التحقق، تخزين
+39:      * الأسرار في ملف) لا تعمل خارجه: تشغيل البرنامج على بيانات حقيقية بخيار منها لا يتجاوز القفل ولا يُضعف التخزين.
+40:      */
+41:     public static boolean testMode() {
+42:         String p = System.getProperty("sa.home");
+43:         if (p == null || p.isEmpty()) return false;
+44:         try {
+45:             String home = new File(p).getCanonicalPath(), tmp = new File(System.getProperty("java.io.tmpdir")).getCanonicalPath();
+46:             return home.startsWith(tmp) || home.startsWith("/tmp/");
+47:         } catch (Exception e) {
+48:             return false;
+49:         }
+50:     }
+51: 
+52:     /** مجلد بيانات التطبيق الافتراضي لهذا النظام. */
+53:     public static File defaultHome() {
+54:         String p = System.getProperty("sa.home");
+55:         if (p != null && !p.isEmpty()) return new File(p);
+56:         String user = System.getProperty("user.home");
+57:         String os = System.getProperty("os.name", "").toLowerCase();
+58:         if (os.contains("mac")) return new File(user, "Library/Application Support/SmartAccountant");
+59:         if (os.contains("win")) {
+60:             String a = System.getenv("APPDATA");
+61:             return new File(a != null ? a : user, "SmartAccountant");
+62:         }
+63:         return new File(user, ".smart-accountant");
+64:     }
+65: 
+66:     private static File mk(File f) {
+67:         if (!f.exists()) f.mkdirs();
+68:         f.setReadable(false, false);
+69:         f.setReadable(true, true);
+70:         f.setWritable(false, false);
+71:         f.setWritable(true, true);
+72:         f.setExecutable(false, false);
+73:         f.setExecutable(true, true);
+74:         return f;
+75:     }
+76: 
+77:     public File home() { return home; }
+78:     public Context getApplicationContext() { return app != null ? app : this; }
+79:     public Context getBaseContext() { return this; }
+80:     public File getFilesDir() { return mk(new File(home, "files")); }
+81:     public File getCacheDir() { return mk(new File(home, "cache")); }
+82:     public File getCodeCacheDir() { return mk(new File(home, "cache/code")); }
+83:     public File getNoBackupFilesDir() { return mk(new File(home, "nobackup")); }
+84:     public File getExternalFilesDir(String type) { return mk(new File(home, "external" + (type == null ? "" : "/" + type))); }
+85:     public File[] getExternalFilesDirs(String type) { return new File[]{getExternalFilesDir(type)}; }
+86:     public File getExternalCacheDir() { return mk(new File(home, "cache/external")); }
+87:     public File getDir(String name, int mode) { return mk(new File(home, "app_" + name)); }
+88:     public File getDatabasePath(String name) { return new File(mk(new File(home, "databases")), name); }
+89:     public File getDataDir() { return home; }
+90:     public String[] databaseList() { String[] l = new File(home, "databases").list(); return l == null ? new String[0] : l; }
+91:     public boolean deleteDatabase(String n) { return getDatabasePath(n).delete(); }
+92:     public String getPackageName() { return "com.smart.hawala.mac"; }
+93:     public String getOpPackageName() { return getPackageName(); }
+94:     public java.io.FileInputStream openFileInput(String n) throws java.io.FileNotFoundException { return new java.io.FileInputStream(new File(getFilesDir(), n)); }
+95:     public java.io.FileOutputStream openFileOutput(String n, int mode) throws java.io.FileNotFoundException { return new java.io.FileOutputStream(new File(getFilesDir(), n), (mode & MODE_APPEND) != 0); }
+96:     public boolean deleteFile(String n) { return new File(getFilesDir(), n).delete(); }
+97:     public String[] fileList() { String[] l = getFilesDir().list(); return l == null ? new String[0] : l; }
+98:     public File getFileStreamPath(String n) { return new File(getFilesDir(), n); }
+99: 
+100:     public Resources getResources() { return RES; }
+101:     public Resources.Theme getTheme() { return RES.newTheme(); }
+102:     public void setTheme(int res) {}
+103:     public android.content.res.AssetManager getAssets() { return RES.getAssets(); }
+104:     public final Drawable getDrawable(int id) { return RES.getDrawable(id); }
+105:     public final int getColor(int id) { return RES.getColor(id); }
+106:     public final android.content.res.ColorStateList getColorStateList(int id) { return RES.getColorStateList(id); }
+107:     public final String getString(int id) { return RES.getString(id); }
+108:     public final String getString(int id, Object... a) { return RES.getString(id, a); }
+109:     public final CharSequence getText(int id) { return RES.getText(id); }
+110:     public java.util.concurrent.Executor getMainExecutor() { return r -> javax.swing.SwingUtilities.invokeLater(r); }
+111:     public android.os.Looper getMainLooper() { return android.os.Looper.getMainLooper(); }
+112:     public ClassLoader getClassLoader() { return Context.class.getClassLoader(); }
+113: 
+114:     public ContentResolver getContentResolver() { return ContentResolver.INSTANCE; }
+115:     public android.content.pm.PackageManager getPackageManager() { return android.content.pm.PackageManager.INSTANCE; }
+116:     public android.content.pm.ApplicationInfo getApplicationInfo() { return new android.content.pm.ApplicationInfo(); }
+117:     public SharedPreferences getSharedPreferences(String name, int mode) { return Prefs.get(new File(mk(new File(home, "shared_prefs")), name + ".properties")); }
+118: 
+119:     private static final java.util.Map<String, Object> services = new java.util.HashMap<>();
+120:     public Object getSystemService(String name) {
+121:         synchronized (services) {
+122:             Object o = services.get(name);
+123:             if (o != null) return o;
+124:             switch (name) {
+125:                 case CLIPBOARD_SERVICE: o = new ClipboardManager(); break;
+126:                 case INPUT_METHOD_SERVICE: o = new android.view.inputmethod.InputMethodManager(); break;
+127:                 case NOTIFICATION_SERVICE: o = new android.app.NotificationManager(); break;
+128:                 case JOB_SCHEDULER_SERVICE: o = new android.app.job.JobScheduler(this); break;
+129:                 case KEYGUARD_SERVICE: o = new android.app.KeyguardManager(); break;
+130:                 case CONNECTIVITY_SERVICE: o = new android.net.ConnectivityManager(); break;
+131:                 case POWER_SERVICE: o = new android.os.PowerManager(); break;
+132:                 case USER_SERVICE: o = new android.os.UserManager(); break;
+133:                 case WINDOW_SERVICE: o = new android.view.WindowManagerImpl(); break;
+134:                 case ALARM_SERVICE: o = new android.app.AlarmManager(); break;
+135:                 case VIBRATOR_SERVICE: o = new android.os.Vibrator(); break;
+136:                 default: return null;
+137:             }
+138:             services.put(name, o);
+139:             return o;
+140:         }
+141:     }
+142:     @SuppressWarnings("unchecked")
+143:     public final <T> T getSystemService(Class<T> c) {
+144:         for (String n : new String[]{CLIPBOARD_SERVICE, INPUT_METHOD_SERVICE, NOTIFICATION_SERVICE, JOB_SCHEDULER_SERVICE, KEYGUARD_SERVICE, CONNECTIVITY_SERVICE, POWER_SERVICE, USER_SERVICE, WINDOW_SERVICE, ALARM_SERVICE, VIBRATOR_SERVICE}) {
+145:             Object o = getSystemService(n);
+146:             if (c.isInstance(o)) return (T) o;
+147:         }
+148:         return null;
+149:     }
+150: 

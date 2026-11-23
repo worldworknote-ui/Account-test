@@ -1,0 +1,175 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.awt.event.MouseAdapter;
+6: import java.awt.event.MouseEvent;
+7: import java.util.*;
+8: import java.util.List;
+9: import javax.swing.*;
+10: import javax.swing.table.DefaultTableModel;
+11: 
+12: /** المكاتب: جدول بكل المكاتب وأرصدتها لكل عملة، بحث، إضافة وتعديل، وفتح صفحة المكتب بنقرتين. */
+13: final class OfficesView extends View {
+14:     final Ui.Field search = Ui.field("بحث باسم المكتب أو الهاتف…");
+15:     /** 10.18: شرائح التصفية كالهاتف: الكل (النشطة)، المثبّتة، لنا، علينا، الموقوفة. */
+16:     final Ui.Seg which = new Ui.Seg(new String[]{"الكل", "المثبّتة", "لنا", "علينا", "الموقوفة"}, null, 0);
+17:     /** 10.18: عرض المكاتب بطاقات (كالهاتف، الافتراضي) أو جدولًا. */
+18:     final Ui.Seg viewMode = new Ui.Seg(new String[]{"بطاقات", "جدول"}, null, 0);
+19:     final JPanel grid = new JPanel(new GridLayout(0, 3, 14, 14));
+20:     final JPanel body = new JPanel(new CardLayout());
+21:     JScrollPane cardsScroll;
+22:     /** 9.0: الترتيب: أبجديًا، الأكبر رصيدًا، الأصغر رصيدًا، الأكثر استخدامًا، آخر ما فتحته. */
+23:     final JComboBox<String> order = Ui.combo(OfficeOrder.NAMES);
+24:     JTable table;
+25:     List<Model.OfficeTotals> shown = new ArrayList<>();
+26: 
+27:     OfficesView(App app) {
+28:         super(app, "المكاتب");
+29:         search.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+30:             @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { fill(); }
+31: 
+32:             @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { fill(); }
+33: 
+34:             @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { fill(); }
+35:         });
+36:         which.listener = i -> fill();
+37:         viewMode.listener = i -> {
+38:             db.setSettingQuiet("desk_offices_view", i == 1 ? "table" : "cards");
+39:             ((CardLayout) body.getLayout()).show(body, i == 1 ? "table" : "cards");
+40:             fill();
+41:         };
+42:         order.addActionListener(e -> {
+43:             db.setSettingQuiet("office_sort", "" + order.getSelectedIndex());
+44:             fill();
+45:         });
+46:     }
+47: 
+48:     @Override void build() {
+49:         JPanel top = Ui.row(search, Box.createHorizontalStrut(8), Ui.label("الترتيب", 13, Ui.muted, true), order, Box.createHorizontalStrut(8), viewMode);
+50:         order.setMaximumSize(new Dimension(190, 38));
+51:         viewMode.setMaximumSize(new Dimension(180, 40));
+52:         viewMode.setPreferredSize(new Dimension(180, 40));
+53:         which.setMaximumSize(new Dimension(560, 42));
+54:         which.setPreferredSize(new Dimension(560, 42));
+55:         JPanel top2 = new JPanel();
+56:         top2.setLayout(new BoxLayout(top2, BoxLayout.Y_AXIS));
+57:         top2.setOpaque(false);
+58:         top2.add(top);
+59:         top2.add(Box.createVerticalStrut(8));
+60:         top2.add(Ui.row(which, Box.createHorizontalGlue()));
+61:         order.setSelectedIndex(OfficeOrder.clamp((int) db.settingLong("office_sort", 0)));
+62:         top2.setBorder(new javax.swing.border.EmptyBorder(6, 24, 10, 24));
+63:         JPanel center = new JPanel(new BorderLayout());
+64:         center.setBackground(Ui.bg);
+65:         center.add(top2, BorderLayout.NORTH);
+66:         table = Ui.table(new DefaultTableModel());
+67:         JScrollPane sp = Ui.tableBox(table);
+68:         JPanel holder = new JPanel(new BorderLayout());
+69:         holder.setBackground(Ui.bg);
+70:         holder.setBorder(new javax.swing.border.EmptyBorder(0, 24, 20, 24));
+71:         holder.add(sp);
+72:         // البطاقات: شبكة تتكيف أعمدتها مع العرض، والصفحة تتمرر
+73:         grid.setOpaque(false);
+74:         JPanel gridTop = new JPanel(new BorderLayout());
+75:         gridTop.setOpaque(false);
+76:         gridTop.add(grid, BorderLayout.NORTH);
+77:         gridTop.setBorder(new javax.swing.border.EmptyBorder(4, 24, 24, 24));
+78:         cardsScroll = new JScrollPane(gridTop);
+79:         cardsScroll.setBorder(null);
+80:         cardsScroll.getViewport().setBackground(Ui.bg);
+81:         cardsScroll.getVerticalScrollBar().setUnitIncrement(24);
+82:         cardsScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+83:         cardsScroll.getViewport().addComponentListener(new java.awt.event.ComponentAdapter() {
+84:             @Override public void componentResized(java.awt.event.ComponentEvent e) { columns(); }
+85:         });
+86:         body.setOpaque(false);
+87:         body.add(cardsScroll, "cards");
+88:         body.add(holder, "table");
+89:         boolean tableMode = "table".equals(db.setting("desk_offices_view", "cards"));
+90:         viewMode.set(tableMode ? 1 : 0);
+91:         ((CardLayout) body.getLayout()).show(body, tableMode ? "table" : "cards");
+92:         center.add(body, BorderLayout.CENTER);
+93:         add(center, BorderLayout.CENTER);
+94:         table.addMouseListener(new MouseAdapter() {
+95:             @Override public void mouseClicked(MouseEvent e) {
+96:                 if (e.getClickCount() == 2 && table.getSelectedRow() >= 0) openSelected();
+97:             }
+98:         });
+99:         table.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ENTER"), "open");
+100:         table.getActionMap().put("open", new AbstractAction() {
+101:             @Override public void actionPerformed(java.awt.event.ActionEvent e) { openSelected(); }
+102:         });
+103:     }
+104: 
+105:     void openSelected() {
+106:         int r = table.getSelectedRow();
+107:         if (r < 0) return;
+108:         app.go("office", shown.get(table.convertRowIndexToModel(r)).officeId);
+109:     }
+110: 
+111:     @Override void refresh() {
+112:         actions.removeAll();
+113:         if (can(Auth.Perm.OFFICES)) action(Ui.primary("+ مكتب جديد", e -> edit(this, app, null, () -> refresh())));
+114:         action(Ui.ghost("تصدير الأرصدة", e -> app.go("balances")));
+115:         action(Ui.ghost(app.hidden() ? "إظهار المبالغ" : "إخفاء المبالغ", e -> {
+116:             app.toggleHidden();
+117:             refresh();
+118:         }));
+119:         fill();
+120:         Entitlements en = License.current;
+121:         if (!en.pro) {
+122:             QuotaState q = db.quotaNow();
+123:             subtitle.setText("النسخة المجانية: " + q.offices + " من " + en.maxOffices() + " مكاتب");
+124:         } else subtitle.setText(db.officeCount() + " مكتبًا");
+125:         done();
+126:     }
+127: 
+128:     void fill() {
+129:         if (table == null) return;
+130:         Map<String, Integer> dec = db.decimalsMap();
+131:         List<Model.OfficeTotals> all = db.officeTotals(null);
+132:         // الترتيب المختار (المثبّتة أولًا دائمًا)
+133:         Map<Long, Map<String, Long>> balAll = db.officeBalances();
+134:         List<Model.Office> ordered = db.offices();
+135:         OfficeOrder.sort(ordered, order.getSelectedIndex(), db.officeOrderInputs(balAll));
+136:         final Map<Long, Integer> pos = new HashMap<>();
+137:         for (int i = 0; i < ordered.size(); i++) pos.put(ordered.get(i).id, i);
+138:         all.sort(Comparator.comparingInt(o -> pos.getOrDefault(o.officeId, Integer.MAX_VALUE)));
+139:         Map<String, java.math.BigDecimal> rates = db.usdRates();
+140:         Set<String> curs = new TreeSet<>();
+141:         for (Model.OfficeTotals o : all) for (Map.Entry<String, long[]> e : o.perCurrency.entrySet()) if (e.getValue()[2] != 0 || e.getValue()[0] != 0 || e.getValue()[1] != 0) curs.add(e.getKey());
+142:         List<String> cols = new ArrayList<>(Arrays.asList("المكتب", "الحالة"));
+143:         for (String c : curs) cols.add("رصيد " + c);
+144:         cols.add("الميزان ≈ USD");
+145:         DefaultTableModel m = new DefaultTableModel(cols.toArray(), 0) {
+146:             @Override public boolean isCellEditable(int r, int c) { return false; }
+147: 
+148:             @Override public Class<?> getColumnClass(int c) { return c >= 2 && c < getColumnCount() - 1 ? Ui.Money.class : Object.class; }
+149:         };
+150:         String q = OwnerReports.norm(search.getText());
+151:         grid.removeAll();
+152:         Map<Long, Model.Office> offices = new HashMap<>();
+153:         for (Model.Office o : db.offices()) offices.put(o.id, o);
+154:         Ui.Keep keep = Ui.Keep.of(table, shown, o -> o.officeId);   // 10.5 (§6)
+155:         shown = new ArrayList<>();
+156:         int w = Math.max(0, which.selected);
+157:         for (Model.OfficeTotals o : all) {
+158:             Model.Office of = offices.get(o.officeId);
+159:             boolean hasUs = false, neg = false;
+160:             for (long[] v : o.perCurrency.values()) {
+161:                 hasUs |= v[2] > 0;
+162:                 neg |= v[2] < 0;
+163:             }
+164:             if (w != 4 && !o.active) continue;
+165:             if (w == 4 && o.active) continue;
+166:             if (w == 1 && !o.pinned) continue;
+167:             if (w == 2 && !hasUs) continue;
+168:             if (w == 3 && !neg) continue;
+169:             if (!q.isEmpty()) {
+170:                 String hay = OwnerReports.norm(o.name + " " + (of == null ? "" : Model.nz(of.phone) + " " + Model.nz(of.shortName)));
+171:                 if (!hay.contains(q)) continue;
+172:             }
+173:             shown.add(o);
+174:             Object[] row = new Object[cols.size()];
+175:             row[0] = (o.pinned ? "مثبّت · " : "") + o.name;

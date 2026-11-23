@@ -1,0 +1,159 @@
+398:         final int start, end;
+399:         final BigDecimal value;
+400:         /** فيه «مئة/ألف/مليون» أو ما يعادلها. */
+401:         final boolean multiplier;
+402:         /** كلمة واحدة فقط من الكلمات المشتبهة: لا تُقبل إلا بجانب عملة. */
+403:         final boolean weak;
+404:         final int words;
+405: 
+406:         Match(int start, int end, BigDecimal value, boolean multiplier, boolean weak, int words) {
+407:             this.start = start;
+408:             this.end = end;
+409:             this.value = value;
+410:             this.multiplier = multiplier;
+411:             this.weak = weak;
+412:             this.words = words;
+413:         }
+414:     }
+415: 
+416:     /** تفكيك كلمة ملتصقة مثل «beşyüzelli» أو «zweihundertfünfundzwanzig» إلى كلمات رقمية، أو null. */
+417:     static List<String> split(String w) {
+418:         if (w.length() < 5 || DICT.containsKey(w)) return null;
+419:         for (char ch : w.toCharArray()) if (ch < 'a' || ch > 'z') return null;
+420:         List<String> out = new ArrayList<>();
+421:         return split(w, 0, out) && out.size() >= 2 ? out : null;
+422:     }
+423: 
+424:     private static boolean split(String w, int at, List<String> out) {
+425:         if (at == w.length()) return true;
+426:         for (int end = w.length(); end > at + 1; end--) {
+427:             String p = w.substring(at, end);
+428:             boolean ok = (DICT.containsKey(p) && DICT.get(p).kind != ARTICLE) || p.equals("und");
+429:             if (!ok) continue;
+430:             out.add(p);
+431:             if (split(w, end, out)) return true;
+432:             out.remove(out.size() - 1);
+433:         }
+434:         return false;
+435:     }
+436: 
+437:     /** كل المبالغ المكتوبة بالحروف في قائمة كلمات مطبّعة (كما يقسّمها المحلّل). */
+438:     static List<Match> find(List<String> nw) {
+439:         // توسيع الكلمات الملتصقة مع حفظ موقع كل جزء في القائمة الأصلية
+440:         List<String> t = new ArrayList<>();
+441:         List<Integer> at = new ArrayList<>();
+442:         for (int i = 0; i < nw.size(); i++) {
+443:             List<String> parts = lookup(nw.get(i)) == null ? split(nw.get(i)) : null;
+444:             if (parts == null) {
+445:                 t.add(nw.get(i));
+446:                 at.add(i);
+447:             } else {
+448:                 for (String p : parts) {
+449:                     t.add(p);
+450:                     at.add(i);
+451:                 }
+452:             }
+453:         }
+454:         List<Match> out = new ArrayList<>();
+455:         int i = 0;
+456:         while (i < t.size()) {
+457:             W first = lookup(t.get(i));
+458:             if (first == null || !startsOk(t, i, first)) {
+459:                 i++;
+460:                 continue;
+461:             }
+462:             Set<String> langs = new HashSet<>(first.langs);
+463:             List<W> seq = new ArrayList<>();
+464:             int j = i;
+465:             while (j < t.size()) {
+466:                 String w = t.get(j);
+467:                 W x = lookup(w);
+468:                 // «quatre vingt(s)» = 80
+469:                 if (x != null && w.equals("quatre") && j + 1 < t.size() && (t.get(j + 1).equals("vingt") || t.get(j + 1).equals("vingts")) && langs.contains("fr")) {
+470:                     seq.add(new W(SMALL, 80, 0, new HashSet<>(Arrays.asList("fr"))));
+471:                     langs.retainAll(Arrays.asList("fr"));
+472:                     j += 2;
+473:                     continue;
+474:                 }
+475:                 if (x == null) {
+476:                     Set<String> c = CONNECTORS.get(w);
+477:                     if (c == null && w.equals("und")) c = new HashSet<>(Arrays.asList("de"));
+478:                     if (c != null && !seq.isEmpty() && j + 1 < t.size()) {
+479:                         W nx = lookup(t.get(j + 1));
+480:                         if (nx != null && overlaps(langs, c) && overlaps(langs, nx.langs)) {
+481:                             j++;
+482:                             continue;
+483:                         }
+484:                     }
+485:                     break;
+486:                 }
+487:                 if (!overlaps(langs, x.langs)) break;
+488:                 if (x.kind == ARTICLE && !(j + 1 < t.size() && isMult(lookup(t.get(j + 1))))) break;
+489:                 if (x.kind == HALF || x.kind == QUARTER) {
+490:                     if (seq.isEmpty()) break;
+491:                 }
+492:                 Set<String> keep = new HashSet<>(langs);
+493:                 keep.retainAll(x.langs);
+494:                 langs = keep;
+495:                 seq.add(x);
+496:                 j++;
+497:             }
+498:             if (seq.isEmpty()) {
+499:                 i++;
+500:                 continue;
+501:             }
+502:             BigDecimal v = value(seq);
+503:             boolean mult = false;
+504:             for (W x : seq) if (x.kind == HUNDRED || x.kind == BIG || x.value >= 100) mult = true;
+505:             boolean weak = seq.size() == 1 && (WEAK.contains(t.get(i)) || seq.get(0).kind != SMALL || seq.get(0).value < 100);
+506:             if (v.signum() > 0) out.add(new Match(at.get(i), at.get(j - 1) + 1, v, mult, weak, seq.size()));
+507:             i = j;
+508:         }
+509:         return out;
+510:     }
+511: 
+512:     private static boolean startsOk(List<String> t, int i, W x) {
+513:         if (x.kind == HALF || x.kind == QUARTER) return false;
+514:         if (x.kind == ARTICLE) return i + 1 < t.size() && isMult(lookup(t.get(i + 1)));
+515:         return true;
+516:     }
+517: 
+518:     private static boolean isMult(W x) { return x != null && (x.kind == HUNDRED || x.kind == BIG); }
+519: 
+520:     private static boolean overlaps(Set<String> a, Set<String> b) {
+521:         for (String x : b) if (a.contains(x)) return true;
+522:         return false;
+523:     }
+524: 
+525:     static BigDecimal value(List<W> seq) {
+526:         BigDecimal total = BigDecimal.ZERO, current = BigDecimal.ZERO;
+527:         BigDecimal lastMult = null;
+528:         for (W x : seq) {
+529:             switch (x.kind) {
+530:                 case SMALL:
+531:                 case ARTICLE:
+532:                     current = current.add(BigDecimal.valueOf(x.value));
+533:                     break;
+534:                 case HUNDRED:
+535:                     current = (current.signum() == 0 ? BigDecimal.ONE : current).multiply(BigDecimal.valueOf(100));
+536:                     lastMult = BigDecimal.valueOf(100);
+537:                     break;
+538:                 case BIG:
+539:                     BigDecimal n = current.signum() == 0 ? BigDecimal.valueOf(x.count > 0 ? x.count : 1) : current;
+540:                     total = total.add(n.multiply(BigDecimal.valueOf(x.value)));
+541:                     current = BigDecimal.ZERO;
+542:                     lastMult = BigDecimal.valueOf(x.value);
+543:                     break;
+544:                 case HALF:
+545:                 case QUARTER:
+546:                     BigDecimal part = x.kind == HALF ? new BigDecimal("0.5") : new BigDecimal("0.25");
+547:                     if (current.signum() == 0 && lastMult != null) total = total.add(lastMult.multiply(part));
+548:                     else current = current.add(part);
+549:                     break;
+550:                 default:
+551:                     break;
+552:             }
+553:         }
+554:         return total.add(current).stripTrailingZeros();
+555:     }
+556: }

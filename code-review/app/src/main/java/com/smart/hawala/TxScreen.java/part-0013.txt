@@ -1,0 +1,144 @@
+1954:             final String what = (Model.TYPE_DEBIT.equals(in.type) ? "لنا " : "علينا ") + "\u2066" + Model.fmt(in.amount, a.db.decimals(in.currency)) + " " + in.currency + "\u2069 — " + office.name;
+1955:             Model.Tx savedTx = res instanceof Long ? a.db.tx((Long) res) : null;
+1956:             final boolean pendingSaved = savedTx != null && savedTx.isPending();
+1957:             // 12.4: لا «تراجع» سريع للحركة المحوّلة من أمانة (فُكّت الأمانة معها) ولا للخاصة غير المحسوبة
+1958:             final boolean undoable = old == null && res instanceof Long && a.can(Auth.Perm.TX_CANCEL) && !pendingSaved && holdUuid == null
+1959:                     && (savedTx == null || !savedTx.isUnposted());
+1960:             fromHold = null;
+1961:             converting = false;
+1962:             if (pendingSaved) a.toast("أُرسلت الحركة لاعتماد المحاسب: لا أثر لها في الأرصدة حتى تُعتمد.");
+1963:             else if (holdUuid != null) a.toast("سُجّلت الحركة وفُكّت الأمانة ✓");
+1964:             else if (conv) a.toast("حُوّلت إلى حركة عادية ✓ (تنزل بالكشف والمطابقة)");
+1965:             else if (!Model.nz(in.special).isEmpty()) a.toast("سُجّلت حركة خاصة «" + in.special + "» " + (in.specialBal ? "(تُحسب في الرصيد)" : "(لا تُحسب في الرصيد)")
+1966:                     + ": تجدها في «الأمانات والخاصة» بالمكتب.");
+1967:             else if (approve) a.toast("صُحّحت الحركة واعتُمدت ✓");
+1968:             else if (!undoable) a.toast(old == null ? "تم تسجيل الحركة" : "تم حفظ التعديل");
+1969:             if (old == null) AutoBackup.runIfDueAsync(a);
+1970:             if (holdUuid != null && back != null) back.run();
+1971:             else if (old == null && queued) a.waQueue.savedCurrent(office.id);
+1972:             else if (old == null && external) a.showHome();
+1973:             else if (old == null) showNew();
+1974:             else if (afterEdit != null) afterEdit.run();
+1975:             else a.showHome();
+1976:             if (undoable) {
+1977:                 final long newId = (Long) res;
+1978:                 a.snack("✓ سُجّلت: " + what, "تراجع", () -> undo(newId, queued));
+1979:             }
+1980:             List<String> alerts = a.officesScreen.limitAlerts(a.db.office(office.id));
+1981:             if (!alerts.isEmpty()) {
+1982:                 new AlertDialog.Builder(a).setTitle("تنبيه: تجاوز حد المكتب").setMessage(Model.join(alerts, "\n")).setPositiveButton("حسنًا", null).show();
+1983:             } else if (old == null) {
+1984:                 long txLimit = a.db.settingLong("reminder_tx", 20);
+1985:                 if (txLimit > 0 && a.txSinceBackup() == txLimit) {
+1986:                     new AlertDialog.Builder(a).setTitle("تذكير: النسخة الاحتياطية").setMessage("سجّلت " + txLimit + " حركة منذ آخر نسخة احتياطية.")
+1987:                             .setPositiveButton("إنشاء نسخة الآن", (d, w) -> a.backupScreen.backupDialog()).setNegativeButton("لاحقًا", null).show();
+1988:                 }
+1989:             }
+1990:         });
+1991:         };
+1992:         // 10.5 (§11): التأكيد بالأرصدة من طبقة البيانات (المكتب بالأحمر، الرصيد الحالي وبعد الحركة أو بعد اعتمادها)، يُحدَّث وهو مفتوح
+1993:         final Long replacing = old == null ? null : old.id;
+1994:         java.util.function.Supplier<TxConfirm.View> view = () -> TxConfirm.build(a.db, in, replacing);
+1995:         if (dup != null) {
+1996:             // الرسالة نفسها سُجّلت من قبل: لا تُسجَّل مرتين إلا بقرار صريح
+1997:             a.confirmTx("⚠ هذه الرسالة مسجّلة سابقًا", "يوجد حركة بالبيان نفسه: " + duplicateText(dup) + ". هل هي حوالة جديدة فعلًا؟\n" + warnText, view, "نعم، سجّلها", doSave);
+1998:         } else if (!warns.isEmpty()) {
+1999:             // 8.0 (ت2): تنبيه قبل الحفظ حتى لو كانت نافذة التأكيد متوقفة
+2000:             a.confirmTx("راجع قبل التسجيل", warnText, view, "تسجيل رغم ذلك", doSave);
+2001:         } else if ("1".equals(a.db.setting("confirm_tx", "1")) || old != null) {
+2002:             a.confirmTx(old == null ? "تأكيد تسجيل الحركة" : approve ? "تأكيد التصحيح والاعتماد" : "تأكيد التعديل", "", view,
+2003:                     old == null ? "تسجيل" : approve ? "اعتماد" : "حفظ", doSave);
+2004:         } else doSave.run();
+2005:     }
+2006: 
+2007:     /** 8.0 (ت2): مبلغ غير معتاد، تكرار محتمل خلال 10 دقائق، تجاوز حد المكتب. لا يمنع الحفظ أبدًا. */
+2008:     private List<String> sanity(Db.TxInput in) {
+2009:         try {
+2010:             Sanity.Input s = new Sanity.Input();
+2011:             s.amount = in.amount;
+2012:             s.when = in.when;
+2013:             s.debit = Model.TYPE_DEBIT.equals(in.type);
+2014:             s.currency = in.currency;
+2015:             s.dec = a.db.decimals(in.currency);
+2016:             s.person = in.person;
+2017:             Long bal = a.db.balances(in.office).get(in.currency);
+2018:             s.balanceBefore = bal == null ? 0 : bal;
+2019:             Db.Limit lim = a.db.officeLimits(in.office).get(in.currency);
+2020:             if (lim != null) {
+2021:                 s.receivableLimit = lim.receivable;
+2022:                 s.payableLimit = lim.payable;
+2023:             }
+2024:             Db.TxFilter f = new Db.TxFilter();
+2025:             f.office = in.office;
+2026:             f.limit = 60;
+2027:             s.history = a.db.txLog(f);
+2028:             return Sanity.check(s);
+2029:         } catch (Exception e) {
+2030:             return new ArrayList<>();
+2031:         }
+2032:     }
+2033: 
+2034:     /** تراجع فوري بعد التسجيل: يُلغى القيد بقيد عكسي (لا يُحذف شيء)، ويبقى أثره في سجل العمليات. */
+2035:     private void undo(long txId, boolean queued) {
+2036:         try {
+2037:             Model.Tx t = a.db.tx(txId);
+2038:             if (t == null || !t.isActive()) return;
+2039:             a.db.cancelTx(txId, "تراجع فوري بعد التسجيل");
+2040:             recent = null;
+2041:             if (queued) a.waQueue.undone();
+2042:             a.toast("تم التراجع: أُلغيت الحركة بقيد عكسي وتبقى ظاهرة في السجل كملغاة.");
+2043:         } catch (Exception e) {
+2044:             a.error(e);
+2045:         }
+2046:     }
+2047: 
+2048:     /** حركة جديدة من صفحة المكتب: المكتب محدد مسبقًا. */
+2049:     void showForOffice(final Model.Office o) {
+2050:         if (!a.require(Auth.Perm.TX_ADD)) return;
+2051:         if (!o.active) {
+2052:             a.toast("هذا المكتب موقوف. فعّله أولًا من صفحته.");
+2053:             return;
+2054:         }
+2055:         String draft = a.db.secretSetting("draft_tx");
+2056:         long draftOffice = -1;
+2057:         if (!draft.isEmpty()) {
+2058:             try {
+2059:                 draftOffice = new JSONObject(draft).optLong("office", -1);
+2060:             } catch (Exception ignored) {
+2061:                 // تجاهل
+2062:             }
+2063:         }
+2064:         if (draft.isEmpty() || draftOffice == o.id) {
+2065:             showNew();
+2066:             if (f != null && (f.office == null || f.office.id != o.id)) selectOffice(o);
+2067:             chosenOffice = o;
+2068:             return;
+2069:         }
+2070:         new AlertDialog.Builder(a).setTitle("لديك حركة لم تُحفظ (مسودة)")
+2071:                 .setMessage("توجد بيانات حركة لم تُسجَّل بعد لمكتب آخر. هل تريد متابعتها، أم البدء بحركة جديدة لـ «" + o.name + "» وحذف المسودة؟")
+2072:                 .setPositiveButton("حركة جديدة لهذا المكتب", (d, w) -> {
+2073:                     a.db.deleteSetting("draft_tx");
+2074:                     showNew();
+2075:                     if (f != null) selectOffice(o);
+2076:                     chosenOffice = o;
+2077:                 })
+2078:                 .setNegativeButton("متابعة المسودة", (d, w) -> showNew()).show();
+2079:     }
+2080: 
+2081:     private String duplicateText(Model.Tx t) {
+2082:         Model.Office o = a.db.office(t.officeId);
+2083:         return Model.day(t.createdAt) + (o == null ? "" : "، " + o.name) + "، " + (Model.TYPE_DEBIT.equals(t.type) ? "لنا " : "علينا ")
+2084:                 + Model.fmt(t.amount, a.db.decimals(t.currency)) + " " + t.currency + (t.person.isEmpty() ? "" : "، " + t.person);
+2085:     }
+2086: 
+2087:     // ===================================================================================
+2088:     // المسودة
+2089:     // ===================================================================================
+2090: 
+2091:     void saveDraft() {
+2092:         try {
+2093:             if (f == null || editing != null || f.external || a.db == null) return;
+2094:             boolean empty = f.amount.getText().toString().trim().isEmpty() && f.person.getText().toString().trim().isEmpty()
+2095:                     && f.desc.getText().toString().trim().isEmpty() && f.notes.getText().toString().trim().isEmpty()
+2096:                     && f.fee.getText().toString().trim().isEmpty();
+2097:             if (empty) {

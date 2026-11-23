@@ -1,0 +1,81 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import javax.swing.*;
+6: 
+7: /** تقارير صاحب المكتب (OwnerReports كالهاتف): النمو، التركّز، عمر الديون، الخامل، الصاعد والمتراجع، الأجور والراجع، المرتجعات، الخدمات، الحجم، الجودة. */
+8: final class OwnerView extends View {
+9:     final JCheckBox allTime = Ui.check("التركّز على كل الفترة (بدل آخر 12 شهرًا)", false);
+10:     final JPanel out = Ui.column();
+11:     Report last;
+12: 
+13:     OwnerView(App app) {
+14:         super(app, "تقارير صاحب المكتب");
+15:     }
+16: 
+17:     @Override void build() {
+18:         body.add(Ui.flow(allTime));
+19:         body.add(Ui.gap(8));
+20:         body.add(out);
+21:         allTime.addActionListener(e -> refresh());
+22:         scroll = Ui.scroll(body);
+23:         add(scroll, BorderLayout.CENTER);
+24:     }
+25: 
+26:     OwnerReports.Input input() {
+27:         OwnerReports.Input in = new OwnerReports.Input();
+28:         in.now = Clock.now();
+29:         in.txs = db.reportTxs();
+30:         in.openings = db.reportOpenings();
+31:         in.names = db.officeNames();
+32:         in.decimals = db.decimalsMap();
+33:         in.usdRates = db.usdRates();
+34:         return in;
+35:     }
+36: 
+37:     Report report() { return OwnerReports.build(input(), db.setting("office_name", ""), allTime.isSelected()); }
+38: 
+39:     @Override void refresh() {
+40:         actions.removeAll();
+41:         action(Ui.primary("تصدير / طباعة…", e -> Export.dialog(this, app, "تقارير صاحب المكتب", this::report)));
+42:         out.removeAll();
+43:         out.add(Ui.label("جارٍ تحليل الحركات…", 14, Ui.muted, false));
+44:         out.revalidate();
+45:         done();
+46:         new SwingWorker<Report, Void>() {
+47:             @Override protected Report doInBackground() { return report(); }
+48: 
+49:             @Override protected void done() {
+50:                 out.removeAll();
+51:                 try {
+52:                     Report r = get();
+53:                     last = r;
+54:                     Ui.Card head = Ui.tinted(Ui.primarySoft, null);
+55:                     head.add(Ui.label("الخلاصة", 17, Ui.primaryInk, true));
+56:                     int n = 0;
+57:                     for (String h : r.headerLines) {
+58:                         if (h.startsWith("صادر عن") || h.startsWith("حتى:")) continue;
+59:                         head.add(Ui.para("• " + Pdf.clean(h), 14, Ui.ink, textWidth() - 40));
+60:                         n++;
+61:                     }
+62:                     if (n == 0) head.add(Ui.label("لا توجد حركات كافية بعد.", 14, Ui.muted, false));
+63:                     head.add(Ui.gap(6));
+64:                     head.add(Ui.para("من الحركات النشطة فقط. خصّص ساعة أول كل شهر لأربعة أرقام: النمو، الديون الأقدم من 90 يومًا، المكاتب الصاعدة والمتراجعة، وصافي الأجور (ومنها «الراجع»).",
+65:                             12.5f, Ui.muted, textWidth() - 40));
+66:                     out.add(head);
+67:                     out.add(Ui.gap(14));
+68:                     for (Report.Section s : r.sections) {
+69:                         out.add(ReportPanel.section(s, textWidth()));
+70:                         out.add(Ui.gap(12));
+71:                     }
+72:                 } catch (Exception e) {
+73:                     out.add(Ui.label(Ui.friendly(e), 14, Ui.red, false));
+74:                 }
+75:                 Ui.rtl(out);
+76:                 out.revalidate();
+77:                 out.repaint();
+78:             }
+79:         }.execute();
+80:     }
+81: }

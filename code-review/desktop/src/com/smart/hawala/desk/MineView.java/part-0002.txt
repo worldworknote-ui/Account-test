@@ -1,0 +1,167 @@
+166:             StringBuilder bal = new StringBuilder();
+167:             for (Map.Entry<String, Long> e : db.balances(o.id).entrySet()) {
+168:                 if (e.getValue() == 0) continue;
+169:                 bal.append(bal.length() > 0 ? "  •  " : "").append(e.getKey()).append(" ").append(app.hidden() ? "••••" : Model.bal(e.getValue(), dec.getOrDefault(e.getKey(), 2)));
+170:             }
+171:             c.add(Ui.para(bal.length() == 0 ? "متوازن" : bal.toString(), 12.5f, Ui.ink, 300));
+172:             List<Component> bs = new ArrayList<>();
+173:             bs.add(Ui.ghost("فتح", e -> app.go("office", o.id)));
+174:             bs.add(Ui.ghost("آخر رسالة", e -> markDialog(o)));
+175:             if ("mine".equals(db.setting("mine_sort", "status"))) {
+176:                 final int at = idx;
+177:                 bs.add(Ui.ghost("↑", e -> move(shown, at, -1)));
+178:                 bs.add(Ui.ghost("↓", e -> move(shown, at, 1)));
+179:             }
+180:             c.add(Ui.flow(bs.toArray(new Component[0])));
+181:             grid.add(c);
+182:         }
+183:         add(grid);
+184:     }
+185: 
+186:     Ui.Btn filterBtn(String label, String key) {
+187:         boolean on = key == null ? filter == null : key.equals(filter);
+188:         Ui.Btn b = on ? Ui.primary(label, null) : Ui.ghost(label, null);
+189:         b.addActionListener(e -> {
+190:             filter = key == null || key.equals(filter) ? null : key;
+191:             refresh();
+192:         });
+193:         return b;
+194:     }
+195: 
+196:     /** يحرّك مكتبًا في «ترتيبي» خطوة (يحفظ ترتيب كل الظاهر، وما لم يظهر بعده). */
+197:     void move(List<Model.Office> shown, int at, int dir) {
+198:         int to = at + dir;
+199:         if (to < 0 || to >= shown.size()) return;
+200:         List<String> ids = new ArrayList<>();
+201:         for (Model.Office o : shown) ids.add(String.valueOf(o.id));
+202:         java.util.Collections.swap(ids, at, to);
+203:         for (String old : db.setting("mine_order", "").split(",")) if (!old.isEmpty() && !ids.contains(old)) ids.add(old);
+204:         db.setSettingQuiet("mine_order", String.join(",", ids));
+205:         refresh();
+206:     }
+207: 
+208:     void pickStatus(Component at, Model.Office o, Db.Work x) {
+209:         JPopupMenu m = new JPopupMenu();
+210:         m.setComponentOrientation(Ui.RTL);
+211:         for (String k : Db.WORK_KEYS) {
+212:             JMenuItem it = new JMenuItem(Db.workLabel(k) + (k.equals(x.status) ? "  ✓" : ""));
+213:             it.setFont(Ui.font(13.5f, false));
+214:             it.addActionListener(e -> setWork(o, k));
+215:             m.add(it);
+216:         }
+217:         m.addSeparator();
+218:         JMenuItem auto = new JMenuItem("تلقائية (" + Db.workLabel(x.auto) + ")" + (x.manual == null ? "  ✓" : ""));
+219:         auto.setFont(Ui.font(13.5f, false));
+220:         auto.addActionListener(e -> setWork(o, null));
+221:         m.add(auto);
+222:         m.show(at, 0, at.getHeight());
+223:     }
+224: 
+225:     void setWork(Model.Office o, String k) {
+226:         try {
+227:             db.setOfficeWork(o.id, k);
+228:             refresh();
+229:         } catch (Exception ex) {
+230:             Ui.error(this, ex);
+231:         }
+232:     }
+233: 
+234:     void markDialog(Model.Office o) {
+235:         JPanel c = Ui.column();
+236:         markCard(c, o, 460);
+237:         JOptionPane.showMessageDialog(this, Ui.rtl(c), "آخر رسالة نُقلت — " + o.name, JOptionPane.PLAIN_MESSAGE);
+238:     }
+239: 
+240:     void txs(int w) {
+241:         List<Model.Tx> wait = db.awaitingMyCheck(60, 300);
+242:         add(Ui.heading("بانتظار تحققي (" + wait.size() + ")"));
+243:         add(Ui.para("حركات أدخلها غيرك في مكاتب تتحقق منها خلال آخر 60 يومًا. انقر مرتين لعرض الحركة. التحقق لا يُنشئ قيدًا، وتعديل المبلغ أو العملة أو الاتجاه أو المكتب يُبطله.",
+244:                 13, Ui.muted, w));
+245:         space(6);
+246:         if (wait.isEmpty()) add(Ui.label("لا حركات بانتظار تحققك ✓", 14, Ui.green, true));
+247:         else {
+248:             JTable t = LogView.txTable(app, wait, true);
+249:             JScrollPane sp = Ui.tableBox(t);
+250:             sp.setPreferredSize(new Dimension(800, Math.min(16, Math.max(3, wait.size())) * 32 + 36));
+251:             sp.setMaximumSize(new Dimension(Integer.MAX_VALUE, sp.getPreferredSize().height));
+252:             add(sp);
+253:             space(6);
+254:             // 10.16: «تحديد الكل»، والتحقق دفعة واحدة في طبقة البيانات (ما يُرفض يُذكر سببه والباقي يُسجَّل)
+255:             add(Ui.flow(Ui.ghost("تحديد الكل", e -> {
+256:                 if (t.getSelectedRowCount() == t.getRowCount()) t.clearSelection();
+257:                 else t.selectAll();
+258:             }), Ui.primary("تحققتُ من المحدد", e -> {
+259:                 int[] rows = t.getSelectedRows();
+260:                 if (rows.length == 0) {
+261:                     Ui.toast("حدّد حركة أو أكثر في الجدول، أو اضغط «تحديد الكل»");
+262:                     return;
+263:                 }
+264:                 List<Long> ids = new ArrayList<>();
+265:                 for (int r : rows) ids.add(wait.get(t.convertRowIndexToModel(r)).id);
+266:                 if (!Ui.confirm(this, "تم التحقق", "تسجيل تحققك من " + ids.size() + " حركة؟ لا يُنشئ أي قيد. تأكد أنك راجعتها فعلًا: التحقق شهادة باسمك.", "تم التحقق")) return;
+267:                 try {
+268:                     Object[] r = db.verifyTxs(ids);
+269:                     @SuppressWarnings("unchecked") List<String> bad = (List<String>) r[1];
+270:                     if (bad.isEmpty()) Ui.toast("سُجّل تحققك من " + r[0] + " حركة ✓");
+271:                     else Ui.info(this, "سُجّل " + r[0] + " ولم يُسجَّل " + bad.size(), String.join("\n", bad));
+272:                 } catch (Exception ex) {
+273:                     Ui.error(this, ex);
+274:                 }
+275:                 refresh();
+276:             })));
+277:         }
+278:         List<Model.Tx> done = db.checkedByMe(7, 50);
+279:         if (!done.isEmpty()) {
+280:             space(12);
+281:             add(Ui.heading("تحققتُ منها (آخر 7 أيام)"));
+282:             Map<Long, String> names = db.officeNames();
+283:             for (Model.Tx t : done)
+284:                 add(Ui.label("✓ " + (Model.TYPE_DEBIT.equals(t.type) ? "لنا " : "علينا ") + Ui.ltr(Model.fmt(t.amount, db.decimals(t.currency)) + " " + t.currency) + " — "
+285:                         + Model.nz(names.get(t.officeId)), 13, Ui.green, false));
+286:         }
+287:     }
+288: 
+289:     void recons(int w) {
+290:         Map<String, Integer> dec = db.decimalsMap();
+291:         List<Model.Recon> recs = db.awaitingMyRecons(60, 100);
+292:         add(Ui.heading("بانتظار تحققي (" + recs.size() + ")"));
+293:         space(6);
+294:         if (recs.isEmpty()) add(Ui.label("لا مطابقات بانتظار تحققك ✓", 14, Ui.green, true));
+295:         Map<Long, String> on = db.officeNames();
+296:         for (Model.Recon r : recs) {
+297:             Ui.Card c = Ui.card();
+298:             StringBuilder b = new StringBuilder();
+299:             for (Map.Entry<String, Long> e : r.balances.entrySet())
+300:                 b.append(b.length() > 0 ? "   •   " : "").append(e.getKey()).append(" ").append(app.hidden() ? "••••" : Model.bal(e.getValue(), dec.getOrDefault(e.getKey(), 2)));
+301:             c.add(Ui.label("«" + Model.nz(on.get(r.officeId)) + "» — " + Model.date(r.createdAt) + " — " + r.statusLabel(), 14, Ui.primaryInk, true));
+302:             c.add(Ui.label(b.toString(), 13, Ui.ink, false));
+303:             c.add(Ui.label("✓ أُرسلت • " + db.reconPeople(r), 12, Ui.muted, false));
+304:             c.add(Ui.flow(Ui.primary("تحققتُ من المطابقة ✓", e -> {
+305:                 try {
+306:                     db.verifyRecon(r.id);
+307:                     Ui.toast("سُجّل تحققك من المطابقة ✓");
+308:                     refresh();
+309:                 } catch (Exception ex) {
+310:                     Ui.error(this, ex);
+311:                 }
+312:             })));
+313:             add(c);
+314:             space(6);
+315:         }
+316:         List<Model.Recon> done = db.reconsCheckedByMe(14, 50);
+317:         if (!done.isEmpty()) {
+318:             space(12);
+319:             add(Ui.heading("تحققتُ منها (آخر 14 يومًا)"));
+320:             for (Model.Recon r : done) add(Ui.label("✓ «" + Model.nz(on.get(r.officeId)) + "» — " + Model.date(r.createdAt), 13, Ui.green, false));
+321:         }
+322:     }
+323: 
+324:     /** علامة «آخر رسالة واتساب نُقلت» للمكتب: النص والتاريخ ومن حفظها، ونسخها وتحديثها وتاريخها. */
+325:     void markCard(JPanel c, Model.Office o, int w) {
+326:         Db.WaMark m = db.lastWaMark(o.id);
+327:         c.add(Ui.gap(6));
+328:         if (m == null) c.add(Ui.label("آخر رسالة نُقلت: لم تُحفظ علامة بعد", 13, Ui.muted, false));
+329:         else {
+330:             c.add(Ui.label("آخر رسالة نُقلت (حفظها " + m.userName + " — " + Model.date(m.at) + (m.msgTime.isEmpty() ? "" : " — وقت الرسالة " + m.msgTime) + "):", 13, Ui.goldInk, true));
+331:             c.add(Ui.para(m.text, 13.5f, Ui.ink, w - 60));
+332:         }

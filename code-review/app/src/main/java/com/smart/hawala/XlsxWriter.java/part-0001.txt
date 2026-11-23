@@ -1,0 +1,175 @@
+1: package com.smart.hawala;
+2: 
+3: import java.io.IOException;
+4: import java.io.OutputStream;
+5: import java.math.BigDecimal;
+6: import java.nio.charset.StandardCharsets;
+7: import java.util.ArrayList;
+8: import java.util.HashSet;
+9: import java.util.LinkedHashMap;
+10: import java.util.List;
+11: import java.util.Map;
+12: import java.util.Set;
+13: import java.util.TimeZone;
+14: import java.util.zip.ZipEntry;
+15: import java.util.zip.ZipOutputStream;
+16: 
+17: /**
+18:  * كاتب ملفات Excel حقيقية (.xlsx) بدون أي مكتبة خارجية.
+19:  * كل قسم من التقرير في ورقة مستقلة، الورقة من اليمين لليسار، الأرقام أرقام حقيقية (تُجمع وتُرتب في Excel)،
+20:  * والأرصدة تُعرض «لنا/علينا» عبر تنسيق رقمي مع بقاء القيمة رقمًا.
+21:  */
+22: public final class XlsxWriter {
+23: 
+24:     // ---------------------------------------------------------------------------- الأنماط
+25:     private static final int F_NORMAL = 0, F_BOLD = 1, F_TITLE = 2, F_SUBTLE = 3, F_HEADER = 4;
+26:     private static final int FILL_NONE = 0, FILL_HEADER = 2, FILL_SHADE = 3, FILL_TOTAL = 4, FILL_LABEL = 5;
+27: 
+28:     private final Map<String, Integer> numFmts = new LinkedHashMap<>();
+29:     private final Map<String, Integer> xfIndex = new LinkedHashMap<>();
+30:     private final List<String> xfs = new ArrayList<>();
+31:     private final String accent;
+32:     /** ألوان إضافية (ألوان العملات): خلفيات وخطوط تُضاف بعد الثابتة. */
+33:     private final List<String> fills = new ArrayList<>();
+34:     private final List<String> fonts = new ArrayList<>();
+35: 
+36:     private static String argb(int c) { return String.format(java.util.Locale.US, "FF%06X", c & 0xFFFFFF); }
+37: 
+38:     static int blend(int c, float a) {
+39:         int r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255;
+40:         return (Math.round(255 - (255 - r) * a) << 16) | (Math.round(255 - (255 - g) * a) << 8) | Math.round(255 - (255 - b) * a);
+41:     }
+42: 
+43:     static int darker(int c) {
+44:         int r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255;
+45:         return (Math.round(r * 0.78f) << 16) | (Math.round(g * 0.78f) << 8) | Math.round(b * 0.78f);
+46:     }
+47: 
+48:     private int fillOf(int color) {
+49:         String k = argb(color);
+50:         int i = fills.indexOf(k);
+51:         if (i < 0) {
+52:             fills.add(k);
+53:             i = fills.size() - 1;
+54:         }
+55:         return 6 + i;
+56:     }
+57: 
+58:     private int fontOf(int color, boolean white) {
+59:         String k = (white ? "W" : "") + argb(color);
+60:         int i = fonts.indexOf(k);
+61:         if (i < 0) {
+62:             fonts.add(k);
+63:             i = fonts.size() - 1;
+64:         }
+65:         return 5 + i;
+66:     }
+67: 
+68:     private XlsxWriter(String accentArgb) {
+69:         accent = accentArgb;
+70:         style(F_NORMAL, FILL_NONE, 0, null, null, false); // النمط 0 الافتراضي
+71:     }
+72: 
+73:     private int numFmt(String code) {
+74:         Integer id = numFmts.get(code);
+75:         if (id == null) {
+76:             id = 164 + numFmts.size();
+77:             numFmts.put(code, id);
+78:         }
+79:         return id;
+80:     }
+81: 
+82:     private int style(int font, int fill, int border, String fmt, String align, boolean wrap) {
+83:         int nf = fmt == null ? 0 : numFmt(fmt);
+84:         String key = font + "|" + fill + "|" + border + "|" + nf + "|" + align + "|" + wrap;
+85:         Integer i = xfIndex.get(key);
+86:         if (i != null) return i;
+87:         StringBuilder x = new StringBuilder("<xf numFmtId=\"").append(nf).append("\" fontId=\"").append(font).append("\" fillId=\"").append(fill)
+88:                 .append("\" borderId=\"").append(border).append("\" xfId=\"0\"");
+89:         if (nf != 0) x.append(" applyNumberFormat=\"1\"");
+90:         if (font != 0) x.append(" applyFont=\"1\"");
+91:         if (fill != 0) x.append(" applyFill=\"1\"");
+92:         if (border != 0) x.append(" applyBorder=\"1\"");
+93:         if (align != null || wrap) {
+94:             x.append(" applyAlignment=\"1\"><alignment");
+95:             if (align != null) x.append(" horizontal=\"").append(align).append("\"");
+96:             x.append(" vertical=\"top\"");
+97:             if (wrap) x.append(" wrapText=\"1\"");
+98:             x.append("/></xf>");
+99:         } else x.append("/>");
+100:         xfs.add(x.toString());
+101:         xfIndex.put(key, xfs.size() - 1);
+102:         return xfs.size() - 1;
+103:     }
+104: 
+105:     static String moneyFmt(int dec) {
+106:         StringBuilder f = new StringBuilder("#,##0");
+107:         if (dec > 0) {
+108:             f.append('.');
+109:             for (int i = 0; i < dec; i++) f.append('0');
+110:         }
+111:         return f.toString();
+112:     }
+113: 
+114:     static String balFmt(int dec) {
+115:         String m = moneyFmt(dec);
+116:         return "\"لنا \"" + m + ";\"علينا \"" + m + ";0";
+117:     }
+118: 
+119:     private static final String DATE_FMT = "yyyy/mm/dd hh:mm";
+120: 
+121:     // ---------------------------------------------------------------------------- الكتابة
+122: 
+123:     public static void write(Report r, OutputStream out, String accentArgb, TimeZone tz) throws IOException {
+124:         new XlsxWriter(accentArgb == null ? "FF0B6B53" : accentArgb).doWrite(r, out, tz == null ? TimeZone.getDefault() : tz);
+125:     }
+126: 
+127:     private void doWrite(Report r, OutputStream out, TimeZone tz) throws IOException {
+128:         List<String> sheetNames = new ArrayList<>();
+129:         List<String> sheetXml = new ArrayList<>();
+130:         Set<String> used = new HashSet<>();
+131:         if (r.sections.isEmpty()) {
+132:             Report.Section s = new Report.Section();
+133:             s.heading = r.title;
+134:             s.note = "لا توجد بيانات";
+135:             r.sections.add(s);
+136:         }
+137:         int idx = 0;
+138:         for (Report.Section s : r.sections) {
+139:             idx++;
+140:             String name = sheetName(s.sheetName == null || s.sheetName.isEmpty() ? "ورقة " + idx : s.sheetName, used, idx);
+141:             sheetNames.add(name);
+142:             sheetXml.add(sheet(r, s, idx == 1, tz));
+143:         }
+144:         ZipOutputStream zip = new ZipOutputStream(out);
+145:         put(zip, "[Content_Types].xml", contentTypes(sheetNames.size()));
+146:         put(zip, "_rels/.rels", "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+147:                 + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+148:                 + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>"
+149:                 + "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties\" Target=\"docProps/core.xml\"/>"
+150:                 + "<Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties\" Target=\"docProps/app.xml\"/>"
+151:                 + "</Relationships>");
+152:         put(zip, "docProps/core.xml", "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+153:                 + "<cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">"
+154:                 + "<dc:title>" + esc(r.title) + "</dc:title><dc:creator>المحاسب الذكي</dc:creator>"
+155:                 + (r.watermark.isEmpty() ? "" : "<dc:description>" + esc(r.watermark) + "</dc:description>")
+156:                 + (r.licenseId.isEmpty() ? "" : "<cp:keywords>SA-" + esc(r.licenseId) + "</cp:keywords>")
+157:                 + "</cp:coreProperties>");
+158:         put(zip, "docProps/app.xml", "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+159:                 + "<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\"><Application>Smart Accountant</Application></Properties>");
+160:         StringBuilder wb = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+161:                 + "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
+162:                 + "<bookViews><workbookView/></bookViews><sheets>");
+163:         StringBuilder rels = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+164:                 + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">");
+165:         for (int i = 0; i < sheetNames.size(); i++) {
+166:             wb.append("<sheet name=\"").append(esc(sheetNames.get(i))).append("\" sheetId=\"").append(i + 1).append("\" r:id=\"rId").append(i + 1).append("\"/>");
+167:             rels.append("<Relationship Id=\"rId").append(i + 1)
+168:                     .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet")
+169:                     .append(i + 1).append(".xml\"/>");
+170:             put(zip, "xl/worksheets/sheet" + (i + 1) + ".xml", sheetXml.get(i));
+171:         }
+172:         wb.append("</sheets></workbook>");
+173:         rels.append("<Relationship Id=\"rId").append(sheetNames.size() + 1)
+174:                 .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/></Relationships>");
+175:         put(zip, "xl/workbook.xml", wb.toString());

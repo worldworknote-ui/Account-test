@@ -1,0 +1,159 @@
+1988:             boolean pending = approvalRequired(legs[0]) || approvalRequired(legs[1]);
+1989:             long ia = insertTx(d, legs[0], null, pending);
+1990:             long ib = insertTx(d, legs[1], null, pending);
+1991:             if (q != null) {
+1992:                 q.tx.put(in.from, q.txOf(in.from) + 1);
+1993:                 q.tx.put(in.to, q.txOf(in.to) + 1);
+1994:                 saveQuota(d, q);
+1995:             }
+1996:             audit(d, pending ? "PROPOSE_TRANSFER" : "CREATE_TRANSFER", "tx", ia, "pair=" + ib + " " + Model.plain(in.amount, decimals(in.currency)) + " " + in.currency);
+1997:             d.setTransactionSuccessful();
+1998:             return new long[]{ia, ib};
+1999:         } finally {
+2000:             d.endTransaction();
+2001:         }
+2002:     }
+2003: 
+2004:     /** 10.5: ساقات عملية مترابطة (تبديل أو تحويل) بالترتيب، أو الحركة وحدها. */
+2005:     public List<Model.Tx> legs(Model.Tx t) {
+2006:         List<Model.Tx> out = new ArrayList<>();
+2007:         if (t == null) return out;
+2008:         if (!t.isLinked()) {
+2009:             out.add(t);
+2010:             return out;
+2011:         }
+2012:         try (Cursor c = getReadableDatabase().rawQuery("SELECT " + TX_COLS + " FROM tx WHERE pair_uuid=? ORDER BY id", new String[]{t.pairUuid})) {
+2013:             while (c.moveToNext()) out.add(readTx(c));
+2014:         }
+2015:         return out;
+2016:     }
+2017: 
+2018:     // ===================================================================================
+2019:     // 10.5 (§7): المحاسبون — مكاتب كل محاسب، و«تم التحقق»، ومن أدخل ومن اعتمد ومن تحقق، وآخر رسالة واتساب نُقلت
+2020:     // ===================================================================================
+2021: 
+2022:     /** هل أدخل هذا المستخدم الحركة؟ بالرقم الثابت؛ وللحركات القديمة (بلا رقم) بالاسم. */
+2023:     public static boolean enteredBy(Model.Tx t, Model.User u) {
+2024:         if (t == null || u == null) return false;
+2025:         if (t.userId != null) return t.userId == u.id;
+2026:         return t.realUser().equals(Model.nz(u.name));
+2027:     }
+2028: 
+2029:     /** المبلغ أو العملة أو الاتجاه أو المكتب تغيّر (يُبطل التحقق). */
+2030:     static boolean keyChanged(Model.Tx t, TxInput in) {
+2031:         return t.amount != in.amount || !Model.nz(t.currency).equals(in.currency) || !Model.nz(t.type).equals(in.type) || t.officeId != in.office;
+2032:     }
+2033: 
+2034:     String keyDiff(Model.Tx t, TxInput in) {
+2035:         List<String> l = new ArrayList<>();
+2036:         if (t.amount != in.amount || !Model.nz(t.currency).equals(in.currency))
+2037:             l.add("المبلغ " + Model.fmt(t.amount, decimals(t.currency)) + " " + t.currency + " ← " + Model.fmt(in.amount, decimals(in.currency)) + " " + in.currency);
+2038:         if (!Model.nz(t.type).equals(in.type)) l.add("الاتجاه " + (TYPE_DEBIT.equals(t.type) ? "لنا" : "علينا") + " ← " + (TYPE_DEBIT.equals(in.type) ? "لنا" : "علينا"));
+2039:         if (t.officeId != in.office) {
+2040:             Model.Office a = office(t.officeId), b = office(in.office);
+2041:             l.add("المكتب «" + (a == null ? "" : a.name) + "» ← «" + (b == null ? "" : b.name) + "»");
+2042:         }
+2043:         return Model.join(l, "، ");
+2044:     }
+2045: 
+2046:     /** مفتاح التحقق: الحركة + المستخدم + بصمة قيمها الأساسية (ثابت على كل جهاز: لا يتكرر ولا يضيع بالمزامنة). */
+2047:     static String checkKey(Model.Tx t, long userId) {
+2048:         String sig = t.officeId + "|" + t.type + "|" + t.amount + "|" + t.currency;
+2049:         return "c:" + t.id + ":" + userId + ":" + Integer.toHexString(sig.hashCode());
+2050:     }
+2051: 
+2052:     public static final class TxCheck {
+2053:         public String uuid = "", userName = "", status = "VALID", voidReason = "";
+2054:         public long txId, userId, at, voidAt;
+2055: 
+2056:         public boolean valid() { return "VALID".equals(status); }
+2057:     }
+2058: 
+2059:     private void voidChecks(SQLiteDatabase d, long txId, String reason) {
+2060:         ContentValues v = new ContentValues();
+2061:         v.put("status", "VOID");
+2062:         v.put("void_reason", Crypto.enc(reason));
+2063:         v.put("void_at", Clock.now());
+2064:         int n = d.update("tx_checks", v, "tx_id=" + txId + " AND status='VALID'", null);
+2065:         if (n > 0) audit(d, "VERIFY_VOID", "tx", txId, n + " — " + reason);
+2066:     }
+2067: 
+2068:     /** ينقل التحقق الساري إلى الحركة المصححة (لم تتغير قيمها الأساسية)، ويبقى الأصل في تاريخ الحركة القديمة. */
+2069:     private void carryChecks(SQLiteDatabase d, long oldId, long newId) {
+2070:         Model.Tx nt = txOn(d, newId);
+2071:         if (nt == null) return;
+2072:         List<TxCheck> l = checksOn(d, oldId);
+2073:         for (TxCheck c : l) {
+2074:             if (!c.valid()) continue;
+2075:             ContentValues v = new ContentValues();
+2076:             v.put("uuid", checkKey(nt, c.userId));
+2077:             v.put("tx_id", newId);
+2078:             v.put("user_id", c.userId);
+2079:             v.put("user_name", Crypto.enc(c.userName));
+2080:             v.put("created_at", c.at);
+2081:             v.put("status", "VALID");
+2082:             if (d.update("tx_checks", v, "uuid=?", new String[]{v.getAsString("uuid")}) == 0) d.insertOrThrow("tx_checks", null, v);
+2083:         }
+2084:     }
+2085: 
+2086:     private List<TxCheck> checksOn(SQLiteDatabase d, long txId) {
+2087:         List<TxCheck> out = new ArrayList<>();
+2088:         try (Cursor c = d.rawQuery("SELECT uuid,tx_id,user_id,user_name,created_at,status,void_reason,void_at FROM tx_checks WHERE tx_id=" + txId + " ORDER BY created_at", null)) {
+2089:             while (c.moveToNext()) {
+2090:                 TxCheck x = new TxCheck();
+2091:                 x.uuid = c.getString(0);
+2092:                 x.txId = c.getLong(1);
+2093:                 x.userId = c.getLong(2);
+2094:                 x.userName = shown(Model.nz(Crypto.dec(c.getString(3))));
+2095:                 x.at = c.getLong(4);
+2096:                 x.status = c.getString(5);
+2097:                 x.voidReason = c.isNull(6) ? "" : Model.nz(Crypto.dec(c.getString(6)));
+2098:                 x.voidAt = c.isNull(7) ? 0 : c.getLong(7);
+2099:                 out.add(x);
+2100:             }
+2101:         }
+2102:         return out;
+2103:     }
+2104: 
+2105:     /** كل تحقق على الحركة (الساري والمُبطل)، بالترتيب. */
+2106:     public List<TxCheck> checks(long txId) { return checksOn(getReadableDatabase(), txId); }
+2107: 
+2108:     /**
+2109:      * «تم التحقق»: لا قيد ولا أثر في الأرصدة. للمستخدم بصلاحية التحقق، على حركة نافذة أدخلها غيره، في مكاتبه (إن خُصصت له مكاتب).
+2110:      * العملية المترابطة (تبديل أو تحويل) يُتحقق منها كلها معًا. التحقق مرتين من المستخدم نفسه لا يتكرر.
+2111:      */
+2112:     public void verifyTx(long txId) {
+2113:         require(Auth.Perm.VERIFY);
+2114:         Model.User me = actor();
+2115:         if (me == null) throw new IllegalStateException("التحقق يحتاج نظام المستخدمين: كل تحقق يُسجَّل باسم من قام به.");
+2116:         SQLiteDatabase d = getWritableDatabase();
+2117:         d.beginTransaction();
+2118:         try {
+2119:             Model.Tx t = txOn(d, txId);
+2120:             if (t == null) throw new IllegalStateException("الحركة غير موجودة");
+2121:             if (t.isPending()) throw new IllegalStateException("الحركة بانتظار الاعتماد: يُتحقق منها بعد اعتمادها");
+2122:             if (!t.isActive()) throw new IllegalStateException("الحركة ملغاة أو معدّلة: تحقق من الحركة الحالية");
+2123:             if (enteredBy(t, me)) throw new IllegalStateException("لا يُحتسب تحققك من حركة أدخلتها أنت؛ يتحقق منها محاسب آخر.");
+2124:             // 10.8: مع فرز المكاتب يتحقق من المكتب من كُلّف بالتحقق منه وحده (لا من يسجّله)
+2125:             Set<Long> scope = checkScope(d, me);
+2126:             if (scope != null && !scope.contains(t.officeId)) throw new SecurityException(checkRefusal(d, me, t.officeId));
+2127:             List<Model.Tx> legs = new ArrayList<>();
+2128:             legs.add(t);
+2129:             if (t.isLinked()) try (Cursor c = d.rawQuery("SELECT " + TX_COLS + " FROM tx WHERE pair_uuid=? AND id<>" + t.id, new String[]{t.pairUuid})) {
+2130:                 while (c.moveToNext()) legs.add(readTx(c));
+2131:             }
+2132:             long now = Clock.now();
+2133:             int added = 0;
+2134:             for (Model.Tx x : legs) {
+2135:                 String key = checkKey(x, me.id);
+2136:                 try (Cursor c = d.rawQuery("SELECT status FROM tx_checks WHERE uuid=?", new String[]{key})) {
+2137:                     if (c.moveToFirst() && "VALID".equals(c.getString(0))) continue;
+2138:                 }
+2139:                 ContentValues v = new ContentValues();
+2140:                 v.put("tx_id", x.id);
+2141:                 v.put("user_id", me.id);
+2142:                 v.put("user_name", Crypto.enc(me.name));
+2143:                 v.put("created_at", now);
+2144:                 v.put("status", "VALID");
+2145:                 v.putNull("void_reason");
+2146:                 v.putNull("void_at");

@@ -1,0 +1,160 @@
+914:             SyncStore.setMeta(d, "vault_id", vid);
+915:             SyncStore.setMeta(d, "joined_fmt", "" + FORMAT);
+916:             SyncStore.setMeta(d, "vault_key", Crypto.enc(SyncCrypto.hex(vk)));
+917:             SyncStore.setMeta(d, "device", dev);
+918:             SyncStore.setMeta(d, "device_name", deviceName == null || deviceName.trim().isEmpty() ? platform() : deviceName.trim());
+919:             SyncStore.setMeta(d, "prefix", "" + prefix);
+920:             SyncStore.setMeta(d, "my_seq", "0");
+921:             SyncStore.setMeta(d, "my_hash", "");
+922:             SyncStore.setMeta(d, "folder", folder.describe());
+923:             SyncStore.setMeta(d, "joined_at", "" + Clock.now());
+924:             Iterator<String> it = cursors.keys();
+925:             while (it.hasNext()) {
+926:                 String x = it.next();
+927:                 d.execSQL("INSERT OR REPLACE INTO sync_cursor(dev,seq,hash) VALUES(?,?,?)", new Object[]{x, cursors.getLong(x), hashes.optString(x, "")});
+928:             }
+929:             SyncStore.capture(d, true);
+930:             db.audit("SYNC_JOIN", "sync", 0, "جهاز " + dev + " — بادئة " + prefix);
+931:             d.setTransactionSuccessful();
+932:         } finally {
+933:             d.endTransaction();
+934:         }
+935:         db.syncPrefix = prefix;
+936:     }
+937: 
+938:     /** يخرج هذا الجهاز من المزامنة (بياناته تبقى). */
+939:     public void leave() {
+940:         leave("أُوقفت المزامنة على هذا الجهاز");
+941:     }
+942: 
+943:     /** 10.14: الخروج مع سبب يظهر للمستخدم (مثل: حذف المدير ملفات المزامنة). */
+944:     public void leave(String reason) {
+945:         SQLiteDatabase d = db.getWritableDatabase();
+946:         d.beginTransaction();
+947:         try {
+948:             SyncStore.leave(d, reason);
+949:             d.setTransactionSuccessful();
+950:         } finally {
+951:             d.endTransaction();
+952:         }
+953:         db.syncPrefix = 0;
+954:     }
+955: 
+956:     /**
+957:      * 10.2: نقل الخزنة إلى ناقل آخر (من المجلد المشترك إلى Google Drive المباشر أو خادمك، أو العكس): تُنسخ ملفاتها المشفّرة
+958:      * كما هي (الرأس والأعضاء واللقطات والحزم) ما لم تكن هناك. كل جهاز يفعل الشيء نفسه فيكمل كل منهم ما رآه الآخر.
+959:      * يرجع عدد الملفات المنسوخة.
+960:      */
+961:     public int moveTo(SyncFolder dst) throws Exception {
+962:         VAULT.lock();
+963:         try {
+964:             return moveToLocked(dst);
+965:         } finally {
+966:             VAULT.unlock();
+967:         }
+968:     }
+969: 
+970:     private int moveToLocked(SyncFolder dst) throws Exception {
+971:         SyncCrypto.Keys keys = keys();
+972:         dst.unlock(keys);
+973:         byte[] h = folder.read(HEADER);
+974:         if (h == null) throw new IOException("رأس الخزنة غير موجود في الناقل الحالي");
+975:         // 10.14: المكان الحالي قديم نُقلت منه الخزنة (فيه شاهد بلا مفاتيح): لا يُنسخ الشاهد إلى الوجهة، بل رأس الخزنة المحفوظ على هذا الجهاز
+976:         if (tombstone(new JSONObject(new String(h, StandardCharsets.UTF_8)))) {
+977:             String copy = SyncStore.meta(db.getReadableDatabase(), "header_copy");
+978:             if (copy == null || tombstone(new JSONObject(copy)) || !keys.vaultId.equals(new JSONObject(copy).optString("vault")))
+979:                 throw new IllegalStateException("رأس الخزنة غير محفوظ على هذا الجهاز. سجّل الدخول بالمكان الجديد مباشرة.");
+980:             h = copy.getBytes(StandardCharsets.UTF_8);
+981:         }
+982:         byte[] there = dst.read(HEADER);
+983:         if (there != null) {
+984:             JSONObject t = new JSONObject(new String(there, StandardCharsets.UTF_8));
+985:             if (tombstone(t)) dst.write(HEADER, h);
+986:             else if (!keys.vaultId.equals(t.optString("vault"))) throw new IllegalStateException("في الوجهة خزنة مزامنة أخرى. اختر وجهة فارغة أو الخزنة نفسها.");
+987:         } else dst.write(HEADER, h);
+988:         int n = 0;
+989:         java.util.Set<String> have = new HashSet<>();
+990:         have.addAll(dst.list(""));
+991:         // 10.4: الصور قبل اللقطات والحزم (ما يشير إليها يجدها)
+992:         for (String p : new String[]{"a-", "s-", "p-", "m-"}) {
+993:             for (String name : folder.list(p)) {
+994:                 if (have.contains(name)) continue;
+995:                 byte[] b = folder.read(name);
+996:                 if (b == null) continue;
+997:                 dst.write(name, b);
+998:                 n++;
+999:             }
+1000:         }
+1001:         SyncStore.setMeta(db.getWritableDatabase(), "folder", dst.describe());
+1002:         return n;
+1003:     }
+1004: 
+1005:     /** 10.3: هل كانت آخر جولة بلا ملف خزنة في المكان المختار؟ */
+1006:     public static boolean headerMissing(Db db) { return "1".equals(SyncStore.meta(db.getReadableDatabase(), "header_missing")); }
+1007: 
+1008:     /** هل يحتاج الإصلاح كلمة السر؟ (لا نسخة محلية من رأس الخزنة: أجهزة 10.2 وما قبله) */
+1009:     public static boolean repairNeedsPassword(Db db) { return SyncStore.meta(db.getReadableDatabase(), "header_copy") == null; }
+1010: 
+1011:     /**
+1012:      * 10.3: إصلاح مكان مزامنة بلا ملفات (نُقل المجلد أو فُرّغ): يكتب رأس الخزنة (من النسخة المحلية، أو جديدًا بكلمة السر)،
+1013:      * ولقطة كاملة لهذا الجهاز، وما عنده من حزم، وبطاقته. لا يغيّر أي بيانات محاسبية. يرجع رمز استرداد جديدًا إن أُنشئ رأس جديد، وإلا "".
+1014:      */
+1015:     public String repair(char[] password) throws Exception {
+1016:         VAULT.lock();
+1017:         try {
+1018:             return repairLocked(password);
+1019:         } finally {
+1020:             VAULT.unlock();
+1021:         }
+1022:     }
+1023: 
+1024:     private String repairLocked(char[] password) throws Exception {
+1025:         if (!enabled(db)) throw new IllegalStateException("المزامنة غير مفعّلة على هذا الجهاز");
+1026:         SyncCrypto.Keys keys = keys();
+1027:         SQLiteDatabase d = db.getWritableDatabase();
+1028:         JSONObject there = header();
+1029:         String rc = "";
+1030:         // 11.5: أمر حذف/نقل غير موقّع لا يمنع الإصلاح (يُعاد الرأس الأصلي من نسخة هذا الجهاز)
+1031:         if (there != null && tombstone(there) && keys.vaultId.equals(there.optString("vault")) && !tombVerified(there, keys.vault)) there = null;
+1032:         if (there != null && tombstone(there)) throw new IllegalStateException(tombText(there) + " لا يُعاد رفع الخزنة إلى هنا. انتقل إلى مكانها الجديد أو أنشئ مزامنة جديدة.");
+1033:         if (there != null) {
+1034:             if (!keys.vaultId.equals(there.optString("vault"))) throw new IllegalStateException("في هذا المكان خزنة مزامنة أخرى. اختر مكانًا آخر.");
+1035:         } else {
+1036:             String copy = SyncStore.meta(d, "header_copy");
+1037:             JSONObject h;
+1038:             if (copy != null) h = new JSONObject(copy);
+1039:             else {
+1040:                 if (password == null || password.length < 8) throw new IllegalArgumentException("اكتب كلمة سر المزامنة (8 محارف على الأقل)");
+1041:                 byte[] salt = SyncCrypto.random(16);
+1042:                 rc = SyncCrypto.newRecoveryCode();
+1043:                 h = new JSONObject();
+1044:                 h.put("format", "smart-accountant-sync");
+1045:                 h.put("v", FORMAT);
+1046:                 h.put("vault", keys.vaultId);
+1047:                 h.put("salt", SyncCrypto.hex(salt));
+1048:                 h.put("iter", SyncCrypto.KDF_ITER);
+1049:                 h.put("pw", SyncCrypto.wrap(SyncCrypto.pbkdf2(password, salt, SyncCrypto.KDF_ITER), keys.vault, keys.vaultId));
+1050:                 h.put("rc", SyncCrypto.wrap(SyncCrypto.pbkdf2(SyncCrypto.normalizeRecovery(rc).toCharArray(), salt, SyncCrypto.KDF_ITER), keys.vault, keys.vaultId));
+1051:                 h.put("created", Clock.now());
+1052:                 String f = SyncStore.meta(d, "founder");
+1053:                 if (f != null) h.put("founder", f);
+1054:             }
+1055:             folder.write(HEADER, h.toString(1).getBytes(StandardCharsets.UTF_8));
+1056:             SyncStore.setMeta(d, "header_copy", h.toString());
+1057:         }
+1058:         // لقطة كاملة (يبدأ منها أي جهاز ينضم هنا) ثم حزم هذا الجهاز وبطاقته
+1059:         writeSnapshot();
+1060:         d.execSQL("UPDATE sync_outbox SET uploaded=0");
+1061:         upload();
+1062:         writeMember();
+1063:         SyncStore.setMeta(d, "header_missing", null);
+1064:         SyncStore.setMeta(d, "folder", folder.describe());
+1065:         db.audit("SYNC_REPAIR", "sync", 0, folder.describe());
+1066:         return rc;
+1067:     }
+1068: 
+1069:     /** تغيير كلمة سر المزامنة: يُعاد تغليف المفتاح فقط (يلزم أن تكون الكلمة القديمة صحيحة). */
+1070:     public void changePassword(char[] oldPw, char[] newPw) throws Exception {
+1071:         VAULT.lock();
+1072:         try {
+1073:             changePasswordLocked(oldPw, newPw);

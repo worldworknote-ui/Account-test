@@ -1,0 +1,187 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.WindowStack;
+4: import android.content.Context;
+5: import android.view.View;
+6: import android.view.ViewGroup;
+7: import android.view.ViewRootImpl;
+8: import android.widget.TextView;
+9: import android.widget.EditText;
+10: import java.awt.*;
+11: import java.awt.event.InputEvent;
+12: import java.awt.event.KeyEvent;
+13: import java.awt.image.BufferedImage;
+14: import java.io.File;
+15: import java.util.*;
+16: import java.util.List;
+17: import javax.imageio.ImageIO;
+18: import javax.swing.*;
+19: 
+20: /**
+21:  * 11.0: تجربة النافذة الحقيقية بالفأرة ولوحة المفاتيح (على شاشة افتراضية): تنقّل، كتابة، تسجيل حركة، نوافذ حوار، قوائم.
+22:  * وسائط: مجلد الصور، ملف .sba، كلمة مروره.
+23:  */
+24: public final class PhoneDrive {
+25:     static Robot robot;
+26:     static File out;
+27:     static int n, fails;
+28:     static final List<String> log = new ArrayList<>();
+29: 
+30:     public static void main(String[] a) throws Exception {
+31:         out = new File(a[0]);
+32:         out.mkdirs();
+33:         File home = java.nio.file.Files.createTempDirectory("sa-drive").toFile();
+34:         System.setProperty("sa.home", home.getAbsolutePath());
+35:         System.setProperty("sa.secrets", "file");
+36:         System.setProperty("sa.auth", "fail");   // 11.5: «تحقق النظام» متاح ويفشل (للقفل في آخر التجربة)
+37:         SecretStore.fallback(new File(home, "keys"));
+38:         Thread.setDefaultUncaughtExceptionHandler((t, e) -> { fails++; e.printStackTrace(); });
+39:         Context ctx = new Context(home);
+40:         Crypto.init(ctx);
+41:         Db db = new Db(ctx);
+42:         SmartApp.db = db;
+43:         SmartApp.ctx = ctx;
+44:         License.load(ctx, db);
+45:         BackupManager.Prepared p = BackupManager.prepareRestore(ctx, new File(a[1]), a[2].toCharArray(), m -> {});
+46:         BackupManager.applyRestore(ctx, db, p, m -> {});
+47:         db.setSetting("office_name", "مكتب التجربة");
+48:         SwingUtilities.invokeAndWait(() -> {
+49:             com.smart.hawala.desk.Main.lafForTests();
+50:             com.smart.hawala.desk.PhoneWindow.open(ctx, db);
+51:         });
+52:         robot = new Robot();
+53:         robot.setAutoDelay(30);
+54:         wait(1500);
+55:         shot("home");
+56:         clickText("لاحقًا");
+57:         wait(600);
+58:         shot("home-clear");
+59:         // 1) التبويب «المكاتب» من الشريط السفلي
+60:         clickTab(1, 6);
+61:         wait(900);
+62:         shot("offices");
+63:         // 2) البحث في المكاتب بالكتابة
+64:         clickHint("ابحث باسم المكتب");
+65:         type("al");
+66:         wait(300);
+67:         key(KeyEvent.VK_A, true);
+68:         paste("الأ");
+69:         wait(500);
+70:         shot("offices-search");
+71:         // 3) فتح مكتب
+72:         clickText("الأمل");
+73:         wait(900);
+74:         shot("office");
+75:         // 12.4: تبويب «أمانات وخاصة»: الحركات الخاصة ثم الأمانات
+76:         performClickOn("أمانات وخاصة");
+77:         wait(600);
+78:         expect(findQuiet("الحركات الخاصة") && findQuiet("الأمانات والمبالغ المجمّدة"), "12.4 office tab: specials + holds");
+79:         shot("office-specials");
+80:         performClickOn("الحركات");
+81:         wait(500);
+82:         // 4) حركة جديدة لهذا المكتب
+83:         clickText("حركة جديدة");
+84:         wait(1000);
+85:         shot("tx-form");
+86:         clickText("لنا (مدين)");
+87:         clickHint("0");
+88:         type("250");
+89:         wait(300);
+90:         shot("tx-filled");
+91:         clickText("تسجيل الحركة");
+92:         wait(900);
+93:         shot("tx-confirm");
+94:         clickText("تسجيل");
+95:         wait(1200);
+96:         shot("tx-saved");
+97:         // 5) القائمة المنسدلة والتقويم في السجل
+98:         key(KeyEvent.VK_F, true);
+99:         wait(900);
+100:         shot("search");
+101:         // 6) نافذة اختيار المكتب في «كشف حساب» من الرئيسية
+102:         key(KeyEvent.VK_H, true);
+103:         wait(900);
+104:         clickText("كشف مكتب");
+105:         wait(900);
+106:         shot("picker");
+107:         key(KeyEvent.VK_ESCAPE, false);
+108:         wait(500);
+109:         // 7) المزيد ← المظهر ← الوضع الليلي
+110:         clickTab(4, 6);
+111:         wait(900);
+112:         shot("more");
+113: 
+114:         // 11.2: «العين» في خانة السر تُظهر ما كُتب وتخفيه
+115:         final EditText[] pe = {null};
+116:         SwingUtilities.invokeAndWait(() -> {
+117:             MainActivity act = com.smart.hawala.desk.PhoneWindow.activityForTests();
+118:             EditText e = new EditText(act);
+119:             Ui.secret(e, false);
+120:             e.setHint("سر التجربة");
+121:             new android.app.AlertDialog.Builder(act).setTitle("تجربة العين").setView(e).setPositiveButton("تم", null).show();
+122:             pe[0] = e;
+123:         });
+124:         wait(900);
+125:         clickHint("سر التجربة");
+126:         wait(300);
+127:         paste("abc123");
+128:         wait(500);
+129:         expect(fieldShowing(javax.swing.JPasswordField.class) != null, "password field hides text");
+130:         final Point[] eye = {null};
+131:         SwingUtilities.invokeAndWait(() -> {
+132:             EditText e = pe[0];
+133:             float d = e.getResources().getDisplayMetrics().density;
+134:             eye[0] = phys(e, e.getPaddingLeft() + 11 * d, e.getHeight() / 2f);
+135:         });
+136:         press(eye[0]);
+137:         wait(700);
+138:         shot("eye-shown");
+139:         javax.swing.text.JTextComponent vis = fieldShowing(javax.swing.JTextField.class);
+140:         expect(vis != null && !(vis instanceof javax.swing.JPasswordField) && "abc123".equals(vis.getText()), "eye shows the typed text");
+141:         expect(!(pe[0].getTransformationMethod() instanceof android.text.method.PasswordTransformationMethod), "eye switched transformation");
+142:         press(eye[0]);
+143:         wait(700);
+144:         expect(fieldShowing(javax.swing.JPasswordField.class) != null && "abc123".equals(new String(fieldShowing(javax.swing.JPasswordField.class).getPassword())), "eye hides again, text kept");
+145:         key(KeyEvent.VK_ESCAPE, false);
+146:         wait(500);
+147: 
+148:         // 11.2: مشاركة صورة مطابقة (content://…files/…): قائمة المشاركة ثم «نسخ للصق»
+149:         final File[] img = {null};
+150:         SwingUtilities.invokeAndWait(() -> {
+151:             try {
+152:                 MainActivity act = com.smart.hawala.desk.PhoneWindow.activityForTests();
+153:                 File dir = new File(act.getCacheDir(), "shared");
+154:                 dir.mkdirs();
+155:                 File f = new File(dir, "مطابقة-تجربة.png");
+156:                 java.awt.image.BufferedImage bi = new java.awt.image.BufferedImage(40, 30, java.awt.image.BufferedImage.TYPE_INT_RGB);
+157:                 javax.imageio.ImageIO.write(bi, "png", f);
+158:                 img[0] = f;
+159:                 act.shareFiles(java.util.Collections.singletonList(f), "image/png", "مطابقة");
+160:                 img[0] = f;
+161:             } catch (Exception ex) {
+162:                 fails++;
+163:                 log.add("share setup: " + ex);
+164:             }
+165:         });
+166:         wait(900);
+167:         shot("share-sheet");
+168:         // (لا يُضغط واتساب في التجربة: لا اتصال بالإنترنت)
+169:         // 11.6: للملفات ما يعمل فقط: سحب الملف من المجلد (ومشاركة النظام على الماك والويندوز)، بلا «نسخ ولصق» ولا تلغرام
+170:         // 12.0: شبكة بأيقونات: للملف سحب من المجلد، وواتساب ويب، وتلغرام، والحفظ… ولا «نسخ ولصق في تطبيق واتساب»
+171:         expect(findQuiet("يُظهر الملف لتسحبه إلى المحادثة") && findQuiet("واتساب ويب") && findQuiet("تلغرام") && findQuiet("حفظ نسخة") && findQuiet("في المجلد")
+172:                 && !findQuiet("يفتح التطبيق والنص جاهز") && !findQuiet("نسخ النص"), "file share grid: drag, web, telegram, save; no app copy/paste");
+173:         expect(!findQuiet("اجعل التطبيق"), "no 'always use' option");
+174:         clickText("إلغاء");
+175:         wait(500);
+176:         // النص: القائمة تظهر دائمًا (حتى مع اختيار ثابت قديم محفوظ)
+177:         SwingUtilities.invokeAndWait(() -> {
+178:             com.smart.hawala.desk.PhoneWindow.activityForTests().getSharedPreferences(android.app.ShareSheet.PREFS, 0).edit().putString("text", "wa_app").apply();
+179:             android.app.ShareSheet.share(com.smart.hawala.desk.PhoneWindow.activityForTests(), new ArrayList<>(), "نص المطابقة", "مطابقة");
+180:         });
+181:         wait(800);
+182:         shot("share-text");
+183:         expect(findQuiet("واتساب") && findQuiet("تلغرام") && findQuiet("نسخ النص") && findQuiet("يفتح التطبيق والنص جاهز"), "text share grid always shown with WhatsApp/Telegram/copy");
+184:         clickText("نسخ النص");
+185:         wait(500);
+186:         java.awt.datatransfer.Clipboard cb = java.awt.Toolkit.getDefaultToolkit().getSystemClipboard();
+187:         boolean txt = false;

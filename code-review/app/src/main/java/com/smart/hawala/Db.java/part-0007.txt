@@ -1,0 +1,182 @@
+791:         require(Auth.Perm.SETTINGS);
+792:         setSetting("lock_before", "" + Math.max(0, until));
+793:     }
+794: 
+795:     /**
+796:      * 8.0: إعداد نصه حساس (مسودة الحركة، طابور رسائل واتساب) يُحفظ مشفّرًا بمفتاح الهاتف كحقول الحركات.
+797:      * القيمة القديمة غير المشفّرة (من 7.x) تُقرأ كما هي مرة واحدة ثم تُكتب مشفّرة.
+798:      */
+799:     public String secretSetting(String k) {
+800:         String v = setting(k, "");
+801:         if (v.isEmpty()) return "";
+802:         try {
+803:             return Crypto.decStrict(v);
+804:         } catch (Exception e) {
+805:             String t = v.trim();
+806:             return t.startsWith("{") || t.startsWith("[") ? v : "";
+807:         }
+808:     }
+809: 
+810:     public void setSecretSetting(String k, String v) {
+811:         if (v == null || v.isEmpty()) deleteSetting(k);
+812:         else setSettingQuiet(k, Crypto.enc(v));
+813:     }
+814: 
+815:     public void deleteSetting(String k) {
+816:         Auth.Perm need = PROTECTED_SETTINGS.get(k);
+817:         if (need != null) require(need);
+818:         String uk = userKey(k);
+819:         if (uk != null) {
+820:             // للمستخدم: «الافتراضي» لا القيمة العامة (وإعادة الضبط لا تمسّ غيره)
+821:             ContentValues x = new ContentValues();
+822:             x.put("k", uk);
+823:             x.put("v", UNSET);
+824:             getWritableDatabase().insertWithOnConflict("settings", null, x, SQLiteDatabase.CONFLICT_REPLACE);
+825:             return;
+826:         }
+827:         getWritableDatabase().delete("settings", "k=?", new String[]{k});
+828:     }
+829: 
+830:     // ===================================================================================
+831:     // حدود النسخة المجانية (9.0): 9 مكاتب (الحذف يعيد المكان) و700 حركة جديدة لكل مكتب
+832:     // ===================================================================================
+833: 
+834:     /** بصمة العدّادات (Keystore على الهاتف). «» = تعذّرت، فتحكم أرضية البيانات الحية. */
+835:     static java.util.function.Function<String, String> quotaMac = License::mac;
+836: 
+837:     /** أرضية المكاتب: الموجودة الآن (النشطة والموقوفة). */
+838:     private static long liveOffices(SQLiteDatabase d) {
+839:         try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM offices", null)) {
+840:             return c.moveToFirst() ? c.getLong(0) : 0;
+841:         }
+842:     }
+843: 
+844:     /**
+845:      * أرضية الحركات: الأصلية لكل مكتب (الملغاة تُحتسب حتى لا يكون الإلغاء طريقًا لتصفير السقف،
+846:      * والحركة المصحَّحة replaces_id لا تُحتسب لأن التصحيح مجاني دائمًا). office&lt;0: لا شيء، 0: كل المكاتب.
+847:      */
+848:     private static Map<Long, Long> liveTx(SQLiteDatabase d, long office) {
+849:         Map<Long, Long> m = new HashMap<>();
+850:         if (office < 0) return m;
+851:         try (Cursor c = d.rawQuery("SELECT office_id,COUNT(*) FROM tx WHERE replaces_id IS NULL"
+852:                 + (office > 0 ? " AND office_id=" + office : "") + " GROUP BY office_id", null)) {
+853:             while (c.moveToNext()) m.put(c.getLong(0), c.getLong(1));
+854:         }
+855:         return m;
+856:     }
+857: 
+858:     /**
+859:      * العدّادات كما تُحفظ مرفوعة إلى أرضية البيانات الحية. البصمة المختلفة تعني عبثًا بالإعدادات:
+860:      * تُسجَّل ملاحظة، وأرضية المكاتب تؤخذ أيضًا من سجل التدقيق (المكاتب المنشأة ولو حُذفت).
+861:      */
+862:     private QuotaState quota(SQLiteDatabase d, long office) {
+863:         String raw = rawSetting(d, "quota");
+864:         QuotaState q = QuotaState.parse(raw);
+865:         String stored = rawSetting(d, "quota_mac");
+866:         String want = raw == null ? "" : quotaMac.apply(q.serialize());
+867:         if (raw != null && !want.isEmpty() && !want.equals(stored)) {
+868:             d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('risk_note',?)", new Object[]{"عدّادات النسخة المجانية عُدّلت خارج التطبيق؛ أُعيد بناؤها من البيانات."});
+869:         }
+870:         // 9.0: حذف المكتب يعيد مكانه، فعدّاد المكاتب هو الموجود فعلًا دائمًا (حتى لو حمل العدّاد القديم مكاتب محذوفة)
+871:         q.offices = 0;
+872:         q.raiseTo(liveOffices(d), liveTx(d, office));
+873:         return q;
+874:     }
+875: 
+876:     private static void saveQuota(SQLiteDatabase d, QuotaState q) {
+877:         String s = q.serialize();
+878:         d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('quota',?)", new Object[]{s});
+879:         d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('quota_mac',?)", new Object[]{quotaMac.apply(s)});
+880:     }
+881: 
+882:     private static boolean unlimited(Entitlements e) {
+883:         return e.maxOffices() == Entitlements.UNLIMITED && e.maxTxPerOffice() == Entitlements.UNLIMITED;
+884:     }
+885: 
+886:     /** للعرض في شاشة الترخيص: العدّادات الآن (مرفوعة إلى البيانات الحية لكل المكاتب). */
+887:     public QuotaState quotaNow() {
+888:         SQLiteDatabase d = getWritableDatabase();
+889:         d.beginTransaction();
+890:         try {
+891:             QuotaState q = quota(d, 0);
+892:             d.setTransactionSuccessful();
+893:             return q;
+894:         } finally {
+895:             d.endTransaction();
+896:         }
+897:     }
+898: 
+899:     /** بعد الإضافة: العدّادات تُرفع إلى البيانات الحية (المكاتب الجديدة وحركاتها) ولا تنقص. */
+900:     private void rebaseQuotaKeep(SQLiteDatabase d) {
+901:         QuotaState q = quota(d, 0);
+902:         saveQuota(d, q);
+903:     }
+904: 
+905:     /** بعد «استبدال الكل»: البيانات كلها جديدة فتُبنى العدّادات منها (أرقام المكاتب القديمة لا تعني شيئًا الآن). */
+906:     private static void rebaseQuota(SQLiteDatabase d) {
+907:         QuotaState q = new QuotaState();
+908:         q.raiseTo(liveOffices(d), liveTx(d, 0));
+909:         saveQuota(d, q);
+910:     }
+911: 
+912:     // ===================================================================================
+913:     // المكاتب والعملات
+914:     // ===================================================================================
+915: 
+916:     public static class Limit {
+917:         public Long receivable;
+918:         public Long payable;
+919: 
+920:         public Limit(Long receivable, Long payable) {
+921:             this.receivable = receivable;
+922:             this.payable = payable;
+923:         }
+924:     }
+925: 
+926:     public long addOffice(String name, String sh, String phone, String loc, String contact, String notes, Long usdUs, Long usdOwe,
+927:                           List<String> codes, Map<String, Limit> limits, List<Opening> openings) {
+928:         require(Auth.Perm.OFFICES);
+929:         Entitlements ent = License.current;
+930:         SQLiteDatabase d = getWritableDatabase();
+931:         d.beginTransaction();
+932:         try {
+933:             QuotaState q = unlimited(ent) ? null : quota(d, -1);
+934:             String no = q == null ? null : q.officeRefusal(ent);
+935:             if (no != null) throw new Entitlements.LimitReached(no);
+936:             ContentValues v = officeValues(name, sh, phone, loc, contact, notes, usdUs, usdOwe);
+937:             long id = ins(d, "offices", v);
+938:             if (q != null) {
+939:                 q.offices++;
+940:                 saveQuota(d, q);
+941:             }
+942:             saveOfficeCurrencies(d, id, codes, limits);
+943:             long now = Clock.now();
+944:             for (Opening o : openings) {
+945:                 if (!codes.contains(o.code)) throw new IllegalArgumentException("الرصيد السابق بعملة " + o.code + " غير مفعّلة لهذا المكتب. فعّل العملة أولًا.");
+946:                 long eid = postEntry(d, null, "OPENING", id, o.code, o.type.equals("لنا") ? o.amount : 0, o.type.equals("علينا") ? o.amount : 0, now);
+947:                 ContentValues z = new ContentValues();
+948:                 z.put("office_id", id);
+949:                 z.put("currency", o.code);
+950:                 z.put("type", o.type);
+951:                 z.put("amount_minor", o.amount);
+952:                 z.put("entry_id", eid);
+953:                 ins(d, "opening_balances", z);
+954:             }
+955:             audit(d, "CREATE_OFFICE", "office", id, "");
+956:             d.setTransactionSuccessful();
+957:             return id;
+958:         } finally {
+959:             d.endTransaction();
+960:         }
+961:     }
+962: 
+963:     public void updateOffice(long id, String name, String sh, String phone, String loc, String contact, String notes, boolean active,
+964:                              Long usdUs, Long usdOwe, List<String> codes, Map<String, Limit> limits) {
+965:         require(Auth.Perm.OFFICES);
+966:         SQLiteDatabase d = getWritableDatabase();
+967:         d.beginTransaction();
+968:         try {
+969:             ContentValues v = officeValues(name, sh, phone, loc, contact, notes, usdUs, usdOwe);
+970:             v.put("active", active ? 1 : 0);
+971:             d.update("offices", v, "id=" + id, null);
+972:             d.delete("office_currencies", "office_id=" + id, null);

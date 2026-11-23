@@ -1,0 +1,106 @@
+395:         codes.filter(function (c) { return S.need[c]; }).map(function (c) { return " (" + c + ": ملفك يحتاج " + S.need[c] + ")"; }).join("") +
+396:         '، فلا يُقرَّب أي مبلغ. إن كانت العملة في التطبيق بمنازل أقل يرفض التطبيق الإضافة بدل أن يقرّب.</p>';
+397:     }
+398:     // إشارة المبالغ الموقّعة
+399:     a.tables.forEach(function (t) {
+400:       if (!t.use || !t.signed) return;
+401:       html += "<h3>إشارة المبالغ في «" + esc(t.label) + "»</h3><p class=\"hint\">لا يوجد عمود اتجاه: المبلغ الموجب يعني…</p>" +
+402:         seg("pos|" + t.id, [["D", "لنا — مدين (عليه لنا)"], ["C", "علينا — دائن (له علينا)"]], S.cfg.positiveIs[t.id] || "D");
+403:     });
+404:     // الأجرة
+405:     a.tables.forEach(function (t) {
+406:       if (!t.use || t.roles.fee === undefined || t.kind === "balances" || t.kind === "summary") return;
+407:       html += "<h3>الأجرة في «" + esc(t.label) + "» (عمود «" + esc(t.names[t.roles.fee - t.c0]) + "»)</h3><p class=\"hint\">تُسجَّل مع الحركة نفسها كأجرة (قيد مستقل كما في التطبيق)" +
+408:         (t.feeDetected ? "؛ عرفتُ اتجاهها من عمود الرصيد في ملفك" : "") + ".</p>" +
+409:         seg("fee|" + t.id, [["D", "لنا — يدفعها المكتب لنا"], ["C", "علينا — ندفعها للمكتب"], ["X", "لا تُحسب في الرصيد (تُحفظ في الملاحظات)"]], (S.cfg.feeDir && S.cfg.feeDir[t.id]) || "D");
+410:     });
+411:     // إشارة عمود الرصيد
+412:     var bc = (S.result && S.result.model && S.result.model.balanceChecks) || [];
+413:     a.tables.forEach(function (t) {
+414:       if (!t.use || t.roles.balance === undefined) return;
+415:       var ch = bc.filter(function (x) { return x.tid === t.id; })[0];
+416:       var auto = ch && ch.sign && !ch.forced ? (ch.sign === "D" ? " (عرفتُ من الملف: الموجب = لنا)" : " (عرفتُ من الملف: الموجب = علينا)") : "";
+417:       html += "<h3>عمود الرصيد في «" + esc(t.label) + "»</h3><p class=\"hint\">يُستخدم للتحقق سطرًا بسطر، ولاستنتاج الرصيد السابق إن بدأ الحساب برصيد غير مكتوب كحركة" + esc(auto) + ".</p>" +
+418:         seg("bsign|" + t.id, [["", "تلقائي"], ["D", "الموجب = لنا"], ["C", "الموجب = علينا"]], S.cfg.balanceSign[t.id] || "");
+419:     });
+420:     if (a.tables.some(function (t) { return t.use && t.roles.balance !== undefined; })) {
+421:       html += '<label class="check"><input type="checkbox" data-infer="1"' + (S.cfg.inferOpening ? " checked" : "") +
+422:         "> أضف «رصيدًا سابقًا» لكل حساب يبدأ في ملفك برصيد غير مكتوب كحركة (حتى يطابق رصيدُه رصيدَ ملفك)</label>";
+423:     }
+424:     if (a.tables.some(function (t) { return t.use && t.kind === "balances"; })) {
+425:       html += '<h3>تاريخ الأرصدة السابقة</h3><div class="grid"><label class="f">التاريخ <small>فارغ = قبل أول حركة بدقيقة</small><input type="date" data-odate="1" value="' +
+426:         esc(S.cfg.openingDateStr || "") + '"></label></div>';
+427:     }
+428:     $("values").innerHTML = html || '<p class="hint">لا توجد قيم تحتاج مطابقة.</p>';
+429:   }
+430: 
+431:   function renderAttention() {
+432:     var box = $("attention"), r = S.result;
+433:     if (!r || r.error) { box.innerHTML = ""; return; }
+434:     var m = r.model, html = "";
+435:     var groups = Object.keys(m.issues).map(function (k) { return m.issues[k]; });
+436:     var excluded = groups.filter(function (g) { return !g.counted; }).reduce(function (s, g) { return s + g.total; }, 0);
+437:     var counted = groups.filter(function (g) { return g.counted; }).reduce(function (s, g) { return s + g.total; }, 0);
+438:     var imported = Object.keys(m.perTable).reduce(function (s, k) { return s + m.perTable[k].imported; }, 0);
+439:     html += '<div class="stats">' + stat(n(imported), "صف نُقل") + stat(n(excluded), "صف لم يُنقل", false) + stat(n(counted), "نُقل بتاريخ الصف السابق") +
+440:       stat(n(m.emptyRows), "صف فارغ") + "</div>";
+441:     if (!groups.length) html += '<div class="msg ok">✓ كل صفوف ملفك فيها ما يلزم للنقل.</div>';
+442:     groups.sort(function (x, y) { return (x.counted - y.counted) || (y.total - x.total); }).forEach(function (g) {
+443:       html += '<details class="box" data-k="iss-' + g.code + '"><summary><span>' + esc(g.label) + " — " + n(g.total) + " صف</span>" +
+444:         (g.counted ? '<span class="chip ok">نُقلت</span>' : '<span class="chip bad">لم تُنقل</span>') + "</summary><div><p class=\"hint\">" + esc(WHY[g.code] || "") + "</p>" +
+445:         issueTable(g) + "</div></details>";
+446:     });
+447:     var zero = m.skipped.filter(function (s) { return s.reason === Smart.REASONS.zero; }).length;
+448:     var info = [];
+449:     if (m.emptyRows) info.push(n(m.emptyRows) + " صفًا فارغًا (رقم قيد أو تاريخ أو بيان فقط، بلا مبلغ ولا حساب) — جداول Excel تُعدّ صفوفًا فارغة مسبقًا؛ لا شيء فيها يُنقل.");
+450:     if (zero) info.push(n(zero) + " صفًا مبلغه صفر — لا يغيّر أي رصيد.");
+451:     if (m.totalsSkipped) info.push(n(m.totalsSkipped) + " صف مجموع («المجموع»/«الإجمالي» بلا تاريخ) — ليس حركة فلم يُنقل.");
+452:     if (info.length) html += '<div class="msg info"><ul style="margin:0">' + info.map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") + "</ul></div>";
+453:     box.innerHTML = html;
+454:   }
+455: 
+456:   function issueTable(g) {
+457:     var cols = [["date", "التاريخ"], ["account", "الحساب"], ["currency", "العملة"], ["amount", "المبلغ"], ["debit", "لنا"], ["credit", "علينا"], ["fee", "الأجرة"], ["direction", "الاتجاه"], ["description", "البيان"], ["balance", "الرصيد"]];
+458:     var has = {};
+459:     g.rows.forEach(function (x) { cols.forEach(function (c) { if (c[0] in x.cells) has[c[0]] = true; }); });
+460:     cols = cols.filter(function (c) { return has[c[0]]; });
+461:     var shown = g.rows.slice(0, 300);
+462:     var h = '<div class="tablebox" style="max-height:320px"><table><tr><th>الورقة</th><th>الصف</th>' + cols.map(function (c) { return "<th>" + c[1] + "</th>"; }).join("") + "</tr>";
+463:     shown.forEach(function (x) {
+464:       h += "<tr><td>" + esc(x.sheet) + "</td><td>" + x.row + "</td>" + cols.map(function (c) {
+465:         var v = x.cells[c[0]];
+466:         return "<td" + (c[0] === "amount" || c[0] === "debit" || c[0] === "credit" ? ' class="num"' : "") + ">" + (v ? esc(String(v).slice(0, 60)) : '<span class="err-t">—</span>') + "</td>";
+467:       }).join("") + "</tr>";
+468:     });
+469:     h += "</table></div>";
+470:     if (g.total > shown.length) h += '<p class="hint">و' + n(g.total - shown.length) + " صفًا غيرها — كلها في تقرير الأرصدة (Excel) من الخطوة 6.</p>";
+471:     return h;
+472:   }
+473: 
+474:   function renderReview() {
+475:     var box = $("review"), r = S.result;
+476:     if (!r) { box.innerHTML = ""; return; }
+477:     if (r.error) { box.innerHTML = '<div class="msg err">تعذر الحساب: ' + esc(r.error) + "</div>"; return; }
+478:     var m = r.model, T = r.T, rep = r.rep, html = "";
+479:     // التحقق
+480:     var li = [];
+481:     function add(ok, txt) { li.push('<li class="' + (ok ? "ok" : "bad") + '">' + (ok ? "✓ " : "✗ ") + txt + "</li>"); }
+482:     add(!r.internal.bad.length, r.internal.bad.length ? "رصيد " + r.internal.bad.length + " مكتب/عملة من القيود لا يساوي مجموع صفوف الملف: " + esc(r.internal.bad.slice(0, 5).join("، "))
+483:       : "رصيد كل مكتب وعملة (" + n(r.internal.n) + ") من قيود التطبيق يساوي مجموع صفوف ملفك مباشرة، وكل قيد متوازن (مدين = دائن).");
+484:     var fc = S.fchecks, fbad = fc.filter(function (x) { return !x.ok; });
+485:     if (fc.length) {
+486:       add(!fbad.length, fbad.length ? fbad.length + " من " + fc.length + " معادلة في ملفك لا تطابق قيمتها المحفوظة صفوفَه الحالية (ربما لم يُعد Excel حسابها بعد آخر تعديل — افتح الملف في Excel واحفظه ثم أعد اختياره)."
+487:         : "أعدتُ حساب معادلات SUMIFS/SUMIF في ملفك (" + fc.length + ") من صفوفه، فطابقت كلها القيم المحفوظة في الملف — أي أن قراءة الصفوف مطابقة لـ Excel.");
+488:     }
+489:     var dbad = r.derived.filter(function (x) { return !x.ok; });
+490:     if (r.derived.length) {
+491:       var byAcc = {};
+492:       r.derived.forEach(function (x) { (byAcc[x.sheet + "|" + x.account] = byAcc[x.sheet + "|" + x.account] || []).push(x); });
+493:       Object.keys(byAcc).forEach(function (k) {
+494:         var xs = byAcc[k], bad = xs.filter(function (x) { return !x.ok; });
+495:         add(!bad.length, "ورقة «" + esc(xs[0].sheet) + "» (لحساب «" + esc(xs[0].account) + "»): " + xs.map(function (x) {
+496:           return x.code + " " + esc(bw(BigInt(x.file), x.dec)) + (x.ok ? "" : " ≠ بعد النقل " + esc(bw(BigInt(x.ours), x.dec)));
+497:         }).join("، ") + (bad.length ? "" : " — يطابق رصيده بعد النقل."));
+498:       });
+499:     }
+500:     (m.balanceChecks || []).forEach(function (b) {

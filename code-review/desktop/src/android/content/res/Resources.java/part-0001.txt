@@ -1,0 +1,128 @@
+1: package android.content.res;
+2: 
+3: import android.graphics.Typeface;
+4: import android.graphics.drawable.Drawable;
+5: import android.graphics.drawable.VectorDrawable;
+6: import android.util.DisplayMetrics;
+7: import java.util.HashMap;
+8: import java.util.Map;
+9: 
+10: /** موارد التطبيق: المقاسات (كثافة العرض) والأيقونات والخطوط والنصوص بأسمائها من R المولَّد. */
+11: public class Resources {
+12:     public static class NotFoundException extends RuntimeException {
+13:         public NotFoundException(String m) { super(m); }
+14:         public NotFoundException() { super(); }
+15:     }
+16: 
+17:     public class Theme {
+18:         public void applyStyle(int style, boolean force) { Resources.this.applyStyle(style); }
+19:         public Resources getResources() { return Resources.this; }
+20:     }
+21: 
+22:     private static final Resources SYS = new Resources();
+23:     public static Resources getSystem() { return SYS; }
+24: 
+25:     public final DisplayMetrics metrics = new DisplayMetrics();
+26:     public final Configuration config = new Configuration();
+27: 
+28:     public DisplayMetrics getDisplayMetrics() { return metrics; }
+29:     public Configuration getConfiguration() { return config; }
+30: 
+31:     // ------------------------------------------------------------------ أسماء المعرّفات
+32:     private static Map<Integer, String[]> names;
+33: 
+34:     static synchronized Map<Integer, String[]> names() {
+35:         if (names != null) return names;
+36:         names = new HashMap<>();
+37:         for (String cls : new String[]{"com.smart.hawala.R", "android.R"}) {
+38:             try {
+39:                 for (Class<?> k : Class.forName(cls).getDeclaredClasses()) {
+40:                     for (java.lang.reflect.Field f : k.getFields()) {
+41:                         if (f.getType() == int.class) names.put(f.getInt(null), new String[]{k.getSimpleName(), f.getName()});
+42:                     }
+43:                 }
+44:             } catch (Throwable ignored) { }
+45:         }
+46:         return names;
+47:     }
+48: 
+49:     public String getResourceEntryName(int id) { String[] n = names().get(id); if (n == null) throw new NotFoundException("#" + Integer.toHexString(id)); return n[1]; }
+50:     public String getResourceTypeName(int id) { String[] n = names().get(id); if (n == null) throw new NotFoundException(); return n[0]; }
+51:     public String getResourceName(int id) { String[] n = names().get(id); if (n == null) throw new NotFoundException(); return "com.smart.hawala:" + n[0] + "/" + n[1]; }
+52:     public int getIdentifier(String name, String type, String pkg) {
+53:         for (Map.Entry<Integer, String[]> e : names().entrySet()) if (e.getValue()[0].equals(type) && e.getValue()[1].equals(name)) return e.getKey();
+54:         return 0;
+55:     }
+56: 
+57:     // ------------------------------------------------------------------ القراءة
+58:     public Drawable getDrawable(int id) { return getDrawable(id, null); }
+59:     public Drawable getDrawable(int id, Theme t) {
+60:         String[] n = names().get(id);
+61:         if (n == null) return null;
+62:         if ("mipmap".equals(n[0])) return VectorDrawable.load("ic_logo");
+63:         if ("drawable".equals(n[0])) {
+64:             Drawable d = VectorDrawable.load(n[1]);
+65:             if (d == null && "android.R".equals(null)) return null;
+66:             return d != null ? d : VectorDrawable.load(androidFallback(n[1]));
+67:         }
+68:         return null;
+69:     }
+70: 
+71:     private static String androidFallback(String name) {
+72:         if (name.contains("share")) return "ic_share";
+73:         if (name.contains("alert")) return "ic_warn";
+74:         if (name.contains("search")) return "ic_search";
+75:         if (name.contains("add")) return "ic_plus";
+76:         if (name.contains("delete")) return "ic_trash";
+77:         if (name.contains("sync")) return "ic_sync";
+78:         if (name.contains("close")) return "ic_close";
+79:         return "ic_info";
+80:     }
+81: 
+82:     public String getString(int id) {
+83:         try {
+84:             for (String[] s : (String[][]) Class.forName("com.smart.hawala.R").getField("STRINGS").get(null)) {
+85:                 if (s[0].equals(getResourceEntryName(id))) return s[1];
+86:             }
+87:         } catch (Throwable ignored) { }
+88:         if (id == android.R.string.ok) return "حسنًا";
+89:         if (id == android.R.string.cancel) return "إلغاء";
+90:         if (id == android.R.string.yes) return "نعم";
+91:         if (id == android.R.string.no) return "لا";
+92:         return "";
+93:     }
+94:     public String getString(int id, Object... args) { return String.format(getString(id), args); }
+95:     public CharSequence getText(int id) { return getString(id); }
+96:     public int getColor(int id) { return getColor(id, null); }
+97:     public int getColor(int id, Theme t) {
+98:         if (id == android.R.color.white) return 0xFFFFFFFF;
+99:         if (id == android.R.color.black) return 0xFF000000;
+100:         return 0xFF0B6B53;
+101:     }
+102:     public ColorStateList getColorStateList(int id) { return ColorStateList.valueOf(getColor(id)); }
+103:     public float getDimension(int id) { return 0; }
+104:     public int getDimensionPixelSize(int id) { return 0; }
+105:     public int getDimensionPixelOffset(int id) { return 0; }
+106:     public int getInteger(int id) { return 0; }
+107:     public boolean getBoolean(int id) { return false; }
+108:     public Typeface getFont(int id) {
+109:         String[] n = names().get(id);
+110:         return n == null ? Typeface.DEFAULT : Typeface.family(n[1]);
+111:     }
+112:     public java.io.InputStream openRawResource(int id) { throw new NotFoundException(); }
+113:     public android.content.res.AssetManager getAssets() { return new AssetManager(); }
+114:     public Theme newTheme() { return new Theme(); }
+115: 
+116:     /** طبقات السمة: الخط (FontPlex...) والوضع الليلي. */
+117:     public void applyStyle(int style) {
+118:         String[] n = names().get(style);
+119:         if (n == null) return;
+120:         switch (n[1]) {
+121:             case "FontPlex": Typeface.themeFamily = "plex"; break;
+122:             case "FontCairo": Typeface.themeFamily = "cairo"; break;
+123:             case "FontKufi": Typeface.themeFamily = "kufi"; break;
+124:             case "FontSystem": Typeface.themeFamily = "system"; break;
+125:             default: break;
+126:         }
+127:     }
+128: }

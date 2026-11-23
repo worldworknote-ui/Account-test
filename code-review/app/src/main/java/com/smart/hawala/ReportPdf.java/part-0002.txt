@@ -1,0 +1,191 @@
+211:         // أرقام الصف بلون عملته (أغمق قليلًا للوضوح)
+212:         TextPaint tintText = null;
+213:         if (tint != 0 && !isHeader && style != Report.MUTED) {
+214:             tintText = new TextPaint(style == Report.BOLD || style == Report.TOTAL ? bold : text);
+215:             tintText.setColor(darker(tint));
+216:             tintText.setTypeface(Typeface.DEFAULT_BOLD);
+217:         }
+218:         for (int i = 0; i < cols.size(); i++) {
+219:             Object v = i < cells.length ? cells[i] : "";
+220:             String s = isHeader ? cols.get(i).title : Report.text(v);
+221:             boolean num = v instanceof Report.Money || v instanceof Report.Bal;
+222:             TextPaint p = isHeader ? white : (tintText != null && num ? tintText : (style == Report.MUTED ? muted : (style == Report.BOLD || style == Report.TOTAL ? bold : text)));
+223:             Layout.Alignment al = isHeader || cols.get(i).type != Report.TEXT ? Layout.Alignment.ALIGN_CENTER : Layout.Alignment.ALIGN_NORMAL;
+224:             ls[i] = layout(s, p, w[i] - 2 * PAD, al);
+225:             hh = Math.max(hh, ls[i].getHeight());
+226:         }
+227:         Block b = new Block() {
+228:             @Override void draw(Canvas c, float top) {
+229:                 int base = accent != 0 ? accent : o.accent;
+230:                 int bg = isHeader ? base : (style == Report.TOTAL ? (accent != 0 || tint != 0 ? blend(tint != 0 ? tint : accent, 0.22f) : total)
+231:                         : tint != 0 ? blend(tint, style == Report.SHADED ? 0.15f : 0.08f) : (style == Report.SHADED ? shade : Color.WHITE));
+232:                 if (bg != Color.WHITE) {
+233:                     fill.setColor(bg);
+234:                     c.drawRect(M, top, W - M, top + h, fill);
+235:                 }
+236:                 if (tint != 0 && !isHeader) {
+237:                     // شريط بلون العملة في بداية الصف
+238:                     fill.setColor(tint);
+239:                     c.drawRect(W - M - 3, top, W - M, top + h, fill);
+240:                 }
+241:                 float x = W - M;
+242:                 for (int i = 0; i < ls.length; i++) {
+243:                     float left = x - w[i];
+244:                     drawLayout(c, ls[i], left + PAD, top + PAD);
+245:                     c.drawLine(left, top, left, top + h, line);
+246:                     x = left;
+247:                 }
+248:                 c.drawLine(W - M, top, W - M, top + h, line);
+249:                 c.drawLine(M, top + h, W - M, top + h, line);
+250:                 if (isHeader) c.drawLine(M, top, W - M, top, line);
+251:             }
+252:         };
+253:         b.h = hh + 2 * PAD;
+254:         return b;
+255:     }
+256: 
+257:     private Block image(final long id, float maxH) {
+258:         if (o.db == null) return null;
+259:         byte[] raw = o.db.attachment(id);
+260:         int[] sz = ImageUtil.size(raw);
+261:         if (sz == null) return note("(صورة رقم " + id + " غير قابلة للعرض)");
+262:         float maxW = Math.min(o.style.imageWidth(), CW - 40);
+263:         float scale = Math.min(maxW / sz[0], Math.min(maxH, 420f) / sz[1]);
+264:         final float iw = sz[0] * scale, ih = sz[1] * scale;
+265:         Block b = new Block() {
+266:             @Override void draw(Canvas c, float top) {
+267:                 Bitmap bm = ImageUtil.decodeSampled(o.db.attachment(id), (int) Math.max(600, iw * 2.5f));
+268:                 if (bm == null) return;
+269:                 RectF dst = new RectF(W - M - 20 - iw, top + 4, W - M - 20, top + 4 + ih);
+270:                 c.drawBitmap(bm, new Rect(0, 0, bm.getWidth(), bm.getHeight()), dst, null);
+271:                 Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+272:                 p.setStyle(Paint.Style.STROKE);
+273:                 p.setColor(Color.rgb(200, 200, 200));
+274:                 p.setStrokeWidth(0.6f);
+275:                 c.drawRect(dst, p);
+276:                 bm.recycle();
+277:             }
+278:         };
+279:         b.h = ih + 10;
+280:         return b;
+281:     }
+282: 
+283:     private Block signature() {
+284:         final StaticLayout a = layout("توقيع المحاسب: ..............................", text, CW / 2 - 10, Layout.Alignment.ALIGN_NORMAL);
+285:         final StaticLayout bb = layout("توقيع المكتب: ..............................", text, CW / 2 - 10, Layout.Alignment.ALIGN_NORMAL);
+286:         Block b = new Block() {
+287:             @Override void draw(Canvas c, float top) {
+288:                 drawLayout(c, a, W / 2 + 5, top + 26);
+289:                 drawLayout(c, bb, M, top + 26);
+290:             }
+291:         };
+292:         b.h = 26 + Math.max(a.getHeight(), bb.getHeight()) + 10;
+293:         return b;
+294:     }
+295: 
+296:     private List<Block> build() {
+297:         List<Block> out = new ArrayList<>();
+298:         out.add(header());
+299:         float maxImg = H - 2 * M - FOOTER - RUNNING - 60;
+300:         for (Report.Section s : r.sections) {
+301:             if (s.heading != null && !s.heading.isEmpty()) out.add(band(s.heading, s.accent));
+302:             for (int i = 0; i < s.summary.size(); i++) {
+303:                 Block k = kv(s.summary.get(i));
+304:                 if (i == 0) {
+305:                     Block spacer = new Block() {
+306:                         @Override void draw(Canvas c, float top) {}
+307:                     };
+308:                     spacer.h = 6;
+309:                     spacer.keepWithNext = true;
+310:                     out.add(spacer);
+311:                 }
+312:                 k.keepWithNext = i < s.summary.size() - 1;
+313:                 out.add(k);
+314:             }
+315:             if (s.note != null && !s.note.isEmpty()) out.add(note(s.note));
+316:             if (!s.cols.isEmpty() && !s.rows.isEmpty()) {
+317:                 float[] w = widths(s.cols);
+318:                 Block spacer = new Block() {
+319:                     @Override void draw(Canvas c, float top) {}
+320:                 };
+321:                 spacer.h = 6;
+322:                 spacer.keepWithNext = true;
+323:                 out.add(spacer);
+324:                 Block head = row(s.cols, w, new Object[0], Report.NORMAL, true, s.accent, 0);
+325:                 head.keepWithNext = true;
+326:                 out.add(head);
+327:                 for (Report.Row rw : s.rows) {
+328:                     Block b = row(s.cols, w, rw.cells, rw.style, false, s.accent, rw.tint);
+329:                     b.repeatHeader = head;
+330:                     out.add(b);
+331:                     if (rw.images != null && o.db != null && o.style != null) {
+332:                         for (Long id : rw.images) {
+333:                             Block im = image(id, maxImg);
+334:                             if (im != null) {
+335:                                 im.repeatHeader = head;
+336:                                 out.add(im);
+337:                             }
+338:                         }
+339:                     }
+340:                 }
+341:             }
+342:         }
+343:         if (r.signature) out.add(signature());
+344:         return out;
+345:     }
+346: 
+347:     private List<List<Block>> paginate(List<Block> blocks) {
+348:         List<List<Block>> pages = new ArrayList<>();
+349:         List<Block> page = new ArrayList<>();
+350:         float avail = H - 2 * M - FOOTER;
+351:         float used = 0;
+352:         for (int i = 0; i < blocks.size(); i++) {
+353:             Block b = blocks.get(i);
+354:             float need = b.h;
+355:             int j = i;
+356:             while (blocks.get(j).keepWithNext && j + 1 < blocks.size() && need < avail * 0.5f) {
+357:                 j++;
+358:                 need += blocks.get(j).h;
+359:             }
+360:             if (used + need > avail && !page.isEmpty()) {
+361:                 pages.add(page);
+362:                 page = new ArrayList<>();
+363:                 avail = H - 2 * M - FOOTER - RUNNING;
+364:                 used = 0;
+365:                 if (b.repeatHeader != null) {
+366:                     page.add(b.repeatHeader);
+367:                     used += b.repeatHeader.h;
+368:                 }
+369:             }
+370:             page.add(b);
+371:             used += b.h;
+372:         }
+373:         if (!page.isEmpty()) pages.add(page);
+374:         return pages;
+375:     }
+376: 
+377:     private void drawPage(Canvas c, List<Block> blocks, int index, int count) {
+378:         c.drawColor(Color.WHITE);
+379:         float y = M;
+380:         if (index > 0) {
+381:             StaticLayout run = layout(r.title, small, CW, Layout.Alignment.ALIGN_NORMAL);
+382:             drawLayout(c, run, M, y);
+383:             c.drawLine(M, y + RUNNING - 6, W - M, y + RUNNING - 6, line);
+384:             y += RUNNING;
+385:         }
+386:         for (Block b : blocks) {
+387:             b.draw(c, y);
+388:             y += b.h;
+389:         }
+390:         List<String> foot = new ArrayList<>();
+391:         foot.add("صفحة " + (index + 1) + " من " + count);
+392:         if (r.footer != null && !r.footer.trim().isEmpty()) foot.add(r.footer.trim());
+393:         if (o.developer != null && !o.developer.isEmpty()) foot.add(o.developer);
+394:         // 12.6: علامة المجانية بخط صغير أحمر تحت التذييل في الهامش السفلي لكل صفحة (غير مزعجة، ولا تغطي الأرقام)
+395:         if (r.watermark != null && !r.watermark.isEmpty()) {
+396:             TextPaint red = new TextPaint(small);
+397:             red.setColor(Color.rgb(198, 40, 40));
+398:             red.setTextSize(small.getTextSize() * 0.92f);
+399:             drawLayout(c, layout(r.watermark, red, CW, Layout.Alignment.ALIGN_CENTER), M, H - M + 2);
+400:         }
+401:         c.drawLine(M, H - M - FOOTER + 4, W - M, H - M - FOOTER + 4, line);

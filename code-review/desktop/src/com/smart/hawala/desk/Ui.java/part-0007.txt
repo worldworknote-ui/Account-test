@@ -1,0 +1,178 @@
+1174:     static String friendly(Throwable t) {
+1175:         Throwable x = t;
+1176:         while (x.getCause() != null && (x.getMessage() == null || x.getMessage().isEmpty() || x instanceof java.util.concurrent.ExecutionException
+1177:                 || x instanceof java.lang.reflect.InvocationTargetException)) x = x.getCause();
+1178:         if (t instanceof com.smart.hawala.BackupManager.BackupException) return ((com.smart.hawala.BackupManager.BackupException) t).userMessage();
+1179:         String m = x.getMessage();
+1180:         if (m == null || m.trim().isEmpty()) m = x.getClass().getSimpleName();
+1181:         if (x instanceof OutOfMemoryError) m = "الذاكرة لا تكفي لهذه العملية.";
+1182:         return m;
+1183:     }
+1184: 
+1185:     static void error(Component parent, Throwable t) {
+1186:         if (t instanceof com.smart.hawala.Entitlements.LimitReached) {
+1187:             limit(parent, t.getMessage());
+1188:             return;
+1189:         }
+1190:         if (!(t instanceof IllegalArgumentException) && !(t instanceof IllegalStateException)) Main.log(t);
+1191:         message(parent, "تعذّرت العملية", friendly(t), JOptionPane.WARNING_MESSAGE);
+1192:     }
+1193: 
+1194:     static void limit(Component parent, String msg) {
+1195:         int r = choose(parent, "حدود النسخة المجانية", msg + "\n\nكل بياناتك محفوظة ومتاحة للعرض والتصدير والنسخ الاحتياطي.", new String[]{"الترخيص", "حسنًا"});
+1196:         if (r == 0 && App.instance != null) App.instance.go("license");
+1197:     }
+1198: 
+1199:     static boolean confirm(Component parent, String title, String msg, String yes) {
+1200:         return choose(parent, title, msg, new String[]{yes, "إلغاء"}) == 0;
+1201:     }
+1202: 
+1203:     static int choose(Component parent, String title, String msg, String[] options) {
+1204:         JOptionPane p = new JOptionPane(para(msg, 14, ink, 440), JOptionPane.QUESTION_MESSAGE, JOptionPane.DEFAULT_OPTION, null, options, options[0]);
+1205:         show(parent, p, title);
+1206:         Object v = p.getValue();
+1207:         for (int i = 0; i < options.length; i++) if (options[i].equals(v)) return i;
+1208:         return -1;
+1209:     }
+1210: 
+1211:     /**
+1212:      * 10.5 (§6): يحفظ تحديد الجدول (بمفاتيح الصفوف لا بأرقامها) وموضع تمريره قبل إعادة ملئه، ويعيدهما بعده،
+1213:      * فلا يرجع المستخدم إلى أول القائمة بعد كل عملية أو رجوع.
+1214:      */
+1215:     static final class Keep {
+1216:         final java.util.Set<Object> keys = new java.util.HashSet<>();
+1217:         Point pos;
+1218: 
+1219:         static <T> Keep of(JTable t, List<T> rows, java.util.function.Function<T, Object> key) {
+1220:             Keep k = new Keep();
+1221:             if (t == null) return k;
+1222:             for (int v : t.getSelectedRows()) {
+1223:                 int m = t.convertRowIndexToModel(v);
+1224:                 if (m >= 0 && m < rows.size()) k.keys.add(key.apply(rows.get(m)));
+1225:             }
+1226:             if (t.getParent() instanceof JViewport) k.pos = ((JViewport) t.getParent()).getViewPosition();
+1227:             return k;
+1228:         }
+1229: 
+1230:         <T> void restore(JTable t, List<T> rows, java.util.function.Function<T, Object> key) {
+1231:             if (t == null) return;
+1232:             for (int m = 0; m < rows.size() && m < t.getModel().getRowCount(); m++) {
+1233:                 if (!keys.contains(key.apply(rows.get(m)))) continue;
+1234:                 int v = t.convertRowIndexToView(m);
+1235:                 if (v >= 0) t.addRowSelectionInterval(v, v);
+1236:             }
+1237:             final Point p = pos;
+1238:             if (p != null && t.getParent() instanceof JViewport) {
+1239:                 final JViewport vp = (JViewport) t.getParent();
+1240:                 SwingUtilities.invokeLater(() -> {
+1241:                     int maxY = Math.max(0, vp.getView().getHeight() - vp.getExtentSize().height);
+1242:                     vp.setViewPosition(new Point(p.x, Math.min(p.y, maxY)));
+1243:                 });
+1244:             }
+1245:         }
+1246:     }
+1247: 
+1248:     /** 10.5 (§11): يرسم سطور تأكيد الحركة: المكتب بالأحمر مع كلمة «المكتب:»، والرصيد بعد الحركة بخط عريض. */
+1249:     static void fillConfirm(JPanel box, com.smart.hawala.TxConfirm.View v) {
+1250:         box.removeAll();
+1251:         for (com.smart.hawala.TxConfirm.Row r : v.rows) {
+1252:             JLabel l;
+1253:             switch (r.kind) {
+1254:                 case com.smart.hawala.TxConfirm.OFFICE:
+1255:                     l = new JLabel("<html><div style='text-align:right'><b>" + esc(r.label) + ":</b> <b><font color='" + hex(red) + "'>" + esc(r.value) + "</font></b></div></html>");
+1256:                     l.setFont(font(16, true));
+1257:                     box.add(gap(6));
+1258:                     break;
+1259:                 case com.smart.hawala.TxConfirm.AFTER:
+1260:                     l = label("   " + r, 14.5f, primaryInk, true);
+1261:                     break;
+1262:                 case com.smart.hawala.TxConfirm.BALANCE:
+1263:                     l = label("   " + r, 14, ink, false);
+1264:                     break;
+1265:                 case com.smart.hawala.TxConfirm.NOTE:
+1266:                     l = para(r.toString(), 13, goldInk, 440);
+1267:                     break;
+1268:                 default:
+1269:                     l = label(r.toString(), 14, ink, false);
+1270:             }
+1271:             l.setForeground(r.kind == com.smart.hawala.TxConfirm.OFFICE ? ink : l.getForeground());
+1272:             l.setHorizontalAlignment(SwingConstants.RIGHT);
+1273:             l.setAlignmentX(Component.RIGHT_ALIGNMENT);
+1274:             box.add(l);
+1275:         }
+1276:         box.revalidate();
+1277:         box.repaint();
+1278:     }
+1279: 
+1280:     /**
+1281:      * 10.5 (§11): نافذة تأكيد الحركة بالأرصدة من طبقة البيانات. تُحدَّث كل ثانيتين وهي مفتوحة؛ إن تغيّر الرصيد (مزامنة مثلًا)
+1282:      * يظهر تنبيه وتُعرض الأرقام الجديدة. يرجع ما وافق عليه المستخدم (لمقارنته قبل الحفظ)، أو null عند الإلغاء.
+1283:      */
+1284:     static com.smart.hawala.TxConfirm.View confirmTx(Component parent, String title, String prefix, java.util.function.Supplier<com.smart.hawala.TxConfirm.View> build, String yes) {
+1285:         final com.smart.hawala.TxConfirm.View[] shown = {build.get()};
+1286:         JPanel c = column();
+1287:         if (prefix != null && !prefix.isEmpty()) {
+1288:             c.add(para(prefix, 14, red, 440));
+1289:             c.add(gap(6));
+1290:         }
+1291:         JLabel changed = label("", 13.5f, red, true);
+1292:         c.add(changed);
+1293:         JPanel rows = column();
+1294:         fillConfirm(rows, shown[0]);
+1295:         c.add(rows);
+1296:         Timer t = new Timer(2000, e -> {
+1297:             try {
+1298:                 com.smart.hawala.TxConfirm.View now = build.get();
+1299:                 if (!now.fingerprint.equals(shown[0].fingerprint)) {
+1300:                     shown[0] = now;
+1301:                     fillConfirm(rows, now);
+1302:                     changed.setText("! تغيّر الرصيد أثناء العرض (وصلت حركة أخرى). راجع الأرقام الجديدة.");
+1303:                     Window w = SwingUtilities.getWindowAncestor(c);
+1304:                     if (w != null) w.pack();
+1305:                 }
+1306:             } catch (Exception ignored) {
+1307:                 // يبقى العرض السابق
+1308:             }
+1309:         });
+1310:         t.start();
+1311:         boolean ok;
+1312:         try {
+1313:             ok = form(parent, title, rtl(c), yes);
+1314:         } finally {
+1315:             t.stop();
+1316:         }
+1317:         return ok ? shown[0] : null;
+1318:     }
+1319: 
+1320:     /** حوار بمحتوى حر وزرّين؛ يرجع true عند الموافقة. */
+1321:     static boolean form(Component parent, String title, JComponent content, String yes) {
+1322:         JOptionPane p = new JOptionPane(content, JOptionPane.PLAIN_MESSAGE, JOptionPane.DEFAULT_OPTION, null, new Object[]{yes, "إلغاء"}, yes);
+1323:         show(parent, p, title);
+1324:         return yes.equals(p.getValue());
+1325:     }
+1326: 
+1327:     static String input(Component parent, String title, String msg, String initial) {
+1328:         JPanel c = column();
+1329:         c.add(para(msg, 14, ink, 380));
+1330:         c.add(gap(8));
+1331:         Field f = field("");
+1332:         f.setText(initial == null ? "" : initial);
+1333:         c.add(f);
+1334:         if (!form(parent, title, c, "موافق")) return null;
+1335:         return f.getText().trim();
+1336:     }
+1337: 
+1338:     static void show(Component parent, JOptionPane p, String title) {
+1339:         p.applyComponentOrientation(RTL);
+1340:         JDialog d = p.createDialog(win(parent), title);
+1341:         d.applyComponentOrientation(RTL);
+1342:         // 10.18: كل النوافذ قابلة للتكبير، ولا تتجاوز الشاشة (محتواها يتمدد معها)
+1343:         d.setResizable(true);
+1344:         try {
+1345:             Rectangle scr = d.getGraphicsConfiguration().getBounds();
+1346:             Dimension sz = d.getSize();
+1347:             int mw = (int) (scr.width * 0.94), mh = (int) (scr.height * 0.90);
+1348:             if (sz.width > mw || sz.height > mh) {
+1349:                 d.setSize(Math.min(sz.width, mw), Math.min(sz.height, mh));
+1350:                 d.setLocationRelativeTo(win(parent));
+1351:             }

@@ -1,0 +1,137 @@
+536:             LinearLayout dl = a.row();
+537:             waHead = dl;
+538:             dl.setGravity(Gravity.CENTER_VERTICAL);
+539:             dl.addView(a.label("رسالة واتساب"), new LinearLayout.LayoutParams(0, -2, 1));
+540:             // 12.3: «مسح» في سطر العنوان نفسه (مقابل «رسالة واتساب») فوق شريط الأدوات
+541:             if (editing == null) {
+542:                 LinearLayout clr = a.toolChip(R.drawable.ic_trash, "مسح", 2, v -> clearForm());
+543:                 clr.setContentDescription("مسح النموذج");
+544:                 dl.addView(clr, new LinearLayout.LayoutParams(-2, a.dp(34)));
+545:             }
+546:             a.body.addView(dl, a.lp(-1, -2, 2));
+547:             // 12.3: شريط أدوات الرسالة بأزرار بأيقونات: لصق، التقاط وتجميع (ويندوز وماك)، قص، مسح النموذج
+548:             LinearLayout tools = a.row();
+549:             tools.setGravity(Gravity.CENTER_VERTICAL);
+550:             tools.addView(a.toolChip(R.drawable.ic_paste, "لصق", 0, v -> pasteMessage()), toolLp(tools));
+551:             if (editing == null && a.waMove.canCapture()) {
+552:                 // 12.1: إطار يرقّم الرسائل على الشاشة، فتضغط الرقم فينتقل نصها إلى هذه الخانة
+553:                 tools.addView(a.toolChip(R.drawable.ic_capture, "التقاط", 1, v -> a.waMove.openCapture(false)), toolLp(tools));
+554:                 // 12.2: تنسخ رسائل من واتساب واحدة تلو الأخرى فتظهر مرقمة في نافذة صغيرة، ثم «نقل»
+555:                 tools.addView(a.toolChip(R.drawable.ic_collect, "تجميع", 1, v -> a.waMove.startOrShowCollect()), toolLp(tools));
+556:             }
+557:             if (editing == null && a.waMove.showCut()) {
+558:                 tools.addView(a.toolChip(R.drawable.ic_cut, "قص", 1, v -> cutFromForm()), toolLp(tools));
+559:             }
+560:             android.widget.HorizontalScrollView hs = new android.widget.HorizontalScrollView(a);
+561:             hs.setHorizontalScrollBarEnabled(false);
+562:             hs.setFillViewport(false);
+563:             hs.addView(tools, new android.widget.FrameLayout.LayoutParams(-2, -2));
+564:             a.body.addView(hs, a.lp(-1, -2, 4));
+565:             form.desc = a.field("الصق رسالة الحوالة هنا");
+566:             form.desc.setSingleLine(false);
+567:             form.desc.setMinLines(2);
+568:             form.desc.setMaxLines(10);
+569:             form.desc.setGravity(Gravity.TOP | Gravity.START);
+570:             form.desc.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+571:             form.desc.setPadding(a.dp(12), a.dp(8), a.dp(12), a.dp(8));
+572:             form.desc.setTextSize(15);
+573:             a.body.addView(form.desc, a.lp(-1, -2, 2));
+574:             form.parseBox = new LinearLayout(a);
+575:             form.parseBox.setOrientation(LinearLayout.VERTICAL);
+576:             form.parseBox.setPadding(a.dp(10), a.dp(6), a.dp(10), a.dp(6));
+577:             form.parseBox.setBackground(a.round(Color.rgb(248, 249, 252), Color.rgb(205, 214, 230), 12));
+578:             form.parseBox.setVisibility(View.GONE);
+579:             a.body.addView(form.parseBox, a.lp(-1, -2, 4));
+580:             form.desc.addTextChangedListener(Ui.watcher(() -> {
+581:                 form.desc.removeCallbacks(form.parseLater);
+582:                 form.desc.postDelayed(form.parseLater, 450);
+583:             }));
+584:             form.desc.addTextChangedListener(new android.text.TextWatcher() {
+585:                 @Override public void beforeTextChanged(CharSequence s, int st, int c, int after) {}
+586: 
+587:                 @Override public void onTextChanged(CharSequence s, int st, int before, int count) {
+588:                     if (count - before >= 15) form.pasted = true;
+589:                     // 11.3: لصق عدة رسائل مباشرة في الخانة (Ctrl+V على الكمبيوتر، أو «لصق» من قائمة الخانة): العرض نفسه كزر «لصق»
+590:                     if (count - before >= 30 && editing == null && !form.queued && !splitOffered) {
+591:                         final String ins = s.subSequence(st, st + count).toString();
+592:                         // 12.1: نسخة HTML من الحافظة إن كان هذا هو نصها (واتساب ويندوز والمتصفح)
+593:                         WaClip.Read cr = WaClip.read(a);
+594:                         final List<WaText.Msg> msgs = WaClip.messages(ins, cr.text.trim().equals(ins.trim()) ? cr.html : null);
+595:                         if (msgs.size() > 1) {
+596:                             splitOffered = true;
+597:                             form.desc.post(() -> offerSplit(msgs, ins, () -> {
+598:                                 String cur = form.desc.getText().toString();
+599:                                 int at = cur.indexOf(ins);
+600:                                 if (at >= 0) form.desc.setText(cur.substring(0, at) + cur.substring(at + ins.length()));
+601:                             }));
+602:                         }
+603:                     }
+604:                 }
+605: 
+606:                 @Override public void afterTextChanged(android.text.Editable e) {}
+607:             });
+608:         }
+609: 
+610:         // لا يُختار النوع مسبقًا: المحاسب يختار «لنا» أو «علينا» في كل حركة
+611:         final android.view.View splitMark = a.add(a.label("نوع الحركة (إلزامي)"));
+612:         form.type = a.new Seg(new String[]{"لنا (مدين)", "علينا (دائن)"}, new int[]{a.green, a.red}, -1, false);
+613:         form.type.listener = i -> {
+614:             form.type.flagMissing(false);
+615:             updateSummary();
+616:         };
+617:         a.body.addView(form.type.view, a.lp(-1, -2, 2));
+618: 
+619:         form.amountLabel = a.add(a.label("المبلغ"));
+620:         form.amount = a.amountInput("0");
+621:         form.amount.setTextSize(22);
+622:         Ui.bold(form.amount);
+623:         form.amount.addTextChangedListener(Ui.watcher(() -> {
+624:             if (feeByRate()) recalcFee();
+625:             else updateSummary();
+626:         }));
+627: 
+628:         a.add(a.label(form.wa ? "العملة (اخترها، أو أضفها من البيان)" : "العملة"));
+629:         form.curHolder = new LinearLayout(a);
+630:         a.body.addView(form.curHolder, a.lp(-1, -2, 0));
+631: 
+632:         form.person = a.input("اسم الشخص أو المستفيد");
+633:         if (!form.wa) {
+634:             // الميزة متوقفة: البيان حقل عادي اختياري كما في الإصدارات السابقة
+635:             form.desc = a.input("البيان (اختياري)");
+636:             form.desc.setSingleLine(false);
+637:             form.desc.setMaxLines(5);
+638:             form.desc.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+639:             form.desc.setLayoutParams(a.lp(-1, -2, 4));
+640:         }
+641:         form.notes = a.input("ملاحظات (اختياري)");
+642:         // 8.0: نوع الخدمة والوجهة في خانتين ثابتتين (لتقرير «الخدمات والوجهات»)، اختياريتان
+643:         form.service = a.input("نوع الخدمة (اختياري): اعتماد، سويفت، USDT…");
+644:         final EditText svc = form.service;
+645:         LinearLayout chips = a.row();
+646:         java.util.LinkedHashSet<String> sv = new java.util.LinkedHashSet<>(a.db.usedServices(8));
+647:         for (String x : a.db.setting("services", "اعتماد,سويفت,USDT,تسليم نقدي,تحويل بنكي").split(",")) if (!x.trim().isEmpty()) sv.add(x.trim());
+648:         sv.remove("تبديل عملة");
+649:         for (final String x : sv) chips.addView(a.pill(x, false, v -> svc.setText(x)), a.gap(-2, -2, 3));
+650:         final View svcChips = a.strip(chips);
+651:         a.body.addView(svcChips, a.lp(-1, -2, 2));
+652:         form.dest = a.input("الوجهة: المدينة أو البلد (اختياري)");
+653:         form.person.addTextChangedListener(Ui.watcher(this::updateSummary));
+654: 
+655:         form.dateBtn = a.smallButton("", Color.rgb(110, 110, 110), v -> pickDate());
+656:         a.body.addView(form.dateBtn, a.lp(-1, 44, 4));
+657:         // 12.0: بلا صلاحية «تاريخ سابق» تُسجَّل الحركة بتاريخ اليوم (الزر يبقى ظاهرًا للعلم لكنه معطّل)
+658:         if (!a.can(Auth.Perm.BACKDATE) && editing == null) form.dateBtn.setEnabled(false);
+659:         setWhen(0);
+660: 
+661:         final View feeHead = a.add(a.label("الأجرة"));
+662:         form.feeMode = a.new Seg(new String[]{"بدون أجرة", "مع أجرة"}, null, 0, false);
+663:         a.body.addView(form.feeMode.view, a.lp(-1, -2, 2));
+664:         form.feeBox = new LinearLayout(a);
+665:         form.feeBox.setOrientation(LinearLayout.VERTICAL);
+666:         form.feeBox.setPadding(a.dp(8), a.dp(6), a.dp(8), a.dp(6));
+667:         form.feeBox.setBackground(a.round(Color.rgb(250, 248, 242), Color.rgb(225, 220, 205), 12));
+668:         form.feeSide = a.new Seg(new String[]{"الأجرة لنا", "الأجرة علينا"}, new int[]{a.green, a.red}, 0, false);
+669:         form.feeSide.listener = i -> updateSummary();
+670:         form.feeBox.addView(form.feeSide.view);
+671:         // مبلغ محدد، أو نسبة من المبلغ الأصلي (1٪ أو 1.5‰ مثلًا) تُحسب منها الأجرة بعملة المبلغ نفسها
+672:         int lastKind = "1".equals(a.db.setting("fee_kind_last", "0")) ? 1 : 0;

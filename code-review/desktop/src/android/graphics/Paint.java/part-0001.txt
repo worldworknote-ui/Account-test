@@ -1,0 +1,179 @@
+1: package android.graphics;
+2: 
+3: import java.awt.Font;
+4: import java.awt.font.FontRenderContext;
+5: import java.awt.font.TextAttribute;
+6: import java.awt.font.TextLayout;
+7: import java.text.AttributedString;
+8: 
+9: public class Paint {
+10:     public static final int ANTI_ALIAS_FLAG = 1, FILTER_BITMAP_FLAG = 2, DITHER_FLAG = 4, UNDERLINE_TEXT_FLAG = 8, STRIKE_THRU_TEXT_FLAG = 16,
+11:             FAKE_BOLD_TEXT_FLAG = 32, LINEAR_TEXT_FLAG = 64, SUBPIXEL_TEXT_FLAG = 128;
+12: 
+13:     public enum Style { FILL, STROKE, FILL_AND_STROKE }
+14:     public enum Cap { BUTT, ROUND, SQUARE }
+15:     public enum Join { MITER, ROUND, BEVEL }
+16:     public enum Align { LEFT, CENTER, RIGHT }
+17: 
+18:     public static class FontMetrics { public float top, ascent, descent, bottom, leading; }
+19:     public static class FontMetricsInt { public int top, ascent, descent, bottom, leading; }
+20: 
+21:     int color = Color.BLACK;
+22:     int flags;
+23:     Style style = Style.FILL;
+24:     Cap cap = Cap.BUTT;
+25:     Join join = Join.MITER;
+26:     float strokeWidth = 0, miter = 4;
+27:     float textSize = 12;
+28:     Typeface typeface;
+29:     Align align = Align.LEFT;
+30:     Shader shader;
+31:     MaskFilter maskFilter;
+32:     ColorFilter colorFilter;
+33:     Xfermode xfermode;
+34:     float shadowR, shadowDx, shadowDy;
+35:     int shadowColor;
+36:     float letterSpacing, textScaleX = 1f;
+37:     PathEffect pathEffect;
+38: 
+39:     public Paint() {}
+40:     public Paint(int flags) { this.flags = flags; }
+41:     public Paint(Paint o) { set(o); }
+42: 
+43:     public void set(Paint o) {
+44:         color = o.color; flags = o.flags; style = o.style; cap = o.cap; join = o.join; strokeWidth = o.strokeWidth; miter = o.miter;
+45:         textSize = o.textSize; typeface = o.typeface; align = o.align; shader = o.shader; maskFilter = o.maskFilter; colorFilter = o.colorFilter;
+46:         xfermode = o.xfermode; shadowR = o.shadowR; shadowDx = o.shadowDx; shadowDy = o.shadowDy; shadowColor = o.shadowColor;
+47:         letterSpacing = o.letterSpacing; textScaleX = o.textScaleX; pathEffect = o.pathEffect;
+48:     }
+49:     public void reset() { set(new Paint()); }
+50: 
+51:     public int getFlags() { return flags; }
+52:     public void setFlags(int f) { flags = f; }
+53:     public void setAntiAlias(boolean a) { flags = a ? flags | ANTI_ALIAS_FLAG : flags & ~ANTI_ALIAS_FLAG; }
+54:     public boolean isAntiAlias() { return (flags & ANTI_ALIAS_FLAG) != 0; }
+55:     public void setDither(boolean d) {}
+56:     public void setFilterBitmap(boolean f) {}
+57:     public void setFakeBoldText(boolean b) { flags = b ? flags | FAKE_BOLD_TEXT_FLAG : flags & ~FAKE_BOLD_TEXT_FLAG; }
+58:     public void setStrikeThruText(boolean b) { flags = b ? flags | STRIKE_THRU_TEXT_FLAG : flags & ~STRIKE_THRU_TEXT_FLAG; }
+59:     public void setUnderlineText(boolean b) { flags = b ? flags | UNDERLINE_TEXT_FLAG : flags & ~UNDERLINE_TEXT_FLAG; }
+60:     public int getColor() { return color; }
+61:     public void setColor(int c) { color = c; }
+62:     public void setARGB(int a, int r, int g, int b) { color = Color.argb(a, r, g, b); }
+63:     public int getAlpha() { return Color.alpha(color); }
+64:     public void setAlpha(int a) { color = (Math.max(0, Math.min(255, a)) << 24) | (color & 0xFFFFFF); }
+65:     public Style getStyle() { return style; }
+66:     public void setStyle(Style s) { style = s; }
+67:     public float getStrokeWidth() { return strokeWidth; }
+68:     public void setStrokeWidth(float w) { strokeWidth = w; }
+69:     public void setStrokeCap(Cap c) { cap = c; }
+70:     public Cap getStrokeCap() { return cap; }
+71:     public void setStrokeJoin(Join j) { join = j; }
+72:     public Join getStrokeJoin() { return join; }
+73:     public void setStrokeMiter(float m) { miter = m; }
+74:     public float getTextSize() { return textSize; }
+75:     public void setTextSize(float s) { textSize = s; }
+76:     public Typeface getTypeface() { return typeface; }
+77:     public Typeface setTypeface(Typeface t) { typeface = t; return t; }
+78:     public Align getTextAlign() { return align; }
+79:     public void setTextAlign(Align a) { align = a; }
+80:     public Shader getShader() { return shader; }
+81:     public Shader setShader(Shader s) { shader = s; return s; }
+82:     public MaskFilter getMaskFilter() { return maskFilter; }
+83:     public MaskFilter setMaskFilter(MaskFilter m) { maskFilter = m; return m; }
+84:     public ColorFilter getColorFilter() { return colorFilter; }
+85:     public ColorFilter setColorFilter(ColorFilter c) { colorFilter = c; return c; }
+86:     public Xfermode setXfermode(Xfermode x) { xfermode = x; return x; }
+87:     public PathEffect setPathEffect(PathEffect e) { pathEffect = e; return e; }
+88:     public void setShadowLayer(float r, float dx, float dy, int c) { shadowR = r; shadowDx = dx; shadowDy = dy; shadowColor = c; }
+89:     public void clearShadowLayer() { shadowR = 0; }
+90:     public void setLetterSpacing(float s) { letterSpacing = s; }
+91:     public float getLetterSpacing() { return letterSpacing; }
+92:     public void setTextScaleX(float s) { textScaleX = s; }
+93:     public void setElegantTextHeight(boolean b) {}
+94:     public void setTextLocale(java.util.Locale l) {}
+95: 
+96:     // ------------------------------------------------------------------ النص
+97:     static final FontRenderContext FRC = new FontRenderContext(null, true, true);
+98: 
+99:     public Font font() {
+100:         Typeface t = typeface == null ? Typeface.DEFAULT : typeface;
+101:         boolean bold = t.isBold() || (flags & FAKE_BOLD_TEXT_FLAG) != 0;
+102:         return Typeface.base(t.familyName(), bold).deriveFont(textSize);
+103:     }
+104: 
+105:     /** سطر واحد جاهز للرسم بالخطوط البديلة والاتجاه الصحيح؛ null لنص فارغ. */
+106:     public TextLayout layout(String s) {
+107:         if (s == null || s.isEmpty()) return null;
+108:         Typeface t = typeface == null ? Typeface.DEFAULT : typeface;
+109:         boolean bold = t.isBold() || (flags & FAKE_BOLD_TEXT_FLAG) != 0;
+110:         Font base = Typeface.base(t.familyName(), bold);
+111:         AttributedString as = new AttributedString(s);
+112:         FontKit.apply(as, s, 0, s.length(), base, textSize, bold);
+113:         as.addAttribute(TextAttribute.RUN_DIRECTION, firstStrongRtl(s) ? TextAttribute.RUN_DIRECTION_RTL : TextAttribute.RUN_DIRECTION_LTR);
+114:         if (letterSpacing != 0) as.addAttribute(TextAttribute.TRACKING, letterSpacing);
+115:         if ((flags & STRIKE_THRU_TEXT_FLAG) != 0) as.addAttribute(TextAttribute.STRIKETHROUGH, TextAttribute.STRIKETHROUGH_ON);
+116:         if ((flags & UNDERLINE_TEXT_FLAG) != 0) as.addAttribute(TextAttribute.UNDERLINE, TextAttribute.UNDERLINE_ON);
+117:         return new TextLayout(as.getIterator(), FRC);
+118:     }
+119: 
+120:     public static boolean firstStrongRtl(CharSequence s) {
+121:         for (int i = 0; i < s.length(); i++) {
+122:             byte d = Character.getDirectionality(s.charAt(i));
+123:             if (d == Character.DIRECTIONALITY_RIGHT_TO_LEFT || d == Character.DIRECTIONALITY_RIGHT_TO_LEFT_ARABIC) return true;
+124:             if (d == Character.DIRECTIONALITY_LEFT_TO_RIGHT) return false;
+125:         }
+126:         return false;
+127:     }
+128: 
+129:     public float measureText(String s) {
+130:         TextLayout l = layout(s);
+131:         return l == null ? 0 : l.getAdvance();
+132:     }
+133:     public float measureText(CharSequence s, int a, int b) { return measureText(s.toString().substring(a, b)); }
+134:     public float measureText(char[] c, int i, int n) { return measureText(new String(c, i, n)); }
+135:     public float measureText(String s, int a, int b) { return measureText(s.substring(a, b)); }
+136: 
+137:     public void getTextBounds(String s, int a, int b, Rect out) {
+138:         TextLayout l = layout(s.substring(a, b));
+139:         if (l == null) { out.set(0, 0, 0, 0); return; }
+140:         java.awt.geom.Rectangle2D r = l.getBounds();
+141:         out.set((int) Math.floor(r.getMinX()), (int) Math.floor(r.getMinY()), (int) Math.ceil(r.getMaxX()), (int) Math.ceil(r.getMaxY()));
+142:     }
+143:     public void getTextBounds(CharSequence s, int a, int b, Rect out) { getTextBounds(s.toString(), a, b, out); }
+144:     public void getTextBounds(char[] c, int i, int n, Rect out) { getTextBounds(new String(c, i, n), 0, n, out); }
+145: 
+146:     public int breakText(String s, boolean forward, float maxW, float[] measured) {
+147:         int n = 0;
+148:         float w = 0;
+149:         while (n < s.length()) {
+150:             float nw = measureText(s.substring(0, n + 1));
+151:             if (nw > maxW) break;
+152:             w = nw;
+153:             n++;
+154:         }
+155:         if (measured != null && measured.length > 0) measured[0] = w;
+156:         return n;
+157:     }
+158: 
+159:     public float ascent() { return -font().getLineMetrics("أAg", FRC).getAscent(); }
+160:     public float descent() { return font().getLineMetrics("أAg", FRC).getDescent(); }
+161:     public float getFontSpacing() { java.awt.font.LineMetrics m = font().getLineMetrics("أAg", FRC); return m.getAscent() + m.getDescent() + m.getLeading(); }
+162: 
+163:     public FontMetrics getFontMetrics() {
+164:         FontMetrics f = new FontMetrics();
+165:         getFontMetrics(f);
+166:         return f;
+167:     }
+168:     public float getFontMetrics(FontMetrics f) {
+169:         java.awt.font.LineMetrics m = font().getLineMetrics("أAg", FRC);
+170:         f.ascent = -m.getAscent();
+171:         f.descent = m.getDescent();
+172:         f.top = f.ascent * 1.08f;
+173:         f.bottom = f.descent * 1.08f;
+174:         f.leading = m.getLeading();
+175:         return f.descent - f.ascent + f.leading;
+176:     }
+177:     public FontMetricsInt getFontMetricsInt() {
+178:         FontMetrics f = getFontMetrics();
+179:         FontMetricsInt i = new FontMetricsInt();

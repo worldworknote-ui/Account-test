@@ -1,0 +1,137 @@
+1: import android.content.Context;
+2: import com.smart.hawala.*;
+3: import java.io.File;
+4: import java.nio.charset.StandardCharsets;
+5: import java.nio.file.Files;
+6: import java.util.*;
+7: import org.json.JSONObject;
+8: 
+9: /**
+10:  * 10.5: ترحيل قاعدة بيانات حقيقية البنية من الإصدار 10.4 (لا من نسخة احتياطية): يُنشئها كود 10.4 نفسه («make»)،
+11:  * ثم يفتحها كود 10.5 («check»): الأرصدة والحركات والمستخدمون والصندوق كما هي بالضبط، والأعمدة والجداول الجديدة أُضيفت،
+12:  * والميزات الجديدة تعمل على البيانات القديمة (التحقق من حركة قديمة بلا رقم مستخدم، والتحويل، والعلامة)، وفحص الصحة سليم.
+13:  * الاستعمال: java MigrationTest tests/data/db-10.4
+14:  */
+15: public class MigrationTest {
+16:     static int fails, passes;
+17: 
+18:     static void check(boolean c, String m) {
+19:         if (c) passes++;
+20:         else fails++;
+21:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+22:     }
+23: 
+24:     static Db open(File home) throws Exception {
+25:         SecretStore.fallback(new File(home, "keys"));
+26:         Context ctx = new Context(home);
+27:         Crypto.init(ctx);
+28:         Db db = new Db(ctx);
+29:         SmartApp.db = db;
+30:         SmartApp.ctx = ctx;
+31:         License.current = Entitlements.of(DeskCoreTest.fullGrant(), BuildInfo.BUILD_DATE);
+32:         return db;
+33:     }
+34: 
+35:     static Db.TxInput tx(long office, boolean us, long amount, String cur, String person) {
+36:         Db.TxInput t = new Db.TxInput();
+37:         t.office = office;
+38:         t.type = us ? Model.TYPE_DEBIT : Model.TYPE_CREDIT;
+39:         t.amount = amount;
+40:         t.currency = cur;
+41:         t.person = person;
+42:         t.when = System.currentTimeMillis() - 60_000;
+43:         return t;
+44:     }
+45: 
+46:     static JSONObject state(Db db) throws Exception {
+47:         JSONObject o = new JSONObject();
+48:         o.put("bal", String.valueOf(new TreeMap<>(db.officeBalances())));
+49:         o.put("cash", String.valueOf(new TreeMap<>(db.cashBalances())));
+50:         o.put("tx", db.recentTx(100).size());
+51:         o.put("pending", db.pendingTx().size());
+52:         o.put("users", db.users(false).size());
+53:         o.put("offices", db.offices().size());
+54:         return o;
+55:     }
+56: 
+57:     static void copy(File from, File to) throws Exception {
+58:         to.mkdirs();
+59:         for (File f : from.listFiles()) {
+60:             File t = new File(to, f.getName());
+61:             if (f.isDirectory()) copy(f, t);
+62:             else Files.copy(f.toPath(), t.toPath());
+63:         }
+64:     }
+65: 
+66:     public static void main(String[] a) throws Exception {
+67:         System.setProperty("sa.secrets", "file");
+68:         // نسخة من القاعدة الاصطناعية (لا تُعدَّل الأصلية)
+69:         File src = new File(a[a.length - 1]);
+70:         File home = Files.createTempDirectory("sa-mig").toFile();
+71:         copy(src, home);
+72:         System.out.println("== ترحيل قاعدة 10.4 إلى " + BuildInfo.VERSION);
+73:         JSONObject want = new JSONObject(new String(Files.readAllBytes(new File(home, "expect.json").toPath()), StandardCharsets.UTF_8));
+74:         Db db = open(home);
+75:         JSONObject got = state(db);
+76:         check(want.getString("bal").equals(got.getString("bal")), "أرصدة المكاتب كما هي: " + got.getString("bal"));
+77:         check(want.getString("cash").equals(got.getString("cash")), "أرصدة الصندوق كما هي: " + got.getString("cash"));
+78:         check(want.getInt("tx") == got.getInt("tx") && want.getInt("pending") == got.getInt("pending") && want.getInt("users") == got.getInt("users")
+79:                 && want.getInt("offices") == got.getInt("offices"), "عدد الحركات والمعلّقة والمستخدمين والمكاتب كما هو");
+80:         Set<String> cols = new HashSet<>();
+81:         try (android.database.Cursor c = db.getReadableDatabase().rawQuery("PRAGMA table_info(tx)", null)) {
+82:             while (c.moveToNext()) cols.add(c.getString(1));
+83:         }
+84:         boolean tables = true;
+85:         for (String t : new String[]{"tx_checks", "wa_marks", "user_offices"})
+86:             try (android.database.Cursor c = db.getReadableDatabase().rawQuery("SELECT COUNT(*) FROM " + t, null)) {
+87:                 c.moveToFirst();
+88:             } catch (Exception e) {
+89:                 tables = false;
+90:             }
+91:         check(cols.contains("user_id") && cols.contains("approved_by") && cols.contains("approved_at") && tables, "الأعمدة والجداول الجديدة أُضيفت دون مسّ القديم");
+92:         // الميزات الجديدة على البيانات القديمة
+93:         Model.User admin = null, clerk = null;
+94:         for (Model.User u : db.users(false)) {
+95:             if (Auth.isAdmin(u)) admin = u;
+96:             else clerk = u;
+97:         }
+98:         SmartApp.currentUser = admin;
+99:         Db.currentUserName = admin.name;
+100:         long v = db.addUser("محقق جديد", Auth.CUSTOM, "VIEW,VERIFY", "4545");
+101:         Model.Tx oldTx = null, clerkTx = null;
+102:         for (Model.Tx t : db.recentTx(100)) {
+103:             if (t.userId == null && "المدير القديم".equals(t.userName) && !t.isLinked()) oldTx = t;
+104:         }
+105:         for (Model.Tx t : db.pendingTx()) clerkTx = t;
+106:         check(oldTx != null && db.txPeople(oldTx).get(0).contains("المدير القديم"), "الحركة القديمة بلا رقم مستخدم: يُعرض من أدخلها باسمه");
+107:         final Model.Tx ot = oldTx;
+108:         SmartApp.currentUser = db.user(v);
+109:         db.verifyTx(ot.id);
+110:         check(db.verified(db.tx(ot.id)), "التحقق من حركة قديمة يعمل");
+111:         SmartApp.currentUser = admin;
+112:         db.approveTx(clerkTx.id);
+113:         Model.Tx ap = db.tx(clerkTx.id);
+114:         check(ap.isActive() && ap.approvedBy != null && ap.approvedBy == admin.id, "اعتماد حركة معلّقة من 10.4 يسجّل من اعتمدها برقمه");
+115:         List<Model.Office> offs = db.offices();
+116:         Db.TransferInput tr = new Db.TransferInput();
+117:         tr.from = offs.get(0).id;
+118:         tr.to = offs.get(1).id;
+119:         tr.currency = "USD";
+120:         tr.amount = 1000;
+121:         tr.when = System.currentTimeMillis();
+122:         db.addTransfer(tr);
+123:         db.setWaMark(offs.get(0).id, "آخر رسالة", "");
+124:         boolean healthy = true;
+125:         for (Db.Check c : db.healthCheck(true)) {
+126:             if (!c.ok) {
+127:                 healthy = false;
+128:                 System.out.println("      ✗ " + c.title + ": " + c.detail);
+129:             }
+130:         }
+131:         check(healthy, "فحص الصحة الكامل سليم بعد الترحيل والعمليات الجديدة");
+132:         SmartApp.currentUser = null;
+133:         System.out.println();
+134:         System.out.println(passes + " نجح، " + fails + " فشل");
+135:         if (fails > 0) System.exit(1);
+136:     }
+137: }

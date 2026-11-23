@@ -1,0 +1,194 @@
+559:             if (uuid == null || uuid.isEmpty()) {
+560:                 r.errors.add("حركة رقم " + id + " بلا مرجع");
+561:                 break;
+562:             }
+563:             if (!uuids.add(uuid)) {
+564:                 r.errors.add("مرجع حركة مكرر: " + uuid);
+565:                 break;
+566:             }
+567:             Long amount = lng(row, "amount_minor");
+568:             if (amount == null || amount < 0) {
+569:                 r.errors.add("مبلغ غير صالح في الحركة رقم " + id);
+570:                 break;
+571:             }
+572:             String cur = str(row, "currency");
+573:             if (cur != null && !currencies.contains(cur)) unknownCur.add(cur);
+574:             if ("CANCELLED".equals(str(row, "status"))) r.txCancelled++;
+575:             else r.txActive++;
+576:         }
+577:         if (!unknownCur.isEmpty()) r.warnings.add("عملات مستخدمة في حركات وغير موجودة في قائمة العملات: " + unknownCur);
+578: 
+579:         Set<Long> entries = new HashSet<>();
+580:         for (JSONObject row : p.table("journal_entries")) {
+581:             Long id = lng(row, "id");
+582:             entries.add(id);
+583:             Long tx = lng(row, "tx_id");
+584:             if (tx != null && !txs.contains(tx)) {
+585:                 r.errors.add("قيد رقم " + id + " يشير إلى حركة غير موجودة");
+586:                 break;
+587:             }
+588:         }
+589:         r.entries = entries.size();
+590: 
+591:         Map<String, Long> balance = new HashMap<>();
+592:         Map<Long, Integer> linesPerEntry = new HashMap<>();
+593:         for (JSONObject row : p.table("journal_lines")) {
+594:             Long e = lng(row, "entry_id");
+595:             if (e == null || !entries.contains(e)) {
+596:                 r.errors.add("سطر قيد يشير إلى قيد غير موجود (" + e + ")");
+597:                 break;
+598:             }
+599:             Long o = lng(row, "office_id");
+600:             if (o != null && !offices.contains(o)) {
+601:                 r.errors.add("سطر قيد يشير إلى مكتب غير موجود (" + o + ")");
+602:                 break;
+603:             }
+604:             Long debit = lng(row, "debit_minor");
+605:             Long credit = lng(row, "credit_minor");
+606:             if (debit == null || credit == null || debit < 0 || credit < 0) {
+607:                 r.errors.add("قيمة غير صالحة في سطر القيد رقم " + lng(row, "id"));
+608:                 break;
+609:             }
+610:             String key = e + "|" + str(row, "currency");
+611:             Long b = balance.get(key);
+612:             balance.put(key, (b == null ? 0 : b) + debit - credit);
+613:             Integer n = linesPerEntry.get(e);
+614:             linesPerEntry.put(e, n == null ? 1 : n + 1);
+615:         }
+616:         for (Map.Entry<String, Long> b : balance.entrySet()) {
+617:             if (b.getValue() != 0) {
+618:                 r.errors.add("قيد غير متوازن (رقم القيد|العملة = " + b.getKey() + ")");
+619:                 break;
+620:             }
+621:         }
+622:         int emptyEntries = 0;
+623:         for (Long e : entries) if (!linesPerEntry.containsKey(e)) emptyEntries++;
+624:         if (emptyEntries > 0) r.warnings.add(emptyEntries + " قيد بلا أسطر (لا يؤثر على الأرصدة)");
+625: 
+626:         for (JSONObject row : p.table("opening_balances")) {
+627:             Long o = lng(row, "office_id");
+628:             if (o != null && !offices.contains(o)) {
+629:                 r.errors.add("رصيد سابق يشير إلى مكتب غير موجود (" + o + ")");
+630:                 break;
+631:             }
+632:         }
+633: 
+634:         Set<Long> recons = new HashSet<>();
+635:         for (JSONObject row : p.table("reconciliations")) {
+636:             Long o = lng(row, "office_id");
+637:             if (o == null || !offices.contains(o)) {
+638:                 r.errors.add("مطابقة رصيد تشير إلى مكتب غير موجود (" + o + ")");
+639:                 break;
+640:             }
+641:             Long id = lng(row, "id");
+642:             if (id != null) recons.add(id);
+643:         }
+644:         for (JSONObject row : p.table("reconciliation_lines")) {
+645:             Long rc = lng(row, "recon_id");
+646:             if (rc == null || !recons.contains(rc)) {
+647:                 r.errors.add("سطر مطابقة يشير إلى مطابقة غير موجودة (" + rc + ")");
+648:                 break;
+649:             }
+650:         }
+651: 
+652:         // 9.0: صندوق المكتب: كل حركة مرتبطة تشير إلى مكتب وحركة موجودين، والمبالغ موجبة
+653:         Set<String> cashUuids = new HashSet<>();
+654:         for (JSONObject row : p.table("cash_moves")) {
+655:             Long id = lng(row, "id");
+656:             Long amount = lng(row, "amount_minor"), fee = lng(row, "fee_minor"), dir = lng(row, "dir");
+657:             if (amount == null || amount <= 0 || (fee != null && fee < 0) || dir == null || (dir != 1 && dir != -1)) {
+658:                 r.errors.add("حركة صندوق غير صالحة (رقم " + id + ")");
+659:                 break;
+660:             }
+661:             Long o = lng(row, "office_id");
+662:             if (o != null && !offices.contains(o)) {
+663:                 r.errors.add("حركة صندوق تشير إلى مكتب غير موجود (" + o + ")");
+664:                 break;
+665:             }
+666:             Long tx = lng(row, "tx_id");
+667:             if (tx != null && !txs.contains(tx)) {
+668:                 r.errors.add("حركة صندوق تشير إلى حركة مكتب غير موجودة (" + tx + ")");
+669:                 break;
+670:             }
+671:             String u = str(row, "uuid");
+672:             if (u == null || u.isEmpty() || !cashUuids.add(u)) {
+673:                 r.errors.add("حركة صندوق بلا مرجع أو بمرجع مكرر (رقم " + id + ")");
+674:                 break;
+675:             }
+676:             String cur = str(row, "currency");
+677:             if (cur == null || !currencies.contains(cur)) r.warnings.add("حركة صندوق بعملة غير معرّفة: " + cur);
+678:             r.cashMoves++;
+679:         }
+680: 
+681:         // 9.0.1: حسابات العملاء: كل حركة لعميل موجود وبمبلغ موجب
+682:         Set<Long> clients = new HashSet<>();
+683:         for (JSONObject row : p.table("cash_clients")) clients.add(lng(row, "id"));
+684:         for (JSONObject row : p.table("client_moves")) {
+685:             Long c = lng(row, "client_id"), amount = lng(row, "amount_minor"), dir = lng(row, "dir");
+686:             if (c == null || !clients.contains(c)) {
+687:                 r.errors.add("حركة على حساب عميل غير موجود (" + c + ")");
+688:                 break;
+689:             }
+690:             if (amount == null || amount <= 0 || dir == null || (dir != 1 && dir != -1)) {
+691:                 r.errors.add("حركة حساب عميل غير صالحة (رقم " + lng(row, "id") + ")");
+692:                 break;
+693:             }
+694:             r.clientMoves++;
+695:         }
+696:         r.clients = clients.size();
+697: 
+698:         Set<Long> attIds = new HashSet<>();
+699:         for (StagedAttachment s : p.attachments) {
+700:             if (!attIds.add(s.id)) {
+701:                 r.errors.add("صورة مكررة الرقم: " + s.id);
+702:                 break;
+703:             }
+704:             if (!txs.contains(s.txId)) {
+705:                 r.errors.add("صورة رقم " + s.id + " تشير إلى حركة غير موجودة");
+706:                 break;
+707:             }
+708:             if (s.size <= 0) {
+709:                 r.errors.add("صورة فارغة رقم " + s.id);
+710:                 break;
+711:             }
+712:         }
+713:         r.attachments = p.attachments.size();
+714:         return r;
+715:     }
+716: 
+717:     // ===================================================================================
+718:     // 9.0: مكاتب النسخة (لاختيار ما يُستعاد منها في النسخة المجانية)
+719:     // ===================================================================================
+720: 
+721:     /** مكتب في النسخة: اسمه وعدد حركاته وأرصدته من القيود. */
+722:     public static final class OfficeInfo {
+723:         public long id;
+724:         public String name = "";
+725:         public boolean active = true;
+726:         public long txCount, lastTx;
+727:         public final Map<String, Long> balances = new java.util.TreeMap<>();
+728:     }
+729: 
+730:     public static List<OfficeInfo> officeSummaries(Parsed p) {
+731:         Map<Long, OfficeInfo> m = new java.util.LinkedHashMap<>();
+732:         for (JSONObject row : p.table("offices")) {
+733:             Long id = lng(row, "id");
+734:             if (id == null) continue;
+735:             OfficeInfo o = new OfficeInfo();
+736:             o.id = id;
+737:             String n = str(row, "name");
+738:             o.name = n == null ? "" : n;
+739:             Long a = lng(row, "active");
+740:             o.active = a == null || a == 1;
+741:             m.put(id, o);
+742:         }
+743:         for (JSONObject row : p.table("tx")) {
+744:             OfficeInfo o = m.get(lng(row, "office_id"));
+745:             if (o == null) continue;
+746:             o.txCount++;
+747:             Long t = lng(row, "created_at");
+748:             if (t != null && t > o.lastTx) o.lastTx = t;
+749:         }
+750:         for (JSONObject row : p.table("journal_lines")) {
+751:             if (!"OFFICE".equals(str(row, "account"))) continue;
+752:             OfficeInfo o = m.get(lng(row, "office_id"));

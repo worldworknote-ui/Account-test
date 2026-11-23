@@ -1,0 +1,51 @@
+1: package android.animation;
+2: 
+3: public class PropertyValuesHolder implements Cloneable {
+4:     String name;
+5:     android.util.Property property;
+6:     float[] floats;
+7:     int[] ints;
+8:     Object[] objects;
+9:     @SuppressWarnings("rawtypes") TypeEvaluator evaluator;
+10:     Object value;
+11:     Float singleF; Integer singleI;
+12: 
+13:     PropertyValuesHolder(String n) { name = n; }
+14:     public static PropertyValuesHolder ofFloat(String n, float... v) { PropertyValuesHolder h = new PropertyValuesHolder(n); h.floats = v; return h; }
+15:     public static PropertyValuesHolder ofFloat(android.util.Property<?, Float> p, float... v) { PropertyValuesHolder h = ofFloat(p.getName(), v); h.property = p; return h; }
+16:     public static PropertyValuesHolder ofInt(String n, int... v) { PropertyValuesHolder h = new PropertyValuesHolder(n); h.ints = v; return h; }
+17:     public static PropertyValuesHolder ofObject(String n, TypeEvaluator ev, Object... v) { PropertyValuesHolder h = new PropertyValuesHolder(n); h.objects = v; h.evaluator = ev; return h; }
+18:     public void setFloatValues(float... v) { floats = v; ints = null; objects = null; }
+19:     public void setIntValues(int... v) { ints = v; floats = null; objects = null; }
+20:     public String getPropertyName() { return name; }
+21:     public void setPropertyName(String n) { name = n; }
+22: 
+23:     @SuppressWarnings("unchecked")
+24:     void calc(float f) {
+25:         if (evaluator != null) {
+26:             Object[] vs = objects != null ? objects : ints != null ? box(ints) : floats != null ? boxF(floats) : null;
+27:             if (vs == null || vs.length == 0) return;
+28:             if (vs.length == 1) { value = vs[0]; return; }
+29:             float seg = f * (vs.length - 1);
+30:             int i = Math.max(0, Math.min(vs.length - 2, (int) Math.floor(seg)));
+31:             value = evaluator.evaluate(seg - i, vs[i], vs[i + 1]);
+32:             return;
+33:         }
+34:         if (floats != null) value = interp(floats, f);
+35:         else if (ints != null) {
+36:             float[] fl = new float[ints.length];
+37:             for (int i = 0; i < fl.length; i++) fl[i] = ints[i];
+38:             value = Math.round(interp(fl, f));
+39:         } else if (objects != null && objects.length > 0) value = objects[Math.min(objects.length - 1, Math.round(f * (objects.length - 1)))];
+40:     }
+41:     private static float interp(float[] v, float f) {
+42:         if (v.length == 1) return v[0];
+43:         float seg = f * (v.length - 1);
+44:         int i = Math.max(0, Math.min(v.length - 2, (int) Math.floor(seg)));
+45:         float t = seg - i;
+46:         return v[i] + (v[i + 1] - v[i]) * t;
+47:     }
+48:     private static Object[] box(int[] a) { Object[] r = new Object[a.length]; for (int i = 0; i < a.length; i++) r[i] = a[i]; return r; }
+49:     private static Object[] boxF(float[] a) { Object[] r = new Object[a.length]; for (int i = 0; i < a.length; i++) r[i] = a[i]; return r; }
+50:     @Override public PropertyValuesHolder clone() { try { return (PropertyValuesHolder) super.clone(); } catch (CloneNotSupportedException e) { throw new AssertionError(e); } }
+51: }

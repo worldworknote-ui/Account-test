@@ -1,0 +1,33 @@
+1: // 12.1 المحاسب الذكي — قراءة صورة ما تحت «إطار الالتقاط» على الماك بإطار Vision المدمج في النظام (بلا إنترنت).
+2: // المخرجات: سطر لكل سطر نص: x، y، العرض، الارتفاع (نسبية 0..1، والأصل أسفل الصورة)، ثم النص بـBase64.
+3: ObjC.import('Foundation');
+4: ObjC.import('Vision');
+5: function run(argv) {
+6:     var url = $.NSURL.fileURLWithPath(argv[0]);
+7:     function ocr(langs) {
+8:         var req = $.VNRecognizeTextRequest.alloc.init;
+9:         req.setRecognitionLevel(0); // دقيق
+10:         req.setUsesLanguageCorrection(false);
+11:         if (langs) req.setRecognitionLanguages($(langs));
+12:         else { try { req.setAutomaticallyDetectsLanguage(true); } catch (e) {} }
+13:         var h = $.VNImageRequestHandler.alloc.initWithURLOptions(url, $({}));
+14:         var ok = h.performRequestsError($([req]), null);
+15:         if (!ok) return null;
+16:         return req.results;
+17:     }
+18:     var res = null;
+19:     try { res = ocr(['ar', 'en']); } catch (e) { res = null; }
+20:     if (!res || res.count == 0) { try { res = ocr(null); } catch (e) { res = null; } }
+21:     if (!res) return '';
+22:     var out = [];
+23:     for (var i = 0; i < res.count; i++) {
+24:         var o = res.objectAtIndex(i);
+25:         var c = o.topCandidates(1);
+26:         if (c.count == 0) continue;
+27:         var s = c.objectAtIndex(0).string;
+28:         var b = o.boundingBox;
+29:         var b64 = s.dataUsingEncoding($.NSUTF8StringEncoding).base64EncodedStringWithOptions(0).js;
+30:         out.push([b.origin.x, b.origin.y, b.size.width, b.size.height, b64].join('\t'));
+31:     }
+32:     return out.join('\n');
+33: }

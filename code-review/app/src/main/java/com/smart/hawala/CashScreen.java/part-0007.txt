@@ -1,0 +1,176 @@
+962:             sb.append(cashEffect >= 0 ? "يدخل الصندوق: " : "يخرج من الصندوق: ").append(iso(Model.fmt(Math.abs(cashEffect), d) + " " + c));
+963:             if (withOffice && office[0] != null) {
+964:                 sb.append("\nوعلى مكتب «").append(office[0].name).append("»: ").append(in ? "علينا " : "لنا ").append(iso(Model.fmt(amt, d) + " " + c));
+965:                 if (f > 0 && !cashFee) sb.append(" وأجرة ").append(fee.selected == 1 ? "لنا " : "علينا ").append(iso(Model.fmt(f, d)));
+966:             }
+967:             if (withClient && client[0] != null) {
+968:                 String cc = same.selected == 1 && !ccur.none() ? ccur.label() : c;
+969:                 String ca = same.selected == 1 ? camt.getText().toString().trim() : Model.fmt(amt, d);
+970:                 sb.append("\nوعلى حساب «").append(client[0].name).append("»: ").append(in ? "علينا له " : "لنا عليه ").append(iso(ca + " " + cc));
+971:             }
+972:             summary.setText(sb.toString());
+973:         };
+974:         officeBtn.setOnClickListener(v -> a.officePicker(o -> {
+975:             office[0] = o;
+976:             drawCurs.run();
+977:             refresh.run();
+978:         }, true));
+979:         clientBtn.setOnClickListener(v -> clients.pick(k -> {
+980:             client[0] = k;
+981:             refresh.run();
+982:         }));
+983:         link.listener = i -> {
+984:             drawCurs.run();
+985:             refresh.run();
+986:         };
+987:         same.listener = i -> refresh.run();
+988:         ccur.listener = i -> {
+989:             refresh.run();
+990:             recalcCross.run();
+991:         };
+992:         fee.listener = i -> refresh.run();
+993:         feeWhere.listener = i -> refresh.run();
+994:         amount.addTextChangedListener(Ui.watcher(() -> {
+995:             recalcCross.run();
+996:             refresh.run();
+997:         }));
+998:         crate.addTextChangedListener(Ui.watcher(() -> {
+999:             recalcCross.run();
+1000:             refresh.run();
+1001:         }));
+1002:         camt.addTextChangedListener(Ui.watcher(refresh));
+1003:         feeAmt.addTextChangedListener(Ui.watcher(refresh));
+1004:         refreshRef[0] = refresh;
+1005:         drawCurs.run();
+1006:         refresh.run();
+1007: 
+1008:         a.footer(a.makeButton(in ? "مراجعة الاستلام" : "مراجعة التسليم", in ? a.green : a.red, v -> {
+1009:             try {
+1010:                 CashBox.Input x = new CashBox.Input();
+1011:                 x.kind = kind;
+1012:                 x.boxId = cfg.id;
+1013:                 int ls = link.selected;
+1014:                 if (ls == 0) {
+1015:                     if (office[0] == null) throw new Exception("اختر المكتب");
+1016:                     x.officeId = office[0].id;
+1017:                 } else if (ls == 1) {
+1018:                     if (client[0] == null) throw new Exception("اختر العميل أو أضفه");
+1019:                     x.clientId = client[0].id;
+1020:                 }
+1021:                 if (cur[0] == null || cur[0].none()) throw new Exception("اختر العملة");
+1022:                 x.currency = cur[0].label();
+1023:                 int d = dec(dec, x.currency);
+1024:                 x.amount = Db.minor(amount.getText().toString(), d);
+1025:                 if (x.clientId != null) {
+1026:                     if (same.selected == 1) {
+1027:                         if (ccur.none()) throw new Exception("اختر عملة حساب العميل");
+1028:                         x.clientCurrency = ccur.label();
+1029:                         if (x.clientCurrency.equals(x.currency)) throw new Exception("اختر عملة غير عملة النقد، أو «عملة النقد نفسها»");
+1030:                         x.clientAmount = Db.minor(camt.getText().toString(), dec(dec, x.clientCurrency));
+1031:                     } else {
+1032:                         x.clientCurrency = x.currency;
+1033:                         x.clientAmount = x.amount;
+1034:                     }
+1035:                 } else x.party = party.getText().toString().trim();
+1036:                 x.description = desc.getText().toString().trim();
+1037:                 if (ls == 2) x.category = cats.isEmpty() ? "" : String.valueOf(cat.getSelectedItem());
+1038:                 if (fee.selected > 0) {
+1039:                     x.fee = Db.minor(feeAmt.getText().toString(), d);
+1040:                     if (x.fee <= 0) throw new Exception("اكتب مبلغ الأجور أو اختر «بدون أجور»");
+1041:                     x.feeSide = fee.selected == 1 ? CashBox.FEE_US : CashBox.FEE_THEM;
+1042:                     x.feeInCash = ls != 0 || feeWhere.selected == 1;
+1043:                 }
+1044:                 x.when = now();
+1045:                 String err = CashBox.validate(x, cfg, Clock.now());
+1046:                 if (err != null) throw new Exception(err);
+1047:                 preview(x, presetClient != null ? () -> clients.page(presetClient.id) : this::home);
+1048:             } catch (Exception e) {
+1049:                 a.error(e);
+1050:             }
+1051:         }));
+1052:     }
+1053: 
+1054:     private void newCategory(final String kind, final Runnable after) {
+1055:         final EditText e = new EditText(a);
+1056:         e.setHint("اسم البند");
+1057:         LinearLayout l = new LinearLayout(a);
+1058:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+1059:         l.addView(e, new LinearLayout.LayoutParams(-1, -2));
+1060:         new AlertDialog.Builder(a).setTitle("بند جديد").setView(l).setPositiveButton("إضافة", (d, w) -> {
+1061:             String n = e.getText().toString().trim();
+1062:             if (n.isEmpty()) return;
+1063:             a.db.addCashCategory(kind, n);
+1064:             after.run();
+1065:         }).setNegativeButton("إلغاء", null).show();
+1066:     }
+1067: 
+1068:     // ===================================================================================
+1069:     // المصروف
+1070:     // ===================================================================================
+1071: 
+1072:     void expense() {
+1073:         if (!a.require(Auth.Perm.CASH) || !a.require(Auth.Perm.CASH_EXPENSE)) return;
+1074:         final CashBox.Config cfg = a.db.cashConfig();
+1075:         screen("مصروف من الصندوق", this::home);
+1076:         final Map<String, Integer> dec = a.db.decimalsMap();
+1077:         a.add(a.label("البند"));
+1078:         final Ui.Flow chips = a.flow();
+1079:         final String[] chosen = {null};
+1080:         final List<TextView> pills = new ArrayList<>();
+1081:         for (final String c : cfg.expenseCats) {
+1082:             final TextView[] me = new TextView[1];
+1083:             me[0] = a.pill(c, false, v -> {
+1084:                 chosen[0] = c;
+1085:                 for (TextView t : pills) {
+1086:                     boolean on = t == me[0];
+1087:                     t.setBackground(a.round(on ? a.accent : a.surface, on ? a.accent : a.line, 50));
+1088:                     t.setTextColor(on ? Color.rgb(42, 30, 0) : a.ink);
+1089:                 }
+1090:             });
+1091:             pills.add(me[0]);
+1092:             chips.addView(me[0]);
+1093:         }
+1094:         a.body.addView(chips);
+1095:         a.body.addView(a.smallButton("+ بند جديد", Color.rgb(130, 130, 130), v -> newCategory(CashBox.EXPENSE, this::expense)), a.lp(-2, 38, 2));
+1096:         a.add(a.label("العملة"));
+1097:         final Ui.Seg cur = a.new Seg(cfg.currencies.toArray(new String[0]), null, cfg.currencies.size() == 1 ? 0 : -1, cfg.currencies.size() > 4);
+1098:         a.body.addView(cur.view, a.lp(-1, -2, 2));
+1099:         a.add(a.label("المبلغ"));
+1100:         final EditText amount = a.amountInput("0");
+1101:         amount.setTextSize(22);
+1102:         final EditText party = a.input("لمن؟ (اختياري: اسم العامل، صاحب المحل…)");
+1103:         final EditText desc = a.input("البيان (مثل: راتب شهر 10)");
+1104:         dateButton(null);
+1105:         a.footer(a.makeButton("مراجعة المصروف", a.accent, v -> {
+1106:             try {
+1107:                 if (chosen[0] == null) throw new Exception("اختر بند المصروف");
+1108:                 if (cur.none()) throw new Exception("اختر العملة");
+1109:                 CashBox.Input x = new CashBox.Input();
+1110:                 x.kind = CashBox.EXPENSE;
+1111:                 x.boxId = cfg.id;
+1112:                 x.category = chosen[0];
+1113:                 x.currency = cur.label();
+1114:                 x.amount = Db.minor(amount.getText().toString(), dec(dec, x.currency));
+1115:                 x.party = party.getText().toString().trim();
+1116:                 x.description = desc.getText().toString().trim();
+1117:                 x.when = now();
+1118:                 String err = CashBox.validate(x, cfg, Clock.now());
+1119:                 if (err != null) throw new Exception(err);
+1120:                 preview(x, this::home);
+1121:             } catch (Exception e) {
+1122:                 a.error(e);
+1123:             }
+1124:         }));
+1125:     }
+1126: 
+1127:     // ===================================================================================
+1128:     // 9.0.1: البيع والشراء
+1129:     // ===================================================================================
+1130: 
+1131:     void trade(final String side) {
+1132:         if (!a.require(Auth.Perm.CASH) || !a.require(Auth.Perm.CASH_FX)) return;
+1133:         final CashBox.Config cfg = a.db.cashConfig();
+1134:         if (cfg.currencies.size() < 2) {
+1135:             a.toast("أضف عملة ثانية للصندوق من إعداداته أولًا");
+1136:             return;
+1137:         }

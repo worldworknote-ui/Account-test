@@ -1,0 +1,154 @@
+871:       var parts = [], bad = null;
+872:       if (roles.debit !== undefined && roles.credit !== undefined) {
+873:         [["D", roles.debit], ["C", roles.credit]].forEach(function (x) {
+874:           var p = C.parseAmount(row[x[1]]);
+875:           if (p.empty || (p.ok && p.zero)) return;
+876:           if (!p.ok) { bad = "badAmount"; return; }
+877:           parts.push({ dir: p.neg ? (x[0] === "D" ? "C" : "D") : x[0], p: p });
+878:         });
+879:       } else if (roles.amount !== undefined) {
+880:         var pa = C.parseAmount(row[roles.amount]);
+881:         if (!pa.empty && !(pa.ok && pa.zero)) {
+882:           if (!pa.ok) bad = "badAmount";
+883:           else if (roles.direction !== undefined) {
+884:             var dm = dirT ? (cfg.dirMap && cfg.dirMap[key(dirT)]) || guessDir(dirT) : null;
+885:             if (!dirT) bad = "noDir";
+886:             else if (dm === "X") bad = "excludedDir";
+887:             else if (dm !== "D" && dm !== "C") bad = "badDir";
+888:             // مبلغ سالب مع اتجاه: كما تجمعه معادلات Excel (يطرح)، أي عكس الاتجاه
+889:             else parts.push({ dir: pa.neg ? (dm === "D" ? "C" : "D") : dm, p: pa });
+890:           } else parts.push({ dir: pa.neg ? (pos === "D" ? "C" : "D") : pos, p: pa });
+891:         } else if (pa.ok && pa.zero) bad = "zero";
+892:       }
+893:       // الأجرة: تتبع الحركة في التطبيق (قيد أجرة مستقل) وتدخل في الرصيد، إلا إن اختار المستخدم «لا تُحسب»
+894:       var feeP = null, feeText = roles.fee !== undefined ? text(row[roles.fee]) : "";
+895:       var feeDir = (cfg.feeDir && cfg.feeDir[t.id]) || "D";
+896:       if (feeText && feeDir !== "X") {
+897:         var fp = C.parseAmount(row[roles.fee]);
+898:         if (!fp.ok) bad = bad && bad !== "zero" ? bad : "badFee";
+899:         else if (!fp.zero) feeP = fp;
+900:       }
+901:       // صف أجرة فقط (بلا مبلغ أصل): الأجرة نفسها حركة باتجاهها
+902:       if (feeP && !parts.length && (!bad || bad === "zero")) { parts.push({ dir: feeP.neg ? flip(feeDir) : feeDir, p: feeP }); feeP = null; bad = null; }
+903:       var hasAny = parts.length > 0 || bad;
+904:       if (!hasAny) {
+905:         // صف رصيد فقط (رصيد منقول/سابق بلا مبلغ): للتحقق ولاستنتاج الرصيد السابق، لا يغيّر شيئًا وحده
+906:         if (log && clean(acc) && text(row[roles.balance])) {
+907:           var cb = currencyOf(row);
+908:           var bm = cb.code ? balanceMinor(row[roles.balance], curDef(cfg, cb.code).dec) : null;
+909:           if (bm !== null) {
+910:             log.push({ r: r, acc: acc, code: cb.code, delta: 0n, bal: bm, when: rowDate ? C.epoch(rowDate, 12) : null, only: true });
+911:             seen[key(acc) + "|" + cb.code] = true;
+912:             stat.balanceOnly++;
+913:             continue;
+914:           }
+915:         }
+916:         // صف بلا مبلغ: فارغ (رقم قيد أو تاريخ أو بيان فقط) أو ناقص
+917:         if ((roles.account !== undefined && acc) || curT || dirT) { issue(model, "noAmount", t, r, row); stat.excluded++; }
+918:         else { model.emptyRows++; stat.empty++; }
+919:         continue;
+920:       }
+921:       stat.rows++;
+922:       model.rowsRead++;
+923:       if (bad && bad !== "zero") { issue(model, bad, t, r, row); stat.excluded++; continue; }
+924:       if (bad === "zero") { model.skipped.push({ sheet: t.label, row: r + 1, reason: REASONS.zero }); continue; }
+925:       if (!clean(acc)) { issue(model, "noAccount", t, r, row); stat.excluded++; continue; }
+926:       var cc = currencyOf(row);
+927:       if (cc.bad) { issue(model, cc.bad, t, r, row); stat.excluded++; continue; }
+928:       var code = cc.code;
+929:       var def = curDef(cfg, code);
+930:       var made = [];
+931:       for (var k = 0; k < parts.length; k++) {
+932:         var m = C.toMinor(parts[k].p, def.dec);
+933:         if (m === null) { made = null; break; }
+934:         made.push({ dir: parts[k].dir, minor: m });
+935:       }
+936:       var feeMinor = null;
+937:       if (made && feeP) { feeMinor = C.toMinor(feeP, def.dec); if (feeMinor === null) made = null; }
+938:       if (!made) { issue(model, "decimals", t, r, row); stat.excluded++; continue; }
+939:       var feeD = feeP ? (feeP.neg ? flip(feeDir) : feeDir) : "D";
+940:       // التاريخ
+941:       var dt = rowDate;
+942:       var filled = false;
+943:       if (!dt) {
+944:         dt = prevDate || firstDate;
+945:         filled = true;
+946:       }
+947:       if (!dt) {
+948:         dt = { y: new Date(cfg.now).getFullYear(), m: new Date(cfg.now).getMonth() + 1, d: new Date(cfg.now).getDate(), H: 12, M: 0, S: 0, hasTime: false };
+949:       }
+950:       prevDate = dt;
+951:       var when = C.epoch(dt, 12);
+952:       if (when > cfg.now + 10 * 60000) { issue(model, "future", t, r, row); stat.excluded++; continue; }
+953:       if (filled) { issue(model, "filledDate", t, r, row, true); stat.filled++; model.filledDates++; }
+954:       var oi = officeOf(model, cfg, acc, "");
+955:       var gk = key(acc) + "|" + code;
+956:       if (isOpening && seen[gk]) model.midOpenings.push({ sheet: t.label, row: r + 1, office: model.offices[oi].name });
+957:       seen[gk] = true;
+958:       var notes = [];
+959:       if (roles.ref !== undefined && text(row[roles.ref])) notes.push("رقم القيد في الملف: " + text(row[roles.ref]));
+960:       (roles.notes || []).forEach(function (c) { var v = text(row[c]); if (v) notes.push(t.names[c - t.c0] + ": " + v); });
+961:       if (feeText && feeDir === "X") notes.push(t.names[roles.fee - t.c0] + " (لم تُحسب في الرصيد): " + feeText);
+962:       notes.push("منقولة من: " + t.label + " — صف " + (r + 1) + (filled ? " (التاريخ من الصف السابق)" : ""));
+963:       if (roles.phone !== undefined && !model.offices[oi].phone) model.offices[oi].phone = text(row[roles.phone]);
+964:       if (made.length === 2) model.both++;
+965:       var delta = 0n, feeLeft = feeMinor;
+966:       made.forEach(function (x) {
+967:         var signed = x.dir === "D" ? x.minor : -x.minor;
+968:         var fee = 0n;
+969:         if (feeLeft !== null) { fee = feeLeft; feeLeft = null; }
+970:         var feeSigned = fee === 0n ? 0n : (feeD === "D" ? fee : -fee);
+971:         if (isOpening) {
+972:           signed += feeSigned;
+973:           fee = 0n;
+974:           feeSigned = 0n;
+975:           if (signed !== 0n) {
+976:             model.openings.push({ office: oi, code: code, minor: signed, when: when - 60000, src: { sheet: t.label, row: r + 1, tid: t.id } });
+977:             model.offices[oi].openings++;
+978:           }
+979:         } else {
+980:           model.txs.push({ office: oi, when: when, dir: x.dir, minor: x.minor, code: code, person: "", desc: desc, notes: notes.join(" • "),
+981:             fee: fee, feeDir: feeD, src: { sheet: t.label, row: r + 1, tid: t.id }, seq: model.txs.length });
+982:           model.offices[oi].tx++;
+983:         }
+984:         delta += signed + feeSigned;
+985:         addDirect(model, t, oi, code, signed + feeSigned);
+986:       });
+987:       if (log) log.push({ r: r, acc: acc, code: code, delta: delta, bal: text(row[roles.balance]) ? balanceMinor(row[roles.balance], def.dec) : null, when: when });
+988:       stat.imported++;
+989:     }
+990:     if (log) model.balanceLogs.push({ t: t, log: log });
+991:   }
+992: 
+993:   /**
+994:    * عمود «الرصيد» في سجل الحركات (دفتر لكل مكتب غالبًا):
+995:    *  1) إشارته تُعرف من الملف نفسه: الفرق بين رصيدين متتاليين = مبلغ الحركة (موجب = لنا) أو عكسه (موجب = علينا).
+996:    *  2) إن بدأ الحساب برصيد سابق غير مكتوب كحركة (رصيد أول صف ≠ مبلغه) يُضاف رصيدًا سابقًا مستنتجًا، فيطابق رصيدنا رصيد ملفك.
+997:    *  3) يُتحقق من كل صف: رصيدنا التراكمي = رصيد الملف في الصف نفسه.
+998:    */
+999:   function resolveBalances(model, cfg) {
+1000:     var lastByKey = {};
+1001:     // الإشارة لكل جدول من فروق أرصدته المتتالية؛ والجدول بلا حركتين متتاليتين (ورقة مكتب بحركة واحدة) يأخذ إشارة باقي أوراق الملف
+1002:     var gPlus = 0, gMinus = 0;
+1003:     model.balanceLogs.forEach(function (bl) {
+1004:       var groups = {}, order = [];
+1005:       bl.log.forEach(function (e) {
+1006:         var g = key(e.acc) + "|" + e.code;
+1007:         if (!groups[g]) { groups[g] = []; order.push(g); }
+1008:         groups[g].push(e);
+1009:       });
+1010:       bl.groups = groups; bl.order = order;
+1011:       var p = evalSign(bl, 1n), m = evalSign(bl, -1n);
+1012:       // صفوف تفيد في الحكم: كل رصيد بعد أول رصيد في حسابه (الأول يطابق دائمًا لأنه يحدد الرصيد السابق)
+1013:       bl.inform = p.inform;
+1014:       bl.plus = p.ok; bl.minus = m.ok;
+1015:       bl.own = p.ok > m.ok && p.ok >= p.inform * 0.5 ? 1n : (m.ok > p.ok && m.ok >= m.inform * 0.5 ? -1n : 0n);
+1016:       if (bl.own === 1n) gPlus += p.ok - m.ok;
+1017:       if (bl.own === -1n) gMinus += m.ok - p.ok;
+1018:     });
+1019:     var global = gPlus > 0 && gMinus === 0 ? 1n : (gMinus > 0 && gPlus === 0 ? -1n : 0n);
+1020:     model.balanceLogs.forEach(function (bl) {
+1021:       var t = bl.t, groups = bl.groups, order = bl.order, plus = bl.plus, minus = bl.minus, pairs = bl.inform;
+1022:       var forced = cfg.balanceSign && cfg.balanceSign[t.id];
+1023:       var s = forced ? (forced === "D" ? 1n : -1n) : bl.own;
+1024:       var how = forced ? "forced" : "own";

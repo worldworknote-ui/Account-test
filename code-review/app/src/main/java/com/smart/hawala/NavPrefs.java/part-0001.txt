@@ -1,0 +1,169 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.Arrays;
+5: import java.util.LinkedHashMap;
+6: import java.util.List;
+7: import java.util.Map;
+8: import org.json.JSONArray;
+9: import org.json.JSONObject;
+10: 
+11: /**
+12:  * 10.15: إعدادات الشريط السفلي «الزجاجي بتجويف» وقائمة «+» (منقولة من تطبيق «أموالي» 1.6 ومكيّفة للمكاتب):
+13:  * شكل الشريط وحجمه وألوانه وشفافيته ولون الدائرة والأيقونات وظهور الأسماء، ومحتوى قائمة «+» وترتيبها ولون كل زر
+14:  * وشكلها وحجمها، وماذا يفعل زر «+». ترتيب أزرار الشريط نفسه باقٍ في إعداد «tabs» كما كان.
+15:  * تُحفظ نصًّا JSON في الإعداد الشخصي nav_prefs (لكل مستخدم وحده). منطق بحت بلا أندرويد (الألوان أعداد ARGB) ليُختبر في tests/.
+16:  */
+17: public final class NavPrefs {
+18:     /** لون «تلقائي»: الشريط بلون الشريط العلوي للتطبيق، والدائرة بلون التبويب المفتوح، والأيقونات حسب لون الشريط. */
+19:     public static final int AUTO = 0;
+20: 
+21:     /** كل ما يمكن وضعه في قائمة «+»: المفتاح ← [الاسم، اللون الافتراضي]. ما لا يملك المستخدم صلاحيته لا يظهر له. */
+22:     public static final Map<String, Object[]> ITEMS = new LinkedHashMap<>();
+23: 
+24:     static {
+25:         ITEMS.put("TX", new Object[]{"حركة عادية", rgb(11, 107, 83)});
+26:         ITEMS.put("FX", new Object[]{"قص عملات", rgb(30, 64, 110)});
+27:         ITEMS.put("XFER", new Object[]{"بين مكتبين", rgb(14, 116, 144)});
+28:         ITEMS.put("WA", new Object[]{"من واتساب", rgb(31, 143, 90)});
+29:         ITEMS.put("CASH_IN", new Object[]{"استلام", rgb(22, 128, 82)});
+30:         ITEMS.put("CASH_OUT", new Object[]{"تسليم", rgb(201, 63, 63)});
+31:         ITEMS.put("SELL", new Object[]{"بيع عملة", rgb(79, 70, 229)});
+32:         ITEMS.put("BUY", new Object[]{"شراء عملة", rgb(13, 128, 128)});
+33:         ITEMS.put("EXP", new Object[]{"مصروف", rgb(201, 162, 39)});
+34:         ITEMS.put("COUNT", new Object[]{"جرد", rgb(100, 116, 139)});
+35:         ITEMS.put("DAILY", new Object[]{"اليومي", rgb(217, 119, 6)});
+36:     }
+37: 
+38:     public static final List<String> DEFAULT_FAN = Arrays.asList("TX", "FX", "XFER", "WA");
+39:     public static final int MIN_FAN = 2, MAX_FAN = 6;
+40: 
+41:     /** ألوان جاهزة للشريط (الأول «تلقائي» = لون الشريط العلوي). */
+42:     public static final int[] BAR_COLORS = {AUTO, rgb(58, 47, 43), rgb(22, 50, 92), rgb(24, 24, 27), rgb(250, 250, 252), rgb(31, 120, 90),
+43:             rgb(176, 124, 16), rgb(185, 50, 50), rgb(91, 70, 190), rgb(100, 116, 139)};
+44:     /** ألوان الدائرة (الأول «تلقائي» = لون التبويب المفتوح). */
+45:     public static final int[] CIRCLE_COLORS = {AUTO, rgb(44, 112, 88), rgb(30, 64, 110), rgb(176, 124, 16), rgb(185, 50, 50), rgb(91, 70, 190),
+46:             rgb(13, 128, 128), rgb(190, 24, 93), rgb(24, 24, 27)};
+47:     /** ألوان الأيقونات (الأول «تلقائي» = أبيض على الداكن وكحلي على الفاتح). */
+48:     public static final int[] ICON_COLORS = {AUTO, 0xFFFFFFFF, rgb(242, 196, 109), rgb(126, 226, 176), rgb(22, 50, 92), rgb(24, 24, 27)};
+49:     public static final int[] ALPHA = {110, 175, 240};
+50:     public static final String[] ALPHA_NAMES = {"شفاف", "وسط", "معتم"};
+51:     public static final String[] FAN_STYLES = {"فاتح", "كحلي", "داكن"};
+52:     public static final String[] SIZES = {"صغير", "وسط", "كبير"};
+53:     public static final String[] BAR_SHAPES = {"موصول بالحواف", "جزيرة عائمة"};
+54: 
+55:     /** أنماط الشريط (الإعداد tab_style): الزجاجي بتجويف (الجديد)، والجزيرة، والدائرة التي تتمدد. */
+56:     public static final String STYLE_NOTCH = "notch", STYLE_ISLAND = "island", STYLE_BUBBLE = "bubble";
+57:     public static final String[] STYLES = {STYLE_NOTCH, STYLE_ISLAND, STYLE_BUBBLE};
+58:     public static final String[] STYLE_NAMES = {"زجاجي بتجويف", "جزيرة", "دائرة تتمدد"};
+59: 
+60:     public List<String> fan = new ArrayList<>(DEFAULT_FAN);
+61:     public Map<String, Integer> itemColors = new LinkedHashMap<>();
+62:     public int barColor = rgb(58, 47, 43);
+63:     public int barAlpha = 2;
+64:     public int circleColor = AUTO;
+65:     public int iconColor = AUTO;
+66:     public int fanStyle = 0;
+67:     public int fanSize = 1;
+68:     /** حجم الشريط (صغير/وسط/كبير). */
+69:     public int barSize = 1;
+70:     /** true = جزيرة عائمة مستديرة، false = موصول بطرفي الشاشة. */
+71:     public boolean barFloat = false;
+72:     /** أسماء التبويبات تحت الأيقونات. */
+73:     public boolean labels = true;
+74:     /** زر «+» يفتح القائمة السريعة (true) أو صفحة التسجيل مباشرة (false). */
+75:     public boolean plusMenu = true;
+76: 
+77:     public static int rgb(int r, int g, int b) { return 0xFF000000 | (r << 16) | (g << 8) | b; }
+78: 
+79:     static int r(int c) { return (c >> 16) & 0xFF; }
+80: 
+81:     static int g(int c) { return (c >> 8) & 0xFF; }
+82: 
+83:     static int b(int c) { return c & 0xFF; }
+84: 
+85:     /** خلط لونين (f = نسبة الثاني). */
+86:     public static int mix(int a, int b, float f) {
+87:         return rgb((int) (r(a) + (r(b) - r(a)) * f), (int) (g(a) + (g(b) - g(a)) * f), (int) (b(a) + (b(b) - b(a)) * f));
+88:     }
+89: 
+90:     public static boolean light(int c) { return (0.299 * r(c) + 0.587 * g(c) + 0.114 * b(c)) > 165; }
+91: 
+92:     /** لون الشريط الفعلي: المختار، أو لون الشريط العلوي للتطبيق. */
+93:     public int bar(int header) { return barColor != AUTO ? barColor : header | 0xFF000000; }
+94: 
+95:     /** لون الدائرة الفعلي: المختار، أو لون التبويب. */
+96:     public int circle(int tabColor) { return circleColor != AUTO ? circleColor : tabColor | 0xFF000000; }
+97: 
+98:     /** لون أيقونات الشريط الفعلي: المختار، أو تلقائيًا أبيض على الشريط الداكن وكحلي على الفاتح. */
+99:     public int icons(int header) { return iconColor != AUTO ? iconColor : light(bar(header)) ? rgb(22, 50, 92) : 0xFFFFFFFF; }
+100: 
+101:     public int itemColor(String k) {
+102:         Integer c = itemColors.get(k);
+103:         if (c != null) return c;
+104:         Object[] o = ITEMS.get(k);
+105:         return o == null ? rgb(100, 116, 139) : (Integer) o[1];
+106:     }
+107: 
+108:     public static String itemName(String k) {
+109:         Object[] o = ITEMS.get(k);
+110:         return o == null ? k : (String) o[0];
+111:     }
+112: 
+113:     public static String styleName(String style) {
+114:         for (int i = 0; i < STYLES.length; i++) if (STYLES[i].equals(style)) return STYLE_NAMES[i];
+115:         return STYLE_NAMES[0];
+116:     }
+117: 
+118:     /** النمط المحفوظ بعد التحقق (قيمة غير معروفة = الزجاجي). */
+119:     public static String style(String saved) {
+120:         for (String s : STYLES) if (s.equals(saved)) return s;
+121:         return STYLE_NOTCH;
+122:     }
+123: 
+124:     // ===================================================================================
+125:     // تعديل (يرجع رسالة خطأ للمستخدم أو null)
+126:     // ===================================================================================
+127: 
+128:     public static void move(List<String> l, int i, int d) {
+129:         int j = i + d;
+130:         if (i < 0 || j < 0 || i >= l.size() || j >= l.size()) return;
+131:         String x = l.get(i);
+132:         l.set(i, l.get(j));
+133:         l.set(j, x);
+134:     }
+135: 
+136:     public String toggleFan(String k) {
+137:         if (fan.contains(k)) {
+138:             if (fan.size() <= MIN_FAN) return "يجب أن تبقى في القائمة " + MIN_FAN + " أزرار على الأقل";
+139:             fan.remove(k);
+140:         } else {
+141:             if (fan.size() >= MAX_FAN) return "الحد الأقصى " + MAX_FAN + " أزرار حتى تبقى القائمة مريحة";
+142:             if (!ITEMS.containsKey(k)) return "زر غير معروف";
+143:             fan.add(k);
+144:         }
+145:         return null;
+146:     }
+147: 
+148:     // ===================================================================================
+149:     // الحفظ والقراءة
+150:     // ===================================================================================
+151: 
+152:     public String toJson() {
+153:         try {
+154:             JSONObject o = new JSONObject();
+155:             o.put("fan", new JSONArray(fan));
+156:             JSONObject ic = new JSONObject();
+157:             for (Map.Entry<String, Integer> e : itemColors.entrySet()) ic.put(e.getKey(), e.getValue());
+158:             o.put("itemColors", ic);
+159:             o.put("barColor", barColor);
+160:             o.put("barAlpha", barAlpha);
+161:             o.put("circleColor", circleColor);
+162:             o.put("iconColor", iconColor);
+163:             o.put("fanStyle", fanStyle);
+164:             o.put("fanSize", fanSize);
+165:             o.put("barSize", barSize);
+166:             o.put("barFloat", barFloat);
+167:             o.put("labels", labels);
+168:             o.put("plusMenu", plusMenu);
+169:             return o.toString();

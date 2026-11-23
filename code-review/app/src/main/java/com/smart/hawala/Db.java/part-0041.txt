@@ -1,0 +1,164 @@
+6138:             throw new IllegalStateException("حركة المكتب المرتبطة بانتظار الاعتماد: ارفضها من «بانتظار الاعتماد» فلا تُحسب في الصندوق.");
+6139:         SQLiteDatabase d = getWritableDatabase();
+6140:         long now = Clock.now();
+6141:         d.beginTransaction();
+6142:         try {
+6143:             checkLock(d, m.createdAt, "الحركة ضمن فترة محاسبية مقفلة");
+6144:             ContentValues v = new ContentValues();
+6145:             v.put("status", CashBox.CANCELLED);
+6146:             v.put("cancel_reason", Crypto.enc(Model.nz(reason)));
+6147:             v.put("cancelled_at", now);
+6148:             if (m.pairUuid != null && !m.pairUuid.isEmpty()) d.update("cash_moves", v, "pair_uuid=? AND status='ACTIVE'", new String[]{m.pairUuid});
+6149:             else d.update("cash_moves", v, "id=" + id + " AND status='ACTIVE'", null);
+6150:             // 9.0.1: حركة حساب العميل المرتبطة تُلغى معها
+6151:             d.update("client_moves", v, "cash_uuid=? AND status='ACTIVE'", new String[]{m.uuid});
+6152:             // حركة المكتب المرتبطة تُلغى معها بقيد عكسي (لا يبقى على المكتب مبلغ لم يمر بالصندوق)
+6153:             if (m.txId != null && Model.STATUS_ACTIVE.equals(m.txStatus)) cancelTx(m.txId, "إلغاء من الصندوق: " + Model.nz(reason));
+6154:             audit(d, "CASH_CANCEL", "cash", id, Model.nz(reason));
+6155:             d.setTransactionSuccessful();
+6156:         } finally {
+6157:             d.endTransaction();
+6158:         }
+6159:     }
+6160: 
+6161:     /** جرد الصندوق المفتوح (متوافق مع 9.0): يرجع عدد التسويات. */
+6162:     public int cashCount(Map<String, Long> counted, String note) {
+6163:         CashBox.Count c = cashCount(currentBox(), counted, note, null);
+6164:         return (int) c.adjusted;
+6165:     }
+6166: 
+6167:     /**
+6168:      * 9.0.1: جرد صندوق: المبالغ المعدودة فعلًا لكل عملة. قبل التسويات تُسجَّل عمليات البيع التي أكّد المستخدم أنها لم تُسجَّل
+6169:      * (زيادة عملة يقابلها عجز أخرى)، ثم يُسجَّل ما بقي من فرق «تسوية جرد» ليطابق الصندوق الواقع.
+6170:      * ويُحفظ الجرد كاملًا في سجل الجرد (المسجّل والمعدود لكل عملة قبل أي تسوية، والصافي بالدولار).
+6171:      */
+6172:     public CashBox.Count cashCount(long boxId, Map<String, Long> counted, String note, List<CashBox.Suggestion> asSales) {
+6173:         require(Auth.Perm.CASH);
+6174:         require(Auth.Perm.CASH_COUNT);   // 12.6
+6175:         CashBox.Config cfg = cashBox(boxId);
+6176:         // 10.5 (AUDIT-028): المتوقع في الصندوق = الرصيد المحسوب + نقد حركات المكاتب المعلّقة (موجود فعلًا ولم يُعتمد بعد)،
+6177:         // فلا تُسجَّل له «تسوية جرد» ثم يُحسب مرة ثانية عند اعتماده
+6178:         Map<String, Long> bal = cashExpected(boxId);
+6179:         Map<String, Long> pend = cashPending(boxId);
+6180:         Map<String, Integer> decs = decimalsMap();
+6181:         List<CashBox.CountLine> lines = new ArrayList<>();
+6182:         for (Map.Entry<String, Long> e : counted.entrySet()) {
+6183:             if (e.getValue() == null || e.getValue() < 0) continue;
+6184:             Long b = bal.get(e.getKey()), pp = pend.get(e.getKey());
+6185:             lines.add(new CashBox.CountLine(e.getKey(), b == null ? 0 : b, e.getValue(), pp == null ? 0 : pp));
+6186:         }
+6187:         String net = CashBox.netUsd(lines, usdRates(), decs, null).toPlainString();
+6188:         SQLiteDatabase d = getWritableDatabase();
+6189:         long now = Clock.now();
+6190:         CashBox.Count out = new CashBox.Count();
+6191:         StringBuilder sold = new StringBuilder();
+6192:         d.beginTransaction();
+6193:         try {
+6194:             if (asSales != null) for (CashBox.Suggestion s : asSales) {
+6195:                 CashBox.Input in = new CashBox.Input();
+6196:                 in.kind = CashBox.EXCHANGE;
+6197:                 in.side = CashBox.SELL;
+6198:                 in.boxId = boxId;
+6199:                 in.currency = s.soldCur;
+6200:                 in.amount = s.sold;
+6201:                 in.toCurrency = s.gotCur;
+6202:                 in.toAmount = s.got;
+6203:                 in.rate = s.rate.toPlainString();
+6204:                 in.when = now;
+6205:                 in.description = "من الجرد: بيع لم يُسجَّل";
+6206:                 String err = CashBox.validate(in, cfg, now + 1);
+6207:                 if (err != null) throw new IllegalArgumentException(err);
+6208:                 try {
+6209:                     addCashMove(in);
+6210:                 } catch (IOException e) {
+6211:                     throw new IllegalStateException(e.getMessage(), e);
+6212:                 }
+6213:                 if (sold.length() > 0) sold.append("، ");
+6214:                 sold.append(CashBox.exchangeText(in, decs, true));
+6215:             }
+6216:             Map<String, Long> after = cashExpected(boxId);
+6217:             int n = 0;
+6218:             for (CashBox.CountLine l : lines) {
+6219:                 Long b = after.get(l.currency);
+6220:                 long rec = b == null ? 0 : b;
+6221:                 long diff = l.counted - rec;
+6222:                 if (diff == 0) continue;
+6223:                 CashBox.Move m = new CashBox.Move();
+6224:                 m.kind = CashBox.ADJUST;
+6225:                 m.boxId = boxId;
+6226:                 m.currency = l.currency;
+6227:                 m.amount = Math.abs(diff);
+6228:                 m.dir = diff > 0 ? 1 : -1;
+6229:                 m.category = CashBox.CAT_COUNT;
+6230:                 m.description = "جرد: المعدود " + Model.fmt(l.counted, dec(decs, l.currency)) + " والمسجّل " + Model.fmt(rec, dec(decs, l.currency))
+6231:                         + (l.pending == 0 ? "" : " (منه معلّق بانتظار الاعتماد " + Model.fmt(l.pending, dec(decs, l.currency)) + ")")
+6232:                         + (note == null || note.trim().isEmpty() ? "" : " — " + note.trim());
+6233:                 m.createdAt = now;
+6234:                 insertCash(d, m);
+6235:                 n++;
+6236:             }
+6237:             ContentValues v = new ContentValues();
+6238:             v.put("uuid", UUID.randomUUID().toString());
+6239:             v.put("box_id", boxId);
+6240:             v.put("created_at", now);
+6241:             v.put("user_name", Crypto.enc(currentUserName));
+6242:             v.put("note", Crypto.enc(Model.nz(note).trim()));
+6243:             v.put("lines", CashBox.linesJson(lines));
+6244:             v.put("net_usd", net);
+6245:             v.put("adjusted", n);
+6246:             v.put("sales", Crypto.enc(sold.toString()));
+6247:             out.id = ins(d, "cash_counts", v);
+6248:             d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('cash_last_count',?)", new Object[]{"" + now});
+6249:             audit(d, "CASH_COUNT", "cash", out.id, cfg.name + " — " + n + " تسوية" + (sold.length() > 0 ? " — بيع: " + sold : ""));
+6250:             d.setTransactionSuccessful();
+6251:             out.adjusted = n;
+6252:         } finally {
+6253:             d.endTransaction();
+6254:         }
+6255:         out.boxId = boxId;
+6256:         out.createdAt = now;
+6257:         out.note = Model.nz(note).trim();
+6258:         out.netUsd = net;
+6259:         out.sales = sold.toString();
+6260:         out.lines.addAll(lines);
+6261:         return out;
+6262:     }
+6263: 
+6264:     private static int dec(Map<String, Integer> decs, String c) {
+6265:         Integer v = decs.get(c);
+6266:         return v == null ? 2 : v;
+6267:     }
+6268: 
+6269:     /** سجل الجرد لصندوق (الأحدث أولًا). */
+6270:     public List<CashBox.Count> cashCounts(long boxId) {
+6271:         List<CashBox.Count> out = new ArrayList<>();
+6272:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id,box_id,created_at,user_name,note,lines,net_usd,adjusted,sales FROM cash_counts WHERE box_id=" + boxId
+6273:                 + " ORDER BY created_at DESC,id DESC", null)) {
+6274:             while (c.moveToNext()) {
+6275:                 CashBox.Count x = new CashBox.Count();
+6276:                 x.id = c.getLong(0);
+6277:                 x.boxId = c.getLong(1);
+6278:                 x.createdAt = c.getLong(2);
+6279:                 x.userName = shown(Model.nz(Crypto.dec(c.getString(3))));
+6280:                 x.note = Model.nz(Crypto.dec(c.getString(4)));
+6281:                 x.lines.addAll(CashBox.linesFrom(c.getString(5)));
+6282:                 x.netUsd = Model.nz(c.getString(6));
+6283:                 x.adjusted = c.isNull(7) ? 0 : c.getLong(7);
+6284:                 x.sales = Model.nz(Crypto.dec(c.getString(8)));
+6285:                 out.add(x);
+6286:             }
+6287:         }
+6288:         return out;
+6289:     }
+6290: 
+6291:     // ===================================================================================
+6292:     // 9.0.1: حسابات العملاء
+6293:     // ===================================================================================
+6294: 
+6295:     private void insertClientMove(SQLiteDatabase d, ClientBook.Move m) {
+6296:         if (m.amount <= 0) throw new IllegalArgumentException("المبلغ يجب أن يكون أكبر من صفر");
+6297:         ContentValues v = new ContentValues();
+6298:         v.put("uuid", UUID.randomUUID().toString());
+6299:         v.put("client_id", m.clientId);
+6300:         v.put("kind", m.kind);
+6301:         v.put("currency", m.currency);

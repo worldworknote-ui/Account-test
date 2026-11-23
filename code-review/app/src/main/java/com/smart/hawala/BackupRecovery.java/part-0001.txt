@@ -1,0 +1,65 @@
+1: package com.smart.hawala;
+2: 
+3: import java.security.SecureRandom;
+4: import javax.crypto.spec.SecretKeySpec;
+5: 
+6: /**
+7:  * 10.14: «رمز استرداد النسخ الاحتياطية». يُنشئه المدير مرة واحدة ويُعرض مرة واحدة (24 حرفًا). بعده تُكتب كل نسخة من هذا الجهاز
+8:  * (التلقائية واليدوية) بالإصدار 2 من التشفير: تُفتح بكلمة مرورها أو بهذا الرمز، فنسيان كلمة مرور النسخ لا يُضيع النسخ.
+9:  *
+10:  * <p>لا يُحفظ الرمز نفسه أبدًا: يُحفظ المفتاح المشتق منه (وملحه) مشفّرًا بمفتاح هذا الجهاز، في إعدادات خاصة بالجهاز
+11:  * (لا تُنقل بالمزامنة ولا داخل النسخ). من يملك الرمز يفتح النسخ؛ ومن لا يملكه ولا كلمة المرور لا يفتحها.
+12:  * إيقافه أو إصداره من جديد لا يغيّر النسخ القديمة: تبقى تُفتح بالرمز الذي كُتبت به.
+13:  */
+14: public final class BackupRecovery {
+15:     private BackupRecovery() {}
+16: 
+17:     static final String K_KEY = "backup_rc_key", K_SALT = "backup_rc_salt", K_ITER = "backup_rc_iter", K_AT = "backup_rc_at";
+18:     public static final int ITERATIONS = 310000;
+19: 
+20:     public static boolean on(Db db) { return !db.setting(K_KEY, "").isEmpty() && !db.setting(K_SALT, "").isEmpty(); }
+21: 
+22:     /** تاريخ إنشاء الرمز الحالي (0 = لا رمز). */
+23:     public static long createdAt(Db db) { return db.settingLong(K_AT, 0); }
+24: 
+25:     /** مفتاح الرمز لكتابة النسخ، أو null إن لم يُفعَّل (أو تعذّر فكّه على هذا الجهاز: تُكتب النسخة بكلمة المرور وحدها). */
+26:     public static SecureStreams.RecoveryKey key(Db db) {
+27:         if (!on(db)) return null;
+28:         try {
+29:             byte[] k = SyncCrypto.unhex(Crypto.dec(db.setting(K_KEY, "")));
+30:             byte[] salt = SyncCrypto.unhex(db.setting(K_SALT, ""));
+31:             int iter = (int) db.settingLong(K_ITER, ITERATIONS);
+32:             if (k.length != 32 || salt.length != 16) return null;
+33:             return new SecureStreams.RecoveryKey(salt, iter, new SecretKeySpec(k, "AES"));
+34:         } catch (Exception e) {
+35:             return null;
+36:         }
+37:     }
+38: 
+39:     private static void requireAdmin(Db db) {
+40:         Model.User me = db.actor();
+41:         if (db.usersEnabled() && (me == null || !Auth.isAdmin(me))) throw new SecurityException("رمز استرداد النسخ للمدير وحده");
+42:     }
+43: 
+44:     /** ينشئ رمزًا جديدًا (يحل محل السابق للنسخ القادمة) ويرجعه ليُعرض مرة واحدة. */
+45:     public static String create(Db db) throws Exception {
+46:         requireAdmin(db);
+47:         String code = SyncCrypto.newRecoveryCode();
+48:         byte[] salt = new byte[16];
+49:         new SecureRandom().nextBytes(salt);
+50:         SecureStreams.RecoveryKey rk = SecureStreams.RecoveryKey.derive(code, salt, ITERATIONS);
+51:         db.setSettingQuiet(K_KEY, Crypto.enc(SyncCrypto.hex(rk.key.getEncoded())));
+52:         db.setSettingQuiet(K_SALT, SyncCrypto.hex(salt));
+53:         db.setSettingQuiet(K_ITER, "" + ITERATIONS);
+54:         db.setSettingQuiet(K_AT, "" + Clock.now());
+55:         db.audit("BACKUP_RECOVERY", "backup", 0, "أُنشئ رمز استرداد للنسخ الاحتياطية");
+56:         return code;
+57:     }
+58: 
+59:     /** يوقف الرمز للنسخ القادمة (النسخ السابقة تبقى تُفتح به). */
+60:     public static void disable(Db db) {
+61:         requireAdmin(db);
+62:         for (String k : new String[]{K_KEY, K_SALT, K_ITER, K_AT}) db.deleteSetting(k);
+63:         db.audit("BACKUP_RECOVERY", "backup", 0, "أُوقف رمز استرداد النسخ الاحتياطية");
+64:     }
+65: }

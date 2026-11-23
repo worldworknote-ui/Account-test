@@ -1,0 +1,48 @@
+426:     void alias(Map<String, List<String>> aliases) {
+427:         String w = Ui.input(this, "كلمة عملة", "الكلمة كما تُكتب في الرسائل (مثل: يوز)", "");
+428:         if (w == null || w.trim().isEmpty()) return;
+429:         List<String> codes = new ArrayList<>();
+430:         for (Model.Currency c : db.currencies(true)) codes.add(c.code);
+431:         int k = Ui.choose(this, "تعني أي عملة؟", "«" + w.trim() + "» تعني:", codes.toArray(new String[0]));
+432:         if (k < 0) return;
+433:         aliases.computeIfAbsent(codes.get(k), z -> new ArrayList<>()).add(w.trim());
+434:         db.setSetting("cur_aliases", MessageParser.aliasesTo(aliases));
+435:         refresh();
+436:     }
+437: 
+438:     void removeAlias(Map<String, List<String>> aliases) {
+439:         String w = Ui.input(this, "حذف كلمة", "اكتب الكلمة التي تريد حذفها", "");
+440:         if (w == null) return;
+441:         for (List<String> l : aliases.values()) l.remove(w.trim());
+442:         db.setSetting("cur_aliases", MessageParser.aliasesTo(aliases));
+443:         refresh();
+444:     }
+445: 
+446:     /** 10.18: اختيار توقيت المكتب من قائمة قابلة للبحث (المناطق الشائعة أولًا ثم كل مناطق العالم). */
+447:     void pickZone() {
+448:         List<String> ids = new ArrayList<>();
+449:         ids.add("");
+450:         for (String[] z : Model.ZONES) ids.add(z[0]);
+451:         for (String id : java.util.TimeZone.getAvailableIDs()) if (id.contains("/") && !id.startsWith("Etc/") && !id.startsWith("SystemV/") && !ids.contains(id)) ids.add(id);
+452:         String[] labels = new String[ids.size()];
+453:         for (int i = 0; i < labels.length; i++) labels[i] = Model.zoneLabel(ids.get(i));
+454:         JComboBox<String> box = Ui.combo(labels);
+455:         box.setSelectedIndex(Math.max(0, ids.indexOf(Model.zoneId())));
+456:         JPanel col = Ui.column();
+457:         col.add(Ui.para("اختر البلد الذي يعمل المكتب بتوقيته. يسري على كل الأجهزة بعد المزامنة: التواريخ المعروضة، وبداية اليوم ونهايته في التقارير والإقفال والصندوق. "
+458:                 + "لا يغيّر لحظة تسجيل أي حركة محفوظة.", 13, Ui.muted, 460));
+459:         col.add(Ui.gap(8));
+460:         col.add(box);
+461:         JOptionPane p = new JOptionPane(col, JOptionPane.PLAIN_MESSAGE, JOptionPane.DEFAULT_OPTION, null, new Object[]{"حفظ", "إلغاء"}, "حفظ");
+462:         Ui.show(this, p, "توقيت المكتب");
+463:         if (!"حفظ".equals(p.getValue())) return;
+464:         try {
+465:             db.setOfficeZone(ids.get(box.getSelectedIndex()));
+466:             app.changed();
+467:             Ui.toast("توقيت المكتب: " + Model.zoneLabel(Model.zoneId()));
+468:             refresh();
+469:         } catch (Exception ex) {
+470:             Ui.error(this, ex);
+471:         }
+472:     }
+473: }

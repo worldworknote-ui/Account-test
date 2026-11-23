@@ -1,0 +1,83 @@
+344:             int m = (c - 1) % 26;
+345:             s.insert(0, (char) ('A' + m));
+346:             c = (c - 1) / 26;
+347:         }
+348:         return s.toString() + row;
+349:     }
+350: 
+351:     static String esc(String s) {
+352:         if (s == null) return "";
+353:         StringBuilder b = new StringBuilder(s.length() + 16);
+354:         for (int i = 0; i < s.length(); i++) {
+355:             char ch = s.charAt(i);
+356:             switch (ch) {
+357:                 case '&': b.append("&amp;"); break;
+358:                 case '<': b.append("&lt;"); break;
+359:                 case '>': b.append("&gt;"); break;
+360:                 case '"': b.append("&quot;"); break;
+361:                 default:
+362:                     if (ch < 0x20 && ch != '\n' && ch != '\t' && ch != '\r') continue; // محارف غير مسموحة في XML
+363:                     if (ch == 0xFFFE || ch == 0xFFFF) continue;
+364:                     b.append(ch);
+365:             }
+366:         }
+367:         return b.toString();
+368:     }
+369: 
+370:     private String styles() {
+371:         StringBuilder x = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+372:                 + "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">");
+373:         if (!numFmts.isEmpty()) {
+374:             x.append("<numFmts count=\"").append(numFmts.size()).append("\">");
+375:             for (Map.Entry<String, Integer> e : numFmts.entrySet()) {
+376:                 x.append("<numFmt numFmtId=\"").append(e.getValue()).append("\" formatCode=\"").append(esc(e.getKey())).append("\"/>");
+377:             }
+378:             x.append("</numFmts>");
+379:         }
+380:         x.append("<fonts count=\"").append(5 + fonts.size()).append("\">")
+381:                 .append("<font><sz val=\"11\"/><name val=\"Arial\"/></font>")
+382:                 .append("<font><b/><sz val=\"11\"/><name val=\"Arial\"/></font>")
+383:                 .append("<font><b/><sz val=\"14\"/><color rgb=\"").append(accent).append("\"/><name val=\"Arial\"/></font>")
+384:                 .append("<font><sz val=\"10\"/><color rgb=\"FF777777\"/><name val=\"Arial\"/></font>")
+385:                 .append("<font><b/><sz val=\"11\"/><color rgb=\"FFFFFFFF\"/><name val=\"Arial\"/></font>");
+386:         for (String f : fonts) x.append("<font><b/><sz val=\"11\"/><color rgb=\"").append(f.startsWith("W") ? "FFFFFFFF" : f).append("\"/><name val=\"Arial\"/></font>");
+387:         x.append("</fonts>");
+388:         x.append("<fills count=\"").append(6 + fills.size()).append("\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill>")
+389:                 .append("<fill><patternFill patternType=\"solid\"><fgColor rgb=\"").append(accent).append("\"/><bgColor indexed=\"64\"/></patternFill></fill>")
+390:                 .append("<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFF6F3EC\"/><bgColor indexed=\"64\"/></patternFill></fill>")
+391:                 .append("<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFE3EFE9\"/><bgColor indexed=\"64\"/></patternFill></fill>")
+392:                 .append("<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFF1F1F1\"/><bgColor indexed=\"64\"/></patternFill></fill>");
+393:         for (String f : fills) x.append("<fill><patternFill patternType=\"solid\"><fgColor rgb=\"").append(f).append("\"/><bgColor indexed=\"64\"/></patternFill></fill>");
+394:         x.append("</fills>");
+395:         x.append("<borders count=\"2\"><border><left/><right/><top/><bottom/><diagonal/></border>")
+396:                 .append("<border><left style=\"thin\"><color rgb=\"FFD9D9D9\"/></left><right style=\"thin\"><color rgb=\"FFD9D9D9\"/></right>")
+397:                 .append("<top style=\"thin\"><color rgb=\"FFD9D9D9\"/></top><bottom style=\"thin\"><color rgb=\"FFD9D9D9\"/></bottom><diagonal/></border></borders>");
+398:         x.append("<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>");
+399:         x.append("<cellXfs count=\"").append(xfs.size()).append("\">");
+400:         for (String xf : xfs) x.append(xf);
+401:         x.append("</cellXfs><cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles></styleSheet>");
+402:         return x.toString();
+403:     }
+404: 
+405:     private static String contentTypes(int sheets) {
+406:         StringBuilder x = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+407:                 + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+408:                 + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+409:                 + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+410:                 + "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>"
+411:                 + "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>"
+412:                 + "<Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>"
+413:                 + "<Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/>");
+414:         for (int i = 1; i <= sheets; i++) {
+415:             x.append("<Override PartName=\"/xl/worksheets/sheet").append(i)
+416:                     .append(".xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>");
+417:         }
+418:         return x.append("</Types>").toString();
+419:     }
+420: 
+421:     private static void put(ZipOutputStream zip, String name, String content) throws IOException {
+422:         zip.putNextEntry(new ZipEntry(name));
+423:         zip.write(content.getBytes(StandardCharsets.UTF_8));
+424:         zip.closeEntry();
+425:     }
+426: }

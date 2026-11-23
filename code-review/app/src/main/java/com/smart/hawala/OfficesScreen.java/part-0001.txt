@@ -1,0 +1,166 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.graphics.Color;
+5: import android.text.InputType;
+6: import android.widget.CheckBox;
+7: import android.widget.EditText;
+8: import android.widget.LinearLayout;
+9: import android.widget.Spinner;
+10: import android.widget.TextView;
+11: import java.math.BigDecimal;
+12: import java.math.RoundingMode;
+13: import java.util.ArrayList;
+14: import java.util.HashMap;
+15: import java.util.LinkedHashMap;
+16: import java.util.List;
+17: import java.util.Locale;
+18: import java.util.Map;
+19: 
+20: /** إدارة المكاتب (مع التثبيت في أعلى القوائم وحدود التنبيه)، والعملات، وأسعار الصرف. */
+21: final class OfficesScreen {
+22:     private final MainActivity a;
+23: 
+24:     OfficesScreen(MainActivity a) { this.a = a; }
+25: 
+26:     // ===================================================================================
+27:     // قائمة المكاتب
+28:     // ===================================================================================
+29: 
+30:     /** قائمة المكاتب صارت تبويب «المكاتب» (OfficeHub). */
+31:     void showManager() { a.officeHub.showList(); }
+32: 
+33:     // ===================================================================================
+34:     // نموذج المكتب
+35:     // ===================================================================================
+36: 
+37:     void form(final Model.Office old) {
+38:         if (!a.require(Auth.Perm.OFFICES)) return;
+39:         a.tabbedScreen(old == null ? "إضافة مكتب" : "تعديل مكتب", old == null ? this::showManager : () -> a.officeHub.showOffice(old), "offices");
+40:         final EditText name = a.input("اسم المكتب");
+41:         final EditText sh = a.input("الاسم المختصر");
+42:         final EditText phone = a.input("الهاتف");
+43:         phone.setInputType(InputType.TYPE_CLASS_PHONE);
+44:         final EditText loc = a.input("المدينة / البلد");
+45:         final EditText contact = a.input("جهة الاتصال");
+46:         final EditText notes = a.input("ملاحظات");
+47:         if (old != null) {
+48:             name.setText(old.name);
+49:             sh.setText(old.shortName);
+50:             phone.setText(old.phone);
+51:             loc.setText(old.location);
+52:             contact.setText(old.contact);
+53:             notes.setText(old.notes);
+54:         }
+55:         final CheckBox active = new CheckBox(a);
+56:         active.setText("المكتب نشط");
+57:         active.setChecked(old == null || old.active);
+58:         a.body.addView(active);
+59:         final CheckBox pinned = new CheckBox(a);
+60:         pinned.setText("📌 تثبيت المكتب في أعلى القوائم");
+61:         pinned.setChecked(old != null && old.pinned);
+62:         a.body.addView(pinned);
+63: 
+64:         a.title("العملات وحدود التنبيه");
+65:         a.hint("حد «لنا»: ننبّهك إذا تجاوز ما لنا على المكتب هذا المبلغ. حد «علينا»: إذا تجاوز ما علينا للمكتب هذا المبلغ. اتركه فارغًا لعدم التنبيه.");
+66:         final Map<String, CheckBox> checks = new LinkedHashMap<>();
+67:         final Map<String, EditText[]> limits = new LinkedHashMap<>();
+68:         List<String> assigned = old == null ? new ArrayList<String>() : a.db.officeCurrencies(old.id);
+69:         Map<String, Db.Limit> oldLimits = old == null ? new HashMap<String, Db.Limit>() : a.db.officeLimits(old.id);
+70:         final List<Model.Currency> currencies = a.db.currencies(true);
+71:         for (Model.Currency c : currencies) {
+72:             if (!c.active && !assigned.contains(c.code)) continue;
+73:             LinearLayout r = a.row();
+74:             CheckBox ck = new CheckBox(a);
+75:             ck.setText(c.code + (c.active ? "" : " (معطلة)"));
+76:             ck.setChecked(assigned.contains(c.code) || (old == null && currencies.size() == 1));
+77:             EditText us = a.field("حد لنا");
+78:             EditText them = a.field("حد علينا");
+79:             Ui.numeric(us);
+80:             Ui.numeric(them);
+81:             us.setTextSize(14);
+82:             them.setTextSize(14);
+83:             Db.Limit l = oldLimits.get(c.code);
+84:             if (l != null && l.receivable != null) us.setText(Db.money(l.receivable, c.decimals));
+85:             if (l != null && l.payable != null) them.setText(Db.money(l.payable, c.decimals));
+86:             r.addView(ck, a.weight(50, 1.1f, 2));
+87:             r.addView(us, a.weight(48, 1, 2));
+88:             r.addView(them, a.weight(48, 1, 2));
+89:             a.body.addView(r);
+90:             checks.put(c.code, ck);
+91:             limits.put(c.code, new EditText[]{us, them});
+92:         }
+93:         a.title("حدود مجموع الأرصدة مقوّمة بالدولار (اختياري)");
+94:         LinearLayout ur = a.row();
+95:         final EditText usdUs = a.field("حد لنا USD");
+96:         final EditText usdThem = a.field("حد علينا USD");
+97:         Ui.numeric(usdUs);
+98:         Ui.numeric(usdThem);
+99:         ur.addView(usdUs, a.weight(52, 1, 2));
+100:         ur.addView(usdThem, a.weight(52, 1, 2));
+101:         a.body.addView(ur);
+102:         if (old != null && old.usdLimit != null) usdUs.setText(Db.money(old.usdLimit, 2));
+103:         if (old != null && old.usdOweLimit != null) usdThem.setText(Db.money(old.usdOweLimit, 2));
+104:         final List<Db.Opening> openings = new ArrayList<>();
+105:         final TextView openList;
+106:         if (old == null) {
+107:             a.title("الأرصدة السابقة (اختياري)");
+108:             openList = a.add(a.text("لا توجد أرصدة سابقة مضافة", 13, a.muted, false));
+109:             a.button("إضافة رصيد سابق", a.accent, v -> openingDialog(openings, openList));
+110:         } else openList = null;
+111:         a.button(old == null ? "حفظ المكتب" : "حفظ التعديلات", a.primary, v -> {
+112:             try {
+113:                 String nm = name.getText().toString().trim();
+114:                 if (nm.isEmpty()) throw new Exception("اكتب اسم المكتب");
+115:                 boolean renamed = old == null || !nm.equalsIgnoreCase(Model.nz(old.name).trim());
+116:                 for (Model.Office x : a.db.offices()) {
+117:                     if (renamed && (old == null || x.id != old.id) && x.name != null && x.name.trim().equalsIgnoreCase(nm)) {
+118:                         throw new Exception("يوجد مكتب آخر بنفس الاسم. اختر اسمًا مميزًا حتى لا تختلط الكشوفات.");
+119:                     }
+120:                 }
+121:                 List<String> codes = new ArrayList<>();
+122:                 Map<String, Db.Limit> lims = new HashMap<>();
+123:                 for (Model.Currency c : currencies) {
+124:                     CheckBox ck = checks.get(c.code);
+125:                     if (ck == null || !ck.isChecked()) continue;
+126:                     codes.add(c.code);
+127:                     EditText[] f = limits.get(c.code);
+128:                     Long x = f[0].getText().toString().trim().isEmpty() ? null : Db.minor(f[0].getText().toString(), c.decimals);
+129:                     Long y = f[1].getText().toString().trim().isEmpty() ? null : Db.minor(f[1].getText().toString(), c.decimals);
+130:                     lims.put(c.code, new Db.Limit(x, y));
+131:                 }
+132:                 if (codes.isEmpty()) throw new Exception("فعّل عملة واحدة على الأقل لهذا المكتب");
+133:                 if (old != null) {
+134:                     Map<String, Long> bal = a.db.balances(old.id);
+135:                     for (String c : a.db.officeCurrencies(old.id)) {
+136:                         Long b = bal.get(c);
+137:                         if (!codes.contains(c) && b != null && b != 0) throw new Exception("لا يمكن إزالة العملة " + c + " لأن رصيد المكتب بها ليس صفرًا");
+138:                     }
+139:                 }
+140:                 Long uu = usdUs.getText().toString().trim().isEmpty() ? null : Db.minor(usdUs.getText().toString(), 2);
+141:                 Long ut = usdThem.getText().toString().trim().isEmpty() ? null : Db.minor(usdThem.getText().toString(), 2);
+142:                 long id;
+143:                 if (old == null) {
+144:                     id = a.db.addOffice(nm, sh.getText().toString(), phone.getText().toString(), loc.getText().toString(),
+145:                             contact.getText().toString(), notes.getText().toString(), uu, ut, codes, lims, openings);
+146:                 } else {
+147:                     id = old.id;
+148:                     a.db.updateOffice(old.id, nm, sh.getText().toString(), phone.getText().toString(), loc.getText().toString(),
+149:                             contact.getText().toString(), notes.getText().toString(), active.isChecked(), uu, ut, codes, lims);
+150:                 }
+151:                 if (pinned.isChecked() != (old != null && old.pinned)) a.db.setPinned(id, pinned.isChecked());
+152:                 a.toast("تم الحفظ");
+153:                 Model.Office saved = a.db.office(id);
+154:                 if (saved != null) a.officeHub.showOffice(saved);
+155:                 else showManager();
+156:             } catch (Exception e) {
+157:                 a.error(e);
+158:             }
+159:         });
+160:     }
+161: 
+162:     // ===================================================================================
+163:     // إيقاف المكتب وحذفه
+164:     // ===================================================================================
+165: 
+166:     private String balanceText(Model.Office o) {

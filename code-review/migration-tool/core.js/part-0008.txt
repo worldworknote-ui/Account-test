@@ -1,0 +1,171 @@
+1147:   function balancesFromTables(T) {
+1148:     var b = {};
+1149:     T.journal_lines.forEach(function (l) {
+1150:       if (l.account !== "OFFICE" || l.office_id === null) return;
+1151:       var k = l.office_id + "|" + l.currency;
+1152:       b[k] = (b[k] || 0n) + BigInt(l.debit_minor) - BigInt(l.credit_minor);
+1153:     });
+1154:     return b;
+1155:   }
+1156: 
+1157:   /** فحص مستقل لتوازن كل قيد (كما في BackupFormat.validate). */
+1158:   function checkBalanced(T) {
+1159:     var sums = {};
+1160:     T.journal_lines.forEach(function (l) {
+1161:       var k = l.entry_id + "|" + l.currency;
+1162:       sums[k] = (sums[k] || 0n) + BigInt(l.debit_minor) - BigInt(l.credit_minor);
+1163:     });
+1164:     return Object.keys(sums).filter(function (k) { return sums[k] !== 0n; });
+1165:   }
+1166: 
+1167:   /** تقرير الأرصدة لكل مكتب وعملة + مقارنة بعمود الرصيد إن وُجد. */
+1168:   function report(model, T, cfg) {
+1169:     var decOf = {};
+1170:     T.currencies.forEach(function (c) { decOf[c.code] = c.decimals; });
+1171:     var kind = {};
+1172:     T.journal_entries.forEach(function (e) { kind[e.id] = e.kind; });
+1173:     var agg = {};
+1174:     T.journal_lines.forEach(function (l) {
+1175:       if (l.account !== "OFFICE" || l.office_id === null) return;
+1176:       var k = l.office_id + "|" + l.currency;
+1177:       var a = agg[k] = agg[k] || { opening: 0n, debit: 0n, credit: 0n };
+1178:       var d = BigInt(l.debit_minor), c = BigInt(l.credit_minor);
+1179:       if (kind[l.entry_id] === "OPENING") a.opening += d - c;
+1180:       else { a.debit += d; a.credit += c; }
+1181:     });
+1182:     var rows = [];
+1183:     var totals = {};
+1184:     model.offices.forEach(function (o, i) {
+1185:       var cs = [];
+1186:       T.office_currencies.forEach(function (oc) { if (oc.office_id === i + 1) cs.push(oc.code); });
+1187:       cs.sort().forEach(function (c) {
+1188:         var a = agg[(i + 1) + "|" + c] || { opening: 0n, debit: 0n, credit: 0n };
+1189:         var v = a.opening + a.debit - a.credit;
+1190:         var exp = model.lastBalance ? model.lastBalance[o.key + "|" + c] : null;
+1191:         rows.push({ office: o.name, code: c, dec: decOf[c], opening: a.opening, debit: a.debit, credit: a.credit, balance: v,
+1192:           expected: exp ? exp.minor : null, match: exp ? exp.minor === v : null, txCount: o.tx });
+1193:         var t = totals[c] = totals[c] || { code: c, dec: decOf[c], receivable: 0n, payable: 0n, nr: 0, np: 0 };
+1194:         if (v > 0n) { t.receivable += v; t.nr++; } else if (v < 0n) { t.payable += -v; t.np++; }
+1195:       });
+1196:     });
+1197:     return { rows: rows, totals: Object.keys(totals).sort().map(function (k) { return totals[k]; }) };
+1198:   }
+1199: 
+1200:   // ===================================================================================
+1201:   // ZIP بدون ضغط (يقرؤه ZipInputStream في التطبيق)
+1202:   // ===================================================================================
+1203: 
+1204:   var CRC_TABLE = (function () {
+1205:     var t = new Uint32Array(256);
+1206:     for (var n = 0; n < 256; n++) {
+1207:       var c = n;
+1208:       for (var k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+1209:       t[n] = c >>> 0;
+1210:     }
+1211:     return t;
+1212:   })();
+1213: 
+1214:   function crc32(b) {
+1215:     var c = 0xffffffff;
+1216:     for (var i = 0; i < b.length; i++) c = CRC_TABLE[(c ^ b[i]) & 0xff] ^ (c >>> 8);
+1217:     return (c ^ 0xffffffff) >>> 0;
+1218:   }
+1219: 
+1220:   function utf8(s) { return new TextEncoder().encode(s); }
+1221: 
+1222:   function zipStored(files, when) {
+1223:     var d = new Date(when);
+1224:     var dosTime = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+1225:     var dosDate = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+1226:     var parts = [], central = [], offset = 0;
+1227:     files.forEach(function (f) {
+1228:       var name = utf8(f.name), data = f.bytes, crc = crc32(data);
+1229:       var h = new DataView(new ArrayBuffer(30));
+1230:       h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint16(8, 0, true);
+1231:       h.setUint16(10, dosTime, true); h.setUint16(12, dosDate, true); h.setUint32(14, crc, true);
+1232:       h.setUint32(18, data.length, true); h.setUint32(22, data.length, true); h.setUint16(26, name.length, true); h.setUint16(28, 0, true);
+1233:       parts.push(new Uint8Array(h.buffer), name, data);
+1234:       var c = new DataView(new ArrayBuffer(46));
+1235:       c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint16(10, 0, true);
+1236:       c.setUint16(12, dosTime, true); c.setUint16(14, dosDate, true); c.setUint32(16, crc, true); c.setUint32(20, data.length, true);
+1237:       c.setUint32(24, data.length, true); c.setUint16(28, name.length, true); c.setUint16(30, 0, true); c.setUint16(32, 0, true);
+1238:       c.setUint16(34, 0, true); c.setUint16(36, 0, true); c.setUint32(38, 0, true); c.setUint32(42, offset, true);
+1239:       central.push(new Uint8Array(c.buffer), name);
+1240:       offset += 30 + name.length + data.length;
+1241:     });
+1242:     var cdSize = central.reduce(function (s, x) { return s + x.length; }, 0);
+1243:     var e = new DataView(new ArrayBuffer(22));
+1244:     e.setUint32(0, 0x06054b50, true); e.setUint16(4, 0, true); e.setUint16(6, 0, true); e.setUint16(8, files.length, true);
+1245:     e.setUint16(10, files.length, true); e.setUint32(12, cdSize, true); e.setUint32(16, offset, true); e.setUint16(20, 0, true);
+1246:     return concat(parts.concat(central, [new Uint8Array(e.buffer)]));
+1247:   }
+1248: 
+1249:   function concat(arrs) {
+1250:     var n = arrs.reduce(function (s, a) { return s + a.length; }, 0);
+1251:     var out = new Uint8Array(n), p = 0;
+1252:     arrs.forEach(function (a) { out.set(a, p); p += a.length; });
+1253:     return out;
+1254:   }
+1255: 
+1256:   /** محتوى النسخة: manifest + الجداول + فهرس الصور (فارغ) + summary في النهاية. */
+1257:   function backupZip(T, cfg) {
+1258:     var files = [];
+1259:     var counts = { offices: T.offices.length, tx: T.tx.length, attachments: 0, currencies: T.currencies.length };
+1260:     var manifest = { format: 5, app: "smart-accountant-hawala", appName: "المحاسب الذكي لمكاتب الحوالات",
+1261:       appVersion: "أداة النقل 1.1", schema: 6, createdAt: cfg.now, counts: counts, source: "migration" };
+1262:     files.push({ name: "manifest.json", bytes: utf8(JSON.stringify(manifest, null, 1)) });
+1263:     var rows = {};
+1264:     TABLE_ORDER.forEach(function (t) {
+1265:       var lines = T[t].map(function (r) { return JSON.stringify(r) + "\n"; }).join("");
+1266:       files.push({ name: "tables/" + t + ".ndjson", bytes: utf8(lines) });
+1267:       rows[t] = T[t].length;
+1268:     });
+1269:     files.push({ name: "attachments/index.ndjson", bytes: new Uint8Array(0) });
+1270:     var summary = { rows: rows, attachments: 0, skippedAttachments: 0,
+1271:       warnings: ["ملف نقل من: " + (cfg.sourceName || "ملف Excel") + " — راجع أرصدة المكاتب بعد الاستعادة وقارنها بالبرنامج السابق"],
+1272:       completedAt: cfg.now };
+1273:     files.push({ name: "summary.json", bytes: utf8(JSON.stringify(summary, null, 1)) });
+1274:     return zipStored(files, cfg.now);
+1275:   }
+1276: 
+1277:   // ===================================================================================
+1278:   // التشفير: SMARTBK5 (مطابق لـ SecureStreams.EncryptingOutputStream)
+1279:   // ===================================================================================
+1280: 
+1281:   function be32(v) { return new Uint8Array([(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255]); }
+1282: 
+1283:   function iv(prefix, counter) {
+1284:     var out = new Uint8Array(12);
+1285:     out.set(prefix, 0);
+1286:     out.set(be32(counter >>> 0), 8);
+1287:     return out;
+1288:   }
+1289: 
+1290:   async function encrypt(plain, password, opts, subtle, rand) {
+1291:     opts = opts || {};
+1292:     var iterations = opts.iterations || 310000;
+1293:     var chunk = opts.chunk || 262144;
+1294:     var salt = opts.salt || rand(16);
+1295:     var prefix = opts.prefix || rand(8);
+1296:     var header = concat([utf8("SMARTBK5"), be32(1), be32(iterations), be32(16), salt, be32(8), prefix, be32(chunk)]);
+1297:     var base = await subtle.importKey("raw", utf8(password), "PBKDF2", false, ["deriveKey"]);
+1298:     var key = await subtle.deriveKey({ name: "PBKDF2", hash: "SHA-256", salt: salt, iterations: iterations }, base,
+1299:       { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+1300:     var out = [header];
+1301:     var v = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv: iv(prefix, 0xffffffff), additionalData: concat([header, utf8("VERIFY")]), tagLength: 128 },
+1302:       key, new Uint8Array(16)));
+1303:     out.push(be32(v.length), v);
+1304:     var count = Math.max(1, Math.ceil(plain.length / chunk));
+1305:     for (var i = 0; i < count; i++) {
+1306:       var last = i === count - 1 ? 1 : 0;
+1307:       var part = plain.subarray(i * chunk, Math.min(plain.length, (i + 1) * chunk));
+1308:       var aad = new Uint8Array(header.length + 9);
+1309:       aad.set(header, 0);
+1310:       // رقم الجزء 8 بايت (long) ثم علامة «الأخير»
+1311:       aad.set(be32(0), header.length);
+1312:       aad.set(be32(i), header.length + 4);
+1313:       aad[header.length + 8] = last;
+1314:       var ct = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv: iv(prefix, i), additionalData: aad, tagLength: 128 }, key, part));
+1315:       out.push(new Uint8Array([last]), be32(ct.length), ct);
+1316:     }
+1317:     return concat(out);

@@ -1,0 +1,184 @@
+168:         if (!allMatch && wm != MeasureSpec.EXACTLY) maxW = altMaxW;
+169:         maxW += getPaddingLeft() + getPaddingRight();
+170:         maxW = Math.max(maxW, getSuggestedMinimumWidth());
+171:         setMeasuredDimension(resolveSizeAndState(maxW, ws, state), hss);
+172:         if (matchW) forceUniformWidth(count, hs);
+173:     }
+174: 
+175:     /** مجموع ما يشغله غير الموزون (لإعادة توزيع المساحة الباقية). */
+176:     private int computeFixed(boolean vertical) {
+177:         int sum = 0;
+178:         for (int i = 0; i < getChildCount(); i++) {
+179:             View c = getChildAt(i);
+180:             if (c.getVisibility() == GONE) continue;
+181:             if (hasDividerBefore(i)) sum += vertical ? divH() : divW();
+182:             LayoutParams p = lp(c);
+183:             if (vertical) {
+184:                 sum += p.topMargin + p.bottomMargin;
+185:                 if (!(p.weight > 0 && p.height == 0)) sum += p.weight > 0 ? c.getMeasuredHeight() : c.getMeasuredHeight();
+186:             } else {
+187:                 sum += p.leftMargin + p.rightMargin;
+188:                 if (!(p.weight > 0 && p.width == 0)) sum += c.getMeasuredWidth();
+189:             }
+190:         }
+191:         if (hasDividerBefore(getChildCount())) sum += vertical ? divH() : divW();
+192:         return sum;
+193:     }
+194: 
+195:     private void forceUniformWidth(int count, int hs) {
+196:         int uniform = MeasureSpec.makeMeasureSpec(getMeasuredWidth(), MeasureSpec.EXACTLY);
+197:         for (int i = 0; i < count; i++) {
+198:             View c = getChildAt(i);
+199:             if (c.getVisibility() == GONE) continue;
+200:             LayoutParams p = lp(c);
+201:             if (p.width == LayoutParams.MATCH_PARENT) {
+202:                 int oldH = p.height;
+203:                 p.height = c.getMeasuredHeight();
+204:                 measureChildWithMargins(c, uniform, 0, hs, 0);
+205:                 p.height = oldH;
+206:             }
+207:         }
+208:     }
+209: 
+210:     // ------------------------------------------------------------------ أفقي
+211:     private void measureHorizontal(int ws, int hs) {
+212:         totalLength = 0;
+213:         int maxH = 0, state = 0;
+214:         float total = 0;
+215:         int count = getChildCount();
+216:         int wm = MeasureSpec.getMode(ws), hm = MeasureSpec.getMode(hs);
+217:         boolean matchH = false, allMatch = true;
+218:         int weightedMaxH = 0, altMaxH = 0;
+219:         maxAscent = -1;
+220:         maxDescent = -1;
+221:         boolean base = baselineAligned;
+222:         boolean skipped = false;
+223:         for (int i = 0; i < count; i++) {
+224:             View c = getChildAt(i);
+225:             if (c.getVisibility() == GONE) continue;
+226:             if (hasDividerBefore(i)) totalLength += divW();
+227:             LayoutParams p = lp(c);
+228:             total += p.weight;
+229:             boolean useExcess = p.width == 0 && p.weight > 0;
+230:             if (wm == MeasureSpec.EXACTLY && useExcess) {
+231:                 totalLength += p.leftMargin + p.rightMargin;
+232:                 skipped = true;
+233:                 if (base) {
+234:                     int fs = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED);
+235:                     c.measure(fs, getChildMeasureSpec(hs, getPaddingTop() + getPaddingBottom() + p.topMargin + p.bottomMargin, p.height));
+236:                 }
+237:             } else {
+238:                 if (useExcess) p.width = LayoutParams.WRAP_CONTENT;
+239:                 measureChildWithMargins(c, ws, total == 0 ? totalLength : 0, hs, 0);
+240:                 if (useExcess) p.width = 0;
+241:                 totalLength += c.getMeasuredWidth() + p.leftMargin + p.rightMargin;
+242:             }
+243:             boolean matchThis = false;
+244:             if (hm != MeasureSpec.EXACTLY && p.height == LayoutParams.MATCH_PARENT) { matchH = true; matchThis = true; }
+245:             int margin = p.topMargin + p.bottomMargin;
+246:             int ch = c.getMeasuredHeight() + margin;
+247:             state = combineMeasuredStates(state, c.getMeasuredState());
+248:             if (base) {
+249:                 int bl = c.getBaseline();
+250:                 if (bl != -1) {
+251:                     int g = (p.gravity < 0 ? gravity : p.gravity) & Gravity.VERTICAL_GRAVITY_MASK;
+252:                     if (g == Gravity.TOP || g == Gravity.BOTTOM || g == 0) {
+253:                         maxAscent = Math.max(maxAscent, bl);
+254:                         maxDescent = Math.max(maxDescent, ch - margin - bl);
+255:                     }
+256:                 }
+257:             }
+258:             maxH = Math.max(maxH, ch);
+259:             allMatch = allMatch && p.height == LayoutParams.MATCH_PARENT;
+260:             if (p.weight > 0) weightedMaxH = Math.max(weightedMaxH, matchThis ? margin : ch);
+261:             else altMaxH = Math.max(altMaxH, matchThis ? margin : ch);
+262:         }
+263:         if (totalLength > 0 && hasDividerBefore(count)) totalLength += divW();
+264:         if (maxAscent != -1) maxH = Math.max(maxH, maxAscent + maxDescent);
+265:         totalLength += getPaddingLeft() + getPaddingRight();
+266:         int wSize = Math.max(totalLength, getSuggestedMinimumWidth());
+267:         int wss = resolveSizeAndState(wSize, ws, 0);
+268:         wSize = wss & MEASURED_SIZE_MASK;
+269:         int remaining = wSize - totalLength;
+270:         if (skipped || (remaining != 0 && total > 0)) {
+271:             float ws2 = weightSum > 0 ? weightSum : total;
+272:             remaining = wSize - (computeFixed(false) + getPaddingLeft() + getPaddingRight());
+273:             maxAscent = maxDescent = -1;
+274:             maxH = -1;
+275:             totalLength = 0;
+276:             for (int i = 0; i < count; i++) {
+277:                 View c = getChildAt(i);
+278:                 if (c.getVisibility() == GONE) continue;
+279:                 if (hasDividerBefore(i)) totalLength += divW();
+280:                 LayoutParams p = lp(c);
+281:                 float cw = p.weight;
+282:                 if (cw > 0) {
+283:                     int share = (int) (cw * remaining / ws2);
+284:                     remaining -= share;
+285:                     ws2 -= cw;
+286:                     int childW;
+287:                     if (p.width == 0 && wm == MeasureSpec.EXACTLY) childW = share;
+288:                     else childW = c.getMeasuredWidth() + share;
+289:                     childW = Math.max(0, childW);
+290:                     int chs = getChildMeasureSpec(hs, getPaddingTop() + getPaddingBottom() + p.topMargin + p.bottomMargin, p.height);
+291:                     c.measure(MeasureSpec.makeMeasureSpec(childW, MeasureSpec.EXACTLY), chs);
+292:                     state = combineMeasuredStates(state, c.getMeasuredState() & MEASURED_STATE_MASK);
+293:                 }
+294:                 totalLength += c.getMeasuredWidth() + p.leftMargin + p.rightMargin;
+295:                 boolean matchThis = hm != MeasureSpec.EXACTLY && p.height == LayoutParams.MATCH_PARENT;
+296:                 int margin = p.topMargin + p.bottomMargin;
+297:                 int ch = c.getMeasuredHeight() + margin;
+298:                 maxH = Math.max(maxH, ch);
+299:                 altMaxH = Math.max(altMaxH, matchThis ? margin : ch);
+300:                 allMatch = allMatch && p.height == LayoutParams.MATCH_PARENT;
+301:                 if (base) {
+302:                     int bl = c.getBaseline();
+303:                     if (bl != -1) {
+304:                         int g = (p.gravity < 0 ? gravity : p.gravity) & Gravity.VERTICAL_GRAVITY_MASK;
+305:                         if (g == Gravity.TOP || g == Gravity.BOTTOM || g == 0) {
+306:                             maxAscent = Math.max(maxAscent, bl);
+307:                             maxDescent = Math.max(maxDescent, ch - margin - bl);
+308:                         }
+309:                     }
+310:                 }
+311:             }
+312:             totalLength += getPaddingLeft() + getPaddingRight();
+313:             if (maxAscent != -1) maxH = Math.max(maxH, maxAscent + maxDescent);
+314:         } else {
+315:             altMaxH = Math.max(altMaxH, weightedMaxH);
+316:         }
+317:         if (!allMatch && hm != MeasureSpec.EXACTLY) maxH = altMaxH;
+318:         if (maxAscent != -1 && !allMatch && hm != MeasureSpec.EXACTLY) maxH = Math.max(maxH, maxAscent + maxDescent);
+319:         maxH += getPaddingTop() + getPaddingBottom();
+320:         maxH = Math.max(maxH, getSuggestedMinimumHeight());
+321:         setMeasuredDimension(wss | (state & MEASURED_STATE_MASK), resolveSizeAndState(maxH, hs, state << 16));
+322:         if (matchH) forceUniformHeight(count, ws);
+323:     }
+324: 
+325:     private void forceUniformHeight(int count, int ws) {
+326:         int uniform = MeasureSpec.makeMeasureSpec(getMeasuredHeight(), MeasureSpec.EXACTLY);
+327:         for (int i = 0; i < count; i++) {
+328:             View c = getChildAt(i);
+329:             if (c.getVisibility() == GONE) continue;
+330:             LayoutParams p = lp(c);
+331:             if (p.height == LayoutParams.MATCH_PARENT) {
+332:                 int oldW = p.width;
+333:                 p.width = c.getMeasuredWidth();
+334:                 measureChildWithMargins(c, ws, 0, uniform, 0);
+335:                 p.width = oldW;
+336:             }
+337:         }
+338:     }
+339: 
+340:     @Override public int getBaseline() {
+341:         if (orientation != VERTICAL || getChildCount() == 0) {
+342:             if (maxAscent > 0) return getPaddingTop() + maxAscent;
+343:             return -1;
+344:         }
+345:         View c = getChildAt(0);
+346:         if (c == null || c.getVisibility() == GONE) return -1;
+347:         int b = c.getBaseline();
+348:         return b == -1 ? -1 : c.getTop() + b;
+349:     }
+350: 
+351:     // ------------------------------------------------------------------ التخطيط

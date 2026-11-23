@@ -1,0 +1,178 @@
+1158:         if (f == null) return;
+1159:         WaClip.Read clip = WaClip.read(a);
+1160:         String text = clip.text;
+1161:         if (text == null || text.trim().isEmpty()) {
+1162:             new AlertDialog.Builder(a).setTitle("الحافظة فارغة")
+1163:                     .setMessage("انسخ رسالة الحوالة من واتساب أولًا: اضغط عليها مطولًا ثم زر «نسخ». لعدة رسائل حدّدها كلها ثم «نسخ».")
+1164:                     .setPositiveButton("الخطوات بالتفصيل", (d, w) -> a.homeScreen.waHelp()).setNegativeButton("حسنًا", null).show();
+1165:             return;
+1166:         }
+1167:         final List<WaText.Msg> msgs = WaClip.messages(text, clip.html);
+1168:         if (msgs.size() > 1 && editing == null && !f.queued) {
+1169:             final String all = text.trim();
+1170:             offerSplit(msgs, null, null);
+1171:             splitAll = all;
+1172:             return;
+1173:         }
+1174:         // 12.1: نص ملزوق بلا علامات: «قص» يدوي بدل حركة واحدة فيها عدة حوالات
+1175:         if (msgs.size() == 1 && editing == null && !f.queued && a.can(Auth.Perm.TX_WA) && WaClip.maybeGlued(msgs.get(0).body)) {
+1176:             final String one = msgs.get(0).body;
+1177:             new AlertDialog.Builder(a).setTitle("هل هذا النص أكثر من رسالة؟")
+1178:                     .setMessage("يبدو أن النص فيه أكثر من رسالة ملزوقة. اقطعه عند حدود الرسائل فتُسجَّل كل واحدة وحدها، أو أبقه هنا كما هو.")
+1179:                     .setPositiveButton("✂ قص الرسائل", (d, w) -> {
+1180:                         a.beforeScreenChange();
+1181:                         a.waMove.cutScreen(one);
+1182:                     })
+1183:                     .setNeutralButton("إبقاؤه هنا", (d, w) -> putText(one))
+1184:                     .setNegativeButton("إلغاء", null).show();
+1185:             return;
+1186:         }
+1187:         putText(msgs.size() == 1 ? msgs.get(0).body : text.trim());
+1188:     }
+1189: 
+1190:     /** 11.3: عرض واحد للصق عدة رسائل (من الزر أو من اللصق في الخانة نفسها). */
+1191:     private boolean splitOffered;
+1192:     private String splitAll;
+1193: 
+1194:     private void offerSplit(final List<WaText.Msg> msgs, final String pastedInField, final Runnable removePasted) {
+1195:         if (!a.can(Auth.Perm.TX_WA)) return;   // 12.0
+1196:         new AlertDialog.Builder(a).setTitle("في النص " + msgs.size() + " رسائل من واتساب")
+1197:                 .setMessage("الأفضل أن تُسجَّل كل رسالة حركةً مستقلة: تظهر قائمة الرسائل، ثم نموذج لكل رسالة بالتتابع.")
+1198:                 .setPositiveButton("تسجيل كل رسالة وحدها", (d, w) -> {
+1199:                     splitOffered = false;
+1200:                     if (removePasted != null) removePasted.run();
+1201:                     a.waQueue.overview(msgs, pasteOffice());
+1202:                 })
+1203:                 .setNeutralButton("إبقاء النص كله هنا", (d, w) -> {
+1204:                     splitOffered = false;
+1205:                     if (pastedInField == null && splitAll != null) putText(splitAll);
+1206:                 })
+1207:                 .setNegativeButton("إلغاء", (d, w) -> {
+1208:                     splitOffered = false;
+1209:                     if (removePasted != null) removePasted.run();
+1210:                 })
+1211:                 .setOnCancelListener(d -> splitOffered = false)
+1212:                 .show();
+1213:     }
+1214: 
+1215:     private void putText(String text) {
+1216:         if (f == null) return;
+1217:         f.desc.setText(text);
+1218:         f.desc.removeCallbacks(f.parseLater);
+1219:         f.pasted = true;
+1220:         previewParse();
+1221:     }
+1222: 
+1223:     private List<MessageParser.Cur> parserCurrencies() {
+1224:         List<MessageParser.Cur> out = new ArrayList<>();
+1225:         if (f != null && f.office != null && !f.curs.isEmpty()) {
+1226:             for (String c : f.curs) out.add(new MessageParser.Cur(c, f.names.get(c), a.db.decimals(c)));
+1227:         } else {
+1228:             for (Model.Currency c : a.db.currencies(false)) out.add(new MessageParser.Cur(c.code, c.name, c.decimals));
+1229:         }
+1230:         return out;
+1231:     }
+1232: 
+1233:     /**
+1234:      * يستخرج المعلومات من البيان ويعرضها فقط (أخضر/أحمر). لا يكتب شيئًا في الحقول:
+1235:      * الكتابة تتم عند ضغط «إضافة المعلومات للحقول».
+1236:      */
+1237:     private void previewParse() {
+1238:         final Form form = f;
+1239:         if (form == null || form.parseBox == null || form.desc == null) return;
+1240:         String text = form.desc.getText().toString();
+1241:         if (!text.equals(form.parsedText)) form.filled = false;
+1242:         form.parsedText = text;
+1243:         if (text.trim().isEmpty()) {
+1244:             form.parsed = null;
+1245:             form.parseBox.removeAllViews();
+1246:             form.parseBox.setVisibility(View.GONE);
+1247:             return;
+1248:         }
+1249:         form.duplicate = duplicateOf(text);
+1250:         // 9.0: المجانية: استخراج المعلومات لـ 20 رسالة يوميًا، ثم الإدخال اليدوي العادي
+1251:         if (!a.db.waAllowed(text)) {
+1252:             form.parsed = null;
+1253:             renderLimit(form);
+1254:             return;
+1255:         }
+1256:         if (form.byAi && form.aiRaw != null && text.equals(form.aiText)) {
+1257:             form.parsed = forOffice(form.aiRaw);
+1258:             renderParse(form);
+1259:             return;
+1260:         }
+1261:         form.byAi = false;
+1262:         form.parsed = MessageParser.parse(text, parserCurrencies(), CurrencyWords.load(a.db));
+1263:         renderParse(form);
+1264:         // تلقائيًا (إن فعّله المدير): بعد لصق رسالة لم يستخرج المحرك المدمج كل معلوماتها
+1265:         if (form.pasted) {
+1266:             form.pasted = false;
+1267:             MessageParser.Result r = form.parsed;
+1268:             boolean incomplete = r.person.isEmpty() || r.amount.isEmpty() || r.currency == null;
+1269:             if (incomplete && AiSettings.auto(a.db) && !text.equals(form.aiAsked) && AiSettings.config(a.db).problem() == null) askAi(form);
+1270:         }
+1271:     }
+1272: 
+1273:     /** يرسل البيان إلى خدمة الذكاء الاصطناعي ويعرض فهمها في البطاقة نفسها (لا يكتب في الحقول). */
+1274:     private void askAi(final Form form) {
+1275:         final String text = form.desc.getText().toString();
+1276:         if (text.trim().isEmpty()) return;
+1277:         final AiExtract.Config cfg = AiSettings.config(a.db);
+1278:         String p = cfg.problem();
+1279:         if (p != null) {
+1280:             a.toast(p);
+1281:             return;
+1282:         }
+1283:         final List<MessageParser.Cur> all = new ArrayList<>();
+1284:         for (Model.Currency c : a.db.currencies(false)) all.add(new MessageParser.Cur(c.code, c.name, c.decimals));
+1285:         final Map<String, List<String>> al = CurrencyWords.load(a.db);
+1286:         form.aiAsked = text;
+1287:         a.busy("جارٍ القراءة الذكية السحابية…", pr -> AiExtract.call(cfg, text, all, al), res -> {
+1288:             if (f != form || !text.equals(form.desc.getText().toString())) return;
+1289:             form.aiRaw = (MessageParser.Result) res;
+1290:             form.aiText = text;
+1291:             form.byAi = true;
+1292:             form.filled = false;
+1293:             form.parsed = forOffice(form.aiRaw);
+1294:             renderParse(form);
+1295:         });
+1296:     }
+1297: 
+1298:     /** نتيجة الذكاء الاصطناعي بعملات المكتب المختار: عملة غير مفعّلة له تظهر تنبيهًا بدل اختيارها. */
+1299:     private MessageParser.Result forOffice(MessageParser.Result ai) {
+1300:         MessageParser.Result r = new MessageParser.Result();
+1301:         r.person = ai.person;
+1302:         r.amount = ai.amount;
+1303:         r.phone = ai.phone;
+1304:         r.city = ai.city;
+1305:         r.sender = ai.sender;
+1306:         r.fee = ai.fee;
+1307:         r.net = ai.net;
+1308:         List<String> ok = new ArrayList<>();
+1309:         for (MessageParser.Cur c : parserCurrencies()) ok.add(c.code);
+1310:         String code = ai.currency != null ? ai.currency : ai.currencyWord.toUpperCase(java.util.Locale.ROOT);
+1311:         if (ok.contains(code)) {
+1312:             r.currency = code;
+1313:             r.currencyWord = ai.currencyWord;
+1314:         } else {
+1315:             r.currency = null;
+1316:             r.currencyWord = ai.currency != null ? ai.currency : ai.currencyWord;
+1317:         }
+1318:         return r;
+1319:     }
+1320: 
+1321:     /** 10.13: ما استُخرج رقائق صغيرة في سطر واحد؛ وما يحتاج تدخلك سطر أحمر قصير. */
+1322:     private Ui.Flow okFlow;
+1323: 
+1324:     private void parseLine(LinearLayout box, boolean ok, String text) {
+1325:         if (ok) {
+1326:             if (okFlow == null || okFlow.getParent() != box) {
+1327:                 okFlow = a.flow();
+1328:                 box.addView(okFlow, a.lp(-1, -2, 2));
+1329:             }
+1330:             TextView c = a.chip("✓ " + text, a.green, a.creditBg);
+1331:             c.setTextSize(13);
+1332:             okFlow.addView(c);
+1333:             return;
+1334:         }
+1335:         TextView t = a.text("✗ " + text, 13, a.red, true);

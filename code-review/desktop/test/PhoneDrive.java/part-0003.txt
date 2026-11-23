@@ -1,0 +1,150 @@
+335:                     if (!hits.isEmpty()) { wv[0] = hits.get(0).getWidth(); wv[1] = r.getView().getWidth(); wv[2] = hits.get(0).getHeight(); }
+336:                 }
+337:             });
+338:             expect(wv[1] > 0 && wv[0] < wv[1] * 0.7 && wv[0] > 200, "wide window: page fills, button capped (" + wv[0] + " of " + wv[1] + ", h " + wv[2] + ")");
+339:             SwingUtilities.invokeAndWait(() -> com.smart.hawala.desk.PhoneWindow.frame().setSize(keep));
+340:             wait(700);
+341:             key(KeyEvent.VK_H, true);
+342:             wait(600);
+343:         }
+344: 
+345:         // 11.6: نافذة المستخدم: الصلاحيات «أساسي» و«متقدم»، وقوالب محفوظة
+346:         {
+347:             java.lang.reflect.Method ud = UsersScreen.class.getDeclaredMethod("userDialog", Model.User.class, boolean.class);
+348:             ud.setAccessible(true);
+349:             SwingUtilities.invokeAndWait(() -> { try { ud.invoke(com.smart.hawala.desk.PhoneWindow.activityForTests().usersScreen, null, false); } catch (Exception e) { throw new RuntimeException(e); } });
+350:             wait(900);
+351:             shot("user-perms");
+352:             // 12.0: أقسام التطبيق، الأول مفتوح والبقية مطوية بسهم، ومع كل قسم عدد المختار
+353:             expect(findQuiet("الحركات") && findQuiet("قص العملات") && findQuiet("المزامنة") && !findQuiet("رؤية أجهزة المزامنة وسجلاتها") && findQuiet("حفظ كقالب…"),
+354:                     "user dialog: sections, first open, others collapsed, presets");
+355:             SwingUtilities.invokeAndWait(() -> {   // فتح قسم «المزامنة» (تحت)
+356:                 for (ViewRootImpl r : WindowStack.roots()) {
+357:                     View v = withDesc(r.getView(), "المزامنة");
+358:                     if (v != null) v.performClick();
+359:                 }
+360:             });
+361:             wait(500);
+362:             shot("user-perms-adv");
+363:             expect(findQuiet("رؤية أجهزة المزامنة وسجلاتها"), "opening a section shows its detailed permissions");
+364:             clickText("حفظ كقالب…");
+365:             wait(600);
+366:             clickHint("اسم القالب، مثل: محاسب فرع");
+367:             paste("محاسب فرع");
+368:             shot("preset-name");
+369:             final Point[] sv = {null};   // «حفظ» نافذة القالب (الأعلى على الشاشة؛ «حفظ» نافذة المستخدم أسفلها)
+370:             SwingUtilities.invokeAndWait(() -> {
+371:                 int best = Integer.MAX_VALUE;
+372:                 for (ViewRootImpl r : WindowStack.roots()) {
+373:                     List<View> hits = new ArrayList<>();
+374:                     collect(r.getView(), "حفظ", false, hits);
+375:                     for (View v : hits) {
+376:                         if (!"حفظ".contentEquals(((TextView) v).getText())) continue;
+377:                         int[] l = new int[2];
+378:                         v.getLocationOnScreen(l);
+379:                         if (l[1] < best) { best = l[1]; sv[0] = phys(v, v.getWidth() / 2f, v.getHeight() / 2f); }
+380:                     }
+381:                 }
+382:             });
+383:             press(sv[0]);
+384:             wait(600);
+385:             shot("preset-saved");
+386:             expect(com.smart.hawala.desk.PhoneWindow.activityForTests().usersScreen.presets().containsKey("محاسب فرع"), "permission preset saved by name");
+387:             key(KeyEvent.VK_ESCAPE, false);
+388:             wait(500);
+389:             key(KeyEvent.VK_H, true);
+390:             wait(600);
+391:         }
+392: 
+393:         // 11.5: الرجوع خطوة خطوة: المزيد ← المظهر ← سهم الرجوع يعيد «المزيد» (لا الرئيسية)، ثم الرئيسية
+394:         clickTab(4, 6);
+395:         wait(900);
+396:         final String[] t0 = {null};
+397:         SwingUtilities.invokeAndWait(() -> t0[0] = com.smart.hawala.desk.PhoneWindow.activityForTests().screenTitle.getText().toString());
+398:         SwingUtilities.invokeAndWait(() -> com.smart.hawala.desk.PhoneWindow.activityForTests().designScreen.show());
+399:         wait(1000);
+400:         final Point[] bk = {null};
+401:         SwingUtilities.invokeAndWait(() -> { for (ViewRootImpl r : WindowStack.roots()) { View v = withDesc(r.getView(), "رجوع"); if (v != null) bk[0] = phys(v, v.getWidth() / 2f, v.getHeight() / 2f); } });
+402:         expect(bk[0] != null, "inner page has a back arrow");
+403:         press(bk[0]);
+404:         wait(1000);
+405:         final String[] t1 = {null};
+406:         SwingUtilities.invokeAndWait(() -> t1[0] = com.smart.hawala.desk.PhoneWindow.activityForTests().screenTitle.getText().toString());
+407:         shot("back-step");
+408:         expect(t0[0] != null && t0[0].equals(t1[0]), "back arrow returns to the previous page (" + t0[0] + " / " + t1[0] + ")");
+409:         key(KeyEvent.VK_H, true);
+410:         wait(800);
+411: 
+412:         // 11.5: قفل التطبيق بعد ترك النافذة مصغّرة: شاشة القفل تظهر بأزرارها (لا شاشة فارغة)، وتحقق النظام إن فشل لا يتركها فارغة
+413:         // (والمشاركة السابقة في هذه التجربة لا تُعفي أول تصغير حقيقي من القفل)
+414:         db.setSettingQuiet("app_lock", "bio");
+415:         db.setSettingQuiet("biometric", "1");
+416:         db.setSettingQuiet("lock_timeout", "0");
+417:         SwingUtilities.invokeAndWait(() -> com.smart.hawala.desk.PhoneWindow.activityForTests().pauseFromWindow());
+418:         wait(1500);
+419:         SwingUtilities.invokeAndWait(() -> com.smart.hawala.desk.PhoneWindow.activityForTests().resumeFromWindow());
+420:         wait(2500);
+421:         shot("lock-after-idle");
+422:         expect(findQuiet("التطبيق مقفل"), "app locked after idle");
+423:         expect(findQuiet("فتح التطبيق"), "lock screen shows unlock button");
+424:         final boolean[] arrow = {false};
+425:         SwingUtilities.invokeAndWait(() -> { for (ViewRootImpl r : WindowStack.roots()) if (hasDesc(r.getView(), "رجوع")) arrow[0] = true; });
+426:         expect(!arrow[0], "no back arrow on the lock screen");
+427:         key(KeyEvent.VK_ESCAPE, false);
+428:         wait(500);
+429:         expect(findQuiet("فتح التطبيق"), "Esc does not leave the lock screen");
+430:         System.setProperty("sa.auth", "yes");
+431:         clickText("فتح التطبيق");
+432:         wait(1500);
+433:         shot("lock-opened");
+434:         expect(!findQuiet("التطبيق مقفل"), "unlock works after retry");
+435:         db.setSettingQuiet("app_lock", "off");
+436:         db.setSettingQuiet("biometric", "0");
+437:         System.out.println(fails == 0 ? "DRIVE OK" : "DRIVE FAILURES: " + fails);
+438:         for (String l : log) System.out.println(l);
+439:         System.exit(fails == 0 ? 0 : 1);
+440:     }
+441: 
+442:     /** محتوى حافظة بنص عادي ونسخة HTML (كما يضعهما واتساب ديسكتوب على ويندوز والمتصفح). */
+443:     static void setHtmlClip(final String text, final String html) {
+444:         final java.awt.datatransfer.DataFlavor hf;
+445:         try {
+446:             hf = new java.awt.datatransfer.DataFlavor("text/html;class=java.lang.String");
+447:         } catch (Exception e) {
+448:             throw new RuntimeException(e);
+449:         }
+450:         java.awt.datatransfer.Transferable t = new java.awt.datatransfer.Transferable() {
+451:             public java.awt.datatransfer.DataFlavor[] getTransferDataFlavors() { return new java.awt.datatransfer.DataFlavor[]{java.awt.datatransfer.DataFlavor.stringFlavor, hf}; }
+452:             public boolean isDataFlavorSupported(java.awt.datatransfer.DataFlavor f) { return f.equals(java.awt.datatransfer.DataFlavor.stringFlavor) || f.getMimeType().startsWith("text/html"); }
+453:             public Object getTransferData(java.awt.datatransfer.DataFlavor f) { return f.equals(java.awt.datatransfer.DataFlavor.stringFlavor) ? text : html; }
+454:         };
+455:         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(t, null);
+456:     }
+457: 
+458:     static void setClip(String s) { Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new java.awt.datatransfer.StringSelection(s), null); }
+459: 
+460:     /** 12.4: يضغط أول أب قابل للضغط لنص (حتى لو كان تحت حافة الشاشة). */
+461:     static void performClickOn(final String text) throws Exception {
+462:         SwingUtilities.invokeAndWait(() -> {
+463:             for (ViewRootImpl rt : WindowStack.roots()) {
+464:                 List<View> hits = new ArrayList<>();
+465:                 collect(rt.getView(), text, false, hits);
+466:                 for (View v : hits) {
+467:                     if (!((TextView) v).getText().toString().trim().equals(text)) continue;
+468:                     View p = v;
+469:                     while (p != null && !p.isClickable()) p = p.getParent() instanceof View ? (View) p.getParent() : null;
+470:                     if (p != null) {
+471:                         p.performClick();
+472:                         return;
+473:                     }
+474:                 }
+475:             }
+476:         });
+477:     }
+478: 
+479:     static String formText() throws Exception {
+480:         final String[] r = {null};
+481:         SwingUtilities.invokeAndWait(() -> {
+482:             for (ViewRootImpl rt : WindowStack.roots()) {
+483:                 List<View> hits = new ArrayList<>();
+484:                 collectHint(rt.getView(), "الصق رسالة", hits);

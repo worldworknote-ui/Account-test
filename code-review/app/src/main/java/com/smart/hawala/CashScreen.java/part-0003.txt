@@ -1,0 +1,160 @@
+358:             TextView amt = plain(a.amountsHidden() ? "••••" : (b < 0 ? "عجز " : "") + Model.fmt(Math.abs(b), dec(dec, e.getKey())), 20, b < 0 ? Color.rgb(255, 170, 170) : Color.WHITE, true);
+359:             amt.setTextDirection(View.TEXT_DIRECTION_LTR);
+360:             r.addView(amt, new LinearLayout.LayoutParams(-2, -2));
+361:             card.addView(r);
+362:         }
+363:         List<CashBox.Count> counts = a.db.cashCounts(cfg.id);
+364:         long lc = counts.isEmpty() ? 0 : counts.get(0).createdAt;
+365:         card.addView(plain(lc > 0 ? "آخر جرد: " + MainActivity.ago(lc) : "لم يُجرد الصندوق بعد — الجرد يطابق المسجّل بالمعدود فعلًا", 11, Color.rgb(170, 186, 212), false));
+366:         a.body.addView(card, a.lp(-1, -2, 6));
+367:     }
+368: 
+369:     TextView plain(String s, int size, int color, boolean bold) {
+370:         TextView t = new TextView(a);
+371:         t.setText(s);
+372:         t.setTextSize(size);
+373:         t.setTextColor(color);
+374:         t.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+375:         if (bold) Ui.bold(t);
+376:         return t;
+377:     }
+378: 
+379:     View tile(int icon, String label, String sub, int color, View.OnClickListener l) {
+380:         LinearLayout b = new LinearLayout(a);
+381:         b.setOrientation(LinearLayout.VERTICAL);
+382:         b.setGravity(Gravity.CENTER);
+383:         b.setPadding(a.dp(6), a.dp(14), a.dp(6), a.dp(12));
+384:         b.setBackground(a.ripple(a.round(a.surface, Ui.mix(a.line, color, 0.45f), 18), 18));
+385:         LinearLayout ic = new LinearLayout(a);
+386:         ic.setGravity(Gravity.CENTER);
+387:         GradientDrawable cg = new GradientDrawable();
+388:         cg.setColor(Ui.mix(a.surface, color, a.night ? 0.35f : 0.14f));
+389:         cg.setCornerRadius(a.dp(14));
+390:         ic.setBackground(cg);
+391:         ic.addView(a.icon(icon, color, 24), new LinearLayout.LayoutParams(a.dp(24), a.dp(24)));
+392:         b.addView(ic, new LinearLayout.LayoutParams(a.dp(46), a.dp(46)));
+393:         TextView t = a.text(label, 14, a.ink, true);
+394:         t.setGravity(Gravity.CENTER);
+395:         b.addView(t, new LinearLayout.LayoutParams(-2, -2));
+396:         if (sub != null) {
+397:             TextView s = a.text(sub, 11, a.muted, false);
+398:             s.setGravity(Gravity.CENTER);
+399:             b.addView(s, new LinearLayout.LayoutParams(-2, -2));
+400:         }
+401:         b.setOnClickListener(l);
+402:         return b;
+403:     }
+404: 
+405:     int green() { return a.night ? Color.rgb(92, 203, 163) : Color.rgb(27, 120, 70); }
+406: 
+407:     int red() { return a.night ? Color.rgb(240, 138, 143) : Color.rgb(173, 46, 54); }
+408: 
+409:     int amber() { return a.night ? Color.rgb(233, 196, 120) : Color.rgb(176, 120, 10); }
+410: 
+411:     int gray() { return a.night ? Color.rgb(160, 170, 185) : Color.rgb(90, 100, 115); }
+412: 
+413:     int teal() { return a.night ? Color.rgb(110, 200, 210) : Color.rgb(18, 110, 120); }
+414: 
+415:     private void actions(CashBox.Config cfg, boolean manyBoxes) {
+416:         boolean can = a.can(Auth.Perm.CASH);
+417:         boolean internal = !cfg.strict || cfg.allowInternal;
+418:         List<View> tiles = new ArrayList<>();
+419:         if (can) {
+420:             tiles.add(tile(R.drawable.ic_download, "استلام", "يدخل الصندوق", green(), v -> form(CashBox.IN, null, null)));
+421:             tiles.add(tile(R.drawable.ic_upload, "تسليم", "يخرج من الصندوق", red(), v -> form(CashBox.OUT, null, null)));
+422:             if (internal && a.can(Auth.Perm.CASH_EXPENSE)) tiles.add(tile(R.drawable.ic_tag, "مصروف", "رواتب، إيجار…", amber(), v -> expense()));
+423:             if (internal && a.can(Auth.Perm.CASH_FX)) tiles.add(tile(R.drawable.ic_coins, "بيع", "عملة تخرج ومقابلها يدخل", a.primary, v -> trade(CashBox.SELL)));
+424:             if (internal && a.can(Auth.Perm.CASH_FX)) tiles.add(tile(R.drawable.ic_coins, "شراء", "عملة تدخل ومقابلها يخرج", teal(), v -> trade(CashBox.BUY)));
+425:             if (a.can(Auth.Perm.CASH_COUNT)) tiles.add(tile(R.drawable.ic_check2, "جرد", "طابق المعدود", gray(), v -> count()));
+426:         }
+427:         if (clients.allowed()) tiles.add(tile(R.drawable.ic_users, "العملاء", "حساباتهم بالتفصيل", a.primary, v -> clients.list()));
+428:         if (can && manyBoxes) tiles.add(tile(R.drawable.ic_transfer, "تحويل", "بين الصناديق", teal(), v -> transfer()));
+429:         tiles.add(tile(R.drawable.ic_list, "سجل الجرد", "العجز والزيادة", gray(), v -> countLog()));
+430:         tiles.add(tile(R.drawable.ic_report, "التقرير", "للفترة", a.primary, v -> reportFor(a.reportsScreen.range()[0], a.reportsScreen.range()[1], this::home)));
+431:         for (int i = 0; i < tiles.size(); i += 3) {
+432:             LinearLayout r = a.row();
+433:             for (int j = i; j < i + 3; j++) {
+434:                 if (j < tiles.size()) r.addView(tiles.get(j), a.weight(-2, 1, 4));
+435:                 else r.addView(new View(a), a.weight(1, 1, 4));
+436:             }
+437:             a.body.addView(r, a.lp(-1, -2, 2));
+438:         }
+439:     }
+440: 
+441:     // ===================================================================================
+442:     // قائمة الحركات
+443:     // ===================================================================================
+444: 
+445:     private boolean passes(CashBox.Move m, long dayStart) {
+446:         switch (filter) {
+447:             case 1: return m.createdAt >= dayStart;
+448:             case 2: return CashBox.IN.equals(m.kind) && !m.cancelled();
+449:             case 3: return CashBox.OUT.equals(m.kind) && !m.cancelled();
+450:             case 4: return CashBox.EXPENSE.equals(m.kind) && !m.cancelled();
+451:             case 5: return CashBox.EXCHANGE.equals(m.kind) && !m.cancelled();
+452:             case 6: return m.clientId != null;
+453:             case 7: return m.officeId != null;
+454:             case 8: return CashBox.TRANSFER.equals(m.kind);
+455:             case 9: return m.cancelled();
+456:             default: return true;
+457:         }
+458:     }
+459: 
+460:     private void list(final List<CashBox.Move> moves, final Map<String, Integer> dec) {
+461:         a.section("الحركات", null, null);
+462:         final LinearLayout chips = a.row();
+463:         final LinearLayout box = new LinearLayout(a);
+464:         box.setOrientation(LinearLayout.VERTICAL);
+465:         final Map<Long, String> names = a.db.officeNames();
+466:         final Runnable[] fill = new Runnable[1];
+467:         fill[0] = () -> {
+468:             chips.removeAllViews();
+469:             for (int i = 0; i < FILTERS.length; i++) {
+470:                 final int k = i;
+471:                 chips.addView(a.pill(FILTERS[i], i == filter, v -> {
+472:                     filter = k;
+473:                     fill[0].run();
+474:                 }), a.gap(-2, -2, 3));
+475:             }
+476:             box.removeAllViews();
+477:             long day = CashBox.startOfDay(Clock.now());
+478:             int n = 0;
+479:             for (int i = moves.size() - 1; i >= 0 && n < 150; i--) {
+480:                 CashBox.Move m = moves.get(i);
+481:                 if (!passes(m, day)) continue;
+482:                 box.addView(moveRow(m, names, dec), a.lp(-1, -2, 2));
+483:                 n++;
+484:             }
+485:             if (n == 0) box.addView(a.text("لا توجد حركات هنا.", 14, a.muted, false));
+486:             else if (n >= 150) box.addView(a.text("تظهر آخر 150 حركة؛ كلها في «التقرير».", 12, a.muted, false));
+487:         };
+488:         a.body.addView(a.strip(chips), a.lp(-1, -2, 2));
+489:         a.body.addView(box);
+490:         fill[0].run();
+491:     }
+492: 
+493:     String title(CashBox.Move m, Map<Long, String> names) {
+494:         if (m.officeId != null) {
+495:             String n = names.get(m.officeId);
+496:             return (m.dir > 0 ? "استلام لحساب " : "تسليم لحساب ") + (n == null ? "مكتب" : n);
+497:         }
+498:         if (m.clientId != null) return (m.dir > 0 ? "استلام من العميل " : "تسليم للعميل ") + m.party;
+499:         if (CashBox.EXCHANGE.equals(m.kind)) {
+500:             if (CashBox.CAT_SELL.equals(m.category) || CashBox.CAT_BUY.equals(m.category))
+501:                 return m.mainLeg() ? m.category : (CashBox.CAT_SELL.equals(m.category) ? "مقابل البيع" : "مقابل الشراء");
+502:             return m.dir > 0 ? "صرف عملة — داخل" : "صرف عملة — خارج";
+503:         }
+504:         if (CashBox.TRANSFER.equals(m.kind)) return m.dir > 0 ? "تحويل وارد" : "تحويل إلى صندوق آخر";
+505:         if (CashBox.OPENING.equals(m.kind)) return "رصيد افتتاحي";
+506:         if (CashBox.ADJUST.equals(m.kind)) return m.dir > 0 ? "جرد — زيادة" : "جرد — عجز";
+507:         return CashBox.kindName(m.kind) + (m.category.isEmpty() ? "" : " — " + m.category);
+508:     }
+509: 
+510:     private View moveRow(final CashBox.Move m, final Map<Long, String> names, Map<String, Integer> dec) {
+511:         LinearLayout r = a.row();
+512:         r.setPadding(a.dp(12), a.dp(10), a.dp(12), a.dp(10));
+513:         r.setBackground(a.ripple(a.round(a.surface, a.line, 14), 14));
+514:         boolean in = m.dir > 0;
+515:         int col = !m.counts() ? a.muted : in ? a.green : a.red;
+516:         int icon = CashBox.EXPENSE.equals(m.kind) ? R.drawable.ic_tag : CashBox.EXCHANGE.equals(m.kind) ? R.drawable.ic_coins
+517:                 : CashBox.TRANSFER.equals(m.kind) ? R.drawable.ic_transfer : m.clientId != null ? R.drawable.ic_user

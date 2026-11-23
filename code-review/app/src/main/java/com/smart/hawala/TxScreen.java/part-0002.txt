@@ -1,0 +1,171 @@
+194:                 selectCur(f.feeCur, f.curs, d.optString("feeCur"));
+195:                 if (feeByRate()) recalcFee();
+196:             }
+197:             long w = d.optLong("when", 0);
+198:             if (w > 0) setWhen(w);
+199:             a.toast("تم استرجاع بيانات حركة لم تُحفظ (الصور لا تُحفظ في المسودة).");
+200:         }
+201:         updateSummary();
+202:     }
+203: 
+204:     /** رسالة واحدة مشارَكة من واتساب: نموذج جديد والبيان معبّأ، دون المساس بالمسودة. */
+205:     void showShared(WaText.Msg m) {
+206:         openExternal(m, false, "تسجيل حركة من واتساب", null);
+207:     }
+208: 
+209:     /** 12.1: نموذج تسجيل جديد مفتوح الآن (لا تعديل)، ففقاعة من إطار الالتقاط تنتقل إلى خانته. */
+210:     boolean formOpen() { return f != null && editing == null && f.desc != null && f.wa; }
+211: 
+212:     /** 12.1: فقاعة من إطار الالتقاط إلى خانة «الصق رسالة الحوالة هنا» في النموذج المفتوح، ثم الاستخراج المعتاد. */
+213:     void captured(WaText.Msg m, Model.Office suggested) {
+214:         if (!formOpen()) {
+215:             showCaptured(m, suggested);
+216:             return;
+217:         }
+218:         if (f.office == null && WaPin.current(a.db) == null && suggested != null && suggested.active) selectOffice(suggested);
+219:         if (!m.time.isEmpty()) f.waTime = m.time;
+220:         putText(m.body);
+221:         a.toast(suggested != null && f.office != null && f.office.id == suggested.id ? "نُقلت الرسالة. المكتب مقترح من اسم المحادثة: تأكّد منه." : "نُقلت الرسالة إلى الخانة.");
+222:     }
+223: 
+224:     /** 12.1: فقاعة واحدة من إطار الالتقاط بلا نموذج مفتوح. المكتب المثبّت أولًا، ثم المقترح من اسم المحادثة. */
+225:     void showCaptured(WaText.Msg m, Model.Office suggested) {
+226:         Model.Office pinned = WaPin.current(a.db);
+227:         openExternal(m, false, "تسجيل حركة من الشاشة", pinned != null ? null : suggested);
+228:     }
+229: 
+230:     /** رسالة من دفعة واتساب، مع شريط «الرسالة n من N» في أعلى النموذج. */
+231:     void showQueued(WaText.Msg m, int index, int total, Model.Office office) {
+232:         openExternal(m, true, "تسجيل حركة (" + (index + 1) + " من " + total + ")", office);
+233:         if (f == null) return;
+234:         LinearLayout strip = a.waQueue.strip(m, index, total);
+235:         a.body.removeView(strip);
+236:         a.body.addView(strip, 0);
+237:     }
+238: 
+239:     /**
+240:      * 10.13: سطر واحد مضغوط أعلى النموذج بدل بطاقتين: مرسل الرسالة ووقتها، وبجانبه شارة صغيرة للمكتب المثبّت لرسائل واتساب
+241:      * (أو تنبيه صغير بالأحمر أنه لم يُثبَّت). اللمس على الشارة يشرح المعنى.
+242:      */
+243:     private View waHead(WaText.Msg m, final Model.Office pinned) {
+244:         LinearLayout r = a.row();
+245:         r.setGravity(Gravity.CENTER_VERTICAL);
+246:         r.setPadding(a.dp(12), a.dp(6), a.dp(8), a.dp(6));
+247:         r.setBackground(a.round(a.goldSoft, a.goldSoft, 14));
+248:         String who = m.sender.isEmpty() ? "رسالة واتساب" : m.sender;
+249:         TextView name = a.text("✉ " + who, 15, a.goldInk, true);
+250:         name.setSingleLine(true);
+251:         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+252:         r.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+253:         if (!m.time.isEmpty()) {
+254:             TextView tm = a.text("\u2066" + m.time + "\u2069", 12, a.goldInk, false);
+255:             tm.setPadding(a.dp(6), 0, a.dp(6), 0);
+256:             r.addView(tm, new LinearLayout.LayoutParams(-2, -2));
+257:         }
+258:         TextView pin = a.chip(pinned != null ? "📌 " + pinned.name : "⚠ بلا مكتب مثبّت", pinned != null ? a.red : a.red,
+259:                 pinned != null ? a.debitBg : a.debitBg);
+260:         pin.setTextSize(12);
+261:         pin.setSingleLine(true);
+262:         pin.setOnClickListener(v -> new android.app.AlertDialog.Builder(a).setTitle("المكتب المثبّت لرسائل واتساب")
+263:                 .setMessage(pinned != null ? "رسائل واتساب في هذه الجلسة تُسجَّل لمكتب «" + pinned.name + "». لا يتغير تلقائيًا؛ إن غيّرت المكتب في النموذج يُطلب تأكيد التغيير قبل الحفظ."
+264:                         : "لم يُثبَّت مكتب لرسائل واتساب في هذه الجلسة: سيُطلب تأكيد المكتب قبل أول حفظ.")
+265:                 .setPositiveButton("حسنًا", null).show());
+266:         r.addView(pin, new LinearLayout.LayoutParams(-2, -2));
+267:         Model.Office known = m.sender.isEmpty() ? null : a.waQueue.officeFor(m.sender);
+268:         if (known == null || (pinned != null && known.id == pinned.id)) {
+269:             r.setLayoutParams(a.lp(-1, -2, 3));
+270:             return r;
+271:         }
+272:         LinearLayout c = new LinearLayout(a);
+273:         c.setOrientation(LinearLayout.VERTICAL);
+274:         c.addView(r);
+275:         TextView k = a.text("رسائله السابقة سُجّلت لمكتب: " + known.name, 12, a.muted, false);
+276:         k.setPadding(a.dp(12), a.dp(2), a.dp(12), 0);
+277:         c.addView(k);
+278:         c.setLayoutParams(a.lp(-1, -2, 3));
+279:         return c;
+280:     }
+281: 
+282:     private void openExternal(WaText.Msg m, boolean queued, String title, Model.Office office) {
+283:         if (!a.require(Auth.Perm.TX_ADD)) return;
+284:         fromHold = null;
+285:         converting = false;
+286:         editing = null;
+287:         afterEdit = null;
+288:         existingAtt.clear();
+289:         removedAtt.clear();
+290:         a.pendingImages.clear();
+291:         build(title);
+292:         f.external = true;
+293:         f.queued = queued;
+294:         f.waSender = m.sender;
+295:         f.waTime = m.time;
+296:         if (queued && f.saveBtn != null) f.saveBtn.setText("تسجيل والتالية");
+297:         // 10.5 (§5): المكتب المثبّت صراحة أولًا؛ بغيره يُقترح مكتب ويُطلب تأكيده قبل أول حفظ. لا يتغير تلقائيًا بالمرسل.
+298:         Model.Office pinned = WaPin.current(a.db);
+299:         Model.Office o = office != null ? office : pinned;
+300:         if (o == null && !m.sender.isEmpty()) o = a.waQueue.officeFor(m.sender);
+301:         if (o == null) {
+302:             Model.Office last = a.db.office(a.db.settingLong("last_office", -1));
+303:             if (last != null && last.active) o = last;
+304:         }
+305:         if (o != null && o.active) selectOffice(o);
+306:         a.body.addView(waHead(m, pinned), 0);
+307:         f.pasted = true;
+308:         f.desc.setText(m.body);
+309:         f.desc.removeCallbacks(f.parseLater);
+310:         previewParse();
+311:         updateSummary();
+312:     }
+313: 
+314:     // ===================================================================================
+315:     // كشف تسجيل الرسالة نفسها مرتين
+316:     // ===================================================================================
+317: 
+318:     private Map<String, Model.Tx> recent;
+319:     private long recentAt;
+320: 
+321:     /** بصمات نصوص الحركات النشطة في آخر 120 يومًا (تُحدَّث بعد كل تسجيل أو كل 5 دقائق). */
+322:     Map<String, Model.Tx> recentPrints() {
+323:         long now = Clock.now();
+324:         if (recent != null && now - recentAt < 300000L) return recent;
+325:         Map<String, Model.Tx> m = new java.util.HashMap<>();
+326:         try {
+327:             for (Model.Tx t : a.db.descriptionsSince(now - 120L * 86400000L)) {
+328:                 String fp = WaText.fingerprint(t.description);
+329:                 if (fp.length() >= 12 && !m.containsKey(fp)) m.put(fp, t);
+330:             }
+331:         } catch (Exception ignored) {
+332:             // الكشف مساعد فقط
+333:         }
+334:         recent = m;
+335:         recentAt = now;
+336:         return m;
+337:     }
+338: 
+339:     private Model.Tx duplicateOf(String text) {
+340:         String fp = WaText.fingerprint(text);
+341:         if (fp.length() < 12) return null;
+342:         Model.Tx t = recentPrints().get(fp);
+343:         if (t == null || (editing != null && (t.id == editing.id))) return null;
+344:         // البصمات خفيفة (البيان فقط)؛ الحركة المطابقة تُقرأ كاملة للعرض
+345:         Model.Tx full = a.db.tx(t.id);
+346:         return full != null && full.isActive() ? full : null;
+347:     }
+348: 
+349:     /** 10.2: تصحيح حركة بانتظار الاعتماد ثم اعتمادها. */
+350:     void showApproveEdit(final Model.Tx t, Runnable after) {
+351:         if (!a.require(Auth.Perm.APPROVE)) return;
+352:         if (!t.isPending()) {
+353:             a.toast("الحركة لم تعد بانتظار الاعتماد.");
+354:             return;
+355:         }
+356:         approving = true;
+357:         fill(t, after, "تصحيح ثم اعتماد");
+358:     }
+359: 
+360:     void showEdit(final Model.Tx t, Runnable after) {
+361:         fromHold = null;
+362:         converting = false;
+363:         // 12.4: الحركة الخاصة تُعدَّل بصلاحية «الحركات الخاصة» (وغير المحسوبة ليست ACTIVE)
+364:         if (t.isSpecial() && !t.isPending()) {

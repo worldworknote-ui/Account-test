@@ -1,0 +1,173 @@
+1: package com.smart.hawala;
+2: 
+3: import java.io.ByteArrayOutputStream;
+4: import java.io.DataInputStream;
+5: import java.io.DataOutputStream;
+6: import java.io.EOFException;
+7: import java.io.IOException;
+8: import java.io.InputStream;
+9: import java.io.OutputStream;
+10: import java.nio.charset.StandardCharsets;
+11: import java.security.GeneralSecurityException;
+12: import java.security.SecureRandom;
+13: import java.util.Arrays;
+14: import javax.crypto.AEADBadTagException;
+15: import javax.crypto.Cipher;
+16: import javax.crypto.SecretKeyFactory;
+17: import javax.crypto.spec.GCMParameterSpec;
+18: import javax.crypto.spec.PBEKeySpec;
+19: import javax.crypto.spec.SecretKeySpec;
+20: 
+21: /**
+22:  * تشفير متدفّق للنسخ الاحتياطية (صيغة SMARTBK5).
+23:  *
+24:  * <p>لماذا صيغة جديدة؟ الصيغة القديمة (SMARTBK4) كانت تجمع كل البيانات والصور (Base64) في الذاكرة
+25:  * ثم تشفّرها دفعة واحدة، فتفشل أو تنهار مع كثرة الصور. هنا تُقسَّم البيانات إلى أجزاء ثابتة الحجم،
+26:  * وكل جزء مشفّر ومُوقَّع مستقلًا بـ AES-256-GCM، فيبقى استهلاك الذاكرة صغيرًا مهما كبرت النسخة.
+27:  *
+28:  * <p>بنية الملف:
+29:  * <pre>
+30:  *  header   = "SMARTBK5" | int version | int iterations | int saltLen | salt | int prefixLen | prefix | int chunkSize
+31:  *  verifier = int len | GCM(iv = prefix||0xFFFFFFFF, aad = header||"VERIFY", 16 zero bytes)
+32:  *  record*  = byte flag (0 = تتبعه أجزاء, 1 = الجزء الأخير) | int len | GCM(iv = prefix||index, aad = header||index||flag, chunk)
+33:  * </pre>
+34:  * علامة «الجزء الأخير» داخلة في التوقيع، فأي قطع للملف أو حذف لجزء منه يُكتشف عند القراءة.
+35:  *
+36:  * <p>10.14 — الإصدار 2 (يُكتب فقط إن فُعّل «رمز استرداد النسخ»): الأجزاء مشفّرة بمفتاح بيانات عشوائي DK، وDK مغلّف مرتين في الرأس:
+37:  * بمفتاح من كلمة المرور، وبمفتاح من رمز الاسترداد. فتُفتح النسخة بأيٍّ منهما. الإصدار 1 يبقى كما هو (تقرؤه الإصدارات الأقدم).
+38:  * <pre>
+39:  *  header v2 = header v1 | int rcSaltLen | rcSalt | int rcIter | int wpLen | GCM(pwKey, prefix||0xFFFFFFFE, headBase, DK)
+40:  *              | int wrLen | GCM(rcKey, prefix||0xFFFFFFFD, headBase, DK)          (headBase = الرأس حتى rcIter)
+41:  * </pre>
+42:  * وجزء التحقق (verifier) يسمح بالتمييز بين «كلمة مرور خاطئة» و«ملف تالف».
+43:  *
+44:  * <p>الملف لا يستخدم أي واجهة خاصة بأندرويد حتى يمكن اختباره على الكمبيوتر.
+45:  */
+46: public final class SecureStreams {
+47: 
+48:     public static final byte[] MAGIC = "SMARTBK5".getBytes(StandardCharsets.US_ASCII);
+49:     public static final int VERSION = 1;
+50:     /** 10.14: نسخة تُفتح بكلمة المرور أو برمز الاسترداد. */
+51:     public static final int VERSION_RC = 2;
+52: 
+53:     /** 10.14: مفتاح رمز استرداد النسخ (مشتق مرة واحدة من الرمز، ويُحفظ مشفّرًا بمفتاح الجهاز). */
+54:     public static final class RecoveryKey {
+55:         public final byte[] salt;
+56:         public final int iterations;
+57:         public final SecretKeySpec key;
+58: 
+59:         public RecoveryKey(byte[] salt, int iterations, SecretKeySpec key) {
+60:             this.salt = salt;
+61:             this.iterations = iterations;
+62:             this.key = key;
+63:         }
+64: 
+65:         /** يشتق المفتاح من الرمز (بأي شكل كُتب: بالشرطات أو بدونها، بأحرف صغيرة). */
+66:         public static RecoveryKey derive(String code, byte[] salt, int iterations) throws GeneralSecurityException {
+67:             return new RecoveryKey(salt, iterations, deriveKey(normalizeCode(code).toCharArray(), salt, iterations));
+68:         }
+69:     }
+70: 
+71:     /** صيغة رمز الاسترداد الموحّدة (24 حرفًا ورقمًا، بلا شرطات). */
+72:     public static String normalizeCode(String s) {
+73:         return s == null ? "" : s.toUpperCase(java.util.Locale.ROOT).replaceAll("[^A-Z0-9]", "").replace('O', '0').replace('I', '1');
+74:     }
+75: 
+76:     /** هل النص المكتوب بشكل رمز استرداد (24 حرفًا ورقمًا)؟ */
+77:     public static boolean looksLikeCode(char[] s) {
+78:         return s != null && normalizeCode(new String(s)).length() == 24;
+79:     }
+80:     public static final int DEFAULT_ITERATIONS = 310000;
+81:     public static final int MIN_ITERATIONS = 100000;
+82:     public static final int MAX_ITERATIONS = 5000000;
+83:     public static final int DEFAULT_CHUNK = 256 * 1024;
+84:     private static final int MAX_CHUNK = 16 * 1024 * 1024;
+85:     private static final int TAG_BITS = 128;
+86:     private static final int TAG_BYTES = 16;
+87:     private static final int SALT_BYTES = 16;
+88:     private static final int PREFIX_BYTES = 8;
+89:     private static final byte[] VERIFY_AAD = "VERIFY".getBytes(StandardCharsets.US_ASCII);
+90: 
+91:     private SecureStreams() {}
+92: 
+93:     /** كلمة المرور لا تطابق النسخة. */
+94:     public static final class WrongPasswordException extends IOException {
+95:         public WrongPasswordException() {
+96:             super("كلمة المرور غير صحيحة. تأكد من الأحرف الكبيرة والصغيرة ولغة لوحة المفاتيح ثم أعد المحاولة.");
+97:         }
+98: 
+99:         /** 10.14: نسخة تقبل رمز استرداد النسخ أيضًا. */
+100:         public WrongPasswordException(boolean recoverable) {
+101:             super(recoverable ? "كلمة المرور أو رمز استرداد النسخ غير صحيح. تأكد من الأحرف ولغة لوحة المفاتيح، أو اكتب رمز الاسترداد (24 حرفًا)."
+102:                     : "كلمة المرور غير صحيحة. تأكد من الأحرف الكبيرة والصغيرة ولغة لوحة المفاتيح ثم أعد المحاولة.");
+103:         }
+104:     }
+105: 
+106:     /** الملف ليس نسخة صالحة، أو ناقص، أو عُدِّل بعد إنشائه. */
+107:     public static final class CorruptBackupException extends IOException {
+108:         public CorruptBackupException(String message) { super(message); }
+109:         public CorruptBackupException(String message, Throwable cause) { super(message, cause); }
+110:     }
+111: 
+112:     /** يشتق مفتاح AES-256 من كلمة المرور. PBEKeySpec ينسخ المصفوفة، ولا يتم تعديل مصفوفة المستدعي إطلاقًا. */
+113:     public static SecretKeySpec deriveKey(char[] password, byte[] salt, int iterations) throws GeneralSecurityException {
+114:         PBEKeySpec spec = new PBEKeySpec(password, salt, iterations, 256);
+115:         try {
+116:             byte[] raw = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();
+117:             try {
+118:                 return new SecretKeySpec(raw, "AES");
+119:             } finally {
+120:                 Arrays.fill(raw, (byte) 0);
+121:             }
+122:         } finally {
+123:             spec.clearPassword();
+124:         }
+125:     }
+126: 
+127:     /** يقرأ أول 8 بايت لمعرفة نوع الملف دون استهلاك بقية البيانات. */
+128:     public static boolean startsWith(byte[] head, byte[] magic) {
+129:         if (head == null || head.length < magic.length) return false;
+130:         for (int i = 0; i < magic.length; i++) if (head[i] != magic[i]) return false;
+131:         return true;
+132:     }
+133: 
+134:     private static byte[] iv(byte[] prefix, int counter) {
+135:         byte[] iv = new byte[12];
+136:         System.arraycopy(prefix, 0, iv, 0, 8);
+137:         iv[8] = (byte) (counter >>> 24);
+138:         iv[9] = (byte) (counter >>> 16);
+139:         iv[10] = (byte) (counter >>> 8);
+140:         iv[11] = (byte) counter;
+141:         return iv;
+142:     }
+143: 
+144:     private static byte[] chunkAad(byte[] header, long index, int flag) {
+145:         byte[] aad = new byte[header.length + 9];
+146:         System.arraycopy(header, 0, aad, 0, header.length);
+147:         int p = header.length;
+148:         for (int i = 7; i >= 0; i--) aad[p++] = (byte) (index >>> (8 * i));
+149:         aad[p] = (byte) flag;
+150:         return aad;
+151:     }
+152: 
+153:     private static byte[] concat(byte[] a, byte[] b) {
+154:         byte[] r = Arrays.copyOf(a, a.length + b.length);
+155:         System.arraycopy(b, 0, r, a.length, b.length);
+156:         return r;
+157:     }
+158: 
+159:     private static byte[] gcm(int mode, SecretKeySpec key, byte[] iv, byte[] aad, byte[] data, int off, int len)
+160:             throws GeneralSecurityException {
+161:         Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+162:         c.init(mode, key, new GCMParameterSpec(TAG_BITS, iv));
+163:         c.updateAAD(aad);
+164:         return c.doFinal(data, off, len);
+165:     }
+166: 
+167:     // ===================================================================================
+168:     // الكتابة
+169:     // ===================================================================================
+170: 
+171:     /**
+172:      * يكتب نسخة مشفّرة. يجب استدعاء {@link #close()} لكتابة الجزء الأخير؛ وعند حدوث خطأ أثناء الكتابة
+173:      * يُستدعى {@link #abort()} بدلًا منه حتى لا ينتج ملف يبدو مكتملًا.

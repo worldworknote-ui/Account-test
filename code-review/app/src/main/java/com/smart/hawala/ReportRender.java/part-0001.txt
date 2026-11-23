@@ -1,0 +1,79 @@
+1: package com.smart.hawala;
+2: 
+3: import android.graphics.Color;
+4: import android.view.View;
+5: import android.widget.LinearLayout;
+6: import android.widget.TextView;
+7: import java.util.ArrayList;
+8: import java.util.List;
+9: 
+10: /**
+11:  * 9.0: عرض أي تقرير (Report) على الهاتف: كل قسم في بطاقة، الخلاصة في الأعلى، وكل سطر مضغوط
+12:  * (العمود الأول عنوانًا والباقي «العمود: القيمة»)، مع «عرض المزيد» للأقسام الطويلة. الأرقام نفسها التي تُصدَّر PDF و Excel.
+13:  */
+14: final class ReportRender {
+15:     private ReportRender() {}
+16: 
+17:     static void render(MainActivity a, Report r) {
+18:         for (Report.Section s : r.sections) section(a, a.body, s);
+19:     }
+20: 
+21:     static void section(final MainActivity a, LinearLayout into, final Report.Section s) {
+22:         final LinearLayout c = new LinearLayout(a);
+23:         c.setOrientation(LinearLayout.VERTICAL);
+24:         c.setPadding(a.dp(14), a.dp(12), a.dp(14), a.dp(12));
+25:         c.setBackground(a.round(a.surface, a.line, 16));
+26:         into.addView(c, a.lp(-1, -2, 5));
+27:         c.addView(a.text(s.heading, 16, a.primaryInk, true));
+28:         for (Report.Kv kv : s.summary) c.addView(a.text(kv.label + ": " + Report.text(kv.value), 13, kv.emphasis ? a.red : a.ink, kv.emphasis));
+29:         final LinearLayout rows = new LinearLayout(a);
+30:         rows.setOrientation(LinearLayout.VERTICAL);
+31:         c.addView(rows);
+32:         final int[] shown = {0};
+33:         final Runnable more = () -> {
+34:             int until = Math.min(s.rows.size(), shown[0] + 15);
+35:             for (int i = shown[0]; i < until; i++) rows.addView(row(a, s, s.rows.get(i)));
+36:             shown[0] = until;
+37:         };
+38:         more.run();
+39:         if (s.rows.size() > shown[0]) {
+40:             final TextView all = a.text("عرض المزيد (" + (s.rows.size() - shown[0]) + ")", 13, a.primary, true);
+41:             all.setPadding(0, a.dp(6), 0, a.dp(2));
+42:             all.setOnClickListener(v -> {
+43:                 more.run();
+44:                 if (shown[0] >= s.rows.size()) all.setVisibility(View.GONE);
+45:                 else all.setText("عرض المزيد (" + (s.rows.size() - shown[0]) + ")");
+46:             });
+47:             c.addView(all);
+48:         }
+49:         if (s.note != null && !s.note.isEmpty()) c.addView(a.text(s.note, 12, a.muted, false));
+50:     }
+51: 
+52:     static View row(MainActivity a, Report.Section s, Report.Row r) {
+53:         LinearLayout box = new LinearLayout(a);
+54:         box.setOrientation(LinearLayout.VERTICAL);
+55:         box.setPadding(a.dp(6), a.dp(6), a.dp(6), a.dp(6));
+56:         if (s.cols.isEmpty() || r.cells.length == 0) return box;
+57:         int first = s.cols.size() > 1 && "#".equals(s.cols.get(0).title) ? 1 : 0;
+58:         String title = Report.text(r.cells[first]);
+59:         if (first == 1) title = Report.text(r.cells[0]) + ". " + title;
+60:         boolean strong = r.style == Report.BOLD || r.style == Report.TOTAL;
+61:         box.addView(a.text(title, 14, r.style == Report.MUTED ? a.muted : a.ink, strong));
+62:         List<String> parts = new ArrayList<>();
+63:         for (int i = first + 1; i < s.cols.size() && i < r.cells.length; i++) {
+64:             Object cell = r.cells[i];
+65:             String v = Report.text(cell);
+66:             if (v.isEmpty() || "0".equals(v) || "—".equals(v)) continue;
+67:             boolean num = cell instanceof Report.Money || cell instanceof Long || cell instanceof Integer;
+68:             parts.add(s.cols.get(i).title + ": " + (num ? "\u2066" + v + "\u2069" : v));
+69:         }
+70:         if (!parts.isEmpty()) box.addView(a.text(Model.join(parts, "   •   "), 12, r.style == Report.MUTED ? a.muted : a.dark, false));
+71:         if (r.style == Report.TOTAL) box.setBackground(a.round(a.goldSoft, a.goldSoft, 10));
+72:         else if (r.style == Report.SHADED) box.setBackground(a.round(a.primarySoft, a.primarySoft, 10));
+73:         else box.setBackground(a.round(Color.TRANSPARENT, Color.TRANSPARENT, 0));
+74:         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+75:         lp.setMargins(0, a.dp(2), 0, a.dp(2));
+76:         box.setLayoutParams(lp);
+77:         return box;
+78:     }
+79: }

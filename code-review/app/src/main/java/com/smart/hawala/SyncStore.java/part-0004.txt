@@ -1,0 +1,144 @@
+472:             // الأسرار من الجهاز الرئيسي وحده، وتُطبَّق دائمًا (لا «الأحدث يفوز» فيها)
+473:             if (secret && (!fromDev.equals(meta(d, "founder")) || "D".equals(kind))) continue;
+474:             // الأحدث يفوز: تغيير محلي أحدث من هذا لا يُكتب فوقه
+475:             String local = null;
+476:             try (Cursor c = d.rawQuery("SELECT hlc FROM sync_clock WHERE tbl=? AND rid=?", new String[]{table, rid})) {
+477:                 if (c.moveToFirst()) local = c.getString(0);
+478:             }
+479:             if (!secret && local != null && local.compareTo(hlc) > 0) {
+480:                 res.skippedOlder++;
+481:                 // 10.16: لا يضيع تعديل بصمت: بقي ما على هذا الجهاز لأنه أحدث، ويُعلَم المستخدم ليراجع
+482:                 if (EDIT_LOST_TABLES.containsKey(table)) {
+483:                     conflict(d, "EDIT_LOST", table, rid + "@" + hlc, ("D".equals(kind) ? "حذف " : "تعديل على ") + rowLabel(d, table, rid)
+484:                             + " من جهاز آخر لم يُطبَّق لأن عليه تعديلًا أحدث؛ بقي التعديل الأحدث. راجع البيانات وتأكد أنها كما تريد.", fromDev);
+485:                     res.notices++;
+486:                 }
+487:                 continue;
+488:             }
+489:             List<String> args = new ArrayList<>();
+490:             String w = where(table, rid, args);
+491:             String[] wa = args.toArray(new String[0]);
+492:             if ("D".equals(kind)) {
+493:                 if (table.equals("attachments")) {
+494:                     try (Cursor c = d.rawQuery("SELECT path FROM attachments WHERE " + w, wa)) {
+495:                         if (c.moveToFirst() && c.getString(0) != null) db.attachmentFile(c.getString(0)).delete();
+496:                     }
+497:                 }
+498:                 d.delete(table, w, wa);
+499:             } else {
+500:                 JSONObject r = op.getJSONObject("r");
+501:                 if (table.equals("journal_entries") && "REVERSAL".equals(r.optString("kind")) && !r.isNull("reverses_id")) {
+502:                     // إلغاء الحركة نفسها من جهازين: قيد عكسي واحد يكفي
+503:                     boolean exists;
+504:                     try (Cursor c = d.rawQuery("SELECT 1 FROM journal_entries WHERE id=?", new String[]{rid})) {
+505:                         exists = c.moveToFirst();
+506:                     }
+507:                     if (!exists) {
+508:                         boolean dup;
+509:                         try (Cursor c = d.rawQuery("SELECT 1 FROM journal_entries WHERE kind='REVERSAL' AND reverses_id=? AND COALESCE(status,'POSTED')='POSTED'",
+510:                                 new String[]{"" + r.getLong("reverses_id")})) {
+511:                             dup = c.moveToFirst();
+512:                         }
+513:                         if (dup) {
+514:                             res.duplicates++;
+515:                             d.execSQL("INSERT OR REPLACE INTO sync_clock(tbl,rid,hlc) VALUES(?,?,?)", new Object[]{table, rid, hlc});
+516:                             continue;
+517:                         }
+518:                     }
+519:                 }
+520:                 if (table.equals("journal_lines")) {
+521:                     // سطور قيد عكسي مكرر تجاهلناه: لا قيد لها هنا
+522:                     boolean parent;
+523:                     try (Cursor c = d.rawQuery("SELECT 1 FROM journal_entries WHERE id=?", new String[]{"" + r.optLong("entry_id")})) {
+524:                         parent = c.moveToFirst();
+525:                     }
+526:                     boolean self;
+527:                     try (Cursor c = d.rawQuery("SELECT 1 FROM journal_lines WHERE id=?", new String[]{rid})) {
+528:                         self = c.moveToFirst();
+529:                     }
+530:                     if (!parent && !self && skippedEntry(ops, r.optLong("entry_id"))) {
+531:                         d.execSQL("INSERT OR REPLACE INTO sync_clock(tbl,rid,hlc) VALUES(?,?,?)", new Object[]{table, rid, hlc});
+532:                         continue;
+533:                     }
+534:                 }
+535:                 ContentValues v = values(db, d, table, r, cols);
+536:                 if (v == null) continue;
+537:                 String[] userBefore = table.equals("users") ? userState(d, rid, columns(d, "users", cols)) : null;
+538:                 boolean userRow = table.equals("users");
+539:                 if (table.equals("exchange_rates")) {
+540:                     if (d.update(table, v, w, wa) == 0) {
+541:                         v.put("usd_rate", "0");
+542:                         v.put("updated_at", 0L);
+543:                         d.insertOrThrow(table, null, v);
+544:                     }
+545:                 } else if (d.update(table, v, w, wa) == 0) {
+546:                     d.insertOrThrow(table, null, v);
+547:                     if (table.equals("tx")) insertedTx.add(r.getLong("id"));
+548:                 }
+549:                 if (userRow && !userChanges.containsKey(rid)) userChanges.put(rid, userBefore);
+550:                 if (userRow) db.invalidateNicks();
+551:                 if (ID_TABLES.contains(table)) {
+552:                     Set<Long> s = touched.get(table);
+553:                     if (s == null) {
+554:                         s = new HashSet<>();
+555:                         touched.put(table, s);
+556:                     }
+557:                     s.add(Long.parseLong(rid));
+558:                 }
+559:             }
+560:             d.execSQL("INSERT OR REPLACE INTO sync_clock(tbl,rid,hlc) VALUES(?,?,?)", new Object[]{table, rid, hlc});
+561:             res.rows++;
+562:         }
+563:         return applyTail(db, d, res, baseline, insertedTx, userChanges, hlc, fromDev, myPrefix);
+564:     }
+565: 
+566:     private static Applied applyTail(Db db, SQLiteDatabase d, Applied res, Set<String> baseline, Set<Long> insertedTx, Map<String, String[]> userChanges,
+567:             String hlc, String fromDev, long myPrefix) throws Exception {
+568:         // 10.16: تغيّر دور مستخدم أو صلاحياته أو إيقافه/إضافة مدير من جهاز آخر: يُعلَم به (كان يمر بصمت)
+569:         Map<String, Set<String>> ucols = new HashMap<>();
+570:         for (Map.Entry<String, String[]> e : userChanges.entrySet()) {
+571:             String[] was = e.getValue(), now = userState(d, e.getKey(), columns(d, "users", ucols));
+572:             if (now == null) continue;
+573:             String name = Model.nz(now[0]);
+574:             List<String> what = new ArrayList<>();
+575:             if (was == null) {
+576:                 if ("ADMIN".equals(now[1])) what.add("أُضيف مدير جديد");
+577:             } else {
+578:                 if (!was[1].equals(now[1])) what.add("تغيّر دوره من " + Auth.shortLabel(was[1]) + " إلى " + Auth.shortLabel(now[1]));
+579:                 if (!was[2].equals(now[2])) what.add("1".equals(now[2]) ? "أُعيد تفعيله" : "أُوقف");
+580:                 if (!Model.nz(was[3]).equals(Model.nz(now[3]))) what.add("تغيّرت صلاحياته");
+581:             }
+582:             if (what.isEmpty()) continue;
+583:             conflict(d, "ROLE_CHANGED", "users", e.getKey() + "@" + hlc, "المستخدم «" + name + "»: " + String.join("، ", what) + " (من جهاز آخر).", fromDev);
+584:             res.notices++;
+585:         }
+586:         // صفوف تشير إلى ما حذفه جهاز آخر (أو وصلت لأصل محذوف هنا): تُرفع مع قيودها ويُسجَّل تعارض؛
+587:         // المخالفات القديمة الموجودة قبل الحزمة لا تُمس
+588:         for (int round = 0; round < 8; round++) {
+589:             List<String[]> bad = new ArrayList<>();
+590:             try (Cursor c = d.rawQuery("PRAGMA foreign_key_check", null)) {
+591:                 while (c.moveToNext()) {
+592:                     String key = c.getString(0) + ":" + c.getLong(1);
+593:                     if (!baseline.contains(key)) bad.add(new String[]{c.getString(0), "" + c.getLong(1), c.getString(2)});
+594:                 }
+595:             }
+596:             if (bad.isEmpty()) break;
+597:             for (String[] b : bad) {
+598:                 if (b[0].equals("tx")) {
+599:                     d.execSQL("DELETE FROM journal_lines WHERE entry_id IN (SELECT id FROM journal_entries WHERE tx_id=" + b[1] + ")");
+600:                     d.execSQL("DELETE FROM journal_entries WHERE tx_id=" + b[1]);
+601:                     d.execSQL("DELETE FROM attachments WHERE tx_id=" + b[1]);
+602:                 }
+603:                 d.delete(b[0], "rowid=?", new String[]{b[1]});
+604:                 conflict(d, "MISSING_PARENT", b[0], b[1], "يشير إلى " + b[2] + " محذوف", fromDev);
+605:                 res.conflicts++;
+606:             }
+607:         }
+608:         // تعديل الحركة نفسها من جهازين: الأسبق بالساعة يبقى
+609:         try (Cursor c = d.rawQuery("SELECT replaces_id FROM tx WHERE replaces_id IS NOT NULL AND status IN ('ACTIVE','PENDING') GROUP BY replaces_id HAVING COUNT(*)>1", null)) {
+610:             List<Long> groups = new ArrayList<>();
+611:             while (c.moveToNext()) groups.add(c.getLong(0));
+612:             for (long g : groups) {
+613:                 List<Object[]> cand = new ArrayList<>();
+614:                 try (Cursor q = d.rawQuery("SELECT t.id,COALESCE(k.hlc,'') FROM tx t LEFT JOIN sync_clock k ON k.tbl='tx' AND k.rid=CAST(t.id AS TEXT)"
+615:                         + " WHERE t.replaces_id=" + g + " AND t.status IN ('ACTIVE','PENDING')", null)) {

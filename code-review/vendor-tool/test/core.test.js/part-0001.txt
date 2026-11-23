@@ -1,0 +1,126 @@
+1: /*
+2:  * اختبارات أداة البائع: node vendor-tool/test/core.test.js [مجلد المخرجات] [مجلد مفاتيح البائع الحقيقية — اختياري]
+3:  * - سلاسل تصديق حقيقية من هواتف (github.com/android/keyattestation، رخصة Apache-2.0) تُقرأ وتتحقق حتى جذر Google.
+4:  * - رموز تُصدرها الأداة تُكتب في node-tokens.json ليتحقق منها اختبار Java (LicenseTest) بالشيفرة نفسها التي في التطبيق.
+5:  */
+6: "use strict";
+7: var fs = require("fs"), path = require("path"), nc = require("crypto");
+8: var VT = require("../core.js");
+9: var OUT = process.argv[2] || path.join(__dirname, "out");
+10: var KEYS = process.argv[3] || "";
+11: fs.mkdirSync(OUT, { recursive: true });
+12: 
+13: var fails = 0, passes = 0;
+14: function check(c, m) {
+15:   if (c) passes++;
+16:   else fails++;
+17:   console.log((c ? "  PASS " : "  FAIL ") + m);
+18: }
+19: 
+20: var LEVEL = { SOFTWARE: 0, TRUSTED_ENVIRONMENT: 1, STRONG_BOX: 2 };
+21: var VEC = path.join(__dirname, "vectors");
+22: 
+23: function chainOf(name) {
+24:   return VT.pemBlocks(fs.readFileSync(path.join(VEC, name + ".pem"), "utf8"), "CERTIFICATE").map(function (b) { return VT.bytesToB64(b); });
+25: }
+26: 
+27: function nodeKeyPair() {
+28:   var kp = nc.generateKeyPairSync("ec", { namedCurve: "P-256" });
+29:   return { priv: kp.privateKey, spki: new Uint8Array(kp.publicKey.export({ type: "spki", format: "der" })), pkcs8: new Uint8Array(kp.privateKey.export({ type: "pkcs8", format: "der" })) };
+30: }
+31: 
+32: async function main() {
+33:   console.log("== سلاسل تصديق حقيقية");
+34:   var names = fs.readdirSync(VEC).filter(function (f) { return f.endsWith(".pem"); }).map(function (f) { return f.slice(0, -4); });
+35:   for (var i = 0; i < names.length; i++) {
+36:     var n = names[i], exp = JSON.parse(fs.readFileSync(path.join(VEC, n + ".json"), "utf8").replace(/^\s*\/\/.*$/mg, ""));
+37:     var chain = chainOf(n);
+38:     var r = await VT.verifyChain(chain);
+39:     var hw = exp.attestationSecurityLevel !== "SOFTWARE";
+40:     check(r.sigOk, n + ": كل توقيعات السلسلة (" + chain.length + " شهادات) صحيحة");
+41:     check(r.rootTrusted === hw, n + ": " + (hw ? "تنتهي بجذر Google: " + r.rootName : "تصديق برمجي لا ينتهي بجذر Google العتادي"));
+42:     var kd = r.kd;
+43:     check(kd && kd.securityLevel === LEVEL[exp.attestationSecurityLevel], n + ": مستوى الأمان " + exp.attestationSecurityLevel);
+44:     check(kd && VT.bytesToB64(kd.challenge) === exp.attestationChallenge, n + ": التحدي يُقرأ كما هو");
+45:     var app = exp.softwareEnforced.attestationApplicationId || (exp.hardwareEnforced || {}).attestationApplicationId;
+46:     if (app) {
+47:       check(kd.appId && kd.appId.packages.map(function (p) { return p.name; }).join(",") === app.packages.map(function (p) { return p.name; }).join(","), n + ": اسم الحزمة");
+48:       var sigs = app.signatures.map(function (s) { return VT.hex(VT.b64ToBytes(s)).toUpperCase(); });
+49:       check(kd.appId.signatures.join(",") === sigs.join(","), n + ": بصمة شهادة التطبيق");
+50:     }
+51:     var rot = exp.hardwareEnforced && exp.hardwareEnforced.rootOfTrust;
+52:     if (rot) check(kd.rootOfTrust && kd.rootOfTrust.deviceLocked === rot.deviceLocked && kd.rootOfTrust.verifiedBootState === rot.verifiedBootState, n + ": حالة الإقلاع " + rot.verifiedBootState);
+53:   }
+54: 
+55:   console.log("== سلاسل معدّلة");
+56:   var good = chainOf("tegu_sdk36_SB_EC_2026_ROOT");
+57:   var leaf = VT.b64ToBytes(good[0]);
+58:   var c0 = VT.parseCert(leaf);
+59:   var bad = new Uint8Array(leaf);
+60:   bad[c0.tbs.byteOffset - leaf.byteOffset + 40] ^= 1;
+61:   var r1 = await VT.verifyChain([VT.bytesToB64(bad)].concat(good.slice(1)));
+62:   check(!r1.sigOk && !r1.ok, "تغيير بايت واحد في شهادة المفتاح يُكشف");
+63:   var r2 = await VT.verifyChain([good[0]].concat(good.slice(2)));
+64:   check(!r2.sigOk, "حذف شهادة وسيطة يُكشف");
+65:   var r3 = await VT.verifyChain(good.slice(1));
+66:   check(!r3.kd && !r3.ok, "سلسلة بلا شهادة المفتاح: لا وصف تصديق");
+67:   var r4 = await VT.verifyChain(good.slice(0, good.length - 1));
+68:   check(r4.sigOk === false || !r4.rootTrusted, "سلسلة بلا جذر Google لا تُعدّ موثوقة");
+69:   var r5 = await VT.verifyChain(good, { status: { entries: (function () { var e = {}; e[VT.parseCert(VT.b64ToBytes(good[1])).serial] = { status: "REVOKED", reason: "KEY_COMPROMISE" }; return e; })() } });
+70:   check(r5.revoked.length === 1 && !r5.ok, "شهادة ملغاة في قائمة Google تُرفض");
+71: 
+72:   console.log("== مراجعة طلب التفعيل");
+73:   // طلب بسلسلة حقيقية لكن لتطبيق آخر وتحدٍّ آخر: يجب أن يُرفض
+74:   var other = await VT.reviewRequest("SA8-REQ:" + VT.b64url(VT.utf8(JSON.stringify({
+75:     t: "sa-activate", v: 1, order: "2026-0001", pkg: VT.PKG, ver: "8.0", build: 20261014,
+76:     dk: await VT.deviceFingerprint(c0.spki), pub: VT.bytesToB64(c0.spki), chain: good, model: "Pixel"
+77:   }))));
+78:   check(other.errors.some(function (e) { return e.indexOf("التحدي") >= 0; }), "تحدٍّ لا يطابق رقم الطلب يُرفض");
+79:   check(other.errors.some(function (e) { return e.indexOf("تطبيق آخر") >= 0; }), "مفتاح أنشأه تطبيق آخر يُرفض");
+80:   check(other.errors.some(function (e) { return e.indexOf("ليس موقّعًا بشهادتك") >= 0; }), "تطبيق غير موقّع بشهادة البائع يُرفض");
+81:   check(other.info.some(function (e) { return e.indexOf("Google") >= 0; }) && other.level === 2, "والسلسلة نفسها موثوقة (StrongBox)");
+82: 
+83:   var dev = nodeKeyPair();
+84:   var dk = await VT.deviceFingerprint(dev.spki);
+85:   function req(o) {
+86:     var j = Object.assign({ t: "sa-activate", v: 1, order: "2026-0153", pkg: VT.PKG, ver: "8.0", build: 20261014, dk: dk, pub: VT.bytesToB64(dev.spki), chain: [], model: "Samsung A15 / Android 15" }, o || {});
+87:     return "SA8-REQ:" + VT.b64url(VT.utf8(JSON.stringify(j)));
+88:   }
+89:   var plain = await VT.reviewRequest("رسالة من العميل:\n" + req().replace(/(.{60})/g, "$1\n") + "\nشكرًا");
+90:   check(plain.errors.length === 0 && plain.warnings.length === 2 && plain.req.order === "2026-0153"
+91:     && plain.warnings.some(function (w) { return w.indexOf("أقدم من 12.7") >= 0; }), "طلب بلا سلسلة (محاكٍ/هاتف قديم): تحذيرات فقط (وبلا هوية مكتب: من إصدار أقدم)، ويُقرأ من وسط رسالة");
+92:   // 11.5: الطلب المضغوط SA8-REQZ: (كما يصنعه التطبيق بـ Deflater) يُقرأ كالعادي ومن وسط رسالة مقسّمة، وأقصر بوضوح
+93:   var fullJson = JSON.stringify({ t: "sa-activate", v: 1, order: "2026-0001", pkg: VT.PKG, ver: "8.0", build: 20261014,
+94:     dk: await VT.deviceFingerprint(c0.spki), pub: VT.bytesToB64(c0.spki), chain: good, model: "Pixel" });
+95:   var zreq = "SA8-REQZ:" + VT.b64url(new Uint8Array(require("zlib").deflateRawSync(Buffer.from(fullJson, "utf8"), { level: 9 })));
+96:   var oreq = "SA8-REQ:" + VT.b64url(VT.utf8(fullJson));
+97:   var zr = await VT.reviewRequest("طلب:\n" + zreq.replace(/(.{80})/g, "$1\n") + "\nشكرًا");
+98:   check(zr.req && zr.req.order === "2026-0001" && zr.req.chain.length === good.length, "الطلب المضغوط يُقرأ من وسط رسالة مقسّمة");
+99:   check(zreq.length < oreq.length * 0.8, "المضغوط أقصر: " + zreq.length + " بدل " + oreq.length + " حرفًا");
+100:   check((await VT.reviewRequest("SA8-REQZ:AAAA")).errors.length > 0, "مضغوط فاسد يُرفض دون رمي");
+101:   check((await VT.reviewRequest(req({ dk: dk.replace(/^./, dk[0] === "A" ? "B" : "A") }))).errors.length > 0, "بصمة معدّلة تُرفض");
+102:   check((await VT.reviewRequest(req({ pkg: "com.smart.hawala.v7" }))).errors.length > 0, "حزمة أخرى تُرفض");
+103:   check((await VT.reviewRequest("SA8-REQ:@@@")).errors.length > 0, "طلب فاسد لا يرمي");
+104:   check((await VT.reviewRequest("مرحبا")).errors.length > 0, "نص ليس طلبًا");
+105: 
+106:   console.log("== إصدار الرمز (مفتاح اختبار)");
+107:   var vendor = nodeKeyPair();
+108:   var signer = await VT.importPkcs8(vendor.pkcs8);
+109:   check(signer.kid === null, "مفتاح الاختبار ليس من مفاتيح التطبيق (kid=null)");
+110:   var refused = false;
+111:   try {
+112:     await VT.issueToken(signer, { lid: "SA-2026-0001", uu: 20271014, dk: dk });
+113:   } catch (e) {
+114:     refused = true;
+115:   }
+116:   check(refused, "لا إصدار بمفتاح ليس من مفاتيح التطبيق");
+117:   signer.kid = "t9";
+118:   var trusted = { t9: signer.spki };
+119:   var tok = await VT.issueToken(signer, { lid: "SA-2026-0001", uu: 20271014, dk: dk });
+120:   var f = await VT.verifyToken(tok, dev.spki, trusted);
+121:   check(f && f.lid === "SA-2026-0001" && f.ft === "all" && f.ed === "pro" && f.uu === "20271014" && f.kid === "t9", "رمز صحيح يتحقق بحقوله");
+122:   check(!(await VT.verifyToken(tok, nodeKeyPair().spki, trusted)), "الرمز لا يعمل لهاتف آخر");
+123:   var parts = tok.split(".");
+124:   var forged = VT.b64url(VT.utf8(VT.fromUtf8(VT.b64ToBytes(parts[0])).replace("uu=20271014", "uu=20991231"))) + "." + parts[1];
+125:   check(!(await VT.verifyToken(forged, dev.spki, trusted)), "تمديد التاريخ في رمز موقّع يُرفض");
+126:   var bads = [["lid", "SA;ft=all"], ["lid", "a b"], ["uu", "2027-10-14"], ["dk", "short"], ["ed", "x=y"]];

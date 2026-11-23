@@ -1,0 +1,167 @@
+704:     var g = model.issues[code] = model.issues[code] || { code: code, label: REASONS[code], counted: !!counted, rows: [] };
+705:     if (g.rows.length < 3000) g.rows.push({ sheet: t.label, row: r + 1, cells: preview(t, row) });
+706:     g.total = (g.total || 0) + 1;
+707:   }
+708: 
+709:   function preview(t, row) {
+710:     var o = {};
+711:     ["date", "currency", "amount", "debit", "credit", "fee", "direction", "account", "description", "ref", "balance"].forEach(function (k) {
+712:       var c = t.roles[k];
+713:       if (c !== undefined) o[k] = text((row || [])[c]);
+714:     });
+715:     (t.roles.wide || []).forEach(function (w) { var v = text((row || [])[w.c]); if (v) o.amount = (o.amount ? o.amount + " • " : "") + w.h + ": " + v; });
+716:     return o;
+717:   }
+718: 
+719:   /** أول نص في الصف داخل أعمدة الجدول فقط. */
+720:   function rowLabelIn(t, row) {
+721:     for (var c = t.c0; c <= t.c1; c++) {
+722:       var x = (row || [])[c];
+723:       if (x && x.s !== undefined && clean(x.s)) return clean(x.s);
+724:     }
+725:     return "";
+726:   }
+727: 
+728:   /** اسم المكتب في التطبيق بعد إعادة التسمية (دون إنشاء المكتب). */
+729:   function officeKeyFor(cfg, name) {
+730:     var nm = clean(name);
+731:     return key(cfg.rename && cfg.rename[key(nm)] ? clean(cfg.rename[key(nm)]) : nm);
+732:   }
+733: 
+734:   function officeOf(model, cfg, name, note) {
+735:     var nm = clean(name);
+736:     var shown = cfg.rename && cfg.rename[key(nm)] ? clean(cfg.rename[key(nm)]) : nm;
+737:     var k = key(shown);
+738:     var i = model.officeIndex[k];
+739:     if (i === undefined) {
+740:       i = model.offices.length;
+741:       model.officeIndex[k] = i;
+742:       model.offices.push({ name: shown, key: k, phone: "", variants: {}, tx: 0, openings: 0, notes: note || "" });
+743:     }
+744:     model.offices[i].variants[nm] = true;
+745:     return i;
+746:   }
+747: 
+748:   function addDirect(model, t, oi, code, signed) {
+749:     var dk = model.offices[oi].key + "|" + code;
+750:     model.direct[dk] = (model.direct[dk] || 0n) + signed;
+751:     (model.keyTables[dk] = model.keyTables[dk] || {})[t.id] = true;
+752:     model.used[code] = true;
+753:   }
+754: 
+755:   function curDef(cfg, code) {
+756:     var d = cfg.currencies && cfg.currencies[code];
+757:     if (d) return d;
+758:     var k = C.KNOWN[code];
+759:     return k ? { name: k.name, dec: k.dec } : { name: code, dec: 2 };
+760:   }
+761: 
+762:   /**
+763:    * قيمة خلية «الرصيد» بالوحدة الصغرى وإشارتها كما في الملف. الرصيد المحسوب بمعادلة قد يحمل كسرًا عائمًا ضئيلًا
+764:    * (70987.00000000001) فيُقرّب إلى منازل العملة فقط إن كان الفرق أقل من جزء من ألف من الوحدة الصغرى.
+765:    * «لنا 500» / «علينا 500» تُقرأ بإشارتها؛ نص لا يُفهم اتجاهه ← null.
+766:    */
+767:   function balanceMinor(cell, dec) {
+768:     if (!cell) return null;
+769:     if (cell.n !== undefined && typeof cell.n === "number") {
+770:       if (!isFinite(cell.n)) return null;
+771:       var f = Math.pow(10, dec), x = cell.n * f, r = Math.round(x);
+772:       if (Math.abs(x - r) > 1e-3 || Math.abs(r) > 9e15) return null;
+773:       return BigInt(r);
+774:     }
+775:     var p = C.parseAmount(cell);
+776:     if (!p.ok || p.empty) return null;
+777:     var m = C.toMinor(p, dec);
+778:     if (m === null) return null;
+779:     var neg = p.neg;
+780:     if (p.hadText) {
+781:       var g = guessDir(clean(normDigits(text(cell))).replace(/[\d.,()\-+]/g, " "));
+782:       if (!g) return null;
+783:       if (g === "C") neg = !neg;
+784:     }
+785:     return neg ? -m : m;
+786:   }
+787: 
+788:   /**
+789:    * cfg: { now, dirMap{key→D|C|X}, curMap{key→code|__skip}, currencies{code→{name,dec}}, rename{}, use{tableId→bool},
+790:    *        positiveIs{tableId→D|C}, balanceSign{tableId→D|C}, fixedCurrency{tableId→code}, defaultCurrency, listedAccounts (bool),
+791:    *        inferOpening (bool, افتراضيًا نعم), openingDate }
+792:    */
+793:   function build(a, cfg, serialToDate) {
+794:     var model = newModel();
+795:     var used = a.tables.filter(function (t) { return cfg.use && t.id in cfg.use ? cfg.use[t.id] : t.use; });
+796:     function rolesOf(t) { return Object.assign({}, t.roles, (cfg.roles && cfg.roles[t.id]) || {}); }
+797:     used.forEach(function (t) { if (t.kind !== "balances" && t.kind !== "summary") buildJournal(model, cfg, t, rolesOf(t), serialToDate); });
+798:     resolveBalances(model, cfg);
+799:     // الأرصدة السابقة من جداول الأرصدة: قبل أول حركة بدقيقة (أو بالتاريخ الذي يحدده المستخدم)
+800:     var first = null;
+801:     model.txs.forEach(function (x) { if (first === null || x.when < first) first = x.when; });
+802:     model.openings.forEach(function (x) { if (first === null || x.when < first) first = x.when; });
+803:     var when = cfg.openingDate || (first !== null ? first - 60000 : cfg.now - 60000);
+804:     used.forEach(function (t) { if (t.kind === "balances" || t.kind === "summary") buildBalances(model, cfg, t, rolesOf(t), when); });
+805:     finalizeLast(model);
+806:     // مكاتب من قائمة الأسماء بلا حركات
+807:     if (cfg.listedAccounts !== false) {
+808:       a.lists.forEach(function (l) {
+809:         if (cfg.use && l.id in cfg.use && !cfg.use[l.id]) return;
+810:         (l.values || []).forEach(function (v) {
+811:           var i = officeOf(model, cfg, v, "");
+812:           if (!model.offices[i].tx && !model.offices[i].openings) model.offices[i].emptyOk = true;
+813:         });
+814:       });
+815:     }
+816:     summaryChecks(a, model, cfg);
+817:     model.offices.forEach(function (o) {
+818:       var v = Object.keys(o.variants);
+819:       if (v.length > 1) model.warnings.push("دُمجت كتابات مختلفة لاسم «" + o.name + "»: " + v.map(function (x) { return "«" + x + "»"; }).join(" / "));
+820:     });
+821:     // أسماء متشابهة لم تُدمج
+822:     var groups = {};
+823:     model.offices.forEach(function (o) { var k = C.looseKey(o.name); (groups[k] = groups[k] || []).push(o.name); });
+824:     Object.keys(groups).forEach(function (k) { if (groups[k].length > 1) model.warnings.push("أسماء متشابهة قد تكون الحساب نفسه: " + groups[k].join(" / ") + " — وحّدها من «أسماء المكاتب» إن كانت حسابًا واحدًا."); });
+825:     if (model.both) model.warnings.push(model.both + " صف فيه مبلغ «لنا» ومبلغ «علينا» معًا: سُجّل كل منهما حركة.");
+826:     if (model.midOpenings.length) {
+827:       model.warnings.push(model.midOpenings.length + " صف «رصيد سابق/منقول» جاء بعد حركات الحساب نفسه، ونُقل كما هو (كما تجمعه معادلات ملفك). تأكد أنه ليس تكرارًا لمجموع ما قبله: " +
+828:         model.midOpenings.slice(0, 8).map(function (m) { return m.sheet + " صف " + m.row + " (" + m.office + ")"; }).join("، ") + (model.midOpenings.length > 8 ? "…" : ""));
+829:     }
+830:     return model;
+831:   }
+832: 
+833:   function buildJournal(model, cfg, t, roles, serialToDate) {
+834:     var stat = model.perTable[t.id] = { rows: 0, imported: 0, excluded: 0, empty: 0, filled: 0, totals: 0, balanceOnly: 0 };
+835:     var order = C.guessDateOrder(sample(t, roles.date));
+836:     var prevDate = null, firstDate = null;
+837:     // أول تاريخ صالح (لصفوف بلا تاريخ في بداية الجدول)
+838:     for (var r0 = t.first; r0 <= t.last && !firstDate && roles.date !== undefined; r0++) firstDate = validDate(t.rows[r0], roles.date, order, serialToDate);
+839:     var sheetAccount = roles.account === undefined ? clean(t.sheetAccount || "") : null;
+840:     var pos = (cfg.positiveIs && cfg.positiveIs[t.id]) || "D";
+841:     var log = roles.balance !== undefined ? [] : null;
+842:     var seen = {};
+843:     function currencyOf(row) {
+844:       if (roles.currency === undefined) return { code: (cfg.fixedCurrency && cfg.fixedCurrency[t.id]) || t.sheetCurrency || cfg.defaultCurrency || "USD" };
+845:       var ct = text(row[roles.currency]);
+846:       if (!ct) return { bad: "noCurrency" };
+847:       var cd = (cfg.curMap && cfg.curMap[key(ct)]) || guessCur(ct);
+848:       if (cd === "__skip") return { bad: "excludedCur" };
+849:       if (!cd) return { bad: "badCurrency" };
+850:       return { code: cd };
+851:     }
+852:     for (var r = t.first; r <= t.last; r++) {
+853:       var row = t.rows[r] || [];
+854:       if (!rowSig(row).any) continue;
+855:       if (isHeaderRepeat(t, row)) continue;
+856:       var acc = roles.account !== undefined ? text(row[roles.account]) : sheetAccount || "";
+857:       var curT = roles.currency !== undefined ? text(row[roles.currency]) : "";
+858:       var dirT = roles.direction !== undefined ? text(row[roles.direction]) : "";
+859:       var desc = roles.description !== undefined ? text(row[roles.description]) : "";
+860:       var label = rowLabelIn(t, row);
+861:       var isOpening = OPEN_RE.test(desc) || OPEN_RE.test(label);
+862:       var rowDate = roles.date !== undefined ? validDate(row, roles.date, order, serialToDate) : null;
+863:       // صف مجموع بلا تاريخ («المجموع»، «الإجمالي»، «Total»): ليس حركة
+864:       if (!rowDate && (C.TOTAL_RE.test(label) || C.TOTAL_RE.test(desc) || (roles.account !== undefined && C.TOTAL_RE.test(acc)))) {
+865:         model.skipped.push({ sheet: t.label, row: r + 1, reason: "صف مجموع" });
+866:         model.totalsSkipped++;
+867:         stat.totals++;
+868:         continue;
+869:       }
+870:       // المبالغ واتجاهاتها

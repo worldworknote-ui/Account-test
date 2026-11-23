@@ -1,0 +1,147 @@
+335:         } catch (Exception e) {
+336:             return null;
+337:         }
+338:     }
+339: 
+340:     /**
+341:      * المبلغ المقابل = المبلغ × السعر (السعر: كم من العملة المقابلة لكل وحدة واحدة)، مقرّبًا لمنازل العملة المقابلة.
+342:      * null إن كان السعر غير صالح.
+343:      */
+344:     public static Long counterAmount(long amountMinor, int dec, String rate, int counterDec) {
+345:         try {
+346:             BigDecimal r = rateDecimal(rate);
+347:             if (r == null) return null;
+348:             return BigDecimal.valueOf(amountMinor, dec).multiply(r).setScale(counterDec, RoundingMode.HALF_EVEN).movePointRight(counterDec).longValueExact();
+349:         } catch (Exception e) {
+350:             return null;
+351:         }
+352:     }
+353: 
+354:     /** سعر مقترح من أسعار الصرف (الدولار): كم من cur2 لكل وحدة من cur1. */
+355:     public static BigDecimal crossRate(String cur1, String cur2, Map<String, BigDecimal> usdRates) {
+356:         BigDecimal a = "USD".equals(cur1) ? BigDecimal.ONE : usdRates.get(cur1), b = "USD".equals(cur2) ? BigDecimal.ONE : usdRates.get(cur2);
+357:         if (a == null || b == null || a.signum() <= 0 || b.signum() <= 0) return null;
+358:         BigDecimal r = a.divide(b, 10, RoundingMode.HALF_EVEN);
+359:         int digits = r.compareTo(BigDecimal.TEN) >= 0 ? 2 : r.compareTo(BigDecimal.ONE) >= 0 ? 4 : 6;
+360:         return r.setScale(digits, RoundingMode.HALF_EVEN).stripTrailingZeros();
+361:     }
+362: 
+363:     /** null = الإدخال صالح، وإلا سبب الرفض بلغة المستخدم. */
+364:     public static String validate(Input in, Config c, long now) {
+365:         if (in == null) return "لا يوجد إدخال";
+366:         if (!c.on && !OPENING.equals(in.kind)) return "الصندوق غير مُعَد بعد. اضبطه أولًا من «صندوق المكتب».";
+367:         List<String> kinds = Arrays.asList(OPENING, IN, OUT, EXPENSE, EXCHANGE, ADJUST, TRANSFER);
+368:         if (!kinds.contains(in.kind)) return "نوع حركة الصندوق غير صالح";
+369:         if (in.amount <= 0) return "المبلغ يجب أن يكون أكبر من صفر";
+370:         if (in.currency == null || !c.currencies.contains(in.currency)) return "العملة " + Model.nz(in.currency) + " غير مفعّلة في الصندوق. أضفها من إعدادات الصندوق.";
+371:         if (in.when <= 0) return "تاريخ الحركة غير صالح";
+372:         if (in.when > now + 10 * 60000L) return "لا يمكن تسجيل حركة صندوق بتاريخ في المستقبل";
+373:         boolean office = in.officeId != null, client = in.clientId != null;
+374:         if (office && client) return "الحركة لحساب مكتب أو لحساب عميل، لا الاثنين";
+375:         if (client && !IN.equals(in.kind) && !OUT.equals(in.kind)) return kindName(in.kind) + " لا يُربط بعميل";
+376:         switch (in.kind) {
+377:             case IN:
+378:             case OUT:
+379:                 if (c.strict && !office && !client) return "الربط الإلزامي مفعّل في هذا الصندوق: لا يدخل الصندوق ولا يخرج منه إلا لحساب مكتب أو عميل. اختر الحساب.";
+380:                 if (!office && !client && Model.nz(in.category).trim().isEmpty()) return "اختر البند (مثل: استلام من شخص، سحب لصاحب المكتب)";
+381:                 if (client) {
+382:                     String ce = ClientBook.validateLink(in.currency, in.amount, in.clientCurrency, in.clientAmount);
+383:                     if (ce != null) return ce;
+384:                 }
+385:                 break;
+386:             case EXPENSE:
+387:                 if (office) return "المصروف لا يُربط بمكتب";
+388:                 if (c.strict && !c.allowInternal) return "الربط الإلزامي مفعّل ولا يسمح بالمصاريف. غيّر ذلك من إعدادات الصندوق.";
+389:                 if (Model.nz(in.category).trim().isEmpty()) return "اختر بند المصروف (رواتب، إيجار، كهرباء…)";
+390:                 break;
+391:             case EXCHANGE:
+392:                 if (office) return "البيع والشراء داخل الصندوق لا يُربط بمكتب";
+393:                 if (c.strict && !c.allowInternal) return "الربط الإلزامي مفعّل ولا يسمح بالبيع والشراء داخل الصندوق. غيّر ذلك من إعدادات الصندوق.";
+394:                 if (!SELL.equals(in.side) && !BUY.equals(in.side)) return "حدّد: بيع أم شراء";
+395:                 if (in.toCurrency == null || !c.currencies.contains(in.toCurrency)) return "اختر العملة المقابلة (مفعّلة في الصندوق)";
+396:                 if (in.toCurrency.equals(in.currency)) return "البيع والشراء بين عملتين مختلفتين";
+397:                 if (in.toAmount <= 0) return "اكتب السعر أو المبلغ المقابل";
+398:                 if (in.fee > 0) return "البيع والشراء بلا أجرة منفصلة: الربح في السعر نفسه";
+399:                 break;
+400:             case TRANSFER:
+401:                 if (office) return "التحويل بين الصناديق لا يُربط بمكتب";
+402:                 if (in.toBox == null || in.toBox == in.boxId) return "اختر الصندوق الآخر";
+403:                 if (in.fee > 0) return "التحويل بين الصناديق بلا أجور";
+404:                 break;
+405:             case OPENING:
+406:             case ADJUST:
+407:                 if (office) return kindName(in.kind) + " لا يُربط بمكتب";
+408:                 if (in.fee > 0) return kindName(in.kind) + " بلا أجور";
+409:                 break;
+410:             default:
+411:                 break;
+412:         }
+413:         if (in.fee < 0) return "الأجرة غير صالحة";
+414:         if (in.fee > 0 && !FEE_US.equals(in.feeSide) && !FEE_THEM.equals(in.feeSide)) return "حدّد الأجور: لنا أم علينا";
+415:         if (in.fee > 0 && EXPENSE.equals(in.kind)) return "المصروف بلا أجور منفصلة؛ اكتب المبلغ كاملًا";
+416:         return null;
+417:     }
+418: 
+419:     // ===================================================================================
+420:     // الأرصدة والخلاصات
+421:     // ===================================================================================
+422: 
+423:     /** رصيد الصندوق لكل عملة (المعدودة فقط). */
+424:     public static Map<String, Long> balances(List<Move> moves, List<String> currencies) {
+425:         Map<String, Long> m = new TreeMap<>();
+426:         if (currencies != null) for (String c : currencies) m.put(c, 0L);
+427:         for (Move x : moves) {
+428:             long e = x.effect();
+429:             if (e == 0 && m.containsKey(x.currency)) continue;
+430:             Long b = m.get(x.currency);
+431:             m.put(x.currency, (b == null ? 0 : b) + e);
+432:         }
+433:         return m;
+434:     }
+435: 
+436:     /**
+437:      * 10.5 (AUDIT-028): النقد الموجود فعلًا في الصندوق لحركات مكاتب ما زالت بانتظار الاعتماد (لكل عملة).
+438:      * النقد دخل أو خرج، لكنه لا يُحسب في الرصيد حتى تُعتمد حركة المكتب؛ فالجرد يقارن المعدود بالرصيد + هذا المعلّق.
+439:      */
+440:     public static Map<String, Long> pendingCash(List<Move> moves) {
+441:         Map<String, Long> m = new TreeMap<>();
+442:         for (Move x : moves) {
+443:             if (!x.pending()) continue;
+444:             long e = x.dir * x.amount + (x.feeInCash && x.fee > 0 ? (FEE_US.equals(x.feeSide) ? x.fee : FEE_THEM.equals(x.feeSide) ? -x.fee : 0) : 0);
+445:             Long b = m.get(x.currency);
+446:             m.put(x.currency, (b == null ? 0 : b) + e);
+447:         }
+448:         m.values().removeIf(v -> v == 0);
+449:         return m;
+450:     }
+451: 
+452:     /** خلاصة عملة واحدة لفترة [from, to). */
+453:     public static final class Summary {
+454:         public String currency;
+455:         public long opening, in, out, feesIn, feesOut, expenses, adjustUp, adjustDown, exchangeIn, exchangeOut, openingsInPeriod, closing;
+456:         public long officeIn, officeOut, count;
+457:         /** 9.0.1: التحويل بين الصناديق (وارد وصادر). */
+458:         public long transferIn, transferOut;
+459:         public final Map<String, Long> byCategory = new TreeMap<>();
+460: 
+461:         /** يجب أن يساوي closing دائمًا. */
+462:         public long computedClosing() {
+463:             return opening + openingsInPeriod + in - out + feesIn - feesOut - expenses + adjustUp - adjustDown + exchangeIn - exchangeOut + transferIn - transferOut;
+464:         }
+465:     }
+466: 
+467:     public static Map<String, Summary> summaries(List<Move> moves, long from, long to, Set<String> only) {
+468:         Map<String, Summary> out = new TreeMap<>();
+469:         for (Move x : moves) {
+470:             if (only != null && !only.isEmpty() && !only.contains(x.currency)) continue;
+471:             Summary s = out.get(x.currency);
+472:             if (s == null) {
+473:                 s = new Summary();
+474:                 s.currency = x.currency;
+475:                 out.put(x.currency, s);
+476:             }
+477:             long e = x.effect();
+478:             if (x.createdAt < from) {
+479:                 s.opening += e;
+480:                 continue;
+481:             }

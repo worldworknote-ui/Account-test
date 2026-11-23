@@ -1,0 +1,74 @@
+1: import com.smart.hawala.*;
+2: import java.util.*;
+3: public class ParserTest {
+4:   static int fails = 0, n = 0;
+5:   static List<MessageParser.Cur> CURS = Arrays.asList(new MessageParser.Cur("USD", "دولار امريكي"), new MessageParser.Cur("SYP", "ليرة سورية ( جديد )"),
+6:       new MessageParser.Cur("SYO", "ليرة سورية قديم"), new MessageParser.Cur("EUR", "يورو اوربي"), new MessageParser.Cur("TRY", "ليرة تركية"));
+7:   static MessageParser.Result t(String title, String msg, String person, String amount, String cur) { return t(title, msg, person, amount, cur, CURS, null, null); }
+8:   static MessageParser.Result t(String title, String msg, String person, String amount, String cur, List<MessageParser.Cur> curs, String phone, String city) {
+9:     n++;
+10:     MessageParser.Result r = MessageParser.parse(msg, curs);
+11:     List<String> bad = new ArrayList<>();
+12:     if (person != null && !person.equals(r.person)) bad.add("person=[" + r.person + "] want [" + person + "]");
+13:     if (amount != null && !amount.equals(r.amount)) bad.add("amount=[" + r.amount + "] want [" + amount + "]");
+14:     if (!Objects.equals(cur, r.currency)) bad.add("currency=[" + r.currency + "] want [" + cur + "]");
+15:     if (phone != null && !phone.equals(r.phone)) bad.add("phone=[" + r.phone + "] want [" + phone + "]");
+16:     if (city != null && !city.equals(r.city)) bad.add("city=[" + r.city + "] want [" + city + "]");
+17:     System.out.println((bad.isEmpty() ? "  PASS " : "  FAIL ") + title + (bad.isEmpty() ? "" : "  -> " + bad));
+18:     if (!bad.isEmpty()) fails++;
+19:     return r;
+20:   }
+21:   public static void main(String[] a) {
+22:     MessageParser.Result r = t("1) the user's example", "السلام عليكم ورحمة الله وبركاته \nيرجى تسليم \nحمدي احمد محمد \nحماة \n+963 933 974 \n500 دولار صافي \nزكاتكم",
+23:         "حمدي احمد محمد", "500", "USD", CURS, "+963 933 974", "حماة");
+24:     check(r.net, "   صافي detected");
+25:     t("2) amount first, name last", "500$\nحماة\n0933 974 123\nحمدي احمد محمد", "حمدي احمد محمد", "500", "USD", CURS, "0933 974 123", "حماة");
+26:     t("3) all inline", "يرجى تسليم حمدي احمد محمد مبلغ 500 دولار في حماة", "حمدي احمد محمد", "500", "USD");
+27:     t("4) labelled fields", "الاسم: سامر خليل\nالمبلغ: 2,000 يورو\nالهاتف: 00963933111222\nالمدينة: حلب", "سامر خليل", "2000", "EUR", CURS, "00963933111222", "حلب");
+28:     t("5) Arabic digits", "تسليم\nمحمد علي حسن\n١٥٠٠ دولار\n٠٩٣٣٩٧٤١٢٣", "محمد علي حسن", "1500", "USD", CURS, "0933974123", null);
+29:     t("6) million, new Syrian pound", "يرجى تسليم 5 مليون سوري جديد\nللسيد أحمد يوسف\nدمشق", "أحمد يوسف", "5000000", "SYP");
+30:     t("7) old Syrian pound by name", "تسليم 750 الف ليرة سورية قديم\nخالد العلي محمد", "خالد العلي محمد", "750000", "SYO");
+31:     t("8) tatweel, greeting, 'حوالة باسم'", "الســـلام عليكـم\nحوالة باسم: خالد عمر\n300 تركي\nاسطنبول", "خالد عمر", "300", "TRY", CURS, null, "اسطنبول");
+32:     MessageParser.Result s = t("9) sender and receiver", "المرسل: أبو محمد\nالمستلم: ياسر حسن\n$750", "ياسر حسن", "750", "USD");
+33:     check(s.sender.equals("أبو محمد"), "   sender = أبو محمد");
+34:     MessageParser.Result f = t("10) fee line is not the amount", "يرجى تسليم 1000 دولار\nالاجرة 10 دولار\nمحمود سعيد الأحمد", "محمود سعيد الأحمد", "1000", "USD");
+35:     check(f.fee.equals("10"), "   fee = 10");
+36:     t("11) no currency word", "تسليم\nعلي محمود\n2500", "علي محمود", "2500", null);
+37:     List<MessageParser.Cur> office = Arrays.asList(new MessageParser.Cur("USD", "دولار امريكي"), new MessageParser.Cur("SYP", "ليرة سورية"));
+38:     MessageParser.Result d = t("12) currency not enabled for the office", "يرجى تسليم\nفاطمة الزهراء علي\n200 درهم", "فاطمة الزهراء علي", "200", null, office, null, null);
+39:     check(d.currencyWord.equals("درهم"), "   remembers the word «درهم» to warn");
+40:     t("13) thousands with dot", "1.500 دولار\nتسليم الى سعيد ناصر", null, "1500", "USD");
+41:     t("14) decimals", "تسليم 1,250.50 يورو\nرامي فادي حداد", "رامي فادي حداد", "1250.5", "EUR");
+42:     t("15) phone and amount on one line", "حمدي احمد محمد\n0933974123 - 500 دولار", "حمدي احمد محمد", "500", "USD");
+43:     t("16) two-word city is not a name", "دير الزور\nيرجى تسليم\nمحمود حسين\n300 دولار", "محمود حسين", "300", "USD", CURS, null, "دير الزور");
+44:     t("17) blessing line is not a name", "الله يسلمكم\nعمر فاروق\n100 دولار", "عمر فاروق", "100", "USD");
+45:     t("18) عبد الله stays a name", "تسليم\nعبد الله محمد\n600$", "عبد الله محمد", "600", "USD");
+46:     t("19) euro symbol before number", "€ 250\nلينا سمير", "لينا سمير", "250", "EUR");
+47:     t("20) 'الف' after number, currency elsewhere", "المبلغ 25 الف\nالعملة دولار\nالسيد مازن عيسى", "مازن عيسى", "25000", "USD");
+48:     t("21) name then phone same line", "ياسين عمر 0944123456\nتسليم 400 دولار", "ياسين عمر", "400", "USD");
+49:     // ---- 10.5: «الف» بعد رقم مكتوب كاملًا (اصطلاح المكاتب)، والأرقام العربية والفواصل، والعملات ذات المنازل الثلاث
+50:     t("10.5-a) 50 ألف = 50,000", "تسليم 50 ألف دولار\nسامر علي", "سامر علي", "50000", "USD");
+51:     MessageParser.Result q1 = t("10.5-b) 50000 الف = 50,000 لا 50 مليونًا", "تسليم 50000 الف دولار\nسامر علي", "سامر علي", "50000", "USD");
+52:     check(q1.amountNote.contains("توضيح") && q1.amountText.equals("50000 الف"), "   note explains «الف» is not a multiplier [" + q1.amountNote + "]");
+53:     t("10.5-c) 50000 ألف بالهمزة", "50000 ألف ليرة تركية\nأحمد سعيد", "أحمد سعيد", "50000", "TRY");
+54:     t("10.5-d) خمسين ألف بالحروف", "يرجى تسليم خمسين ألف دولار\nمراد حسين", "مراد حسين", "50000", "USD");
+55:     t("10.5-e) أرقام عربية ٥٠ الف", "تسليم ٥٠ الف دولار\nعلي حسن", "علي حسن", "50000", "USD");
+56:     t("10.5-f) أرقام عربية ٥٠٠٠٠ الف", "تسليم ٥٠٠٠٠ الف دولار\nعلي حسن", "علي حسن", "50000", "USD");
+57:     t("10.5-g) فواصل 50,000 الف", "تسليم 50,000 الف دولار\nعلي حسن", "علي حسن", "50000", "USD");
+58:     MessageParser.Result q2 = t("10.5-h) 1500 الف ملتبس: يُفهم 1,500 ويُطلب التأكيد", "تسليم 1500 الف ليرة تركية\nعلي حسن", "علي حسن", "1500", "TRY");
+59:     check(q2.amountNote.contains("1,500,000"), "   note offers the other reading [" + q2.amountNote + "]");
+60:     t("10.5-i) 750 الف ما زالت 750,000", "تسليم 750 الف ليرة تركية\nعلي حسن", "علي حسن", "750000", "TRY");
+61:     t("10.5-j) 2.5 مليون", "تسليم 2.5 مليون ليرة تركية\nعلي حسن", "علي حسن", "2500000", "TRY");
+62:     t("10.5-k) مبالغ سليمة لا تتغير: 1,500 دولار", "تسليم 1,500 دولار\nعلي حسن", "علي حسن", "1500", "USD");
+63:     t("10.5-l) مبالغ سليمة: 12.5 دولار", "تسليم 12.5 دولار\nعلي حسن", "علي حسن", "12.5", "USD");
+64:     List<MessageParser.Cur> kw = Arrays.asList(new MessageParser.Cur("USD", "دولار امريكي", 2), new MessageParser.Cur("KWD", "دينار كويتي", 3));
+65:     MessageParser.Result q3 = t("10.5-m) 1.250 دينار كويتي ملتبس: لا يُخمَّن", "تسليم 1.250 دينار كويتي\nعلي حسن", "علي حسن", "", "KWD", kw, null, null);
+66:     check(q3.amountNote.contains("ملتبس"), "   ambiguous 3-decimal amount explained [" + q3.amountNote + "]");
+67:     t("10.5-n) 1250 دينار كويتي واضح", "تسليم 1250 دينار كويتي\nعلي حسن", "علي حسن", "1250", "KWD", kw, null, null);
+68:     t("10.5-o) 1.250 دولار بمنزلتين = 1250 كما كان", "تسليم 1.250 دولار\nعلي حسن", "علي حسن", "1250", "USD", kw, null, null);
+69:     t("24) 'لـ' before the name", "مرحبا اخي\nبدنا نسلم 300 دولار\nلـ أحمد الخطيب\nحمص", "أحمد الخطيب", "300", "USD", CURS, null, "حمص");
+70:     t("25) English message", "Please deliver\nAhmad Ali\n200 USD", "Ahmad Ali", "200", "USD");
+71:     t("26) two amounts: first with its currency wins", "يرجى تسليم 200 دولار\nما يعادل 3,000,000 ليرة سورية\nحسن رضا", "حسن رضا", "200", "USD");
+72:     t("27) labelled with Arabic digits", "المبلغ: ٣٠٠٠ دولار أمريكي\nاسم المستلم: نور الهدى", "نور الهدى", "3000", "USD");
+73:     t("28) labelled phone with spaces", "رقم الهاتف: 0933 123 456\nتسليم 150 يورو\nسمير سليمان", "سمير سليمان", "150", "EUR", CURS, "0933 123 456", null);
+74:     t("29) name in one word after delivery line is ignored, labelled wins", "يرجى التسليم\nالسيد: عماد\n90 دولار", "عماد", "90", "USD");

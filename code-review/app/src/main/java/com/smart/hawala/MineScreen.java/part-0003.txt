@@ -1,0 +1,107 @@
+320:                 a.confirm("التحقق من " + picked.size() + " حركة", "يُسجَّل تحققك من الحركات المحددة كلها. تأكد أنك راجعتها فعلًا: التحقق شهادة باسمك.", "تحققتُ", () -> {
+321:                     try {
+322:                         Object[] r = a.db.verifyTxs(new java.util.ArrayList<>(picked));
+323:                         @SuppressWarnings("unchecked") List<String> bad = (List<String>) r[1];
+324:                         if (bad.isEmpty()) a.toast("سُجّل تحققك من " + r[0] + " حركة ✓");
+325:                         else new AlertDialog.Builder(a).setTitle("سُجّل " + r[0] + " ولم يُسجَّل " + bad.size()).setMessage(Model.join(bad, "\n")).setPositiveButton("حسنًا", null).show();
+326:                         show();
+327:                     } catch (Exception e) {
+328:                         a.error(e);
+329:                     }
+330:                 });
+331:             });
+332:             br.addView(go[0], a.weight(42, 1.4f, 2));
+333:             a.body.addView(br);
+334:         }
+335:         for (final Model.Tx t : wait) {
+336:             LinearLayout c = a.card();
+337:             int d = a.db.decimals(t.currency);
+338:             if (wait.size() > 1) {
+339:                 final android.widget.CheckBox cb = new android.widget.CheckBox(a);
+340:                 cb.setText("تحديد");
+341:                 cb.setOnCheckedChangeListener((x, on) -> {
+342:                     if (on) picked.add(t.id);
+343:                     else picked.remove(t.id);
+344:                     count.run();
+345:                 });
+346:                 boxes.add(cb);
+347:                 c.addView(cb);
+348:             }
+349:             c.addView(a.text((Model.TYPE_DEBIT.equals(t.type) ? "لنا " : "علينا ") + "\u2066" + Model.fmt(t.amount, d) + " " + t.currency + "\u2069 — " + Model.nz(names.get(t.officeId)),
+350:                     15, Model.TYPE_DEBIT.equals(t.type) ? a.green : a.red, true));
+351:             c.addView(a.text("✓ سجّلها " + Model.join(a.db.txPeople(t), "، ") + (t.person.isEmpty() ? "" : " • " + t.person), 12, a.muted, false));
+352:             LinearLayout r = a.row();
+353:             r.addView(a.smallButton("تحققتُ ✓", a.primary, v -> {
+354:                 try {
+355:                     a.db.verifyTx(t.id);
+356:                     a.toast("سُجّل تحققك ✓");
+357:                     show();
+358:                 } catch (Exception e) {
+359:                     a.error(e);
+360:                 }
+361:             }), a.weight(40, 1, 2));
+362:             r.addView(a.smallButton("التفاصيل", a.accent, v -> a.logScreen.details(t, this::show)), a.weight(40, 1, 2));
+363:             c.addView(r);
+364:         }
+365:         List<Model.Tx> done = a.db.checkedByMe(7, 50);
+366:         if (!done.isEmpty()) {
+367:             a.section("تحققتُ منها (آخر 7 أيام)", null, null);
+368:             for (Model.Tx t : done)
+369:                 a.add(a.text("✓ " + (Model.TYPE_DEBIT.equals(t.type) ? "لنا " : "علينا ") + "\u2066" + Model.fmt(t.amount, a.db.decimals(t.currency)) + " " + t.currency + "\u2069 — "
+370:                         + Model.nz(names.get(t.officeId)), 13, a.green, false));
+371:         }
+372:     }
+373: 
+374:     /** علامة «آخر رسالة واتساب نُقلت» للمكتب: النص والتاريخ ومن حفظها، ونسخها وتحديثها وتاريخها. */
+375:     void markCard(LinearLayout c, final Model.Office o, final Runnable after) {
+376:         final Db.WaMark m = a.db.lastWaMark(o.id);
+377:         if (m == null) c.addView(a.text("آخر رسالة نُقلت: لم تُحفظ علامة بعد", 13, a.muted, false));
+378:         else {
+379:             c.addView(a.text("آخر رسالة نُقلت (حفظها " + m.userName + " — " + Model.date(m.at) + (m.msgTime.isEmpty() ? "" : " — وقت الرسالة " + m.msgTime) + "):", 13, a.goldInk, true));
+380:             android.widget.TextView tx = a.text(m.text, 14, a.ink, false);
+381:             tx.setTextIsSelectable(true);
+382:             c.addView(tx);
+383:         }
+384:         c.addView(a.text("العلامة تساعدك لتعرف من أين تكمل؛ حفظها ليس دليلًا على تسجيل أي حركة.", 12, a.muted, false));
+385:         LinearLayout r = a.row();
+386:         if (m != null) r.addView(a.smallButton("نسخ النص", a.accent, v -> {
+387:             ClipboardManager cm = (ClipboardManager) a.getSystemService(Context.CLIPBOARD_SERVICE);
+388:             if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("آخر رسالة", m.text));
+389:             a.toast("نُسخ نص آخر رسالة");
+390:         }), a.weight(30, 1, 2));
+391:         if (a.can(Auth.Perm.TX_ADD)) r.addView(a.smallButton("تحديث", a.primary, v -> update(o, after)), a.weight(30, 1, 2));
+392:         r.addView(a.smallButton("التاريخ", android.graphics.Color.rgb(120, 120, 120), v -> history(o)), a.weight(30, 1, 2));
+393:         c.addView(r);
+394:     }
+395: 
+396:     void update(final Model.Office o, final Runnable after) {
+397:         LinearLayout l = new LinearLayout(a);
+398:         l.setOrientation(LinearLayout.VERTICAL);
+399:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+400:         l.addView(a.text("الصق نص آخر رسالة واتساب نقلتها إلى الدفتر لـ«" + o.name + "». يُحفظ مع اسمك ووقت الحفظ، ويبقى التاريخ السابق.", 13, a.muted, false));
+401:         final EditText text = new EditText(a);
+402:         text.setMinLines(3);
+403:         text.setHint("نص الرسالة");
+404:         l.addView(text, new LinearLayout.LayoutParams(-1, -2));
+405:         final EditText time = new EditText(a);
+406:         time.setHint("وقت الرسالة كما في واتساب (اختياري)");
+407:         l.addView(time, new LinearLayout.LayoutParams(-1, -2));
+408:         new AlertDialog.Builder(a).setTitle("آخر رسالة نُقلت — " + o.name).setView(l).setPositiveButton("حفظ العلامة", (d, w) -> {
+409:             try {
+410:                 a.db.setWaMark(o.id, text.getText().toString(), time.getText().toString());
+411:                 a.toast("حُفظت العلامة");
+412:                 if (after != null) after.run();
+413:             } catch (Exception e) {
+414:                 a.error(e);
+415:             }
+416:         }).setNegativeButton("إلغاء", null).show();
+417:     }
+418: 
+419:     void history(Model.Office o) {
+420:         StringBuilder b = new StringBuilder();
+421:         for (Db.WaMark m : a.db.waMarks(o.id, 50))
+422:             b.append(Model.date(m.at)).append(" — ").append(m.userName).append(m.msgTime.isEmpty() ? "" : " — وقت الرسالة " + m.msgTime).append("\n").append(m.text).append("\n\n");
+423:         new AlertDialog.Builder(a).setTitle("تاريخ علامة آخر رسالة — " + o.name).setMessage(b.length() == 0 ? "لا توجد علامات بعد." : b.toString().trim())
+424:                 .setPositiveButton("إغلاق", null).show();
+425:     }
+426: }

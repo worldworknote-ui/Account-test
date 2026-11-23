@@ -1,0 +1,154 @@
+5984:         v.put("created_at", m.createdAt);
+5985:         v.put("user_name", Crypto.enc(currentUserName));
+5986:         return ins(d, "cash_moves", v);
+5987:     }
+5988: 
+5989:     /**
+5990:      * يسجّل حركة صندوق. المرتبطة بمكتب تُسجَّل معها حركة مكتب عادية في المعاملة نفسها (بكل شروطها: الصلاحية والحد والإقفال
+5991:      * والاعتماد): الاستلام لحساب مكتب = «علينا» للمكتب، والتسليم لحسابه = «لنا»، وأجرتها على حساب المكتب ما لم تُقبض نقدًا.
+5992:      * البيع والشراء سطران مرتبطان (العملة ومقابلها)، والتحويل بين صندوقين سطران مرتبطان. يرجع رقم حركة الصندوق.
+5993:      */
+5994:     public long addCashMove(CashBox.Input in) throws IOException {
+5995:         require(Auth.Perm.CASH);
+5996:         // 12.6: المصروف والبيع والشراء والجرد والافتتاحي صلاحيات فوق «الصندوق»
+5997:         if (CashBox.EXPENSE.equals(in.kind)) require(Auth.Perm.CASH_EXPENSE);
+5998:         else if (CashBox.EXCHANGE.equals(in.kind)) require(Auth.Perm.CASH_FX);
+5999:         else if (CashBox.ADJUST.equals(in.kind) || CashBox.OPENING.equals(in.kind)) require(Auth.Perm.CASH_COUNT);
+6000:         CashBox.Config cfg = cashBox(in.boxId);
+6001:         if (!cfg.active) throw new IllegalStateException("الصندوق «" + cfg.name + "» معطّل");
+6002:         String err = CashBox.validate(in, cfg, Clock.now());
+6003:         if (err != null) throw new IllegalArgumentException(err);
+6004:         ClientBook.Client client = null;
+6005:         if (in.clientId != null) {
+6006:             client = client(in.clientId);
+6007:             if (client == null) throw new IllegalArgumentException("العميل غير موجود");
+6008:             if (!client.active) throw new IllegalStateException("حساب العميل «" + client.name + "» مؤرشف");
+6009:             if (decimalsMap().get(in.clientCurrency) == null) throw new IllegalArgumentException("عملة حساب العميل غير معرّفة");
+6010:         }
+6011:         CashBox.Config dest = null;
+6012:         if (CashBox.TRANSFER.equals(in.kind)) {
+6013:             dest = cashBox(in.toBox);
+6014:             if (!dest.active) throw new IllegalStateException("الصندوق «" + dest.name + "» معطّل");
+6015:             if (!dest.currencies.contains(in.currency)) throw new IllegalArgumentException("العملة " + in.currency + " غير مفعّلة في «" + dest.name + "». أضفها من إعداداته.");
+6016:         }
+6017:         SQLiteDatabase d = getWritableDatabase();
+6018:         d.beginTransaction();
+6019:         try {
+6020:             checkLock(d, in.when, "تاريخ الحركة يقع داخل فترة محاسبية مقفلة");
+6021:             Long txId = null;
+6022:             boolean feeCash = in.officeId == null || in.feeInCash;
+6023:             if (in.officeId != null) {
+6024:                 TxInput t = new TxInput();
+6025:                 t.office = in.officeId;
+6026:                 t.type = CashBox.IN.equals(in.kind) ? TYPE_CREDIT : TYPE_DEBIT;
+6027:                 t.amount = in.amount;
+6028:                 t.currency = in.currency;
+6029:                 t.person = Model.nz(in.party);
+6030:                 t.description = Model.nz(in.description);
+6031:                 t.service = "الصندوق";
+6032:                 t.when = in.when;
+6033:                 if (in.fee > 0 && !feeCash) {
+6034:                     t.feeType = CashBox.FEE_US.equals(in.feeSide) ? FEE_US : FEE_THEM;
+6035:                     t.fee = in.fee;
+6036:                     t.feeCurrency = in.currency;
+6037:                 }
+6038:                 txId = addTx(t, null);
+6039:             }
+6040:             CashBox.Move m = new CashBox.Move();
+6041:             m.kind = in.kind;
+6042:             m.boxId = in.boxId;
+6043:             m.currency = in.currency;
+6044:             m.amount = in.amount;
+6045:             m.dir = in.dir();
+6046:             m.fee = in.fee;
+6047:             m.feeSide = in.fee > 0 ? in.feeSide : "";
+6048:             m.feeInCash = feeCash;
+6049:             boolean buy = CashBox.BUY.equals(in.side);
+6050:             m.category = in.officeId != null ? (CashBox.IN.equals(in.kind) ? CashBox.CAT_OFFICE_IN : CashBox.CAT_OFFICE_OUT)
+6051:                     : client != null ? (CashBox.IN.equals(in.kind) ? CashBox.CAT_CLIENT_IN : CashBox.CAT_CLIENT_OUT)
+6052:                     : CashBox.EXCHANGE.equals(in.kind) ? (buy ? CashBox.CAT_BUY : CashBox.CAT_SELL)
+6053:                     : CashBox.TRANSFER.equals(in.kind) ? CashBox.CAT_TRANSFER
+6054:                     : CashBox.ADJUST.equals(in.kind) ? CashBox.CAT_COUNT : Model.nz(in.category).trim();
+6055:             m.party = in.party;
+6056:             m.description = in.description;
+6057:             m.officeId = in.officeId;
+6058:             m.txId = txId;
+6059:             m.createdAt = in.when;
+6060:             long id;
+6061:             if (client != null) {
+6062:                 // حساب العميل: الاستلام منه = علينا له، والتسليم له = لنا عليه؛ وقد يُقيَّد بعملة غير عملة النقد بسعر محفوظ
+6063:                 m.clientId = client.id;
+6064:                 if (Model.nz(m.party).trim().isEmpty()) m.party = client.name;
+6065:                 m.uuid = UUID.randomUUID().toString();
+6066:                 boolean cross = !in.clientCurrency.equals(in.currency);
+6067:                 if (cross) m.rate = ClientBook.rateOf(in.clientAmount, decimals(in.clientCurrency), in.amount, decimals(in.currency));
+6068:                 ClientBook.Move cm = new ClientBook.Move();
+6069:                 cm.clientId = client.id;
+6070:                 cm.kind = ClientBook.CASH;
+6071:                 cm.currency = in.clientCurrency;
+6072:                 cm.amount = in.clientAmount;
+6073:                 cm.dir = CashBox.IN.equals(in.kind) ? -1 : 1;
+6074:                 cm.cashUuid = m.uuid;
+6075:                 cm.rate = cross ? m.rate : null;
+6076:                 cm.description = in.description;
+6077:                 cm.createdAt = in.when;
+6078:                 insertClientMove(d, cm);
+6079:             }
+6080:             if (CashBox.EXCHANGE.equals(in.kind)) {
+6081:                 // البيع: العملة تخرج ومقابلها يدخل؛ الشراء: العملة تدخل ومقابلها يخرج
+6082:                 String pair = UUID.randomUUID().toString();
+6083:                 m.pairUuid = pair;
+6084:                 m.rate = Model.nz(in.rate);
+6085:                 m.dir = buy ? 1 : -1;
+6086:                 id = insertCash(d, m);
+6087:                 CashBox.Move b = new CashBox.Move();
+6088:                 b.kind = CashBox.EXCHANGE;
+6089:                 b.boxId = in.boxId;
+6090:                 b.currency = in.toCurrency;
+6091:                 b.amount = in.toAmount;
+6092:                 b.dir = -m.dir;
+6093:                 b.category = m.category;
+6094:                 b.party = in.party;
+6095:                 b.description = in.description;
+6096:                 b.pairUuid = pair;
+6097:                 b.rate = Model.nz(in.rate);
+6098:                 b.createdAt = in.when;
+6099:                 insertCash(d, b);
+6100:             } else if (dest != null) {
+6101:                 String pair = UUID.randomUUID().toString();
+6102:                 m.pairUuid = pair;
+6103:                 m.dir = -1;
+6104:                 m.party = "إلى: " + dest.name;
+6105:                 id = insertCash(d, m);
+6106:                 CashBox.Move b = new CashBox.Move();
+6107:                 b.kind = CashBox.TRANSFER;
+6108:                 b.boxId = dest.id;
+6109:                 b.currency = in.currency;
+6110:                 b.amount = in.amount;
+6111:                 b.dir = 1;
+6112:                 b.category = CashBox.CAT_TRANSFER;
+6113:                 b.party = "من: " + cfg.name;
+6114:                 b.description = in.description;
+6115:                 b.pairUuid = pair;
+6116:                 b.createdAt = in.when;
+6117:                 insertCash(d, b);
+6118:             } else id = insertCash(d, m);
+6119:             String what = CashBox.EXCHANGE.equals(in.kind) ? CashBox.exchangeText(in, decimalsMap())
+6120:                     : Model.fmt(in.amount, decimals(in.currency)) + " " + in.currency + (dest != null ? " — إلى " + dest.name : "")
+6121:                     + (client != null ? " — عميل: " + client.name + (in.clientCurrency.equals(in.currency) ? "" : " (" + Model.fmt(in.clientAmount, decimals(in.clientCurrency)) + " " + in.clientCurrency + ")") : "");
+6122:             audit(d, "CASH_" + (CashBox.EXCHANGE.equals(in.kind) ? (buy ? "BUY" : "SELL") : in.kind), "cash", id, what
+6123:                     + (txId != null ? " — حركة مكتب " + txId : "") + (in.fee > 0 ? " — أجور " + Model.fmt(in.fee, decimals(in.currency)) : ""));
+6124:             d.setTransactionSuccessful();
+6125:             return id;
+6126:         } finally {
+6127:             d.endTransaction();
+6128:         }
+6129:     }
+6130: 
+6131:     /** إلغاء حركة صندوق (وحركة المكتب المرتبطة بها، والساق الأخرى للبيع والشراء أو التحويل). */
+6132:     public void cancelCashMove(long id, String reason) {
+6133:         require(Auth.Perm.TX_CANCEL);
+6134:         CashBox.Move m = cashMove(id);
+6135:         if (m == null) throw new IllegalArgumentException("حركة الصندوق غير موجودة");
+6136:         if (m.cancelled()) throw new IllegalStateException("هذه الحركة ملغاة أصلًا");
+6137:         if (m.txId != null && Model.STATUS_PENDING.equals(m.txStatus))

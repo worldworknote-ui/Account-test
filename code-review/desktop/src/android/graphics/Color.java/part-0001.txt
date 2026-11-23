@@ -1,0 +1,64 @@
+1: package android.graphics;
+2: 
+3: /** ألوان أندرويد (int بصيغة ARGB) — نسخة الكمبيوتر. */
+4: public class Color {
+5:     public static final int BLACK = 0xFF000000, WHITE = 0xFFFFFFFF, TRANSPARENT = 0, RED = 0xFFFF0000, GREEN = 0xFF00FF00, BLUE = 0xFF0000FF,
+6:             GRAY = 0xFF888888, DKGRAY = 0xFF444444, LTGRAY = 0xFFCCCCCC, YELLOW = 0xFFFFFF00, CYAN = 0xFF00FFFF, MAGENTA = 0xFFFF00FF;
+7: 
+8:     public static int alpha(int c) { return c >>> 24; }
+9:     public static int red(int c) { return (c >> 16) & 0xFF; }
+10:     public static int green(int c) { return (c >> 8) & 0xFF; }
+11:     public static int blue(int c) { return c & 0xFF; }
+12:     public static int rgb(int r, int g, int b) { return 0xFF000000 | (cl(r) << 16) | (cl(g) << 8) | cl(b); }
+13:     public static int argb(int a, int r, int g, int b) { return (cl(a) << 24) | (cl(r) << 16) | (cl(g) << 8) | cl(b); }
+14:     public static int rgb(float r, float g, float b) { return rgb((int) (r * 255 + .5f), (int) (g * 255 + .5f), (int) (b * 255 + .5f)); }
+15:     public static int argb(float a, float r, float g, float b) { return argb((int) (a * 255 + .5f), (int) (r * 255 + .5f), (int) (g * 255 + .5f), (int) (b * 255 + .5f)); }
+16:     private static int cl(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
+17: 
+18:     public static int parseColor(String s) {
+19:         if (s == null) throw new IllegalArgumentException("Unknown color");
+20:         s = s.trim();
+21:         if (s.startsWith("#")) {
+22:             String h = s.substring(1);
+23:             long v = Long.parseLong(h, 16);
+24:             if (h.length() == 6) return (int) (v | 0xFF000000L);
+25:             if (h.length() == 8) return (int) v;
+26:             throw new IllegalArgumentException("Unknown color");
+27:         }
+28:         switch (s.toLowerCase()) {
+29:             case "black": return BLACK;
+30:             case "white": return WHITE;
+31:             case "red": return RED;
+32:             case "green": return GREEN;
+33:             case "blue": return BLUE;
+34:             case "gray": case "grey": return GRAY;
+35:             case "yellow": return YELLOW;
+36:             case "transparent": return TRANSPARENT;
+37:             default: throw new IllegalArgumentException("Unknown color");
+38:         }
+39:     }
+40: 
+41:     public static void colorToHSV(int c, float[] hsv) {
+42:         float[] r = java.awt.Color.RGBtoHSB(red(c), green(c), blue(c), null);
+43:         hsv[0] = r[0] * 360f;
+44:         hsv[1] = r[1];
+45:         hsv[2] = r[2];
+46:     }
+47: 
+48:     public static int HSVToColor(float[] hsv) { return HSVToColor(255, hsv); }
+49: 
+50:     public static int HSVToColor(int a, float[] hsv) {
+51:         int rgb = java.awt.Color.HSBtoRGB(hsv[0] / 360f, hsv[1], hsv[2]);
+52:         return (cl(a) << 24) | (rgb & 0xFFFFFF);
+53:     }
+54: 
+55:     public static float luminance(int c) {
+56:         double r = lin(red(c) / 255.0), g = lin(green(c) / 255.0), b = lin(blue(c) / 255.0);
+57:         return (float) (0.2126 * r + 0.7152 * g + 0.0722 * b);
+58:     }
+59: 
+60:     private static double lin(double v) { return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
+61: 
+62:     /** للرسم بـ Java2D. */
+63:     public static java.awt.Color awt(int c) { return new java.awt.Color(c, true); }
+64: }

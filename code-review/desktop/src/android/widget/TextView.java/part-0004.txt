@@ -1,0 +1,76 @@
+460:         boolean relative = (gravity & Gravity.RELATIVE_LAYOUT_DIRECTION) != 0;
+461:         int mode;
+462:         int ta = getTextAlignment();
+463:         if (ta == TEXT_ALIGNMENT_CENTER) mode = 1;
+464:         else if (ta == TEXT_ALIGNMENT_VIEW_START) mode = isRtl() ? 4 : 3;
+465:         else if (ta == TEXT_ALIGNMENT_VIEW_END) mode = isRtl() ? 3 : 4;
+466:         else if (ta == TEXT_ALIGNMENT_TEXT_START) mode = 0;
+467:         else if (ta == TEXT_ALIGNMENT_TEXT_END) mode = 2;
+468:         else if (hg == Gravity.CENTER_HORIZONTAL) mode = 1;
+469:         else if (relative) {
+470:             // START/END: حسب اتجاه الفقرة (ALIGN_NORMAL/OPPOSITE) كما في أندرويد
+471:             int rg = gravity & Gravity.RELATIVE_HORIZONTAL_GRAVITY_MASK;
+472:             mode = (rg & Gravity.END) == Gravity.END ? 2 : 0;
+473:         } else mode = hg == Gravity.RIGHT ? 4 : 3;
+474:         c.save();
+475:         c.clipRect(l - 1, getPaddingTop() - 2, w - r + 1, h - getPaddingBottom() + 2);
+476:         float y = t + verticalOffset(tl);
+477:         if (shadowR > 0 && Color.alpha(shadowColor) > 0) {
+478:             float o = c.alpha;
+479:             c.save();
+480:             c.translate(shadowDx, shadowDy);
+481:             c.alpha = o * 0.8f;
+482:             tl.draw(c, l, y, avail, mode, shadowColor);
+483:             c.restore();
+484:         }
+485:         tl.draw(c, l, y, avail, mode, col);
+486:         c.restore();
+487:     }
+488:     private void drawCompound(Canvas c, Drawable d, int x, int y) {
+489:         c.save();
+490:         c.translate(x - d.getBounds().left, y - d.getBounds().top);
+491:         d.setState(getDrawableState());
+492:         d.draw(c);
+493:         c.restore();
+494:     }
+495:     @Override protected void drawableStateChanged() {
+496:         super.drawableStateChanged();
+497:         for (Drawable d : compound) if (d != null) d.setState(getDrawableState());
+498:         if (color.isStateful()) invalidate();
+499:     }
+500: 
+501:     @Override public boolean onTouchEvent(MotionEvent e) {
+502:         if (text instanceof Spanned && e.getAction() == MotionEvent.ACTION_UP) {
+503:             android.text.style.ClickableSpan[] cs = ((Spanned) text).getSpans(0, text.length(), android.text.style.ClickableSpan.class);
+504:             if (cs.length == 1 && !isClickable()) { cs[0].onClick(this); return true; }
+505:         }
+506:         return super.onTouchEvent(e);
+507:     }
+508: 
+509:     /** المساحة والنمط للخانة الحقيقية (EditText). */
+510:     protected java.awt.Font awtFont() {
+511:         Typeface tf = getTypeface();
+512:         return Typeface.base(tf.familyName(), tf.isBold()).deriveFont(paint.getTextSize());
+513:     }
+514:     protected boolean textRtl() {
+515:         int m = dirMode();
+516:         String s = text.toString();
+517:         if (m == TextLines.DIR_LTR) return false;
+518:         if (m == TextLines.DIR_RTL) return true;
+519:         if (m == TextLines.DIR_ANY_RTL) { for (char ch : s.toCharArray()) { byte d = Character.getDirectionality(ch); if (d == 1 || d == 2) return true; } return dirFallback() && s.isEmpty(); }
+520:         if (s.isEmpty() && hint != null) s = hint.toString();
+521:         for (char ch : s.toCharArray()) { byte d = Character.getDirectionality(ch); if (d == 1 || d == 2) return true; if (d == 0) return false; }
+522:         return dirFallback();
+523:     }
+524:     protected int swingAlign() {
+525:         int hg = Gravity.getAbsoluteGravity(gravity, getLayoutDirection()) & Gravity.HORIZONTAL_GRAVITY_MASK;
+526:         if (hg == Gravity.CENTER_HORIZONTAL) return javax.swing.SwingConstants.CENTER;
+527:         if ((gravity & Gravity.RELATIVE_LAYOUT_DIRECTION) != 0) return textRtl() ? javax.swing.SwingConstants.RIGHT : javax.swing.SwingConstants.LEFT;
+528:         return hg == Gravity.RIGHT ? javax.swing.SwingConstants.RIGHT : javax.swing.SwingConstants.LEFT;
+529:     }
+530:     protected boolean isSingleLineMode() { return singleLine; }
+531:     protected int maxLength() {
+532:         for (InputFilter f : filters) if (f instanceof InputFilter.LengthFilter) return ((InputFilter.LengthFilter) f).getMax();
+533:         return -1;
+534:     }
+535: }

@@ -1,0 +1,138 @@
+1: import android.content.Context;
+2: import com.smart.hawala.*;
+3: import java.io.File;
+4: import java.nio.file.Files;
+5: import java.util.*;
+6: 
+7: /**
+8:  * 10.11: إصلاحات تقرير التدقيق على Db الحقيقي (sqlite-jdbc). كل فحص هنا كان يفشل في 10.10:
+9:  * AUDIT-001 (تغيير رمز حساب أعلى صلاحية)، 002 (نقل مجلد البيانات)، 004 (منازل عملة الصندوق)، 010 (الدمج والأدوار)،
+10:  * 011 (صلاحيات المطابقة في Db)، 013 (فحص عنوان الخادم)، 016 (تكرار الأسماء).
+11:  */
+12: public class AuditFixesTest {
+13:     static int fails, passes;
+14: 
+15:     static void check(boolean c, String m) {
+16:         if (c) passes++;
+17:         else fails++;
+18:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+19:     }
+20: 
+21:     interface Io { void run() throws Exception; }
+22: 
+23:     static boolean refused(Io r) {
+24:         try {
+25:             r.run();
+26:             return false;
+27:         } catch (Exception e) {
+28:             return true;
+29:         }
+30:     }
+31: 
+32:     static void as(Db db, long uid) {
+33:         SmartApp.currentUser = db.user(uid);
+34:         Db.currentUserName = SmartApp.currentUser.name;
+35:     }
+36: 
+37:     public static void main(String[] a) throws Exception {
+38:         System.setProperty("sa.secrets", "file");
+39:         Object[] dv = DeskCoreTest.device("audit");
+40:         Context ctx = (Context) dv[0];
+41:         Db db = (Db) dv[1];
+42:         License.current = Entitlements.of(DeskCoreTest.fullGrant(), BuildInfo.BUILD_DATE);
+43:         List<String> ue = Arrays.asList("USD", "EUR");
+44:         long A = db.addOffice("البلسم", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+45:         long B = db.addOffice("النور", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+46:         Map<String, Long> op = new HashMap<>();
+47:         op.put("USD", 1000000L);
+48:         db.cashSetup("الصندوق", ue, op, false, true);
+49:         long admin = db.addUser("المدير", Auth.ADMIN, null, "123456");
+50:         as(db, admin);
+51:         long mgr = db.addUser("مدير الموظفين", Auth.CUSTOM, "VIEW,USERS", "4444");
+52:         long power = db.addUser("أمين", Auth.CUSTOM, "VIEW,RESTORE,DELETE", "5555");
+53:         long peer = db.addUser("سعاد", Auth.CUSTOM, "VIEW", "7777");
+54:         long acct = db.addUser("رنا", Auth.CUSTOM, "VIEW,TX_ADD,VERIFY", "2222");
+55:         long chk = db.addUser("خالد", Auth.CUSTOM, "VIEW,VERIFY", "3333");
+56:         long viewer = db.addUser("مشاهد", Auth.CUSTOM, "VIEW", "6666");
+57: 
+58:         System.out.println("== AUDIT-001: تغيير رمز حساب آخر");
+59:         as(db, mgr);
+60:         check(refused(() -> db.setPin(power, "9999")) && db.verifyPin(power, "5555"), "صاحب «المستخدمون» لا يغيّر رمز حساب فيه صلاحية لا يملكها، ورمزه باقٍ");
+61:         db.setPin(peer, "8888");
+62:         check(db.verifyPin(peer, "8888"), "ويغيّر رمز موظف صلاحياته ضمن صلاحياته");
+63:         as(db, admin);
+64:         db.setPin(power, "9999");
+65:         check(db.verifyPin(power, "9999"), "المدير يغيّر أي رمز");
+66: 
+67:         System.out.println("== AUDIT-004: منازل عملة مستعملة في الصندوق فقط");
+68:         db.saveCurrency("GLD", "ذهب", 2, true);
+69:         check(!db.currencyUsed("GLD"), "عملة جديدة غير مستعملة");
+70:         Map<String, Long> op2 = new HashMap<>();
+71:         op2.put("GLD", 150000L);
+72:         db.cashSetup(db.currentBox(), "الصندوق", Arrays.asList("USD", "EUR", "GLD"), op2, false, true);
+73:         check(db.currencyUsed("GLD"), "رصيد صندوق بها = مستعملة");
+74:         check(refused(() -> db.saveCurrency("GLD", "ذهب", 0, true)) && db.decimals("GLD") == 2, "تغيير منازلها يُرفض في طبقة البيانات");
+75:         db.saveCurrency("GLD", "ذهب خالص", 2, true);
+76:         check("ذهب خالص".equals(db.currencyNames().get("GLD")), "تغيير الاسم بالمنازل نفسها مسموح");
+77: 
+78:         System.out.println("== AUDIT-010: الدمج يحفظ أدوار المحاسبين");
+79:         db.setOfficeTeam(A, new HashSet<>(Collections.singletonList(acct)), new HashSet<>(Collections.singletonList(chk)));
+80:         db.mergeOffices(A, B);
+81:         check(Db.ROLE_CHECK.equals(db.officeRoles(chk).get(B)) && Db.ROLE_OWN.equals(db.officeRoles(acct).get(B)), "خالد يبقى «يتحقق» ورنا «تسجّل» في المكتب الهدف");
+82: 
+83:         System.out.println("== AUDIT-011: المطابقة بصلاحياتها في Db");
+84:         as(db, viewer);
+85:         check(refused(() -> db.createRecon(B)), "مستخدم VIEW فقط لا ينشئ مطابقة");
+86:         as(db, admin);
+87:         long rid = db.createRecon(B);
+88:         as(db, viewer);
+89:         check(refused(() -> db.setReconStatus(rid, Model.RECON_CONFIRMED, "")) && refused(() -> db.deleteRecon(rid)), "ولا يؤكدها ولا يحذفها");
+90:         as(db, admin);
+91:         db.setReconStatus(rid, Model.RECON_CONFIRMED, "تم");
+92:         db.deleteRecon(rid);
+93:         check(db.recon(rid) == null, "المدير يؤكد ويحذف");
+94: 
+95:         System.out.println("== AUDIT-016: تكرار الأسماء");
+96:         check(refused(() -> db.addUser("رنا", Auth.CUSTOM, "VIEW", "1212")), "اسم موجود يُرفض عند الإضافة");
+97:         check(refused(() -> db.addUser(" رنا ", Auth.CUSTOM, "VIEW", "1212")), "ولو بمسافات زائدة");
+98:         check(refused(() -> db.updateUser(viewer, "رنا", Auth.CUSTOM, "VIEW", true)), "وعند تعديل اسم حساب آخر إليه");
+99:         db.updateUser(viewer, "مشاهد", Auth.CUSTOM, "VIEW", true);
+100:         check(true, "حفظ الحساب باسمه نفسه مسموح");
+101: 
+102:         System.out.println("== AUDIT-013: عنوان خادم المزامنة");
+103:         check(refused(() -> HttpSyncFolder.checkUrl("http://localhost.attacker.example/")) && refused(() -> HttpSyncFolder.checkUrl("http://127.0.0.1.nip.io/")),
+104:                 "http لمضيف يبدأ بـ localhost أو 127.0.0.1 فقط يُرفض");
+105:         check(!refused(() -> HttpSyncFolder.checkUrl("http://127.0.0.1:8090")) && !refused(() -> HttpSyncFolder.checkUrl("https://sync.example.com")),
+106:                 "http لهذا الجهاز وhttps لأي خادم مقبولان");
+107: 
+108:         System.out.println("== AUDIT-002: نقل مجلد البيانات");
+109:         Db.TxInput t = new Db.TxInput();
+110:         t.office = B;
+111:         t.type = Model.TYPE_DEBIT;
+112:         t.amount = 1000;
+113:         t.currency = "USD";
+114:         t.person = "زبون";
+115:         t.when = System.currentTimeMillis() - 5000;
+116:         long tid = db.addTx(t, Collections.singletonList(new byte[]{1, 2, 3, 4}));
+117:         long att = db.attachmentIds(tid).get(0);
+118:         db.close();
+119:         File oldHome = ctx.home();
+120:         File newHome = new File(oldHome.getParentFile(), oldHome.getName() + "-moved");
+121:         Files.move(oldHome.toPath(), newHome.toPath());
+122:         SecretStore.fallback(new File(newHome, "keys"));
+123:         Context c2 = new Context(newHome);
+124:         DeskCoreTest.resetCrypto();
+125:         Crypto.init(c2);
+126:         Db db2 = new Db(c2);
+127:         SmartApp.db = db2;
+128:         byte[] img = db2.attachment(att);
+129:         check(img != null && img.length == 4 && img[3] == 4, "الصورة تُقرأ بعد نقل المجلد");
+130:         boolean imagesOk = false;
+131:         for (Db.Check ch : db2.healthCheck(true)) if (ch.title.startsWith("الصور")) imagesOk = ch.ok;
+132:         check(imagesOk, "وفحص الصحة يجدها");
+133: 
+134:         System.out.println();
+135:         System.out.println(passes + " نجح، " + fails + " فشل");
+136:         System.exit(fails == 0 ? 0 : 1);
+137:     }
+138: }

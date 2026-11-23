@@ -1,0 +1,71 @@
+1: #!/bin/bash
+2: # يبني SmartAccountant.app («المحاسب الذكي») للماك: ملف zip لكل معالج (Apple Silicon وIntel)، كل واحد ببيئة جافا مصغّرة مضمّنة:
+3: #   RT_ARM=<بيئة arm64 من mac/make-runtime.sh>  RT_X64=<بيئة x64>
+4: #   JPKG_ARM=<jdk.jpackage.jmod من JDK الماك arm64>  JPKG_X64=<jdk.jpackage.jmod من JDK الماك x64>
+5: #   RCODESIGN=<أداة rcodesign من apple-codesign>   bash desktop/package-mac.sh <مجلد الإخراج>
+6: # المشغّل ملف تنفيذي أصلي للماك (مشغّل jpackage من Temurin 21) وليس سكربتًا، والحزمة كلها موقّعة توقيعًا محليًا (ad-hoc):
+7: # macOS الحديث (Sequoia وTahoe) يرفض فتح حزمة مشغّلها سكربت غير موقّع برسالة «لا يمكن فتح التطبيق».
+8: # التخطيط مثل jpackage: Contents/MacOS/SmartAccountant + Contents/app/{SmartAccountant.cfg,smart-accountant.jar}
+9: #                        + Contents/runtime/Contents/{Info.plist,Home/...}
+10: set -e
+11: HERE="$(cd "$(dirname "$0")" && pwd)"
+12: P="$(dirname "$HERE")"
+13: OUT="${1:-$HERE/dist}"
+14: VERSION=$(grep -o 'VERSION = "[^"]*"' "$P/app/src/main/java/com/smart/hawala/BuildInfo.java" | cut -d'"' -f2)
+15: BUILD=$(grep -o 'BUILD_DATE = [0-9]*' "$P/app/src/main/java/com/smart/hawala/BuildInfo.java" | grep -o '[0-9]*')
+16: [ -x "$RT_ARM/bin/java" ] && [ -x "$RT_X64/bin/java" ] || { echo "حدّد RT_ARM وRT_X64 (انظر desktop/mac/make-runtime.sh)"; exit 1; }
+17: [ -f "$JPKG_ARM" ] && [ -f "$JPKG_X64" ] || { echo "حدّد JPKG_ARM وJPKG_X64 (ملف jmods/jdk.jpackage.jmod من JDK الماك لكل معالج)"; exit 1; }
+18: [ -x "$RCODESIGN" ] || { echo "حدّد RCODESIGN (https://github.com/indygreg/apple-platform-rs — apple-codesign)"; exit 1; }
+19: [ -f "$R8_JAR" ] || { echo "حدّد R8_JAR (cmdline-tools/lib/r8.jar من أدوات أندرويد) لتعمية النسخة"; exit 1; }
+20: 
+21: # 12.6: نسخة التوزيع معمّاة دائمًا (الخريطة في desktop/build/obf-map.txt، لا تدخل الحزمة)
+22: OBFUSCATE=1 bash "$HERE/build.sh"
+23: mkdir -p "$OUT"
+24: ICONS="$OUT/icons"; rm -rf "$ICONS"
+25: java -cp "$HERE/build/smart-accountant.jar" com.smart.hawala.desk.IconGen "$ICONS"
+26: 
+27: # مشغّل jpackage الأصلي من ملف الوحدة (zip بعد ترويسة 4 بايت)
+28: launcher() {
+29:   python3 - "$1" "$2" <<'EOF'
+30: import sys, zipfile, io
+31: d = open(sys.argv[1], 'rb').read()[4:]
+32: z = zipfile.ZipFile(io.BytesIO(d))
+33: open(sys.argv[2], 'wb').write(z.read('classes/jdk/jpackage/internal/resources/jpackageapplauncher'))
+34: EOF
+35:   chmod 755 "$2"
+36: }
+37: 
+38: for pair in "arm64:$RT_ARM:$JPKG_ARM:AppleSilicon" "x64:$RT_X64:$JPKG_X64:Intel"; do
+39:   IFS=: read -r arch rt jpkg label <<< "$pair"
+40:   STAGE="$OUT/stage-$arch"
+41:   rm -rf "$STAGE"; mkdir -p "$STAGE"
+42:   APP="$STAGE/SmartAccountant.app"
+43:   C="$APP/Contents"
+44:   mkdir -p "$C/MacOS" "$C/Resources/ar.lproj" "$C/Resources/en.lproj" "$C/app" "$C/runtime/Contents"
+45:   sed -e "s/@VERSION@/$VERSION/" -e "s/@BUILD@/$BUILD/" "$HERE/mac/Info.plist" > "$C/Info.plist"
+46:   printf "APPLSACC" > "$C/PkgInfo"
+47:   cp "$HERE/mac/InfoPlist.strings" "$C/Resources/ar.lproj/"
+48:   cp "$HERE/mac/InfoPlist.strings" "$C/Resources/en.lproj/"
+49:   launcher "$jpkg" "$C/MacOS/SmartAccountant"
+50:   file "$C/MacOS/SmartAccountant" | grep -q "Mach-O 64-bit.*$( [ "$arch" = arm64 ] && echo arm64 || echo x86_64)" || { echo "المشغّل ليس لمعالج $arch"; exit 1; }
+51:   cp "$HERE/mac/SmartAccountant.cfg" "$C/app/"
+52:   cp "$HERE/build/smart-accountant.jar" "$C/app/"
+53:   # المكتبة الأصلية لهذا المعالج فقط داخل البرنامج
+54:   if [ "$arch" = "arm64" ]; then other="org/sqlite/native/Mac/x86_64/*"; else other="org/sqlite/native/Mac/aarch64/*"; fi
+55:   zip -qd "$C/app/smart-accountant.jar" "org/sqlite/native/Linux/*" "$other" >/dev/null || true
+56:   python3 "$HERE/mac/make_icns.py" "$ICONS" "$C/Resources/AppIcon.icns" >/dev/null
+57:   cp "$HERE/mac/runtime-Info.plist" "$C/runtime/Contents/Info.plist"
+58:   cp -a "$rt" "$C/runtime/Contents/Home"
+59:   # الماك يشترط توقيعًا لكل كود arm64؛ التوقيع المحلي يجعل الحزمة سليمة ومتسقة (تبقى رسالة «مطوّر غير معروف» أول مرة فقط)
+60:   # المشغّل وبيئة Adoptium موقّعة أصلًا بعلَم «hardened runtime»، فيُعطى المشغّل صلاحيات jpackage المعتادة لجافا
+61:   # (JIT وتحميل مكتبات البيئة)، وإلا يتوقف الـ JVM على معالج Apple.
+62:   "$RCODESIGN" sign -e "$HERE/mac/entitlements.plist" "$APP" >/dev/null 2>"$OUT/sign-$arch.log" || { cat "$OUT/sign-$arch.log"; exit 1; }
+63:   INFO="$("$RCODESIGN" print-signature-info "$C/MacOS/SmartAccountant")"
+64:   echo "$INFO" | grep -q 'ADHOC' && echo "$INFO" | grep -q 'allow-jit' && echo "$INFO" | grep -q 'disable-library-validation' \
+65:     || { echo "توقيع المشغّل غير مكتمل"; echo "$INFO" | head -40; exit 1; }
+66:   cp "$HERE/mac/اقرأني-الماك.txt" "$STAGE/"
+67:   ZIP="$OUT/SmartAccountant-$VERSION-mac-$label.zip"
+68:   rm -f "$ZIP"
+69:   ( cd "$STAGE" && zip -qry -9 "$ZIP" . )
+70:   echo "PACKAGE OK: $ZIP ($(du -h "$ZIP" | cut -f1))"
+71: done

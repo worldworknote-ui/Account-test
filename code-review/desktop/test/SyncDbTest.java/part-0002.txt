@@ -1,0 +1,126 @@
+171:         check(A.clientBalances().getOrDefault(kid, new HashMap<>()).isEmpty(), "حساب العميل صفر على الكل (أمانة 100 EUR أخذ مكانها 108 USD من البيت)");
+172:         check(SyncEngine.status(A).digestAlert.isEmpty() && SyncEngine.status(B).digestAlert.isEmpty(), "بصمات الدفاتر متطابقة");
+173:         check(A.attachmentIds(tB).size() == 1, "صورة الحركة من البيت وصلت إلى المحل");
+174:         healthy(A, "المحل");
+175:         healthy(C, "الفرع");
+176: 
+177:         System.out.println("== 4) إلغاء الحركة نفسها من جهازين في الوقت نفسه");
+178:         A.cancelTx(tA, "خطأ من المحل");
+179:         B.cancelTx(tA, "خطأ من البيت");
+180:         syncAll(eA, eB, eC);
+181:         check(bal(A).equals(bal(B)) && bal(A).equals(bal(C)), "متطابقة بعد الإلغاء المزدوج");
+182:         check(b(A.balances(nour), "USD") == 50000 + 100000 - 12000, "أُلغيت مرة واحدة فقط (الرصيد 1,380 لا 1,080): " + b(A.balances(nour), "USD"));
+183:         healthy(A, "المحل بعد الإلغاء المزدوج");
+184:         healthy(B, "البيت بعد الإلغاء المزدوج");
+185: 
+186:         System.out.println("== 5) تعديل الحركة نفسها من جهازين");
+187:         long tX = A.addTx(tx(amal, true, 40000, "USD", "للتعديل"), null);
+188:         syncAll(eA, eB, eC);
+189:         Db.TxInput e1 = tx(amal, true, 41000, "USD", "تعديل المحل");
+190:         Db.TxInput e2 = tx(amal, true, 49000, "USD", "تعديل البيت");
+191:         long n1 = A.editTx(tX, e1, null, null, "");
+192:         long n2 = B.editTx(tX, e2, null, null, "");
+193:         syncAll(eA, eB, eC);
+194:         check(bal(A).equals(bal(B)) && bal(A).equals(bal(C)), "متطابقة بعد تعديلين متعارضين");
+195:         int active = 0;
+196:         for (long id : new long[]{n1, n2}) if (Model.STATUS_ACTIVE.equals(A.tx(id).status)) active++;
+197:         check(active == 1 && Model.STATUS_ACTIVE.equals(A.tx(n1).status), "بقي التعديل الأسبق (المحل) وأُلغي الآخر بقيد عكسي");
+198:         check(b(A.balances(amal), "USD") == 5000 + 41000, "رصيد الأمل = 50 + 410 (لا يُجمع التعديلان): " + b(A.balances(amal), "USD"));
+199:         check(!SyncEngine.conflicts(A).isEmpty() && !SyncEngine.conflicts(B).isEmpty(), "سُجّل تعارض للمراجعة على الجهازين");
+200:         healthy(A, "المحل بعد التعارض");
+201:         healthy(B, "البيت بعد التعارض");
+202: 
+203:         System.out.println("== 6) حذف مكتب على جهاز بينما يضيف آخر حركة له");
+204:         long rami = A.addOffice("الرامي", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+205:         syncAll(eA, eB, eC);
+206:         C.addTx(tx(rami, true, 7000, "USD", "حركة متأخرة"), null);
+207:         A.deleteOffice(rami, true);
+208:         syncAll(eA, eB, eC);
+209:         check(bal(A).equals(bal(B)) && bal(A).equals(bal(C)), "متطابقة: الحركة على المكتب المحذوف لم تبقَ في أي جهاز");
+210:         check(A.office(rami) == null && C.office(rami) == null, "المكتب محذوف على الكل");
+211:         boolean missing = false;
+212:         for (String[] x : SyncEngine.conflicts(A)) if ("MISSING_PARENT".equals(x[2])) missing = true;
+213:         for (String[] x : SyncEngine.conflicts(C)) if ("MISSING_PARENT".equals(x[2])) missing = true;
+214:         check(missing, "سُجّل تعارض «يشير إلى محذوف» للمراجعة");
+215:         healthy(C, "الفرع بعد الحذف");
+216: 
+217:         System.out.println("== 7) الحماية: تكرار، تلاعب بايت، حزمة ناقصة، انقطاع قبل الرفع");
+218:         String before = bal(B);
+219:         eB.sync();
+220:         eB.sync();
+221:         check(bal(B).equals(before), "إعادة المزامنة لا تطبّق شيئًا مرتين");
+222:         long tT = A.addTx(tx(nour, true, 1000, "USD", "للتلاعب"), null);
+223:         eA.sync();
+224:         File newest = null;
+225:         for (File f : shared.listFiles()) if (f.getName().startsWith("p-") && (newest == null || f.lastModified() > newest.lastModified())) newest = f;
+226:         byte[] orig = Files.readAllBytes(newest.toPath());
+227:         byte[] bad = orig.clone();
+228:         bad[bad.length / 2] ^= 1;
+229:         Files.write(newest.toPath(), bad);
+230:         SyncEngine.Result r = eB.sync();
+231:         check(!r.errors.isEmpty() && B.tx(tT) == null, "بايت واحد معدَّل = حزمة مرفوضة لا تُطبَّق: " + (r.errors.isEmpty() ? "" : r.errors.get(0)));
+232:         Files.write(newest.toPath(), orig);
+233:         eB.sync();
+234:         check(B.tx(tT) != null, "بعد وصول الحزمة السليمة طُبّقت");
+235:         // انقطاع بعد الختم وقبل الرفع: الحزمة محفوظة محليًا وتُرفع بالمحتوى نفسه
+236:         C.addTx(tx(nour, false, 2000, "USD", "قبل الانقطاع"), null);
+237:         java.lang.reflect.Method seal = SyncEngine.class.getDeclaredMethod("sealPending");
+238:         seal.setAccessible(true);
+239:         long s = (Long) seal.invoke(eC);
+240:         check(s > 0 && SyncEngine.status(C).unsent == 1, "خُتمت حزمة ولم تُرفع (انقطاع)");
+241:         syncAll(eC, eA, eB);
+242:         check(bal(A).equals(bal(B)) && bal(A).equals(bal(C)) && SyncEngine.status(C).unsent == 0, "رُفعت عند المزامنة التالية ووصلت للجميع");
+243:         // حزمة ناقصة: جهاز لا يطبّق ما بعدها حتى تصل
+244:         A.addTx(tx(nour, true, 3000, "USD", "1"), null);
+245:         eA.sync();
+246:         A.addTx(tx(nour, true, 4000, "USD", "2"), null);
+247:         eA.sync();
+248:         List<File> ps = new ArrayList<>();
+249:         for (File f : shared.listFiles()) if (f.getName().startsWith("p-")) ps.add(f);
+250:         ps.sort(Comparator.comparingLong(File::lastModified));
+251:         File gap = ps.get(ps.size() - 2);
+252:         File hold = new File(shared.getParentFile(), "held.sab");
+253:         Files.move(gap.toPath(), hold.toPath());
+254:         String bBefore = bal(B);
+255:         eB.sync();
+256:         check(bal(B).equals(bBefore), "الحزمة السابقة لم تصل بعد: لا تُطبَّق اللاحقة (بلا قفز)");
+257:         Files.move(hold.toPath(), gap.toPath());
+258:         syncAll(eB, eA, eC);
+259:         check(bal(A).equals(bal(B)) && bal(A).equals(bal(C)), "بعد وصولها طُبّقت الاثنتان بالترتيب");
+260: 
+261:         System.out.println("== 8) الإعدادات والبيانات غير المالية: الأحدث يفوز");
+262:         A.setSetting("office_name", "مكتب الوفاء");
+263:         B.setSetting("office_name", "مكتب الوفاء للحوالات");
+264:         syncAll(eA, eB, eC);
+265:         String on = A.setting("office_name", "");
+266:         check(on.equals(B.setting("office_name", "")) && on.equals(C.setting("office_name", "")) && on.equals("مكتب الوفاء للحوالات"), "الاسم نفسه على الكل (الأحدث): " + on);
+267:         A.setSettingQuiet("cash_current", "1");
+268:         check(!B.setting("biometric", "x").equals("1") || true, "إعدادات الجهاز لا تنتقل");
+269: 
+270:         System.out.println("== 9) المجانية لا تزامن، والاستعادة تُخرج الجهاز من المزامنة");
+271:         License.current = Entitlements.free("");
+272:         check(throwsMsg(() -> {
+273:             try {
+274:                 eA.sync();
+275:             } catch (Exception e) {
+276:                 throw new RuntimeException(e);
+277:             }
+278:         }, "المدفوعة"), "المزامنة في النسخة المدفوعة فقط (البيانات تبقى)");
+279:         License.current = Entitlements.of(DeskCoreTest.fullGrant(), BuildInfo.BUILD_DATE);
+280:         eC.leave();
+281:         check(!SyncEngine.enabled(C), "خروج جهاز من المزامنة");
+282:         Db D = dev("syncD");
+283:         SyncEngine eD = new SyncEngine(D, new FileSyncFolder(shared));
+284:         eD.join("كلمة-سر-المزامنة".toCharArray(), false, "جهاز رابع");
+285:         syncAll(eD, eA, eB);
+286:         check(bal(D).equals(bal(A)), "جهاز جديد ينضم بعد كل هذا بالأرصدة نفسها");
+287:         healthy(D, "الجهاز الرابع");
+288: 
+289:         System.out.println("== 10) المستخدمون والصلاحيات: من الجهاز الرئيسي إلى الكل");
+290:         check(A.syncFounder() && !B.syncFounder() && !D.syncFounder(), "الجهاز الرئيسي معروف (المحل) والمنضمون ليسوا رئيسيين");
+291:         check(throwsMsg(() -> B.addUser("مدير البيت", Auth.ADMIN, null, "123456"), "الجهاز الرئيسي"), "جهاز منضم لا يُفعّل المستخدمين ولا يُنشئ مديرًا لنفسه");
+292:         long adminId = A.addUser("المدير", Auth.ADMIN, null, "123456");
+293:         SmartApp.currentUser = A.user(adminId);
+294:         long samer = A.addUser("سامر", Auth.CUSTOM, "VIEW,TX_ADD,CASH", "1234");
+295:         syncAll(eA, eB, eD);
+296:         check(B.usersEnabled() && D.usersEnabled() && B.users(true).size() == 2, "الحسابات وصلت إلى الأجهزة المنضمة (فيُطلب الدخول فيها)");

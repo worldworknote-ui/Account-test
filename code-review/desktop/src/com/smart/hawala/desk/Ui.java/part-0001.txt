@@ -1,0 +1,188 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.Db;
+4: import com.smart.hawala.Model;
+5: import java.awt.*;
+6: import java.awt.event.*;
+7: import java.awt.geom.RoundRectangle2D;
+8: import java.io.InputStream;
+9: import java.util.ArrayList;
+10: import java.util.Calendar;
+11: import java.util.List;
+12: import java.util.Locale;
+13: import java.util.concurrent.Callable;
+14: import java.util.function.Consumer;
+15: import javax.swing.*;
+16: import javax.swing.border.Border;
+17: import javax.swing.border.EmptyBorder;
+18: import javax.swing.table.DefaultTableCellRenderer;
+19: import javax.swing.table.JTableHeader;
+20: import javax.swing.table.TableCellRenderer;
+21: import javax.swing.table.TableColumn;
+22: 
+23: /**
+24:  * السمة والعناصر المشتركة لواجهة الماك: ألوان الهاتف نفسها (الأخضر 0B6B53 والذهبي)، خط IBM Plex Sans Arabic المضمَّن،
+25:  * واتجاه من اليمين لليسار في كل شيء. كل عمل بطيء يمر عبر busy() في خيط خلفي.
+26:  */
+27: final class Ui {
+28:     private Ui() {}
+29: 
+30:     static Color primary, accent, bg, surface, line, ink, muted, red, green, creditBg, debitBg, warnBg, warnInk, primarySoft, primaryInk, goldSoft, goldInk, sidebar, sidebarInk;
+31:     /** 10.4: ألوان إضافية للتصميم الحديث: خلفية صفوف الجداول المتناوبة، ورأس الجدول، وظل البطاقات، وخط الشريط الجانبي الخافت. */
+32:     static Color stripe, tableHead, shadow, sidebarMuted, sidebarHover, sidebarActive;
+33:     /** 10.4: الوضع الليلي لنسخة الكمبيوتر. */
+34:     static boolean dark;
+35:     /** 10.10: خلفية الأزرار المجزأة. */
+36:     static Color segTrack;
+37:     static Font base, baseBold;
+38:     static final ComponentOrientation RTL = ComponentOrientation.RIGHT_TO_LEFT;
+39: 
+40:     static void init(Db db) {
+41:         loadFonts();
+42:         applyColors(db);
+43:         setupLaf();
+44:         UIManager.put("Panel.background", bg);
+45:         UIManager.put("OptionPane.background", surface);
+46:         UIManager.put("OptionPane.messageFont", font(14, false));
+47:         UIManager.put("OptionPane.buttonFont", font(13, true));
+48:         UIManager.put("ToolTip.font", font(12, false));
+49:         for (String k : new String[]{"Label.font", "Button.font", "TextField.font", "TextArea.font", "ComboBox.font", "CheckBox.font", "RadioButton.font",
+50:                 "Table.font", "TableHeader.font", "List.font", "Menu.font", "MenuItem.font", "PopupMenu.font", "TabbedPane.font", "Spinner.font",
+51:                 "PasswordField.font", "FormattedTextField.font", "TitledBorder.font", "ToggleButton.font", "TextPane.font", "EditorPane.font"}) {
+52:             UIManager.put(k, font(13, k.startsWith("TableHeader")));
+53:         }
+54:         UIManager.put("Table.rowHeight", 34);
+55:     }
+56: 
+57:     /**
+58:      * 10.4: سمة FlatLaf الحديثة (مكتبة مفتوحة المصدر، رخصة Apache 2.0): حقول وقوائم وجداول وأشرطة تمرير بزوايا مستديرة
+59:      * ومظهر واحد على الماك والويندوز، فاتح أو ليلي، بلون المكتب الأساسي.
+60:      */
+61:     static void setupLaf() {
+62:         java.util.Map<String, String> x = new java.util.HashMap<>();
+63:         x.put("@accentColor", hex(primary));
+64:         x.put("@background", hex(bg));
+65:         x.put("@foreground", hex(ink));
+66:         x.put("Component.arc", "12");
+67:         x.put("Button.arc", "12");
+68:         x.put("TextComponent.arc", "10");
+69:         x.put("CheckBox.arc", "6");
+70:         x.put("ProgressBar.arc", "999");
+71:         x.put("Component.focusWidth", "1");
+72:         x.put("Component.innerFocusWidth", "0");
+73:         x.put("Component.borderColor", hex(line));
+74:         x.put("Component.disabledBorderColor", hex(line));
+75:         x.put("Component.focusedBorderColor", hex(primary));
+76:         x.put("Component.focusColor", hex(mix(surface, primary, 0.35f)));
+77:         x.put("TextField.margin", "6,10,6,10");
+78:         x.put("PasswordField.margin", "6,10,6,10");
+79:         // 10.5: زر «إظهار كلمة السر» (العين) في كل خانة سر
+80:         x.put("PasswordField.showRevealButton", "true");
+81:         x.put("TextArea.margin", "8,10,8,10");
+82:         x.put("ComboBox.padding", "4,8,4,8");
+83:         x.put("TextField.background", hex(surface));
+84:         x.put("PasswordField.background", hex(surface));
+85:         x.put("TextArea.background", hex(surface));
+86:         x.put("ComboBox.background", hex(surface));
+87:         x.put("ComboBox.buttonBackground", hex(surface));
+88:         x.put("List.background", hex(surface));
+89:         x.put("ScrollBar.thumbArc", "999");
+90:         x.put("ScrollBar.thumbInsets", "2,2,2,2");
+91:         x.put("ScrollBar.width", "11");
+92:         x.put("ScrollBar.showButtons", "false");
+93:         x.put("ScrollBar.track", hex(bg));
+94:         x.put("Table.background", hex(surface));
+95:         x.put("Table.selectionBackground", hex(mix(surface, primary, dark ? 0.32f : 0.16f)));
+96:         x.put("Table.selectionForeground", hex(ink));
+97:         x.put("Table.selectionInactiveBackground", hex(mix(surface, primary, dark ? 0.22f : 0.10f)));
+98:         x.put("Table.selectionInactiveForeground", hex(ink));
+99:         x.put("Table.gridColor", hex(line));
+100:         x.put("TableHeader.background", hex(tableHead));
+101:         x.put("TableHeader.foreground", hex(muted));
+102:         x.put("TableHeader.separatorColor", hex(line));
+103:         x.put("TableHeader.bottomSeparatorColor", hex(line));
+104:         x.put("TableHeader.height", "36");
+105:         x.put("PopupMenu.borderCornerRadius", "10");
+106:         x.put("Popup.borderCornerRadius", "10");
+107:         x.put("ToolTip.background", hex(dark ? new Color(40, 52, 48) : new Color(30, 41, 37)));
+108:         x.put("ToolTip.foreground", "#FFFFFF");
+109:         x.put("OptionPane.background", hex(surface));
+110:         x.put("Panel.background", hex(bg));
+111:         x.put("TitlePane.unifiedBackground", "true");
+112:         x.put("TitlePane.background", hex(bg));
+113:         x.put("CheckBox.icon.checkmarkColor", "#FFFFFF");
+114:         x.put("CheckBox.icon.selectedBackground", hex(primary));
+115:         x.put("CheckBox.icon.selectedBorderColor", hex(primary));
+116:         x.put("ProgressBar.foreground", hex(primary));
+117:         x.put("ProgressBar.background", hex(line));
+118:         x.put("Separator.foreground", hex(line));
+119:         try {
+120:             com.formdev.flatlaf.FlatLaf.setGlobalExtraDefaults(x);
+121:             if (dark) com.formdev.flatlaf.FlatDarkLaf.setup();
+122:             else com.formdev.flatlaf.FlatLightLaf.setup();
+123:             UIManager.put("defaultFont", font(13.5f, false));
+124:         } catch (Throwable t) {
+125:             // بلا المكتبة: المظهر الافتراضي للنظام
+126:         }
+127:     }
+128: 
+129:     /** 10.4: تبديل الوضع الفاتح/الليلي وإعادة رسم كل النوافذ. */
+130:     static void switchTheme(Db db, boolean toDark) {
+131:         db.setSettingQuiet("desk_theme", toDark ? "dark" : "light");
+132:         init(db);
+133:         for (Window w : Window.getWindows()) SwingUtilities.updateComponentTreeUI(w);
+134:     }
+135: 
+136:     static void loadFonts() {
+137:         if (base != null) return;
+138:         try {
+139:             base = load("/res/plex_regular.ttf");
+140:             baseBold = load("/res/plex_bold.ttf");
+141:             GraphicsEnvironment ge = GraphicsEnvironment.getLocalGraphicsEnvironment();
+142:             ge.registerFont(base);
+143:             ge.registerFont(baseBold);
+144:             for (String f : new String[]{"cairo_regular", "cairo_bold", "kufi_regular", "kufi_bold"}) {
+145:                 try {
+146:                     ge.registerFont(load("/res/" + f + ".ttf"));
+147:                 } catch (Exception ignored) {
+148:                     // اختياري
+149:                 }
+150:             }
+151:         } catch (Exception e) {
+152:             base = new Font(Font.SANS_SERIF, Font.PLAIN, 13);
+153:             baseBold = new Font(Font.SANS_SERIF, Font.BOLD, 13);
+154:         }
+155:     }
+156: 
+157:     private static Font load(String path) throws Exception {
+158:         try (InputStream in = Ui.class.getResourceAsStream(path)) {
+159:             if (in == null) throw new IllegalStateException(path);
+160:             return Font.createFont(Font.TRUETYPE_FONT, in);
+161:         }
+162:     }
+163: 
+164:     static Font font(float size, boolean bold) {
+165:         loadFonts();
+166:         return (bold ? baseBold : base).deriveFont(size);
+167:     }
+168: 
+169:     static Color parse(String s, Color def) {
+170:         try {
+171:             s = s == null ? "" : s.trim();
+172:             if (s.isEmpty()) return def;
+173:             if (s.startsWith("#")) s = s.substring(1);
+174:             long v = Long.parseLong(s, 16);
+175:             if (s.length() == 8) return new Color((int) (v >> 16) & 255, (int) (v >> 8) & 255, (int) v & 255);
+176:             return new Color((int) v);
+177:         } catch (Exception e) {
+178:             return def;
+179:         }
+180:     }
+181: 
+182:     static Color mix(Color a, Color b, float t) {
+183:         return new Color((int) (a.getRed() + (b.getRed() - a.getRed()) * t), (int) (a.getGreen() + (b.getGreen() - a.getGreen()) * t),
+184:                 (int) (a.getBlue() + (b.getBlue() - a.getBlue()) * t));
+185:     }
+186: 
+187:     static Color darker(Color c, float f) { return new Color((int) (c.getRed() * f), (int) (c.getGreen() * f), (int) (c.getBlue() * f)); }
+188: 

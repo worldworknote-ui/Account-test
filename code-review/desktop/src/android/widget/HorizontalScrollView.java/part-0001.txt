@@ -1,0 +1,99 @@
+1: package android.widget;
+2: 
+3: import android.content.Context;
+4: import android.graphics.Rect;
+5: import android.view.*;
+6: 
+7: /** تمرير أفقي (الرقائق والعملات): السحب بالفأرة وعجلة لوحة اللمس الأفقية أو Shift+العجلة. يبدأ من اليمين في الواجهة العربية. */
+8: public class HorizontalScrollView extends FrameLayout {
+9:     private float lastX, startX;
+10:     private boolean dragging, fill, placed;
+11:     private android.animation.ValueAnimator smooth;
+12: 
+13:     public HorizontalScrollView(Context c) { super(c); }
+14:     public HorizontalScrollView(Context c, android.util.AttributeSet a) { this(c); }
+15:     public void setFillViewport(boolean f) { fill = f; requestLayout(); }
+16:     public void setSmoothScrollingEnabled(boolean e) {}
+17:     @Override protected ViewGroup.LayoutParams generateDefaultLayoutParams() { return new FrameLayout.LayoutParams(-2, -1); }
+18: 
+19:     @Override protected void onMeasure(int ws, int hs) {
+20:         if (getChildCount() == 0) { super.onMeasure(ws, hs); return; }
+21:         View c = getChildAt(0);
+22:         MarginLayoutParams p = margins(c);
+23:         int chs = getChildMeasureSpec(hs, getPaddingTop() + getPaddingBottom() + p.topMargin + p.bottomMargin, p.height);
+24:         c.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED), chs);
+25:         int w = resolveSize(Math.max(getSuggestedMinimumWidth(), c.getMeasuredWidth() + getPaddingLeft() + getPaddingRight() + p.leftMargin + p.rightMargin), ws);
+26:         int h = resolveSize(Math.max(getSuggestedMinimumHeight(), c.getMeasuredHeight() + getPaddingTop() + getPaddingBottom() + p.topMargin + p.bottomMargin), hs);
+27:         setMeasuredDimension(w, h);
+28:         int avail = w - getPaddingLeft() - getPaddingRight() - p.leftMargin - p.rightMargin;
+29:         if (fill && c.getMeasuredWidth() < avail) c.measure(MeasureSpec.makeMeasureSpec(avail, MeasureSpec.EXACTLY), chs);
+30:     }
+31: 
+32:     @Override protected void onLayout(boolean changed, int l, int t, int r, int b) {
+33:         if (getChildCount() == 0) return;
+34:         View c = getChildAt(0);
+35:         MarginLayoutParams p = margins(c);
+36:         int x = getPaddingLeft() + p.leftMargin, y = getPaddingTop() + p.topMargin;
+37:         int prevMax = placed ? maxScroll() : 0;
+38:         int prevX = getScrollX();
+39:         c.layout(x, y, x + c.getMeasuredWidth(), y + c.getMeasuredHeight());
+40:         if (!placed) {
+41:             placed = true;
+42:             if (isRtl()) scrollTo(maxScroll(), 0);
+43:         } else if (isRtl() && prevX >= prevMax) {
+44:             scrollTo(maxScroll(), 0);
+45:         } else scrollTo(prevX, 0);
+46:     }
+47:     public int maxScroll() {
+48:         if (getChildCount() == 0) return 0;
+49:         View c = getChildAt(0);
+50:         MarginLayoutParams p = margins(c);
+51:         return Math.max(0, c.getWidth() + p.leftMargin + p.rightMargin + getPaddingLeft() + getPaddingRight() - getWidth());
+52:     }
+53:     @Override public void scrollTo(int x, int y) { super.scrollTo(Math.max(0, Math.min(x, maxScroll())), 0); }
+54:     public void smoothScrollTo(int x, int y) {
+55:         if (smooth != null) smooth.cancel();
+56:         int from = getScrollX(), to = Math.max(0, Math.min(x, maxScroll()));
+57:         if (!isAttachedToWindow() || android.animation.Choreo.instant) { scrollTo(to, 0); return; }
+58:         smooth = android.animation.ValueAnimator.ofInt(from, to);
+59:         smooth.setDuration(250);
+60:         smooth.addUpdateListener(a -> scrollTo((int) a.getAnimatedValue(), 0));
+61:         smooth.start();
+62:     }
+63:     public void smoothScrollBy(int dx, int dy) { smoothScrollTo(getScrollX() + dx, 0); }
+64:     public boolean fullScroll(int dir) { smoothScrollTo(dir == FOCUS_LEFT ? 0 : maxScroll(), 0); return true; }
+65:     @Override public boolean canScrollHorizontally(int dir) { return dir < 0 ? getScrollX() > 0 : getScrollX() < maxScroll(); }
+66:     @Override public boolean wheel(float dx, float dy) {
+67:         if (dx == 0 || maxScroll() == 0) return false;
+68:         scrollBy(Math.round(dx), 0);
+69:         return true;
+70:     }
+71:     @Override public boolean requestChildRectangleOnScreen(View child, Rect r, boolean immediate) {
+72:         if (r.left < getScrollX()) scrollTo(r.left, 0);
+73:         else if (r.right > getScrollX() + getWidth()) scrollTo(r.right - getWidth(), 0);
+74:         return true;
+75:     }
+76:     @Override public boolean onInterceptTouchEvent(MotionEvent e) {
+77:         switch (e.getActionMasked()) {
+78:             case MotionEvent.ACTION_DOWN: lastX = startX = e.getX(); dragging = false; return false;
+79:             case MotionEvent.ACTION_MOVE:
+80:                 if (!dragging && Math.abs(e.getX() - startX) > ViewConfiguration.TOUCH_SLOP && maxScroll() > 0) {
+81:                     dragging = true;
+82:                     lastX = e.getX();
+83:                     if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
+84:                 }
+85:                 return dragging;
+86:             default: dragging = false; return false;
+87:         }
+88:     }
+89:     @Override public boolean onTouchEvent(MotionEvent e) {
+90:         switch (e.getActionMasked()) {
+91:             case MotionEvent.ACTION_DOWN: lastX = startX = e.getX(); return maxScroll() > 0;
+92:             case MotionEvent.ACTION_MOVE:
+93:                 if (!dragging && Math.abs(e.getX() - startX) > ViewConfiguration.TOUCH_SLOP) dragging = true;
+94:                 if (dragging) { scrollBy(Math.round(lastX - e.getX()), 0); lastX = e.getX(); }
+95:                 return true;
+96:             default: dragging = false; return true;
+97:         }
+98:     }
+99: }

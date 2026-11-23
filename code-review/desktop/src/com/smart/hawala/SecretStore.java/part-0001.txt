@@ -1,0 +1,169 @@
+1: package com.smart.hawala;
+2: 
+3: import java.io.ByteArrayOutputStream;
+4: import java.io.File;
+5: import java.io.InputStream;
+6: import java.nio.charset.StandardCharsets;
+7: import java.nio.file.Files;
+8: import java.nio.file.StandardCopyOption;
+9: import java.nio.file.attribute.PosixFilePermissions;
+10: import java.util.concurrent.TimeUnit;
+11: 
+12: /**
+13:  * أسرار الماك (مفتاح البيانات، مفتاح الجهاز للترخيص، مفتاح بصمة العدّادات) في «سلسلة المفاتيح» (Keychain)
+14:  * عبر أداة النظام /usr/bin/security، فلا تُخزَّن بجانب قاعدة البيانات. على الويندوز: ملفات محمية بـ DPAPI لحساب المستخدم.
+15:  * غير ذلك (للاختبارات): ملفات صلاحيتها للمالك فقط.
+16:  */
+17: public final class SecretStore {
+18:     private SecretStore() {}
+19: 
+20:     static final String SERVICE = "com.smart.hawala.mac";
+21:     private static volatile File fallbackDir;
+22: 
+23:     static boolean keychain() {
+24:         return System.getProperty("os.name", "").toLowerCase().contains("mac") && new File("/usr/bin/security").exists()
+25:                 && !("file".equals(System.getProperty("sa.secrets")) && android.content.Context.testMode());
+26:     }
+27: 
+28:     /** للاختبارات وغير الماك: مجلد الأسرار. */
+29:     public static void fallback(File dir) { fallbackDir = dir; }
+30: 
+31:     private static File dir() {
+32:         File d = fallbackDir != null ? fallbackDir : new File(android.content.Context.defaultHome(), "keys");
+33:         if (!d.exists()) d.mkdirs();
+34:         try {
+35:             Files.setPosixFilePermissions(d.toPath(), PosixFilePermissions.fromString("rwx------"));
+36:         } catch (Exception ignored) {
+37:             // نظام بلا صلاحيات POSIX
+38:         }
+39:         return d;
+40:     }
+41: 
+42:     /** null إن لم يوجد. يرمي إن تعذر الوصول إلى سلسلة المفاتيح نفسها (لا يُعامل كغياب). */
+43:     public static synchronized String get(String name) throws Exception {
+44:         if (keychain()) {
+45:             Res r = run("/usr/bin/security", "find-generic-password", "-s", SERVICE, "-a", name, "-w");
+46:             if (r.code == 0) return r.out.trim();
+47:             if (r.code == 44 || r.err.contains("could not be found")) return null;
+48:             throw new IllegalStateException("تعذر قراءة سلسلة المفاتيح (" + r.code + "): " + r.err.trim());
+49:         }
+50:         String cached = winCache.get(name);
+51:         if (cached != null) return cached;
+52:         File f = file(name);
+53:         if (!f.exists()) return null;
+54:         String v = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim();
+55:         if (v.startsWith(DPAPI)) {
+56:             v = dpapi(false, v.substring(DPAPI.length()));
+57:             winCache.put(name, v);
+58:         }
+59:         return v;
+60:     }
+61: 
+62:     /**
+63:      * 11.3: اسم ملف آمن لكل نظام. أسماء مثل «drive_refresh:بريد@…» فيها «:» الممنوعة في أسماء ملفات ويندوز
+64:      * (فكان حفظ دخول Google يفشل هناك ويطلب البرنامج الدخول من جديد). كل حرف خارج [A-Za-z0-9._-] يُكتب %XX؛
+65:      * الأسماء القديمة بلا هذه الأحرف تبقى كما هي، وملف قديم بالاسم الخام (ماك/لينكس) يُقرأ ويُنقل.
+66:      */
+67:     static String fileName(String name) {
+68:         StringBuilder b = new StringBuilder();
+69:         for (byte x : name.getBytes(StandardCharsets.UTF_8)) {
+70:             char c = (char) (x & 0xff);
+71:             if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-') b.append(c);
+72:             else b.append('%').append(String.format("%02X", x & 0xff));
+73:         }
+74:         return b.toString();
+75:     }
+76: 
+77:     static File file(String name) {
+78:         File d = dir();
+79:         File f = new File(d, fileName(name));
+80:         if (!f.exists() && !fileName(name).equals(name) && !windows()) {
+81:             File legacy = new File(d, name);
+82:             if (legacy.isFile()) return legacy;
+83:         }
+84:         return f;
+85:     }
+86: 
+87:     /** على الويندوز: تُحمى الأسرار بـ DPAPI (مربوطة بحساب مستخدم ويندوز) فلا يفيد نسخ الملفات إلى جهاز أو حساب آخر. */
+88:     static final String DPAPI = "dpapi:";
+89:     private static final java.util.Map<String, String> winCache = new java.util.concurrent.ConcurrentHashMap<>();
+90: 
+91:     static boolean windows() {
+92:         return System.getProperty("os.name", "").toLowerCase().contains("win") && !("file".equals(System.getProperty("sa.secrets")) && android.content.Context.testMode());
+93:     }
+94: 
+95:     private static String dpapi(boolean protect, String input) throws Exception {
+96:         String ps = "$ErrorActionPreference='Stop';Add-Type -AssemblyName System.Security;"
+97:                 + "$i=[Console]::In.ReadToEnd().Trim();$s=[Security.Cryptography.DataProtectionScope]::CurrentUser;"
+98:                 + "$e=[Text.Encoding]::UTF8.GetBytes('SmartAccountant');"
+99:                 + (protect
+100:                 ? "$o=[Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes($i),$e,$s);[Console]::Out.Write([Convert]::ToBase64String($o))"
+101:                 : "$o=[Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String($i),$e,$s);[Console]::Out.Write([Convert]::ToBase64String($o))");
+102:         String enc = java.util.Base64.getEncoder().encodeToString(ps.getBytes(StandardCharsets.UTF_16LE));
+103:         String root = System.getenv("SystemRoot");
+104:         File exe = new File(root == null ? "C:\\Windows" : root, "System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+105:         Process p = new ProcessBuilder(exe.exists() ? exe.getAbsolutePath() : "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", enc).start();
+106:         try (java.io.OutputStream o = p.getOutputStream()) {
+107:             o.write(input.getBytes(StandardCharsets.UTF_8));
+108:         }
+109:         final String[] err = {""};
+110:         Thread t = new Thread(() -> {
+111:             try { err[0] = read(p.getErrorStream()); } catch (Exception ignored) { /* لا شيء */ }
+112:         });
+113:         t.start();
+114:         String out = read(p.getInputStream()).trim();
+115:         if (!p.waitFor(60, TimeUnit.SECONDS)) {
+116:             p.destroyForcibly();
+117:             throw new IllegalStateException("انتهت مهلة حماية المفاتيح في ويندوز");
+118:         }
+119:         t.join(2000);
+120:         if (p.exitValue() != 0 || out.isEmpty()) throw new IllegalStateException("تعذرت حماية المفاتيح في ويندوز (DPAPI): " + err[0].trim());
+121:         if (protect) return out;
+122:         return new String(java.util.Base64.getDecoder().decode(out), StandardCharsets.UTF_8);
+123:     }
+124: 
+125:     public static synchronized void put(String name, String value) throws Exception {
+126:         if (keychain()) {
+127:             Res r = run("/usr/bin/security", "add-generic-password", "-U", "-s", SERVICE, "-a", name, "-l", "المحاسب الذكي — " + name, "-w", value);
+128:             if (r.code != 0) throw new IllegalStateException("تعذر الحفظ في سلسلة المفاتيح (" + r.code + "): " + r.err.trim());
+129:             String back = get(name);
+130:             if (!value.equals(back)) throw new IllegalStateException("سلسلة المفاتيح لم تحفظ القيمة كما هي");
+131:             return;
+132:         }
+133:         File d = dir();
+134:         String fn = fileName(name);
+135:         File tmp = new File(d, fn + ".tmp");
+136:         String stored = value;
+137:         if (windows()) {
+138:             try {
+139:                 String p = DPAPI + dpapi(true, value);
+140:                 if (value.equals(dpapi(false, p.substring(DPAPI.length())))) stored = p;
+141:             } catch (Exception e) {
+142:                 // ويندوز منع PowerShell (سياسة مؤسسة/مضاد فيروسات): يبقى الملف في مجلد المستخدم الخاص بلا DPAPI بدل أن يتوقف البرنامج
+143:                 System.err.println("DPAPI غير متاح: " + e);
+144:             }
+145:         }
+146:         Files.write(tmp.toPath(), stored.getBytes(StandardCharsets.UTF_8));
+147:         try {
+148:             Files.setPosixFilePermissions(tmp.toPath(), PosixFilePermissions.fromString("rw-------"));
+149:         } catch (Exception ignored) {
+150:             // نظام بلا صلاحيات POSIX
+151:         }
+152:         Files.move(tmp.toPath(), new File(d, fn).toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+153:         // ملف قديم بالاسم الخام (ماك/لينكس قبل 11.3) لم يعد مطلوبًا
+154:         if (!fn.equals(name) && !windows()) new File(d, name).delete();
+155:         if (windows()) winCache.put(name, value); else winCache.remove(name);
+156:     }
+157: 
+158:     public static synchronized void delete(String name) throws Exception {
+159:         if (keychain()) {
+160:             run("/usr/bin/security", "delete-generic-password", "-s", SERVICE, "-a", name);
+161:             return;
+162:         }
+163:         winCache.remove(name);
+164:         new File(dir(), fileName(name)).delete();
+165:         if (!fileName(name).equals(name) && !windows()) new File(dir(), name).delete();
+166:     }
+167: 
+168:     static final class Res {
+169:         int code;

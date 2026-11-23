@@ -1,0 +1,53 @@
+631:         if (!Ui.form(this, "دمج مكتبين", Ui.rtl(c), "دمج")) return;
+632:         if (!confirm.val().equals(Model.nz(from.name).trim())) {
+633:             Ui.toast("الاسم غير مطابق؛ لم يُدمج شيء.");
+634:             return;
+635:         }
+636:         Model.Office target = others.get(into.getSelectedIndex());
+637:         Ui.busy(this, "جارٍ حفظ نسخة أمان ثم الدمج…", p -> {
+638:             Snapshot.take(app.ctx, db, "دمج «" + from.name + "» في «" + target.name + "»");
+639:             db.mergeOffices(from.id, target.id);
+640:             return null;
+641:         }, r -> {
+642:             app.changed();
+643:             Ui.info(this, "تم الدمج ✓", "صار «" + target.name + "» يحمل حركات المكتبين وأرصدتهما. للتراجع: النسخ الاحتياطي ← نسخ الأمان.");
+644:             app.go("office", target.id);
+645:         });
+646:     }
+647: 
+648:     void delete(Model.Office o) {
+649:         if (!require(Auth.Perm.DELETE)) return;
+650:         long n = db.officeTxCount(o.id);
+651:         if (n == 0) {
+652:             if (!Ui.confirm(this, "حذف المكتب", "حذف «" + o.name + "» نهائيًا؟ ليس له حركات.", "حذف")) return;
+653:             try {
+654:                 db.deleteOffice(o.id, false);
+655:                 app.changed();
+656:                 app.go("offices");
+657:             } catch (Exception e) {
+658:                 Ui.error(this, e);
+659:             }
+660:             return;
+661:         }
+662:         int k = Ui.choose(this, "حذف المكتب", "لـ«" + o.name + "» " + n + " حركة. الأفضل إيقافه: يبقى كشفه ورصيده ولا تُسجَّل عليه حركات جديدة.\n\n"
+663:                 + "الحذف النهائي يمسح حركاته وقيودها وصورها (تُحفظ نسخة أمان قبله).", new String[]{"إيقافه فقط", "حذف نهائي مع الحركات", "إلغاء"});
+664:         if (k == 0) {
+665:             db.setOfficeActive(o.id, false);
+666:             refresh();
+667:         } else if (k == 1) {
+668:             String typed = Ui.input(this, "تأكيد الحذف النهائي", "اكتب اسم المكتب «" + o.name + "» للتأكيد", "");
+669:             if (typed == null || !typed.equals(Model.nz(o.name).trim())) {
+670:                 Ui.toast("الاسم غير مطابق؛ لم يُحذف شيء.");
+671:                 return;
+672:             }
+673:             Ui.busy(this, "جارٍ حفظ نسخة أمان ثم الحذف…", p -> {
+674:                 Snapshot.take(app.ctx, db, "حذف «" + o.name + "»");
+675:                 db.deleteOffice(o.id, true);
+676:                 return null;
+677:             }, r -> {
+678:                 app.changed();
+679:                 app.go("offices");
+680:             });
+681:         }
+682:     }
+683: }

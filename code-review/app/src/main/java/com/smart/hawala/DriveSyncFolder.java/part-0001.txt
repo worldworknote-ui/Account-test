@@ -1,0 +1,190 @@
+1: package com.smart.hawala;
+2: 
+3: import java.io.ByteArrayOutputStream;
+4: import java.io.IOException;
+5: import java.io.OutputStream;
+6: import java.net.HttpURLConnection;
+7: import java.net.URL;
+8: import java.net.URLEncoder;
+9: import java.nio.charset.StandardCharsets;
+10: import java.util.ArrayList;
+11: import java.util.HashMap;
+12: import java.util.List;
+13: import java.util.Map;
+14: import org.json.JSONArray;
+15: import org.json.JSONObject;
+16: 
+17: /**
+18:  * 10.2: ناقل المزامنة عبر Google Drive مباشرة (واجهة Drive v3)، في «مجلد بيانات التطبيق» المخفي (appDataFolder) لحساب Google
+19:  * الذي تسجّل به: لا يظهر في Drive ولا يلمسه غير هذا التطبيق، ولا يحتاج تطبيق Drive على الهاتف، فتصل التغييرات خلال ثوانٍ.
+20:  * الملفات هي نفسها المشفّرة بأسماء معتمة. كل الأجهزة يجب أن تسجّل بحساب Google نفسه.
+21:  *
+22:  * <p>الرمز (access token) يأتي من {@link Tokens}: على أندرويد من خدمات Google، وعلى الكمبيوتر من تسجيل دخول في المتصفح.
+23:  */
+24: public final class DriveSyncFolder implements SyncFolder {
+25:     public static final String SCOPE = "https://www.googleapis.com/auth/drive.appdata";
+26: 
+27:     /** مصدر رمز الدخول. refresh = الرمز السابق رُفض (انتهى): اطلب جديدًا. */
+28:     public interface Tokens {
+29:         String token(boolean refresh) throws IOException;
+30:     }
+31: 
+32:     /** للاختبار: عنوان واجهة بديلة (خادم محاكٍ). */
+33:     static String api = "https://www.googleapis.com";
+34: 
+35:     private final Tokens tokens;
+36:     private String token;
+37:     private final Map<String, String[]> ids = new HashMap<>();
+38:     private boolean listed;
+39:     int timeoutMs = 30000;
+40: 
+41:     public DriveSyncFolder(Tokens tokens) { this.tokens = tokens; }
+42: 
+43:     @Override public String kind() { return "drive"; }
+44: 
+45:     @Override public String describe() { return "Google Drive (مجلد التطبيق المخفي)"; }
+46: 
+47:     private interface Call<T> {
+48:         T run(String token) throws IOException;
+49:     }
+50: 
+51:     /** ينفّذ الطلب، وإن رُفض الرمز (401) يطلب رمزًا جديدًا مرة واحدة. */
+52:     private <T> T authed(Call<T> c) throws IOException {
+53:         if (token == null) token = tokens.token(false);
+54:         try {
+55:             return c.run(token);
+56:         } catch (Unauthorized e) {
+57:             token = tokens.token(true);
+58:             return c.run(token);
+59:         }
+60:     }
+61: 
+62:     static final class Unauthorized extends IOException {
+63:         Unauthorized() { super("انتهت صلاحية الدخول إلى Google"); }
+64:     }
+65: 
+66:     private HttpURLConnection open(String url, String method, String tok) throws IOException {
+67:         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+68:         c.setRequestMethod(method);
+69:         c.setConnectTimeout(timeoutMs);
+70:         c.setReadTimeout(timeoutMs * 4);
+71:         c.setUseCaches(false);
+72:         c.setRequestProperty("Authorization", "Bearer " + tok);
+73:         return c;
+74:     }
+75: 
+76:     /** 10.18: وقت خادم Google من ترويسة الرد يصحّح «الساعة الموحّدة» (من الخادم الحقيقي فقط، لا من محاكٍ أو خادم بديل). */
+77:     private void learnClock(HttpURLConnection c) {
+78:         try {
+79:             if (!"www.googleapis.com".equals(c.getURL().getHost())) return;
+80:             long d = c.getHeaderFieldDate("Date", 0);
+81:             if (d > 0) Clock.learn(d);
+82:         } catch (Throwable ignored) {
+83:             // التصحيح اختياري
+84:         }
+85:     }
+86: 
+87:     private IOException fail(HttpURLConnection c, int code) {
+88:         if (code == 401) return new Unauthorized();
+89:         String msg = "";
+90:         try {
+91:             JSONObject j = new JSONObject(new String(HttpSyncFolder.readAll(c.getErrorStream()), StandardCharsets.UTF_8));
+92:             msg = j.getJSONObject("error").optString("message");
+93:         } catch (Exception ignored) {
+94:             // بلا تفاصيل
+95:         }
+96:         String lm = msg.toLowerCase();
+97:         if (code == 403 && (lm.contains("not been used") || lm.contains("disabled")))
+98:             return new IOException("واجهة Google Drive غير مفعّلة في مشروع Google Cloud الخاص بالتطبيق (فعّل Google Drive API). " + msg);
+99:         if (code == 403 && lm.contains("insufficient")) return new IOException("لم يُمنح التطبيق صلاحية Drive. سجّل الدخول من جديد من «المزامنة».");
+100:         if (code == 403 || code == 429) return new IOException("Google Drive طلب التمهّل (" + code + "). أعد المحاولة بعد قليل.");
+101:         return new IOException("خطأ من Google Drive (" + code + ")" + (msg.isEmpty() ? "" : ": " + msg));
+102:     }
+103: 
+104:     private void refresh() throws IOException {
+105:         ids.clear();
+106:         String pageToken = null;
+107:         do {
+108:             final String pt = pageToken;
+109:             JSONObject j = authed(tok -> {
+110:                 String url = api + "/drive/v3/files?spaces=appDataFolder&pageSize=1000&fields=" + URLEncoder.encode("nextPageToken,files(id,name,modifiedTime,size)", "UTF-8")
+111:                         + "&q=" + URLEncoder.encode("trashed=false", "UTF-8") + (pt == null ? "" : "&pageToken=" + URLEncoder.encode(pt, "UTF-8"));
+112:                 HttpURLConnection c = open(url, "GET", tok);
+113:                 try {
+114:                     int code = c.getResponseCode();
+115:                 learnClock(c);
+116:                     if (code != 200) throw fail(c, code);
+117:                     return new JSONObject(new String(HttpSyncFolder.readAll(c.getInputStream()), StandardCharsets.UTF_8));
+118:                 } catch (org.json.JSONException e) {
+119:                     throw new IOException("رد غير مفهوم من Google Drive");
+120:                 } finally {
+121:                     c.disconnect();
+122:                 }
+123:             });
+124:             JSONArray a = j.optJSONArray("files");
+125:             if (a != null) for (int i = 0; i < a.length(); i++) {
+126:                 JSONObject f = a.optJSONObject(i);
+127:                 if (f == null) continue;
+128:                 String n = f.optString("name"), id = f.optString("id"), m = f.optString("modifiedTime");
+129:                 String[] prev = ids.get(n);
+130:                 // أسماء مكررة ممكنة في Drive: الأحدث يفوز
+131:                 if (prev == null || prev[1].compareTo(m) < 0) ids.put(n, new String[]{id, m, f.optString("size", "0")});
+132:             }
+133:             pageToken = j.optString("nextPageToken", null);
+134:             if (pageToken != null && pageToken.isEmpty()) pageToken = null;
+135:         } while (pageToken != null);
+136:         listed = true;
+137:     }
+138: 
+139:     private String id(String name) throws IOException {
+140:         if (!listed) refresh();
+141:         String[] x = ids.get(name);
+142:         if (x == null) {
+143:             refresh();
+144:             x = ids.get(name);
+145:         }
+146:         return x == null ? null : x[0];
+147:     }
+148: 
+149:     @Override public List<String> list(String prefix) throws IOException {
+150:         refresh();
+151:         List<String> out = new ArrayList<>();
+152:         for (String n : ids.keySet()) if (n.startsWith(prefix)) out.add(n);
+153:         return out;
+154:     }
+155: 
+156:     @Override public boolean exists(String name) throws IOException { return id(name) != null; }
+157: 
+158:     @Override public byte[] read(String name) throws IOException {
+159:         final String fid = id(name);
+160:         if (fid == null) return null;
+161:         byte[] b = readId(fid);
+162:         if (b != null) return b;
+163:         // 10.18: الملف استُبدل بين قراءة القائمة وقراءته (الاستبدال = ملف جديد ثم حذف القديم، وبطاقة كل جهاز تُستبدل في كل مزامنة):
+164:         // كان يرجع «غير موجود» فيبدو الجهاز الآخر كأنه خرج من المزامنة. تُحدَّث القائمة ويُقرأ الملف الجديد.
+165:         refresh();
+166:         String[] x = ids.get(name);
+167:         return x == null || x[0].equals(fid) ? null : readId(x[0]);
+168:     }
+169: 
+170:     private byte[] readId(final String fid) throws IOException {
+171:         return authed(tok -> {
+172:             HttpURLConnection c = open(api + "/drive/v3/files/" + URLEncoder.encode(fid, "UTF-8") + "?alt=media", "GET", tok);
+173:             try {
+174:                 int code = c.getResponseCode();
+175:                 learnClock(c);
+176:                 if (code == 404) return null;
+177:                 if (code != 200) throw fail(c, code);
+178:                 return HttpSyncFolder.readAll(c.getInputStream());
+179:             } finally {
+180:                 c.disconnect();
+181:             }
+182:         });
+183:     }
+184: 
+185:     /** الملفات الكبيرة (اللقطة) تُرفع بالرفع المستأنف؛ الصغيرة بطلب واحد. */
+186:     static final int SIMPLE_MAX = 4 * 1024 * 1024;
+187: 
+188:     @Override public void write(final String name, final byte[] data) throws IOException {
+189:         // 10.4: ملف جديد لا يُعيد قراءة القائمة كلها (القائمة قُرئت في أول الجولة)
+190:         if (!listed) refresh();

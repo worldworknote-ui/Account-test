@@ -1,0 +1,135 @@
+1074:         } finally {
+1075:             VAULT.unlock();
+1076:         }
+1077:     }
+1078: 
+1079:     private void changePasswordLocked(char[] oldPw, char[] newPw) throws Exception {
+1080:         if (newPw == null || newPw.length < 8) throw new IllegalArgumentException("كلمة سر المزامنة 8 محارف على الأقل");
+1081:         JSONObject h = header();
+1082:         if (h == null) throw new IllegalStateException("رأس الخزنة غير موجود في المجلد");
+1083:         byte[] vk;
+1084:         try {
+1085:             vk = unlock(h, oldPw, false);
+1086:         } catch (GeneralSecurityException e) {
+1087:             throw new IllegalArgumentException("كلمة السر الحالية غير صحيحة");
+1088:         }
+1089:         folder.unlock(new SyncCrypto.Keys(h.getString("vault"), vk));
+1090:         byte[] salt = SyncCrypto.unhex(h.getString("salt"));
+1091:         h.put("pw", SyncCrypto.wrap(SyncCrypto.pbkdf2(newPw, salt, h.optInt("iter", SyncCrypto.KDF_ITER)), vk, h.getString("vault")));
+1092:         folder.write(HEADER, h.toString(1).getBytes(StandardCharsets.UTF_8));
+1093:         // 10.4: النسخة المحلية من الرأس تتبع التغيير (وإلا أعاد «إصلاح» كلمة السر القديمة)
+1094:         SyncStore.setMeta(db.getWritableDatabase(), "header_copy", h.toString());
+1095:         db.audit("SYNC_PASSWORD", "sync", 0, "غُيّرت كلمة سر المزامنة");
+1096:     }
+1097: 
+1098:     /** 10.4: رمز استرداد جديد (يلزم كلمة السر الحالية). القديم يتوقف عن العمل. يرجع الرمز الجديد (يُعرض مرة واحدة). */
+1099:     public String newRecoveryCode(char[] password) throws Exception {
+1100:         VAULT.lock();
+1101:         try {
+1102:             return newRecoveryCodeLocked(password);
+1103:         } finally {
+1104:             VAULT.unlock();
+1105:         }
+1106:     }
+1107: 
+1108:     private String newRecoveryCodeLocked(char[] password) throws Exception {
+1109:         JSONObject h = header();
+1110:         if (h == null) throw new IllegalStateException("رأس الخزنة غير موجود في المكان الحالي");
+1111:         byte[] vk;
+1112:         try {
+1113:             vk = unlock(h, password, false);
+1114:         } catch (GeneralSecurityException e) {
+1115:             throw new IllegalArgumentException("كلمة سر المزامنة غير صحيحة");
+1116:         }
+1117:         if (!Arrays.equals(vk, keys().vault)) throw new IllegalStateException("الخزنة في هذا المكان ليست خزنة هذا الجهاز");
+1118:         String rc = SyncCrypto.newRecoveryCode();
+1119:         byte[] salt = SyncCrypto.unhex(h.getString("salt"));
+1120:         h.put("rc", SyncCrypto.wrap(SyncCrypto.pbkdf2(SyncCrypto.normalizeRecovery(rc).toCharArray(), salt, h.optInt("iter", SyncCrypto.KDF_ITER)), vk, h.getString("vault")));
+1121:         folder.write(HEADER, h.toString(1).getBytes(StandardCharsets.UTF_8));
+1122:         SyncStore.setMeta(db.getWritableDatabase(), "header_copy", h.toString());
+1123:         db.audit("SYNC_RECOVERY", "sync", 0, "أُصدر رمز استرداد جديد");
+1124:         return rc;
+1125:     }
+1126: 
+1127:     // ===================================================================================
+1128:     // 10.5 (AUDIT-002): دور الجهاز الرئيسي — نقله، واستلامه عند ضياع الجهاز الرئيسي
+1129:     // ===================================================================================
+1130:     //
+1131:     // التصميم:
+1132:     //  • مصدر الحقيقة الوحيد هو حقل «founder» في رأس الخزنة؛ كل جهاز يقرؤه في بداية كل جولة ويتبعه، فلا يبقى جهازان رئيسيان
+1133:     //    بعد جولة واحدة. أعمال الرئيسي (حذف ملفات المُزالين والصور، إرسال الأسرار مرة) آمنة حتى لو تزامنت للحظة.
+1134:     //  • النقل من الرئيسي نفسه: بحساب مدير، إلى جهاز نشط زامن قريبًا واستلم كل ما أرسله الرئيسي (فلا ينقصه شيء من الأسرار).
+1135:     //  • الاستلام عند الضياع: بحساب مدير + رمز استرداد الخزنة (ليس كلمة السر ولا رابط الانضمام اللذين يعرفهما كل جهاز منضم)،
+1136:     //    وبشرط أن يغيب الرئيسي FOUNDER_ABSENT_MS أو أن يكون قد خرج. إن عاد الرئيسي القديم يقرأ الرأس فيصبح جهازًا عاديًا.
+1137:     //  • كل تغيير يرفع «founder_epoch» ويُسجَّل في سجل العمليات وفي الرأس (من، إلى، متى، وكيف).
+1138: 
+1139:     /** أقل غياب للجهاز الرئيسي قبل السماح باستلام دوره برمز الاسترداد. */
+1140:     public static final long FOUNDER_ABSENT_MS = 7L * 24 * 3600 * 1000;
+1141:     /** الجهاز المستلم بالنقل يجب أن يكون قد زامن خلال هذه المدة. */
+1142:     static final long FOUNDER_TARGET_FRESH_MS = 3L * 24 * 3600 * 1000;
+1143: 
+1144:     /** ينقل دور الجهاز الرئيسي من هذا الجهاز إلى جهاز آخر نشط. */
+1145:     public void transferFounder(String toDev) throws Exception {
+1146:         VAULT.lock();
+1147:         try {
+1148:             transferFounderLocked(toDev);
+1149:         } finally {
+1150:             VAULT.unlock();
+1151:         }
+1152:     }
+1153: 
+1154:     private void transferFounderLocked(String toDev) throws Exception {
+1155:         db.requireAdmin("نقل دور الجهاز الرئيسي للمدير وحده.");
+1156:         if (!enabled(db)) throw new IllegalStateException("المزامنة غير مفعّلة على هذا الجهاز");
+1157:         SyncCrypto.Keys keys = keys();
+1158:         SQLiteDatabase d = db.getWritableDatabase();
+1159:         JSONObject h = header();
+1160:         if (h == null) throw new IllegalStateException("رأس الخزنة غير موجود في المكان الحالي");
+1161:         String me = SyncStore.meta(d, "device");
+1162:         if (!me.equals(h.optString("founder"))) throw new IllegalStateException("هذا الجهاز ليس الجهاز الرئيسي الآن");
+1163:         if (toDev == null || toDev.equals(me)) throw new IllegalArgumentException("اختر جهازًا آخر");
+1164:         roundMembers = null;
+1165:         JSONObject m = readMembers(keys).get(toDev);
+1166:         if (m == null) throw new IllegalArgumentException("الجهاز غير موجود في المزامنة أو أُزيل منها");
+1167:         if (Clock.now() - m.optLong("at") > FOUNDER_TARGET_FRESH_MS)
+1168:             throw new IllegalStateException("الجهاز «" + m.optString("name") + "» لم يزامن منذ " + Model.date(m.optLong("at")) + ". زامنه أولًا ثم انقل الدور.");
+1169:         if (!atLeast(m.optString("app"), "10.5")) throw new IllegalStateException("حدّث التطبيق على «" + m.optString("name") + "» إلى 10.5 أو أحدث أولًا.");
+1170:         JSONObject c = m.optJSONObject("cursors");
+1171:         long mySeq = lng(SyncStore.meta(d, "my_seq"));
+1172:         if (c == null || c.optLong(me, 0) < mySeq)
+1173:             throw new IllegalStateException("«" + m.optString("name") + "» لم يستلم بعد كل ما أرسله هذا الجهاز (" + (c == null ? 0 : c.optLong(me, 0)) + " من " + mySeq
+1174:                     + "). زامن الجهازين ثم أعد المحاولة.");
+1175:         setFounder(h, toDev, me, "نقل من الجهاز الرئيسي");
+1176:         db.audit("SYNC_FOUNDER", "sync", 0, "نُقل دور الجهاز الرئيسي إلى «" + m.optString("name") + "»");
+1177:         writeMember();
+1178:         cacheMembers();
+1179:     }
+1180: 
+1181:     /** يستلم هذا الجهاز دور الجهاز الرئيسي بعد ضياعه (رمز الاسترداد + مدير + غياب الرئيسي). */
+1182:     public void claimFounder(char[] recoveryCode) throws Exception {
+1183:         VAULT.lock();
+1184:         try {
+1185:             claimFounderLocked(recoveryCode);
+1186:         } finally {
+1187:             VAULT.unlock();
+1188:         }
+1189:     }
+1190: 
+1191:     private void claimFounderLocked(char[] recoveryCode) throws Exception {
+1192:         db.requireAdmin("استلام دور الجهاز الرئيسي للمدير وحده.");
+1193:         if (!enabled(db)) throw new IllegalStateException("المزامنة غير مفعّلة على هذا الجهاز");
+1194:         SyncCrypto.Keys keys = keys();
+1195:         SQLiteDatabase d = db.getWritableDatabase();
+1196:         JSONObject h = header();
+1197:         if (h == null) throw new IllegalStateException("رأس الخزنة غير موجود في المكان الحالي");
+1198:         byte[] vk;
+1199:         try {
+1200:             vk = unlock(h, recoveryCode, true);
+1201:         } catch (GeneralSecurityException e) {
+1202:             throw new IllegalArgumentException("رمز الاسترداد غير صحيح");
+1203:         }
+1204:         if (!Arrays.equals(vk, keys.vault)) throw new IllegalStateException("الخزنة في هذا المكان ليست خزنة هذا الجهاز");
+1205:         String me = SyncStore.meta(d, "device"), old = h.optString("founder");
+1206:         if (me.equals(old)) throw new IllegalStateException("هذا الجهاز هو الجهاز الرئيسي من قبل");
+1207:         String why = founderClaimBlock(old);
+1208:         if (why != null) throw new IllegalStateException(why);

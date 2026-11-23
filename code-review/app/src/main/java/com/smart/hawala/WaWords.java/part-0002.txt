@@ -1,0 +1,105 @@
+115:             + "\\d+(?:[.,]\\d+)?\\s*(?:kb|mb|gb|ك\\.?ب|م\\.?ب|كيلوبايت|ميغابايت|ميجابايت)(?:\\s*[-–•·]\\s*.*)?|"
+116:             + "(?:pdf|docx?|xlsx?|pptx?|zip|rar|jpe?g|png|apk)\\s*[•·-]\\s*.*|\\d+\\s*(?:pages?|صفحات|صفحة)"
+117:             + ")\\s*$");
+118: 
+119:     /** سطر داخل الفقاعة ليس من نص الرسالة (يُحذف). */
+120:     public static boolean metaLine(String l) {
+121:         String s = clean(l);
+122:         return !s.isEmpty() && META.matcher(s).matches();
+123:     }
+124: 
+125:     // ===================================================================================
+126:     // اسم المرسل في الغروب
+127:     // ===================================================================================
+128: 
+129:     private static final String PHONE = "\\+?\\d{1,4}(?:[ \\-]?\\d{2,4}){2,5}";
+130:     private static final Pattern SENDER_NAME_PHONE = Pattern.compile("^\\s*~?\\s*([^\\d+~\\n]{1,40}?)\\s*~?\\s*(" + PHONE + ")\\s*$");
+131:     private static final Pattern SENDER_PHONE_NAME = Pattern.compile("^\\s*(" + PHONE + ")\\s*~\\s*([^\\d+~\\n]{1,40}?)\\s*$");
+132:     private static final Pattern SENDER_TILDE = Pattern.compile("^\\s*~\\s*([^\\d~\\n]{1,40}?)\\s*$");
+133:     private static final Pattern PHONE_ONLY = Pattern.compile("^\\s*(" + PHONE + ")\\s*$");
+134: 
+135:     /**
+136:      * أول سطر في فقاعة الغروب: اسم المرسل ورقمه («~ Abo Nour +40 765 450 476»، «+90 545 965 72 40 ~زهرة حلب»، «~ أبو عمر»).
+137:      * يعيد {الاسم، الرقم} أو null إن لم يكن سطر مرسل.
+138:      */
+139:     public static String[] sender(String line) {
+140:         if (line == null) return null;
+141:         String s = MessageParser.digits(WaText.stripMarks(line)).trim();
+142:         if (s.isEmpty() || s.length() > 70) return null;
+143:         Matcher m = SENDER_NAME_PHONE.matcher(s);
+144:         if (m.matches() && (s.contains("~") || s.contains("+"))) return new String[]{m.group(1).trim(), m.group(2).trim()};
+145:         m = SENDER_PHONE_NAME.matcher(s);
+146:         if (m.matches()) return new String[]{m.group(2).trim(), m.group(1).trim()};
+147:         m = SENDER_TILDE.matcher(s);
+148:         if (m.matches()) return new String[]{m.group(1).trim(), ""};
+149:         m = PHONE_ONLY.matcher(s);
+150:         if (m.matches() && s.startsWith("+")) return new String[]{"", m.group(1).trim()};
+151:         return null;
+152:     }
+153: 
+154:     /**
+155:      * نص فقاعة مقروءة من الشاشة ← {المرسل، النص}: يُفصل سطر المرسل في أولها، وتُحذف أسطر «Forwarded» و«Edited» وحجم الملف أينما كانت،
+156:      * وتنبيهات البرنامج الملتصقة بها.
+157:      */
+158:     public static String[] split(String text) {
+159:         List<String> l = new ArrayList<>(Arrays.asList(WaText.stripMarks(text == null ? "" : text).replace("\r\n", "\n").split("\n", -1)));
+160:         String who = "";
+161:         while (!l.isEmpty() && l.get(0).trim().isEmpty()) l.remove(0);
+162:         if (l.size() > 1) {
+163:             String[] s = sender(l.get(0));
+164:             if (s != null) {
+165:                 who = s[0].isEmpty() ? s[1] : s[0];
+166:                 l.remove(0);
+167:             }
+168:         }
+169:         List<String> out = new ArrayList<>();
+170:         for (String x : l) {
+171:             if (metaLine(x)) continue;
+172:             if (systemLine(x) && !WaCuts.timeLine(x) && DATE_PILL.matcher(clean(x)).matches()) continue;
+173:             out.add(x);
+174:         }
+175:         while (!out.isEmpty() && out.get(0).trim().isEmpty()) out.remove(0);
+176:         while (!out.isEmpty() && out.get(out.size() - 1).trim().isEmpty()) out.remove(out.size() - 1);
+177:         return new String[]{who, String.join("\n", out)};
+178:     }
+179: 
+180:     // ===================================================================================
+181:     // التحية والمجاملة
+182:     // ===================================================================================
+183: 
+184:     /** كلمات تحية ومجاملة (مطبّعة كما يطبّع المحلّل) لا تكون اسم مستفيد ولا اسم عملة. */
+185:     public static final Set<String> COURTESY = Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+186:             "السلام", "سلام", "عليكم", "ورحمة", "ورحمه", "وبركاته", "بركاته", "مرحبا", "مرحبتين", "اهلا", "أهلا", "اهلين", "هلا",
+187:             "حياكم", "حياك", "يعطيكم", "يعطيك", "العافية", "العافيه", "تحية", "تحيه", "وبعد", "التحية",
+188:             "صباح", "مساء", "الخير", "السادة", "الساده", "الكرام", "الاخوة", "الأخوة", "الاخوه", "اخوتي",
+189:             "اخواني", "الأفاضل", "الافاضل", "المحترمين", "المحترم", "حضرة", "حضرات", "الاستاذ", "الأستاذ", "استاذ", "أستاذ", "جماعة", "جماعه",
+190:             "شباب", "الشباب", "يسلمو", "يسلموا", "تسلم", "تسلمو", "مشكور", "مشكورين", "جزاكم", "فيكم", "ممنون",
+191:             "ممنونين", "تكرم", "تكرموا", "لطفا", "لطفًا", "رجاء", "رجاءً", "مطابقة", "مطابقه", "رصيد", "الرصيد",
+192:             "hello", "hi", "hey", "dear", "dears", "good", "morning", "evening", "afternoon", "night", "greetings", "regards", "best",
+193:             "kind", "sir", "sirs", "madam", "gentlemen", "team", "friends", "brothers", "thanks", "thank", "you", "please", "kindly",
+194:             "merhaba", "selam", "selamlar", "günaydın", "iyi", "akşamlar", "teşekkürler", "sağol", "bună", "buna", "ziua", "mulțumesc", "mersi")));
+195: 
+196:     // ===================================================================================
+197:     // بدايات الرسائل (لاقتراح القص)
+198:     // ===================================================================================
+199: 
+200:     /** كلمات تبدأ بها رسالة حوالة عادةً: سطر يبدأ بإحداها مثل أول سطر = رسالة جديدة مقترحة في شاشة القص. */
+201:     public static final Set<String> OPENERS = Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+202:             "حوالة", "حواله", "حوالات", "تسليم", "سلم", "سلّم", "سلموا", "استلام", "استلم", "استلمت", "استلمنا", "مطلوب", "المطلوب", "تحويل", "حول", "حوّل",
+203:             "ارسال", "إرسال", "ارسل", "أرسل", "دفع", "ادفع", "دفعة", "قبض", "سحب", "ايداع", "إيداع", "قيد", "مطابقة", "رصيد", "تسليم:", "حوالة:",
+204:             "transfer", "send", "sent", "pay", "paid", "payment", "deliver", "received", "receive", "deposit", "withdraw", "havale", "gönder", "teslim",
+205:             "transfer:", "plată", "trimite")));
+206: 
+207:     /** الكلمة الأولى في السطر (مطبّعة للمقارنة). */
+208:     public static String firstWord(String line) {
+209:         String s = clean(line).replaceAll("^[\\p{Punct}\\s•·\\-–—]+", "");
+210:         int i = 0;
+211:         while (i < s.length() && !Character.isWhitespace(s.charAt(i))) i++;
+212:         return s.substring(0, i);
+213:     }
+214: 
+215:     /** النص بلا علامات الاتجاه والمسافات الزائدة، والأرقام عربية غربية. */
+216:     static String clean(String t) {
+217:         return MessageParser.digits(WaText.stripMarks(t)).replace('\u00A0', ' ').replaceAll("[ \\t]+", " ").trim().toLowerCase(Locale.ROOT);
+218:     }
+219: }

@@ -1,0 +1,173 @@
+181:             p.errors.add("الملف فيه مطابقات أو مستخدمون؛ لا يُضاف إلى البيانات الحالية.");
+182:         }
+183:         for (JSONObject e : entries) {
+184:             String k = e.optString("kind");
+185:             if (!"OPENING".equals(k) && !"PRINCIPAL".equals(k) && !"FEE".equals(k)) {
+186:                 p.errors.add("الملف فيه قيود من نوع «" + k + "» (إلغاء أو تعديل)؛ لا يُضاف إلى البيانات الحالية.");
+187:                 break;
+188:             }
+189:         }
+190:         for (JSONObject t : txRows) {
+191:             if (!"ACTIVE".equals(t.optString("status")) || !t.isNull("replaces_id") && t.has("replaces_id")) {
+192:                 p.errors.add("الملف فيه حركات ملغاة أو معدّلة؛ لا يُضاف إلى البيانات الحالية.");
+193:                 break;
+194:             }
+195:         }
+196:         if (!p.errors.isEmpty()) return p;
+197: 
+198:         // بصمة الملف: تمنع إضافته مرتين
+199:         JSONObject counts = manifest.optJSONObject("counts");
+200:         p.fingerprint = manifest.optLong("createdAt") + "|" + (counts == null ? "" : counts.optLong("offices") + "|" + counts.optLong("tx"))
+201:                 + "|" + (txRows.isEmpty() ? "" : txRows.get(0).optString("uuid"));
+202:         if (ex.mergedFiles.contains(p.fingerprint)) {
+203:             p.errors.add("أُضيف هذا الملف إلى بياناتك سابقًا. إضافته مرة ثانية تضاعف الأرصدة، لذلك لا تُسمح.");
+204:             return p;
+205:         }
+206:         int dupUuids = 0;
+207:         for (JSONObject t : txRows) if (ex.uuids.contains(t.optString("uuid"))) dupUuids++;
+208:         if (dupUuids > 0) {
+209:             p.errors.add(dupUuids + " حركة من هذا الملف موجودة في بياناتك (يبدو أنه أُضيف سابقًا). لم يُضف شيء.");
+210:             return p;
+211:         }
+212: 
+213:         // العملات ومنازلها
+214:         Map<String, Integer> fileDec = new HashMap<>();
+215:         Map<String, String> fileName = new HashMap<>();
+216:         for (JSONObject c : list(tables, "currencies")) {
+217:             fileDec.put(c.optString("code"), c.optInt("decimals", 2));
+218:             fileName.put(c.optString("code"), c.optString("name", c.optString("code")));
+219:         }
+220:         Set<String> used = new java.util.TreeSet<>();
+221:         for (JSONObject l : lines) if ("OFFICE".equals(l.optString("account"))) used.add(l.optString("currency"));
+222:         for (JSONObject t : txRows) used.add(t.optString("currency"));
+223:         Map<String, int[]> dec = new HashMap<>();
+224:         for (String code : used) {
+225:             Integer fd = fileDec.get(code);
+226:             if (fd == null) {
+227:                 p.errors.add("العملة " + code + " مستخدمة في الملف وغير معرّفة فيه.");
+228:                 continue;
+229:             }
+230:             Integer ad = ex.decimals.get(code);
+231:             if (ad == null) {
+232:                 NewCurrency n = new NewCurrency();
+233:                 n.code = code;
+234:                 n.name = fileName.get(code);
+235:                 n.decimals = fd;
+236:                 p.newCurrencies.add(n);
+237:                 ad = fd;
+238:             } else if (ad.intValue() != fd.intValue()) {
+239:                 p.warnings.add("منازل " + code + " في التطبيق " + ad + " وفي الملف " + fd + "؛ حُوّلت المبالغ دون تقريب.");
+240:             }
+241:             dec.put(code, new int[]{fd, ad});
+242:         }
+243:         if (!p.errors.isEmpty()) return p;
+244: 
+245:         // المكاتب: مطابقة بالاسم (بالكتابة نفسها أولًا، ثم بعد توحيد الهمزات والتاء والمسافات إن كان التطابق وحيدًا)
+246:         Map<String, List<Long>> byExact = new HashMap<>(), byLoose = new HashMap<>();
+247:         for (Map.Entry<Long, String> e : ex.offices.entrySet()) {
+248:             put(byExact, exactKey(e.getValue()), e.getKey());
+249:             put(byLoose, looseKey(e.getValue()), e.getKey());
+250:         }
+251:         for (JSONObject o : list(tables, "offices")) {
+252:             Office of = new Office();
+253:             of.fileId = o.optLong("id");
+254:             of.name = o.optString("name").trim();
+255:             of.phone = o.optString("phone", "");
+256:             of.notes = o.optString("notes", "");
+257:             if (of.name.isEmpty()) {
+258:                 p.errors.add("في الملف مكتب بلا اسم.");
+259:                 continue;
+260:             }
+261:             List<Long> m = byExact.get(exactKey(of.name));
+262:             if (m == null || m.size() != 1) {
+263:                 List<Long> l2 = byLoose.get(looseKey(of.name));
+264:                 if ((m == null || m.isEmpty()) && l2 != null && l2.size() == 1) {
+265:                     m = l2;
+266:                     of.approximate = true;
+267:                 }
+268:             }
+269:             if (m != null && m.size() > 1) {
+270:                 p.errors.add("في التطبيق أكثر من مكتب باسم «" + of.name + "»؛ غيّر اسم أحدهما أولًا حتى يُعرف أين تُضاف الأرصدة.");
+271:                 continue;
+272:             }
+273:             if (m != null && m.size() == 1) {
+274:                 of.targetId = m.get(0);
+275:                 of.targetName = ex.offices.get(of.targetId);
+276:                 p.matchedOffices++;
+277:             } else p.newOffices++;
+278:             p.offices.put(of.fileId, of);
+279:         }
+280:         if (!p.errors.isEmpty()) return p;
+281:         // مكتبان في الملف يُضافان إلى المكتب نفسه في التطبيق: مسموح، ويُجمعان
+282:         Map<Long, Long> entryWhen = new HashMap<>();
+283:         Map<Long, String> entryKind = new HashMap<>();
+284:         for (JSONObject e : entries) {
+285:             entryWhen.put(e.optLong("id"), e.optLong("created_at"));
+286:             entryKind.put(e.optLong("id"), e.optString("kind"));
+287:         }
+288: 
+289:         // المتوقع: صافي قيود حساب المكتب في الملف (هو نفسه ما ستضيفه القيود الجديدة)
+290:         for (JSONObject l : lines) {
+291:             if (!"OFFICE".equals(l.optString("account")) || l.isNull("office_id")) continue;
+292:             long fo = l.optLong("office_id");
+293:             String code = l.optString("currency");
+294:             if (!p.offices.containsKey(fo)) {
+295:                 p.errors.add("قيد في الملف لمكتب غير موجود فيه.");
+296:                 return p;
+297:             }
+298:             int[] d = dec.get(code);
+299:             Long dv = convert(l.optLong("debit_minor"), d[0], d[1]), cv = convert(l.optLong("credit_minor"), d[0], d[1]);
+300:             if (dv == null || cv == null) {
+301:                 p.errors.add("مبلغ بعملة " + code + " فيه منازل أكثر مما في التطبيق (" + d[1] + ")؛ غيّر منازل العملة في التطبيق أو في الأداة.");
+302:                 return p;
+303:             }
+304:             String k = fo + "|" + code;
+305:             Long prev = p.expected.get(k);
+306:             p.expected.put(k, (prev == null ? 0 : prev) + dv - cv);
+307:             p.offices.get(fo).codes.add(code);
+308:         }
+309: 
+310:         // الأرصدة السابقة
+311:         Map<String, Long> fromParts = new HashMap<>();
+312:         for (JSONObject ob : list(tables, "opening_balances")) {
+313:             Opening o = new Opening();
+314:             o.fileOffice = ob.optLong("office_id");
+315:             o.code = ob.optString("currency");
+316:             int[] d = dec.get(o.code);
+317:             Long amt = d == null ? null : convert(ob.optLong("amount_minor"), d[0], d[1]);
+318:             if (amt == null || amt <= 0 || !p.offices.containsKey(o.fileOffice)) {
+319:                 p.errors.add("رصيد سابق غير صالح في الملف.");
+320:                 return p;
+321:             }
+322:             String type = ob.optString("type");
+323:             if (!"لنا".equals(type) && !"علينا".equals(type)) {
+324:                 p.errors.add("نوع رصيد سابق غير معروف: " + type);
+325:                 return p;
+326:             }
+327:             o.signed = "لنا".equals(type) ? amt : -amt;
+328:             Long w = entryWhen.get(ob.optLong("entry_id"));
+329:             if (w == null || !"OPENING".equals(entryKind.get(ob.optLong("entry_id")))) {
+330:                 p.errors.add("رصيد سابق في الملف بلا قيد افتتاحي.");
+331:                 return p;
+332:             }
+333:             o.when = w;
+334:             p.openings.add(o);
+335:             add(fromParts, o.fileOffice + "|" + o.code, o.signed);
+336:             p.offices.get(o.fileOffice).codes.add(o.code);
+337:         }
+338: 
+339:         // الحركات
+340:         for (JSONObject t : txRows) {
+341:             Tx x = new Tx();
+342:             x.fileId = t.optLong("id");
+343:             x.uuid = t.optString("uuid");
+344:             x.fileOffice = t.optLong("office_id");
+345:             x.type = t.optString("type");
+346:             x.person = t.optString("person", "");
+347:             x.currency = t.optString("currency");
+348:             x.feeType = t.optString("fee_type", Model.FEE_NONE);
+349:             x.feeCurrency = t.optString("fee_currency", x.currency);
+350:             x.description = t.optString("description", "");
+351:             x.notes = t.optString("notes", "");
+352:             x.userName = t.optString("user_name", "");
+353:             x.when = t.optLong("created_at");

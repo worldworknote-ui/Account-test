@@ -1,0 +1,45 @@
+1: # 12.1 المحاسب الذكي — قراءة صورة ما تحت الإطار بقارئ الصور المدمج في ويندوز (Windows.Media.Ocr)، حين لا تعطي
+2: # النافذة نصها لميزة إمكانية الوصول. يعمل على الجهاز نفسه بلا إنترنت. العربية تحتاج أن تكون حزمة اللغة العربية مثبتة في ويندوز،
+3: # وإلا تُقرأ الأرقام والحروف اللاتينية بلغة المستخدم.
+4: # المخرجات: سطر لكل سطر نص: L، x، y، العرض، الارتفاع (بكسل الصورة)، النص بـBase64.
+5: param([string]$Path)
+6: $ErrorActionPreference = 'Stop'
+7: try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
+8: Add-Type -AssemblyName System.Runtime.WindowsRuntime
+9: $null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
+10: $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
+11: $null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics, ContentType = WindowsRuntime]
+12: $null = [Windows.Globalization.Language, Windows.Globalization, ContentType = WindowsRuntime]
+13: 
+14: $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+15:     $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+16: function Await($op, [Type]$t) {
+17:     $task = $asTask.MakeGenericMethod($t).Invoke($null, @($op))
+18:     $null = $task.Wait(-1)
+19:     return $task.Result
+20: }
+21: function B64([string]$s) { return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($s)) }
+22: 
+23: $file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($Path)) ([Windows.Storage.StorageFile])
+24: $stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+25: $dec = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+26: $bmp = Await ($dec.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+27: 
+28: $engine = $null
+29: $ar = [Windows.Globalization.Language]::new('ar')
+30: if ([Windows.Media.Ocr.OcrEngine]::IsLanguageSupported($ar)) { $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($ar) }
+31: if ($null -eq $engine) { $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages() }
+32: if ($null -eq $engine) { exit 0 }
+33: $res = Await ($engine.RecognizeAsync($bmp)) ([Windows.Media.Ocr.OcrResult])
+34: foreach ($line in $res.Lines) {
+35:     $x1 = [double]::MaxValue; $y1 = [double]::MaxValue; $x2 = 0; $y2 = 0
+36:     foreach ($w in $line.Words) {
+37:         $b = $w.BoundingRect
+38:         if ($b.X -lt $x1) { $x1 = $b.X }
+39:         if ($b.Y -lt $y1) { $y1 = $b.Y }
+40:         if (($b.X + $b.Width) -gt $x2) { $x2 = $b.X + $b.Width }
+41:         if (($b.Y + $b.Height) -gt $y2) { $y2 = $b.Y + $b.Height }
+42:     }
+43:     if ($x2 -le 0) { continue }
+44:     "L`t{0}`t{1}`t{2}`t{3}`t{4}" -f [int]$x1, [int]$y1, [int]($x2 - $x1), [int]($y2 - $y1), (B64 $line.Text)
+45: }

@@ -1,0 +1,140 @@
+185:         JSONObject j = new JSONObject();
+186:         j.put("t", "sa-activate");
+187:         j.put("v", 1);
+188:         j.put("platform", "mac");
+189:         j.put("order", order);
+190:         j.put("pkg", ctx.getPackageName());
+191:         j.put("ver", BuildInfo.VERSION);
+192:         j.put("build", BuildInfo.BUILD_DATE);
+193:         j.put("dk", LicenseToken.deviceFingerprint(pub));
+194:         j.put("pub", Base64.getEncoder().encodeToString(pub));
+195:         j.put("chain", new JSONArray());
+196:         j.put("hw", hardwareId());
+197:         j.put("model", model());
+198:         j.put("at", Clock.now());
+199:         // إثبات حيازة المفتاح: توقيع رقم الطلب ببصمة المفتاح نفسه
+200:         String proof = "v=1;t=request;order=" + order + ";dk=" + LicenseToken.deviceFingerprint(pub);
+201:         j.put("proof", proof);
+202:         j.put("proofSig", sign(proof.getBytes(StandardCharsets.UTF_8)));
+203:         db.audit("LICENSE_REQUEST", "license", 0, order);
+204:         // 11.5: مضغوطًا (أقصر بنحو الثلث)؛ أداة البائع تقرأ الصيغتين
+205:         LicenseGuard.addToRequest(ctx, db, j);   // 12.7: هوية المكتب وسجل محاولات الاستخدام لمكتب آخر
+206:         return LicenseToken.packRequest(j.toString());
+207:     }
+208: 
+209:     public static Entitlements activate(Context ctx, Db db, String token) throws Exception {
+210:         token = LicenseToken.extract(token);   // 11.5: من ملف المفتاح أو رابط QR أو رسائل واتساب مقسّمة
+211:         byte[] dk = deviceKeyX509();
+212:         if (dk == null) throw new IllegalStateException("أنشئ طلب التفعيل أولًا من هذا الجهاز ثم أرسله للبائع.");
+213:         LicenseToken.Grant g = LicenseToken.verify(token, dk);
+214:         if (g == null) {
+215:             String lid = LicenseToken.peek(token).get("lid");
+216:             throw new IllegalArgumentException("الرمز غير صالح لهذا الجهاز" + (lid == null ? "" : " (" + lid + ")")
+217:                     + ": تأكد أنك نسخته كاملًا وأنه صادر لطلب هذا الجهاز نفسه.");
+218:         }
+219:         save(ctx, db, token.replaceAll("\\s+", ""));
+220:         db.audit("LICENSE_ACTIVATE", "license", 0, g.lid());
+221:         load(ctx, db);
+222:         return current;
+223:     }
+224: 
+225:     public static String release(Context ctx, Db db) throws Exception {
+226:         String token = storedToken(ctx, db);
+227:         byte[] dk = deviceKeyX509();
+228:         LicenseToken.Grant g = LicenseToken.verify(token, dk);
+229:         if (g == null) throw new IllegalStateException("لا توجد رخصة مفعّلة على هذا الجهاز.");
+230:         byte[] nonce = new byte[12];
+231:         new SecureRandom().nextBytes(nonce);
+232:         String body = "v=1;t=release;lid=" + g.lid() + ";dk=" + LicenseToken.deviceFingerprint(dk) + ";n="
+233:                 + Base64.getUrlEncoder().withoutPadding().encodeToString(nonce) + ";at=" + Clock.now();
+234:         String sig = sign(body.getBytes(StandardCharsets.UTF_8));
+235:         save(ctx, db, "");
+236:         SecretStore.delete(DEV);
+237:         db.audit("LICENSE_RELEASE", "license", 0, g.lid());
+238:         load(ctx, db);
+239:         return REL_PREFIX + Base64.getUrlEncoder().withoutPadding().encodeToString(body.getBytes(StandardCharsets.UTF_8)) + "." + sig;
+240:     }
+241: 
+242:     /** 12.7: توقيع بمفتاح الجهاز (سجل المحاولات). */
+243:     static String signData(byte[] data) throws Exception { return sign(data); }
+244: 
+245:     private static String sign(byte[] data) throws Exception {
+246:         java.security.Signature s = java.security.Signature.getInstance("SHA256withECDSA");
+247:         s.initSign(privateKey());
+248:         s.update(data);
+249:         return Base64.getUrlEncoder().withoutPadding().encodeToString(s.sign());
+250:     }
+251: 
+252:     // ===================================================================================
+253:     // بصمة عدّادات المجاني
+254:     // ===================================================================================
+255: 
+256:     static String mac(String data) {
+257:         try {
+258:             String k = SecretStore.get(MAC);
+259:             if (k == null) {
+260:                 byte[] raw = new byte[32];
+261:                 new SecureRandom().nextBytes(raw);
+262:                 k = Base64.getEncoder().encodeToString(raw);
+263:                 SecretStore.put(MAC, k);
+264:             }
+265:             Mac m = Mac.getInstance("HmacSHA256");
+266:             m.init(new SecretKeySpec(Base64.getDecoder().decode(k), "HmacSHA256"));
+267:             return BackupFormat.hex(m.doFinal(data.getBytes(StandardCharsets.UTF_8)));
+268:         } catch (Throwable t) {
+269:             return "";
+270:         }
+271:     }
+272: 
+273:     static boolean highRisk() { return false; }
+274: 
+275:     // ===================================================================================
+276:     // الخادم الاختياري
+277:     // ===================================================================================
+278: 
+279:     public static boolean checkDue(Db db) {
+280:         if (db.setting("license_server", "").trim().isEmpty() || !current.pro) return false;
+281:         return Clock.now() - db.settingLong("license_last_check", 0) > 7L * 86400000L;
+282:     }
+283: 
+284:     public static String checkOnline(Context ctx, Db db) {
+285:         String base = db.setting("license_server", "").trim();
+286:         if (base.isEmpty() || !current.pro) return "لا يوجد خادم ترخيص مضبوط أو لا رخصة مفعّلة.";
+287:         HttpURLConnection c = null;
+288:         try {
+289:             byte[] nonce = new byte[16];
+290:             new SecureRandom().nextBytes(nonce);
+291:             String n = Base64.getUrlEncoder().withoutPadding().encodeToString(nonce);
+292:             byte[] dk = deviceKeyX509();
+293:             String body = "v=1;t=check;lid=" + current.lid + ";dk=" + LicenseToken.deviceFingerprint(dk) + ";n=" + n + ";at=" + Clock.now();
+294:             JSONObject req = new JSONObject();
+295:             req.put("body", body);
+296:             req.put("sig", sign(body.getBytes(StandardCharsets.UTF_8)));
+297:             req.put("pub", Base64.getEncoder().encodeToString(dk));
+298:             req.put("ver", BuildInfo.VERSION);
+299:             req.put("platform", "mac");
+300:             c = (HttpURLConnection) new URL(base.replaceAll("/+$", "") + "/v1/check").openConnection();
+301:             c.setConnectTimeout(15000);
+302:             c.setReadTimeout(20000);
+303:             c.setDoOutput(true);
+304:             c.setRequestMethod("POST");
+305:             c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+306:             try (OutputStream o = c.getOutputStream()) {
+307:                 o.write(req.toString().getBytes(StandardCharsets.UTF_8));
+308:             }
+309:             if (c.getResponseCode() != 200) return "رد الخادم: " + c.getResponseCode();
+310:             JSONObject res = new JSONObject(new String(Db.readAll(c.getInputStream()), StandardCharsets.UTF_8));
+311:             JSONArray rv = res.optJSONArray("revoked");
+312:             StringBuilder list = new StringBuilder();
+313:             if (rv != null) for (int i = 0; i < rv.length(); i++) list.append(i > 0 ? "," : "").append(rv.optString(i));
+314:             db.setSettingQuiet("license_revoked", list.toString());
+315:             db.setSettingQuiet("license_last_check", "" + Clock.now());
+316:             load(ctx, db);
+317:             return res.optString("message", "تم الفحص ✓");
+318:         } catch (Throwable t) {
+319:             return "تعذر الاتصال بخادم الترخيص (" + t.getClass().getSimpleName() + "). لا يتعطل شيء؛ يُعاد لاحقًا.";
+320:         } finally {
+321:             if (c != null) c.disconnect();
+322:         }
+323:     }
+324: }

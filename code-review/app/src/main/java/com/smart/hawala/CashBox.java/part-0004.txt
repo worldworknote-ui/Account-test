@@ -1,0 +1,148 @@
+482:             if (to > 0 && x.createdAt >= to) continue;
+483:             if (!x.counts()) continue;
+484:             s.count++;
+485:             long fc = x.feeCash();
+486:             if (fc > 0) s.feesIn += fc;
+487:             else s.feesOut -= fc;
+488:             switch (x.kind) {
+489:                 case OPENING: s.openingsInPeriod += x.amount; break;
+490:                 case IN:
+491:                     s.in += x.amount;
+492:                     if (x.officeId != null) s.officeIn += x.amount;
+493:                     break;
+494:                 case OUT:
+495:                     s.out += x.amount;
+496:                     if (x.officeId != null) s.officeOut += x.amount;
+497:                     break;
+498:                 case EXPENSE:
+499:                     s.expenses += x.amount;
+500:                     String cat = Model.nz(x.category).trim().isEmpty() ? "أخرى" : x.category.trim();
+501:                     Long v = s.byCategory.get(cat);
+502:                     s.byCategory.put(cat, (v == null ? 0 : v) + x.amount);
+503:                     break;
+504:                 case EXCHANGE:
+505:                     if (x.dir > 0) s.exchangeIn += x.amount;
+506:                     else s.exchangeOut += x.amount;
+507:                     break;
+508:                 case ADJUST:
+509:                     if (x.dir > 0) s.adjustUp += x.amount;
+510:                     else s.adjustDown += x.amount;
+511:                     break;
+512:                 case TRANSFER:
+513:                     if (x.dir > 0) s.transferIn += x.amount;
+514:                     else s.transferOut += x.amount;
+515:                     break;
+516:                 default: break;
+517:             }
+518:         }
+519:         for (Summary s : out.values()) s.closing = s.computedClosing();
+520:         return out;
+521:     }
+522: 
+523:     /** الرصيد قبل لحظة لكل عملة. */
+524:     public static Map<String, Long> balanceBefore(List<Move> moves, long t) {
+525:         Map<String, Long> m = new TreeMap<>();
+526:         for (Move x : moves) {
+527:             if (x.createdAt >= t) continue;
+528:             Long b = m.get(x.currency);
+529:             m.put(x.currency, (b == null ? 0 : b) + x.effect());
+530:         }
+531:         return m;
+532:     }
+533: 
+534:     /** ترتيب زمني ثابت (التاريخ ثم الرقم). */
+535:     public static void sort(List<Move> moves) {
+536:         Collections.sort(moves, new Comparator<Move>() {
+537:             @Override public int compare(Move a, Move b) {
+538:                 int c = Long.compare(a.createdAt, b.createdAt);
+539:                 return c != 0 ? c : Long.compare(a.id, b.id);
+540:             }
+541:         });
+542:     }
+543: 
+544:     // ===================================================================================
+545:     // التقرير (PDF / Excel / الشاشة)
+546:     // ===================================================================================
+547: 
+548:     /** ما يُعرض في تقرير الصندوق. */
+549:     public static final class ReportSpec {
+550:         public long from, to;
+551:         public final Set<String> currencies = new TreeSet<>();
+552:         public boolean details = true, byDay = true, byOffice = true;
+553:     }
+554: 
+555:     public static int dec(Map<String, Integer> d, String c) {
+556:         Integer v = d.get(c);
+557:         return v == null ? 2 : v;
+558:     }
+559: 
+560:     static String moveText(Move x, Map<Long, String> offices) {
+561:         if (x.clientId != null) return (x.dir > 0 ? "استلام من العميل " : "تسليم للعميل ") + Model.nz(x.party);
+562:         if (EXCHANGE.equals(x.kind) && (CAT_SELL.equals(x.category) || CAT_BUY.equals(x.category)))
+563:             return (x.mainLeg() ? x.category : (CAT_SELL.equals(x.category) ? "مقابل بيع" : "مقابل شراء")) + (Model.nz(x.rate).isEmpty() ? "" : " بسعر " + x.rate);
+564:         if (TRANSFER.equals(x.kind)) return x.dir > 0 ? "تحويل وارد من صندوق آخر" : "تحويل إلى صندوق آخر";
+565:         StringBuilder b = new StringBuilder(kindName(x.kind));
+566:         if (x.officeId != null) {
+567:             String n = offices.get(x.officeId);
+568:             b.append(x.dir > 0 ? " لحساب " : " لحساب ").append(n == null ? "مكتب #" + x.officeId : n);
+569:         } else if (!Model.nz(x.category).isEmpty() && !OPENING.equals(x.kind)) b.append(" — ").append(x.category);
+570:         return b.toString();
+571:     }
+572: 
+573:     public static Report report(List<Move> all, ReportSpec sp, Map<String, Integer> decimals, Map<Long, String> offices, String boxName, String issuer) {
+574:         List<Move> moves = new ArrayList<>(all);
+575:         sort(moves);
+576:         Report r = new Report();
+577:         r.title = "تقرير " + (boxName == null || boxName.trim().isEmpty() ? DEFAULT_NAME : boxName.trim());
+578:         r.fileBase = "تقرير-الصندوق";
+579:         if (issuer != null && !issuer.trim().isEmpty()) r.headerLines.add("صادر عن: " + issuer.trim());
+580:         r.headerLines.add("الفترة: " + (sp.from <= 0 ? "من البداية" : "من " + Model.day(sp.from)) + " " + (sp.to <= 0 ? "حتى الآن" : "إلى " + Model.day(sp.to - 1)));
+581:         Map<String, Summary> sums = summaries(moves, sp.from, sp.to, sp.currencies);
+582: 
+583:         Report.Section s = r.section("خلاصة الصندوق", "الخلاصة");
+584:         s.col("العملة", 0.6f, Report.TEXT).col("أول الفترة", 1f, Report.MONEY).col("الداخل", 1f, Report.MONEY).col("الخارج", 1f, Report.MONEY)
+585:                 .col("أجور لنا", 0.9f, Report.MONEY).col("أجور علينا", 0.9f, Report.MONEY).col("المصاريف", 0.9f, Report.MONEY)
+586:                 .col("فروق الجرد", 0.9f, Report.TEXT).col("آخر الفترة", 1f, Report.MONEY);
+587:         for (Summary m : sums.values()) {
+588:             int dc = dec(decimals, m.currency);
+589:             long inAll = m.in + m.exchangeIn + m.openingsInPeriod + m.transferIn, outAll = m.out + m.exchangeOut + m.transferOut;
+590:             long adj = m.adjustUp - m.adjustDown;
+591:             s.row(Report.TOTAL, m.currency, new Report.Money(m.opening, dc), new Report.Money(inAll, dc), new Report.Money(outAll, dc),
+592:                     new Report.Money(m.feesIn, dc), new Report.Money(m.feesOut, dc), new Report.Money(m.expenses, dc),
+593:                     adj == 0 ? "—" : (adj > 0 ? "زيادة " : "عجز ") + Model.fmt(Math.abs(adj), dc), new Report.Money(m.closing, dc));
+594:             s.kv("بـ" + m.currency, "أول الفترة " + Model.fmt(m.opening, dc) + " + الداخل " + Model.fmt(inAll, dc) + " − الخارج " + Model.fmt(outAll, dc)
+595:                     + " + أجور لنا " + Model.fmt(m.feesIn, dc) + " − أجور علينا " + Model.fmt(m.feesOut, dc) + " − المصاريف " + Model.fmt(m.expenses, dc)
+596:                     + (adj == 0 ? "" : (adj > 0 ? " + زيادة جرد " : " − عجز جرد ") + Model.fmt(Math.abs(adj), dc))
+597:                     + " = " + Model.fmt(m.closing, dc) + " " + m.currency, false);
+598:         }
+599:         if (sums.isEmpty()) s.kv("لا حركات", "لا توجد حركات في الصندوق بهذه الشروط", false);
+600:         s.note = "الصندوق مستقل عن أرصدة المكاتب: يضبط النقد الموجود فعلًا. «الداخل» يشمل الاستلام وما دخل من بيع وشراء العملات والتحويل الوارد من صندوق آخر والأرصدة الافتتاحية داخل الفترة؛ "
+601:                 + "و«الخارج» التسليم وما خرج في البيع والشراء والتحويل إلى صندوق آخر. أجور الحركات المقيّدة على حساب المكتب لا تظهر هنا لأنها لا تمس النقد.";
+602: 
+603:         // 9.0.1: البيع والشراء لكل زوج عملات: المجموع ومتوسط السعر
+604:         Map<String, long[]> fx = new TreeMap<>();
+605:         Map<String, Move> byPair = new HashMap<>();
+606:         for (Move x : moves) if (x.pairUuid != null && !x.mainLeg()) byPair.put(x.pairUuid, x);
+607:         for (Move x : moves) {
+608:             if (!x.mainLeg() || !x.counts() || x.createdAt < sp.from || (sp.to > 0 && x.createdAt >= sp.to)) continue;
+609:             Move other = byPair.get(x.pairUuid);
+610:             if (other == null) continue;
+611:             if (!sp.currencies.isEmpty() && !sp.currencies.contains(x.currency) && !sp.currencies.contains(other.currency)) continue;
+612:             String key = (CAT_SELL.equals(x.category) ? "بيع" : "شراء") + "|" + x.currency + "|" + other.currency;
+613:             long[] v = fx.get(key);
+614:             if (v == null) {
+615:                 v = new long[3];
+616:                 fx.put(key, v);
+617:             }
+618:             v[0] += x.amount;
+619:             v[1] += other.amount;
+620:             v[2]++;
+621:         }
+622:         if (!fx.isEmpty()) {
+623:             Report.Section f = r.section("بيع وشراء العملات", "البيع والشراء");
+624:             f.col("العملية", 0.6f, Report.TEXT).col("العملة", 0.6f, Report.TEXT).col("الكمية", 1f, Report.MONEY).col("المقابل", 1f, Report.TEXT)
+625:                     .col("متوسط السعر", 0.9f, Report.TEXT).col("العمليات", 0.6f, Report.INT);
+626:             for (Map.Entry<String, long[]> e : fx.entrySet()) {
+627:                 String[] k = e.getKey().split("\\|", 3);
+628:                 long[] v = e.getValue();
+629:                 int d1 = dec(decimals, k[1]), d2 = dec(decimals, k[2]);

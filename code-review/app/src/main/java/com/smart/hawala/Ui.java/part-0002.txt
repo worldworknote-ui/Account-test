@@ -1,0 +1,165 @@
+191:             boolean classicNight = nb.isEmpty() && userPrimary == defPrimary;
+192:             int nbg = classicNight ? Color.rgb(11, 20, 17) : parseColor(nb, Color.rgb(17, 19, 22));
+193:             bg = nbg;
+194:             surface = classicNight ? Color.rgb(19, 32, 27) : mix(nbg, Color.WHITE, 0.05f);
+195:             line = classicNight ? Color.rgb(36, 55, 47) : mix(nbg, Color.WHITE, 0.12f);
+196:             ink = classicNight ? Color.rgb(236, 243, 239) : Color.rgb(236, 239, 242);
+197:             muted = classicNight ? Color.rgb(141, 163, 154) : mix(nbg, Color.WHITE, 0.58f);
+198:             red = Color.rgb(255, 120, 120);
+199:             green = Color.rgb(61, 220, 151);
+200:             creditBg = Color.rgb(20, 52, 40);
+201:             debitBg = Color.rgb(58, 28, 31);
+202:             warnBg = Color.rgb(58, 46, 18);
+203:             warnInk = Color.rgb(243, 208, 138);
+204:             // 11.3: لون النصوص الأساسي من اللون المختار (كان نعناعيًا أخضر مع أي لون)
+205:             primarySoft = classicNight ? Color.rgb(22, 52, 41) : mix(surface, userPrimary, 0.28f);
+206:             primaryInk = userPrimary == defPrimary ? Color.rgb(61, 220, 151) : readableOnDark(userPrimary);
+207:             goldSoft = Color.rgb(58, 46, 18);
+208:             goldInk = Color.rgb(233, 196, 120);
+209:         }
+210:         dark = ink;
+211:         segTrack = mix(surface, line, night ? 0.55f : 0.6f);
+212:         // 10.13: «إطارات الأزرار والبطاقات» خيار لكل مستخدم (الافتراضي: ظاهرة)
+213:         frames = db == null || !"off".equals(db.setting("btn_frames", "on"));
+214:         cardStroke = frames ? (night ? mix(surface, line, 0.9f) : line) : (night ? surface : mix(surface, line, 0.75f));
+215:         flatHeader = hc.isEmpty();
+216:         header = flatHeader ? bg : parseColor(hc, darker(primary, 0.8f));
+217:         headerInk = flatHeader ? ink : onColor(header);
+218:         systemBars(header, surface);
+219:     }
+220: 
+221:     /** لون شريط الحالة وشريط التنقل، مع أيقونات داكنة فوق الألوان الفاتحة. */
+222:     void systemBars(int status, int nav) {
+223:         try {
+224:             Window w = getWindow();
+225:             w.setStatusBarColor(status);
+226:             w.setNavigationBarColor(nav);
+227:             View d = w.getDecorView();
+228:             int f = d.getSystemUiVisibility();
+229:             f = isLight(status) ? f | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR : f & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+230:             f = isLight(nav) ? f | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : f & ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+231:             d.setSystemUiVisibility(f);
+232:         } catch (Throwable ignored) {
+233:             // غير مهم
+234:         }
+235:     }
+236: 
+237:     /** في الوضع الليلي: يفتّح ألوان النصوص الداكنة حتى تُقرأ فوق الخلفية الداكنة. */
+238:     int readable(int c) {
+239:         if (!night || Color.alpha(c) < 255) return c;
+240:         double l = lum(c);
+241:         if (l >= 0.55) return c;
+242:         return mix(c, Color.WHITE, (float) Math.min(0.75, 0.62 - l));
+243:     }
+244: 
+245:     /** في الوضع الليلي: الخلفيات الفاتحة تتحول إلى درجة داكنة من اللون نفسه (أحمر فاتح ← أحمر داكن...). */
+246:     int fillFor(int c) {
+247:         if (!night || Color.alpha(c) < 255 || lum(c) < 0.7) return c;
+248:         int r = Color.red(c), g = Color.green(c), b = Color.blue(c);
+249:         int m = Math.min(r, Math.min(g, b));
+250:         float k = 1.7f;
+251:         return Color.rgb(Math.min(255, Color.red(surface) + (int) ((r - m) * k)),
+252:                 Math.min(255, Color.green(surface) + (int) ((g - m) * k)),
+253:                 Math.min(255, Color.blue(surface) + (int) ((b - m) * k)));
+254:     }
+255: 
+256:     int strokeFor(int c) {
+257:         if (!night || Color.alpha(c) < 255) return c;
+258:         return lum(c) > 0.55 ? (lum(c) > 0.8 ? line : mix(line, c, 0.35f)) : c;
+259:     }
+260: 
+261:     // ===================================================================================
+262:     // البنية: شريط علوي + محتوى قابل للتمرير + شريط ثابت (اختياري) + تبويبات (اختياري)
+263:     // ===================================================================================
+264: 
+265:     // ===================================================================================
+266:     // 11.5: سجل التنقل: الرجوع إلى الصفحة السابقة خطوة خطوة حتى الرئيسية (زر الرجوع، رجوع النظام، Esc، السحب)
+267:     // ===================================================================================
+268: 
+269:     /** الصفحات السابقة (كيف تُفتح كل واحدة من جديد)، الأحدث في الآخر. */
+270:     final ArrayList<Object[]> history = new ArrayList<>();
+271:     /** كيف تُفتح الصفحة الحالية من جديد (null = لا تُحفظ في السجل: نماذج الإدخال والقفل). */
+272:     private Runnable here;
+273:     private String hereTitle;
+274:     private Runnable pendingHere;
+275:     /** الصفحة الجاري فتحها رجوعًا (فلا تُضاف الحالية إلى السجل). */
+276:     private boolean navBack;
+277: 
+278:     /** تسجّل الصفحة التي ستُرسم الآن كيف تُفتح من جديد (يُستدعى قبل base/tabbedScreen). */
+279:     void here(Runnable reopen) { pendingHere = reopen; }
+280: 
+281:     /** يرجع إلى الصفحة السابقة في السجل؛ false إن لم يبق شيء. */
+282:     boolean historyBack() {
+283:         if (!showHomeButton()) {
+284:             history.clear();
+285:             return false;
+286:         }
+287:         while (!history.isEmpty()) {
+288:             Object[] e = history.remove(history.size() - 1);
+289:             Runnable r = (Runnable) e[1];
+290:             if (r == null) continue;
+291:             // يبقى العلم حتى تُرسم الصفحة فعلًا (بعض الصفحات تُبنى بعد انتظار، مثل التقارير)
+292:             navBack = true;
+293:             returning = true;
+294:             r.run();
+295:             return true;
+296:         }
+297:         return false;
+298:     }
+299: 
+300:     /** يشغّل رجوعًا محددًا دون أن تُضاف الصفحة الحالية إلى السجل. */
+301:     void runAsBack(Runnable r) {
+302:         navBack = true;
+303:         r.run();
+304:     }
+305: 
+306:     /** هل للرجوع وجهة (سجل أو رجوع محدد)؟ */
+307:     boolean canGoBack() { return !history.isEmpty() || back != null; }
+308: 
+309:     private void trackHistory(String title, String tab, Runnable backAction) {
+310:         Runnable next = pendingHere;
+311:         pendingHere = null;
+312:         boolean same = title.equals(hereTitle);
+313:         if (!showHomeButton()) {
+314:             // 11.5: شاشات القفل والدخول: لا سجل رجوع (لا سهم ولا سحب يعيد صفحة من خلف القفل)
+315:             history.clear();
+316:             here = null;
+317:             hereTitle = title;
+318:             navBack = false;
+319:             return;
+320:         }
+321:         if (tab != null && backAction == null) {
+322:             // صفحة رئيسية من التبويبات: بداية جديدة للسجل
+323:             history.clear();
+324:         } else if (!navBack && !same && here != null) {
+325:             history.add(new Object[]{hereTitle, here});
+326:             if (history.size() > 40) history.remove(0);
+327:         }
+328:         if (same && next == null) next = here;   // إعادة رسم الصفحة نفسها
+329:         here = next;
+330:         hereTitle = title;
+331:         navBack = false;
+332:     }
+333: 
+334:     /** يرسم شاشة جديدة بشريط عنوان. backAction: ما يفعله زر الرجوع (null = الرئيسية). */
+335:     void base(String title, Runnable backAction) { build(title, backAction, null); }
+336: 
+337:     /** شاشة رئيسية من شاشات التبويبات (الرئيسية، المكاتب، الحركات، المزيد): بلا رجوع ومع شريط التبويبات. */
+338:     void rootScreen(String title, String tab) { build(title, null, tab); }
+339: 
+340:     /** شاشة فرعية داخل تبويب (صفحة المكتب مثلًا): رجوع + شريط التبويبات. */
+341:     void tabbedScreen(String title, Runnable backAction, String tab) { build(title, backAction, tab); }
+342: 
+343:     /** 9.0: شاشات لها ألوانها الخاصة (صندوق المكتب): تضبط ألوانها وتطلب الإبقاء عليها؛ أي شاشة أخرى تعيد ألوان التطبيق. */
+344:     String themeOwner;
+345:     boolean themeKeep;
+346: 
+347:     /** 9.0.1: يُستدعى عند مغادرة شاشات لها ألوانها الخاصة (يُقفل الصندوق مثلًا). */
+348:     void themeLeft(String owner) {}
+349: 
+350:     /**
+351:      * 10.5 (§6): موضع التمرير لكل شاشة (بعنوانها)، يُستعاد عند الرجوع إليها (زر الرجوع، أو إعادة رسمها بعد عملية، أو العودة
+352:      * من تفاصيل). البحث والفلاتر والتبويب محفوظة في حقول كل شاشة أصلًا. المواضع تنتهي بعد 20 دقيقة.
+353:      */
+354:     private final java.util.Map<String, long[]> scrollMemory = new java.util.HashMap<>();
+355:     /** الشاشة التالية تُفتح رجوعًا (فيُستعاد موضعها). */

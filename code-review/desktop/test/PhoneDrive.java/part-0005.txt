@@ -1,0 +1,161 @@
+626:             expect(badge[0] != null && badge[1] != null, "12.1 two numbered badges on the bubbles");
+627:             // 12.2: شرح الإطار يظهر أول مرة فقط
+628:             final boolean[] intro = {false};
+629:             SwingUtilities.invokeAndWait(() -> {
+630:                 for (java.awt.Window x : java.awt.Window.getWindows())
+631:                     if (x instanceof java.awt.Dialog && x.isShowing() && "كيف أستعمل إطار الالتقاط؟".equals(((java.awt.Dialog) x).getTitle())) {
+632:                         intro[0] = true;
+633:                         x.dispose();
+634:                     }
+635:             });
+636:             expect(intro[0], "12.2 first-time guide for the capture frame");
+637:             // 12.2: داخل الإطار لا تغطيه أي نافذة من البرنامج (عدا الأرقام)، فيمر الماوس والتمرير إلى واتساب
+638:             final boolean[] free = {true};
+639:             SwingUtilities.invokeAndWait(() -> {
+640:                 Rectangle in = w[0].inner();
+641:                 Point c = new Point(in.x + in.width / 2, in.y + in.height - 20);
+642:                 for (java.awt.Window x : java.awt.Window.getWindows())
+643:                     if (x.isShowing() && x != com.smart.hawala.desk.PhoneWindow.frame() && x.getBounds().contains(c)) free[0] = false;
+644:             });
+645:             expect(free[0], "12.2 the frame's inside is not covered by any of our windows (mouse/scroll pass through)");
+646:             expect(w[0].auto.getText().contains("قراءة تلقائية: تعمل"), "12.2 auto-read toggle on the bar: " + w[0].auto.getText());
+647:             BufferedImage im = robot.createScreenCapture(new Rectangle(w[0].area.x, w[0].area.y - DeskCapture.Win.BAR, w[0].area.width, w[0].area.height + DeskCapture.Win.BAR));
+648:             ImageIO.write(im, "png", new File(out, String.format("%02d-%s.png", ++n, "capture-frame")));
+649:             expect(w[0].status.getText().contains("مكتب الأمل للحوالات"), "12.1 chat name read from the window header: " + w[0].status.getText());
+650:             if (badge[0] != null) SwingUtilities.invokeAndWait(() -> badge[0].doClick());
+651:             wait(900);
+652:             String t = formText();
+653:             expect(t != null && t.contains("حوالة 250 دولار لخالد") && !t.contains("11:05"), "12.1 badge click puts the bubble text into the form: " + t);
+654:             // عدة فقاعات ← دفعة
+655:             SwingUtilities.invokeAndWait(() -> w[0].multi.doClick());
+656:             if (badge[0] != null) SwingUtilities.invokeAndWait(() -> {
+657:                 for (javax.swing.JButton c : w[0].badges()) c.doClick();
+658:             });
+659:             wait(300);
+660:             SwingUtilities.invokeAndWait(() -> w[0].send.doClick());
+661:             wait(1200);
+662:             shot("capture-batch");
+663:             expect(findQuiet("رسائل من واتساب") && findQuiet("2 رسائل"), "12.1 multi-select sends a batch");
+664:             expect(findQuiet("مقترح من اسم المحادثة") && findQuiet("المكتب: الأمل"), "12.1 office suggested from the chat name");
+665:             // 12.5: «مربع نسخ»: كل ما تحت المربع رسالة واحدة
+666:             SwingUtilities.invokeAndWait(() -> w[0].boxBtn.doClick());
+667:             wait(400);
+668:             final boolean[] bm = {false};
+669:             SwingUtilities.invokeAndWait(() -> bm[0] = w[0].boxMode && w[0].copyBtn.isVisible() && !w[0].auto.isVisible() && w[0].badges().isEmpty()
+670:                     && w[0].area.width <= 400);
+671:             expect(bm[0], "12.5 box mode: small box with a copy button");
+672:             BufferedImage bi = robot.createScreenCapture(new Rectangle(w[0].area.x, w[0].area.y - DeskCapture.Win.BAR, w[0].area.width, w[0].area.height + DeskCapture.Win.BAR));
+673:             ImageIO.write(bi, "png", new File(out, String.format("%02d-%s.png", ++n, "capture-box")));
+674:             // القارئ الوهمي يعطي أسطرًا بمكانها في الإطار الكبير: نكبّر المربع فوقها
+675:             SwingUtilities.invokeAndWait(() -> w[0].setArea(new Rectangle(w[0].area.x, w[0].area.y, 460, 600)));
+676:             SwingUtilities.invokeAndWait(() -> w[0].copyBtn.doClick());
+677:             wait(1800);
+678:             shot("capture-box-after");
+679:             String ft5 = formText();
+680:             expect(findQuiet("رسائل من واتساب") || (ft5 != null && ft5.contains("حوالة 250 دولار لخالد")), "12.5 «نسخ ما في المربع» moves the text to the app: "
+681:                     + w[0].status.getText() + " | " + ft5);
+682:             SwingUtilities.invokeAndWait(() -> w[0].dispose());
+683:             clickText("رسالة واتساب");
+684:             wait(300);
+685:             key(KeyEvent.VK_H, true);
+686:             wait(800);
+687:         }
+688:         System.clearProperty("sa.capture.fake");
+689:         fake.delete();
+690:         key(KeyEvent.VK_H, true);
+691:         wait(700);
+692:         // و) فحص الحافظة: بلا محتوى
+693:         setClip("أحمد 100");
+694:         SwingUtilities.invokeAndWait(() -> com.smart.hawala.desk.PhoneWindow.activityForTests().waMove.inspect());
+695:         wait(900);
+696:         shot("clip-inspect");
+697:         expect(findQuiet("فحص الحافظة") && findQuiet("عععع ###") && !findQuiet("أحمد 100"), "12.1 clipboard inspector masks the content");
+698:         clickText("إغلاق");
+699:         wait(500);
+700:         key(KeyEvent.VK_H, true);
+701:         wait(700);
+702:     }
+703: 
+704:     static boolean findQuiet(String text) throws Exception {
+705:         int f = fails;
+706:         int sz = log.size();
+707:         boolean ok = find(text, false, false) != null;
+708:         fails = f;
+709:         while (log.size() > sz) log.remove(log.size() - 1);
+710:         return ok;
+711:     }
+712: 
+713:     static void expect(boolean ok, String what) {
+714:         System.out.println((ok ? "ok   " : "FAIL ") + what);
+715:         if (!ok) { fails++; log.add("FAIL: " + what); }
+716:     }
+717: 
+718:     /** الخانة الحقيقية الظاهرة الآن من هذا النوع (أو null). */
+719:     static <T extends javax.swing.text.JTextComponent> T fieldShowing(Class<T> k) throws Exception {
+720:         final Object[] r = {null};
+721:         SwingUtilities.invokeAndWait(() -> {
+722:             for (java.awt.Component c : all(com.smart.hawala.desk.PhoneWindow.frame().getLayeredPane()))
+723:                 if (k.isInstance(c) && c.isShowing() && (k != javax.swing.JTextField.class || !(c instanceof javax.swing.JPasswordField))) r[0] = c;
+724:         });
+725:         return k.cast(r[0]);
+726:     }
+727: 
+728:     static List<java.awt.Component> all(java.awt.Component c) {
+729:         List<java.awt.Component> o = new ArrayList<>();
+730:         o.add(c);
+731:         if (c instanceof java.awt.Container) for (java.awt.Component x : ((java.awt.Container) c).getComponents()) o.addAll(all(x));
+732:         return o;
+733:     }
+734: 
+735:     static void wait(int ms) throws Exception {
+736:         Thread.sleep(ms);
+737:         SwingUtilities.invokeAndWait(() -> { });
+738:     }
+739: 
+740:     static void shot(String name) throws Exception {
+741:         Rectangle r = com.smart.hawala.desk.PhoneWindow.frameBounds();
+742:         BufferedImage im = robot.createScreenCapture(r);
+743:         ImageIO.write(im, "png", new File(out, String.format("%02d-%s.png", ++n, name)));
+744:         System.out.println("shot " + name);
+745:     }
+746: 
+747:     /** يبحث عن نص ظاهر في النوافذ (الأعلى أولًا)، ويرجع مركزه على الشاشة. */
+748:     static Point find(String text, boolean bottom, boolean hint) throws Exception {
+749:         final Point[] res = {null};
+750:         SwingUtilities.invokeAndWait(() -> {
+751:             List<ViewRootImpl> roots = WindowStack.roots();
+752:             roots.sort((x, y) -> Integer.compare(y.layer(), x.layer()));
+753:             for (ViewRootImpl r : roots) {
+754:                 List<View> hits = new ArrayList<>();
+755:                 collect(r.getView(), text, hint, hits);
+756:                 if (hits.isEmpty()) continue;
+757:                 List<View> exact = new ArrayList<>();
+758:                 for (View v : hits) {
+759:                     CharSequence t = hint ? ((TextView) v).getHint() : ((TextView) v).getText();
+760:                     if (t.toString().trim().equals(text)) exact.add(v);
+761:                 }
+762:                 if (!exact.isEmpty()) hits = exact;
+763:                 View best = hits.get(0);
+764:                 for (View v : hits) {
+765:                     int[] l = new int[2], m = new int[2];
+766:                     v.getLocationOnScreen(l);
+767:                     best.getLocationOnScreen(m);
+768:                     if (bottom ? l[1] > m[1] : l[1] < m[1]) best = v;
+769:                 }
+770:                 res[0] = phys(best, best.getWidth() / 2f, best.getHeight() / 2f);
+771:                 return;
+772:             }
+773:         });
+774:         if (res[0] == null) { fails++; log.add("NOT FOUND: " + text); }
+775:         return res[0];
+776:     }
+777: 
+778:     static void collect(View v, String text, boolean hint, List<View> hits) {
+779:         if (!v.isShown()) return;
+780:         if (v instanceof TextView) {
+781:             CharSequence t = hint ? ((TextView) v).getHint() : ((TextView) v).getText();
+782:             if (t != null && t.toString().contains(text) && v.getWidth() > 0) hits.add(v);
+783:         }
+784:         if (v instanceof ViewGroup) for (int i = 0; i < ((ViewGroup) v).getChildCount(); i++) collect(((ViewGroup) v).getChildAt(i), text, hint, hits);
+785:     }
+786: 

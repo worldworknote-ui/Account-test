@@ -1,0 +1,13 @@
+1: #!/bin/bash
+2: # يبني بيئة جافا مصغّرة للماك (≈24 ميغابايت بعد ضغط zip) من وحدات Temurin، تكفي البرنامج وحده:
+3: #   JLINK=<jdk-21.0.8 على هذا الجهاز>/bin/jlink  JMODS=<jdk-21.0.8 للماك>/Contents/Home/jmods  bash make-runtime.sh <مجلد الإخراج>
+4: # يجب أن يكون إصدار jlink مطابقًا تمامًا لإصدار وحدات الماك (مثلًا 21.0.8+9 للاثنين). تبقى توقيعات Adoptium على الملفات التنفيذية كما هي
+5: # (لا يُستعمل --strip-debug لأنه يعدّل الملفات التنفيذية فتسقط توقيعاتها). الوحدات بلا ضغط داخلي لأن ضغط ملف zip الخارجي لها أفضل.
+6: set -e
+7: OUT="$1"
+8: rm -rf "$OUT"
+9: "$JLINK" --module-path "$JMODS" \
+10:   --add-modules java.base,java.desktop,java.sql,jdk.crypto.ec,jdk.unsupported \
+11:   --exclude-files='**/libjsound.dylib,**/libsplashscreen.dylib,**/bin/keytool' \
+12:   --strip-java-debug-attributes --no-header-files --no-man-pages --compress=zip-0 --output "$OUT"
+13: echo "RUNTIME OK: $OUT ($(du -sh "$OUT" | cut -f1))"

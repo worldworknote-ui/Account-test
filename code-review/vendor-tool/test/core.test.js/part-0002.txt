@@ -1,0 +1,115 @@
+127:   for (var bi = 0; bi < bads.length; bi++) {
+128:     var fx = { lid: "SA-2026-0002", uu: 20271014, dk: dk };
+129:     fx[bads[bi][0]] = bads[bi][1];
+130:     var threw = false;
+131:     try {
+132:       await VT.issueToken(signer, fx);
+133:     } catch (e) {
+134:       threw = true;
+135:     }
+136:     check(threw, "حقل غير صالح يُرفض قبل التوقيع: " + bads[bi][0] + "=" + bads[bi][1]);
+137:   }
+138:   var der = VT.b64ToBytes(parts[1]);
+139:   check(der[0] === 0x30 && VT.rawToDer(VT.derToRaw(der, 32)).join() === der.join(), "التوقيع بترميز DER ويتحول ذهابًا وإيابًا");
+140: 
+141:   // رموز لاختبار Java: التطبيق يجب أن يقبل ما تصدره الأداة ويرفض المعدّل
+142:   var dev2 = nodeKeyPair();
+143:   var raw64 = VT.derToRaw(der, 32);
+144:   var list = [
+145:     { name: "رمز كامل", token: tok, ok: true },
+146:     { name: "رمز جزئي mo و mt", token: await VT.issueToken(signer, { lid: "SA-2026-0003", ed: "small", ft: "offices,export", uu: 20270101, dk: dk, mo: 20, mt: 2000 }), ok: true },
+147:     { name: "رمز بأسطر جديدة من واتساب", token: tok.replace(/(.{30})/g, "$1\n"), ok: true },
+148:     // 12.6: رمز مخصص بالقالب الأساسي وحدود رقمية وتاريخ انتهاء
+149:     { name: "رمز 12.6 بحدود مخصصة", token: await VT.issueToken(signer, Object.assign({ lid: "SA-2026-0005", uu: 20270101, dk: dk, ex: 20271231 }, VT.fieldsOf(VT.DEFAULT_TEMPLATES[0]))), ok: true },
+150:     { name: "رمز لهاتف آخر", token: await VT.issueToken(signer, { lid: "SA-2026-0004", uu: 20271014, dk: await VT.deviceFingerprint(dev2.spki) }), ok: false },
+151:     { name: "تاريخ ممدد بعد التوقيع", token: forged, ok: false },
+152:     { name: "توقيع خام بلا DER", token: parts[0] + "." + VT.b64url(raw64), ok: false }
+153:   ];
+154:   fs.writeFileSync(path.join(OUT, "node-tokens.json"), JSON.stringify({ kid: "t9", vendorPub: signer.spki, devicePub: VT.bytesToB64(dev.spki), tokens: list }));
+155:   check(true, "كُتب node-tokens.json (" + list.length + " رموز) لاختبار Java");
+156: 
+157:   console.log("== 12.6: القوالب والحدود الرقمية وتعديل الرخصة");
+158:   var fb = VT.fieldsOf(VT.DEFAULT_TEMPLATES[0]);
+159:   check(fb.mo === 30 && fb.mu === 2 && fb.mb === 1 && fb.mc === 100 && !fb.mt && !fb.mw, "القالب الأساسي: 30 مكتبًا، مستخدمان، صندوق، 100 عميل");
+160:   check(fb.ft.split(",").indexOf("ai") < 0 && fb.ft.split(",").indexOf("users") >= 0, "الأساسي بلا ذكاء اصطناعي ومع المستخدمين");
+161:   var fOff = VT.fieldsOf({ name: "صغيرة جدا", lim: { offices: { on: true, n: 20 }, boxes: { on: false }, clients: { on: false }, wa: { on: false } }, sw: { export: true } });
+162:   check(fOff.mb === 1 && fOff.mc === 25 && fOff.mw === 20 && fOff.ed === "صغيرة_جدا", "البند غير المحدد = حد المجانية مكتوبًا صراحة، والاسم بلا مسافات");
+163:   var p126 = VT.payloadOf(Object.assign({ lid: "SA-2026-0009", uu: 20270101, dk: dk, ex: 20271231 }, fb), "k1");
+164:   check(/;mo=30/.test(p126) && /;mu=2/.test(p126) && /;ex=20271231/.test(p126), "الحدود وتاريخ الانتهاء في الرمز");
+165:   var badLim = false;
+166:   try { VT.fieldsOf({ name: "x", lim: { users: { on: true, n: "-3" } }, sw: {} }); } catch (e) { badLim = true; }
+167:   check(badLim, "حد سالب مرفوض");
+168:   var LA = VT.newLedger();
+169:   VT.record(LA, Object.assign({ lid: "SA-2026-0001", dk: dk, uu: 20271014, token: "t1" }, fb), Date.UTC(2026, 9, 1));
+170:   check(VT.findLicense(LA, "SA-2026-0001").lim.mu === 2, "السجل يحفظ الحدود");
+171:   var am = VT.amend(LA, "SA-2026-0001", Object.assign({ token: "t2", uu: 20271014, note: "مستخدم ثالث" }, fb, { mu: 3 }), Date.UTC(2026, 10, 1));
+172:   check(am.token === "t2" && am.lim.mu === 3 && am.history.length === 1 && am.history[0].token === "t1", "تعديل الرخصة: رمز جديد بنفس الرقم والقديم في السجل");
+173: 
+174:   console.log("== حفظ المفتاح مشفّرًا");
+175:   var sealed = await VT.sealKey(vendor.pkcs8, "عبارة مرور طويلة 2026");
+176:   check(sealed.indexOf(VT.bytesToB64(vendor.pkcs8).substring(10, 40)) < 0, "المفتاح المحفوظ مشفّر");
+177:   var opened = await VT.openKey(sealed, "عبارة مرور طويلة 2026");
+178:   check(opened.spki === signer.spki, "يُفتح بعبارة المرور الصحيحة");
+179:   var wrong = false;
+180:   try {
+181:     await VT.openKey(sealed, "عبارة خاطئة 1234");
+182:   } catch (e) {
+183:     wrong = /غير صحيحة/.test(e.message);
+184:   }
+185:   check(wrong, "عبارة خاطئة تُرفض برسالة واضحة");
+186:   var shortPass = false;
+187:   try {
+188:     await VT.sealKey(vendor.pkcs8, "123");
+189:   } catch (e) {
+190:     shortPass = true;
+191:   }
+192:   check(shortPass, "عبارة قصيرة مرفوضة");
+193: 
+194:   console.log("== إيصال التحرير (توقيع Java/Android بصيغة DER)");
+195:   var body = "v=1;t=release;lid=SA-2026-0001;dk=" + dk + ";n=abc;at=1791900000000";
+196:   var sig = nc.sign("sha256", Buffer.from(body, "utf8"), { key: dev.priv, dsaEncoding: "der" });
+197:   var rel = "SA8-REL:" + VT.b64url(VT.utf8(body)) + "." + VT.b64url(new Uint8Array(sig));
+198:   var vr = await VT.verifyRelease("أرسل لك الإيصال: " + rel, VT.bytesToB64(dev.spki));
+199:   check(vr.ok && vr.lid === "SA-2026-0001" && vr.dk === dk, "إيصال صحيح من الهاتف المسجّل");
+200:   check(!(await VT.verifyRelease(rel, VT.bytesToB64(dev2.spki))).ok, "الإيصال لا يُقبل بمفتاح هاتف آخر");
+201:   var relBad = "SA8-REL:" + VT.b64url(VT.utf8(body.replace("SA-2026-0001", "SA-2026-0009"))) + "." + VT.b64url(new Uint8Array(sig));
+202:   check(!(await VT.verifyRelease(relBad, VT.bytesToB64(dev.spki))).ok, "تغيير رقم الرخصة في الإيصال يُكشف");
+203:   check(!(await VT.verifyRelease("SA8-REQ:xyz", VT.bytesToB64(dev.spki))).ok, "نص ليس إيصالًا");
+204: 
+205:   console.log("== السجل وقواعد النقل");
+206:   var L = VT.newLedger(), now = Date.UTC(2026, 9, 14, 9);
+207:   check(VT.nextLid(L, now) === "SA-2026-0001", "أول رقم رخصة");
+208:   VT.record(L, { lid: "SA-2026-0001", order: "2026-0153", customer: "=HYPERLINK(\"x\")", dk: dk, pub: VT.bytesToB64(dev.spki), uu: 20271014, token: tok }, now);
+209:   check(VT.nextLid(L, now) === "SA-2026-0002" && L.licenses.length === 1, "الرقم التالي يزيد بعد البيع");
+210:   var again = await VT.reviewRequest(req(), { ledger: L });
+211:   check(again.warnings.some(function (w) { return w.indexOf("لديه رخصة") >= 0; }) && again.warnings.some(function (w) { return w.indexOf("استُعمل") >= 0; }), "تنبيه: الهاتف لديه رخصة ورقم الطلب مستعمل");
+212:   var t1 = VT.canTransfer(L, "SA-2026-0001", now, false);
+213:   check(!t1.ok && t1.reason.indexOf("مفقود") >= 0, "بلا إيصال ولا تسجيل فقد: لا نقل");
+214:   L.licenses[0].lostAt = now;
+215:   var t2 = VT.canTransfer(L, "SA-2026-0001", now + 3 * VT.DAY, false);
+216:   check(!t2.ok && t2.reason.indexOf("4") >= 0, "هاتف مفقود: الانتظار 7 أيام (بقي 4)");
+217:   var t3 = VT.canTransfer(L, "SA-2026-0001", now + 7 * VT.DAY + 1, false);
+218:   check(t3.ok && t3.nextLid === "SA-2026-0001-T1", "بعد 7 أيام: النقل برقم SA-2026-0001-T1");
+219:   var t4 = VT.canTransfer(L, "SA-2026-0001", now, true);
+220:   check(t4.ok, "بإيصال تحرير: النقل فورًا");
+221:   VT.record(L, { lid: t3.nextLid, dk: "x", uu: 20271014 }, now + 8 * VT.DAY);
+222:   VT.markMoved(L, "SA-2026-0001", t3.nextLid);
+223:   check(L.revoked.indexOf("SA-2026-0001") >= 0 && VT.findLicense(L, "SA-2026-0001").status === "moved", "الرخصة القديمة منقولة ومضافة لقائمة الإلغاء");
+224:   check(VT.nextLid(L, now) === "SA-2026-0002", "النقل لا يستهلك رقم بيع جديدًا");
+225:   var t5 = VT.canTransfer(L, "SA-2026-0001-T1", now + 9 * VT.DAY, true);
+226:   check(t5.ok && t5.nextLid === "SA-2026-0001-T2", "النقل الثاني في السنة مسموح");
+227:   VT.record(L, { lid: t5.nextLid, dk: "y", uu: 20271014 }, now + 9 * VT.DAY);
+228:   VT.markMoved(L, "SA-2026-0001-T1", t5.nextLid);
+229:   var t6 = VT.canTransfer(L, "SA-2026-0001-T2", now + 10 * VT.DAY, true);
+230:   check(!t6.ok && t6.reason.indexOf("مرتين") >= 0, "النقل الثالث في السنة مرفوض");
+231:   check(VT.canTransfer(L, "SA-2026-0001-T2", now + 380 * VT.DAY, true).ok, "بعد سنة يُسمح من جديد");
+232:   var csv = VT.ledgerCsv(L);
+233:   check(csv.indexOf("'=HYPERLINK") >= 0 && csv.charCodeAt(0) === 0xfeff, "CSV بترميز UTF-8 ومحمي من حقن المعادلات");
+234:   check(JSON.parse(VT.revocationJson(L)).revoked.length === 2, "قائمة الإلغاء للخادم");
+235:   check(JSON.parse(VT.serverExport(L)).licenses["SA-2026-0001-T2"].dk === "y", "سجل الخادم");
+236:   check(VT.defaultUu(Date.UTC(2026, 9, 14, 12)) === 20271014, "التحديثات سنة من اليوم افتراضيًا");
+237: 
+238:   console.log("== طلب تفعيل من نسخة الماك (8.1)");
+239:   var macReq = fs.readFileSync(path.join(__dirname, "..", "..", "tests", "data", "mac-request.txt"), "utf8");
+240:   var mrv = await VT.reviewRequest(macReq, {});
+241:   check(mrv.mac === true && mrv.errors.length === 0 && mrv.req.platform === "mac", "طلب الماك يُقبل (توقيع إثبات الحيازة صحيح) " + JSON.stringify(mrv.errors));

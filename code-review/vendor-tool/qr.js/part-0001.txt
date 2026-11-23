@@ -1,0 +1,219 @@
+1: /*
+2:  * 11.5: مولّد رمز QR صغير بلا مكتبات (وضع البايت، تصحيح أخطاء M، الإصدارات 1–40، اختيار القناع بأقل عقوبة).
+3:  * يُستعمل لعرض رابط التفعيل smartacc://activate?k=… فيمسحه العميل بكاميرا هاتفه فيفتح التطبيق بالرمز مباشرة.
+4:  * الخوارزمية حسب المواصفة ISO/IEC 18004.
+5:  */
+6: (function (root) {
+7:   "use strict";
+8: 
+9:   // عدد كلمات التصحيح لكل كتلة، وعدد الكتل، لمستوى M (الفهرس = الإصدار)
+10:   var ECC_M = [-1, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26, 26, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28];
+11:   var BLOCKS_M = [-1, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21, 23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49];
+12: 
+13:   function rawModules(ver) {
+14:     var r = (16 * ver + 128) * ver + 64;
+15:     if (ver >= 2) {
+16:       var n = Math.floor(ver / 7) + 2;
+17:       r -= (25 * n - 10) * n - 55;
+18:       if (ver >= 7) r -= 36;
+19:     }
+20:     return r;
+21:   }
+22: 
+23:   function dataCodewords(ver) { return Math.floor(rawModules(ver) / 8) - ECC_M[ver] * BLOCKS_M[ver]; }
+24: 
+25:   // ---------------------------------------------------------------- Reed-Solomon على GF(256)
+26:   function mul(x, y) {
+27:     var z = 0;
+28:     for (var i = 7; i >= 0; i--) {
+29:       z = (z << 1) ^ ((z >>> 7) * 0x11D);
+30:       z ^= ((y >>> i) & 1) * x;
+31:     }
+32:     return z & 0xFF;
+33:   }
+34: 
+35:   function rsDivisor(deg) {
+36:     var r = [];
+37:     for (var i = 0; i < deg - 1; i++) r.push(0);
+38:     r.push(1);
+39:     var root = 1;
+40:     for (var k = 0; k < deg; k++) {
+41:       for (var j = 0; j < r.length; j++) {
+42:         r[j] = mul(r[j], root);
+43:         if (j + 1 < r.length) r[j] ^= r[j + 1];
+44:       }
+45:       root = mul(root, 0x02);
+46:     }
+47:     return r;
+48:   }
+49: 
+50:   function rsRemainder(data, div) {
+51:     var r = div.map(function () { return 0; });
+52:     data.forEach(function (b) {
+53:       var f = b ^ r.shift();
+54:       r.push(0);
+55:       div.forEach(function (c, i) { r[i] ^= mul(c, f); });
+56:     });
+57:     return r;
+58:   }
+59: 
+60:   // ---------------------------------------------------------------- البناء
+61:   function encode(text) {
+62:     var bytes = Array.from(new TextEncoder().encode(text));
+63:     var ver, cap;
+64:     for (ver = 1; ver <= 40; ver++) {
+65:       cap = dataCodewords(ver) * 8;
+66:       var need = 4 + (ver < 10 ? 8 : 16) + bytes.length * 8;
+67:       if (need <= cap) break;
+68:     }
+69:     if (ver > 40) throw new Error("النص أطول من سعة رمز QR");
+70:     // البتات: وضع البايت 0100، الطول، البيانات، نهاية، حشو
+71:     var bits = [];
+72:     function put(v, n) { for (var i = n - 1; i >= 0; i--) bits.push((v >>> i) & 1); }
+73:     put(4, 4);
+74:     put(bytes.length, ver < 10 ? 8 : 16);
+75:     bytes.forEach(function (b) { put(b, 8); });
+76:     put(0, Math.min(4, cap - bits.length));
+77:     put(0, (8 - bits.length % 8) % 8);
+78:     for (var pad = 0xEC; bits.length < cap; pad ^= 0xEC ^ 0x11) put(pad, 8);
+79:     var data = [];
+80:     for (var i = 0; i < bits.length; i += 8) {
+81:       var v = 0;
+82:       for (var j = 0; j < 8; j++) v = (v << 1) | bits[i + j];
+83:       data.push(v);
+84:     }
+85:     // الكتل والتصحيح والتشبيك
+86:     var nb = BLOCKS_M[ver], ecl = ECC_M[ver], raw = Math.floor(rawModules(ver) / 8);
+87:     var shortCount = nb - raw % nb, shortLen = Math.floor(raw / nb);
+88:     var div = rsDivisor(ecl), blocks = [], k = 0;
+89:     for (var b = 0; b < nb; b++) {
+90:       var dlen = shortLen - ecl + (b < shortCount ? 0 : 1);
+91:       var dat = data.slice(k, k + dlen);
+92:       k += dlen;
+93:       var ec = rsRemainder(dat, div);
+94:       if (b < shortCount) dat.push(0);   // مكان مؤقت ليتساوى الطول
+95:       blocks.push(dat.concat(ec));
+96:     }
+97:     var out = [];
+98:     for (var c = 0; c < blocks[0].length; c++) {
+99:       blocks.forEach(function (bl, bi) {
+100:         if (c !== shortLen - ecl || bi >= shortCount) out.push(bl[c]);
+101:       });
+102:     }
+103:     return draw(ver, out);
+104:   }
+105: 
+106:   function draw(ver, cw) {
+107:     var size = ver * 4 + 17, m = [], fn = [];
+108:     for (var y = 0; y < size; y++) { m.push(new Array(size).fill(false)); fn.push(new Array(size).fill(false)); }
+109:     function set(x, y, d) { m[y][x] = d; fn[y][x] = true; }
+110:     // أنماط التوقيت
+111:     for (var i = 0; i < size; i++) { set(6, i, i % 2 === 0); set(i, 6, i % 2 === 0); }
+112:     // أنماط الإيجاد
+113:     function finder(cx, cy) {
+114:       for (var dy = -4; dy <= 4; dy++) for (var dx = -4; dx <= 4; dx++) {
+115:         var d = Math.max(Math.abs(dx), Math.abs(dy)), x = cx + dx, y = cy + dy;
+116:         if (x >= 0 && x < size && y >= 0 && y < size) set(x, y, d !== 2 && d !== 4);
+117:       }
+118:     }
+119:     finder(3, 3); finder(size - 4, 3); finder(3, size - 4);
+120:     // أنماط المحاذاة
+121:     var pos = [];
+122:     if (ver > 1) {
+123:       var n = Math.floor(ver / 7) + 2, step = (ver === 32) ? 26 : Math.ceil((ver * 4 + 4) / (n * 2 - 2)) * 2;
+124:       pos = [6];
+125:       for (var p = size - 7; pos.length < n; p -= step) pos.splice(1, 0, p);
+126:     }
+127:     pos.forEach(function (ax, ai) {
+128:       pos.forEach(function (ay, aj) {
+129:         if ((ai === 0 && aj === 0) || (ai === 0 && aj === pos.length - 1) || (ai === pos.length - 1 && aj === 0)) return;
+130:         for (var dy = -2; dy <= 2; dy++) for (var dx = -2; dx <= 2; dx++) set(ax + dx, ay + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+131:       });
+132:     });
+133:     // حجز أماكن معلومات الصيغة (تُكتب لاحقًا) والإصدار
+134:     formatBits(m, fn, size, 0, true);
+135:     if (ver >= 7) {
+136:       var rem = ver;
+137:       for (var q = 0; q < 12; q++) rem = (rem << 1) ^ ((rem >>> 11) * 0x1F25);
+138:       var vb = (ver << 12) | rem;
+139:       for (var t = 0; t < 18; t++) {
+140:         var bit = ((vb >>> t) & 1) === 1, a = size - 11 + t % 3, bb = Math.floor(t / 3);
+141:         set(a, bb, bit); set(bb, a, bit);
+142:       }
+143:     }
+144:     // البيانات بالتعرج
+145:     var idx = 0;
+146:     for (var right = size - 1; right >= 1; right -= 2) {
+147:       if (right === 6) right = 5;
+148:       for (var vert = 0; vert < size; vert++) {
+149:         for (var jj = 0; jj < 2; jj++) {
+150:           var x = right - jj, up = ((right + 1) & 2) === 0, y = up ? size - 1 - vert : vert;
+151:           if (!fn[y][x] && idx < cw.length * 8) {
+152:             m[y][x] = ((cw[idx >>> 3] >>> (7 - (idx & 7))) & 1) === 1;
+153:             idx++;
+154:           }
+155:         }
+156:       }
+157:     }
+158:     // أفضل قناع
+159:     var best = null, bestPen = Infinity;
+160:     for (var mask = 0; mask < 8; mask++) {
+161:       var c = m.map(function (r) { return r.slice(); });
+162:       applyMask(c, fn, size, mask);
+163:       formatBits(c, fn, size, mask, false);
+164:       var pen = penalty(c, size);
+165:       if (pen < bestPen) { bestPen = pen; best = c; }
+166:     }
+167:     return best;
+168:   }
+169: 
+170:   function applyMask(m, fn, size, mask) {
+171:     for (var y = 0; y < size; y++) for (var x = 0; x < size; x++) {
+172:       if (fn[y][x]) continue;
+173:       var inv;
+174:       switch (mask) {
+175:         case 0: inv = (x + y) % 2 === 0; break;
+176:         case 1: inv = y % 2 === 0; break;
+177:         case 2: inv = x % 3 === 0; break;
+178:         case 3: inv = (x + y) % 3 === 0; break;
+179:         case 4: inv = (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0; break;
+180:         case 5: inv = x * y % 2 + x * y % 3 === 0; break;
+181:         case 6: inv = (x * y % 2 + x * y % 3) % 2 === 0; break;
+182:         default: inv = ((x + y) % 2 + x * y % 3) % 2 === 0;
+183:       }
+184:       if (inv) m[y][x] = !m[y][x];
+185:     }
+186:   }
+187: 
+188:   /** معلومات الصيغة: مستوى M (00) والقناع، مع BCH. reserve=true للحجز فقط. */
+189:   function formatBits(m, fn, size, mask, reserve) {
+190:     var data = (0 << 3) | mask, rem = data;
+191:     for (var i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+192:     var bits = ((data << 10) | rem) ^ 0x5412;
+193:     function s(x, y, b) { m[y][x] = reserve ? false : b; if (reserve) fn[y][x] = true; }
+194:     function g(k) { return ((bits >>> k) & 1) === 1; }
+195:     for (var a = 0; a <= 5; a++) s(8, a, g(a));
+196:     s(8, 7, g(6)); s(8, 8, g(7)); s(7, 8, g(8));
+197:     for (var b = 9; b < 15; b++) s(14 - b, 8, g(b));
+198:     for (var c = 0; c < 8; c++) s(size - 1 - c, 8, g(c));
+199:     for (var d = 8; d < 15; d++) s(8, size - 15 + d, g(d));
+200:     s(8, size - 8, true);   // الوحدة الداكنة دائمًا
+201:     if (reserve) fn[size - 8][8] = true;
+202:   }
+203: 
+204:   function penalty(m, size) {
+205:     var p = 0, dark = 0;
+206:     function lines(get) {
+207:       for (var a = 0; a < size; a++) {
+208:         var run = 1, prev = get(a, 0), hist = [];
+209:         for (var b = 1; b < size; b++) {
+210:           var v = get(a, b);
+211:           if (v === prev) { run++; if (run === 5) p += 3; else if (run > 5) p++; }
+212:           else { run = 1; prev = v; }
+213:         }
+214:         // نمط شبيه بالإيجاد 1:1:3:1:1 مع أربعة فاتحة
+215:         for (var c = 0; c + 10 < size; c++) {
+216:           var pat = [true, false, true, true, true, false, true];
+217:           var ok = true;
+218:           for (var k = 0; k < 7; k++) if (get(a, c + k) !== pat[k]) { ok = false; break; }
+219:           if (!ok) continue;

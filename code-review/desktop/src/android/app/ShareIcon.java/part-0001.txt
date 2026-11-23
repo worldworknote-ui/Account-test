@@ -1,0 +1,184 @@
+1: package android.app;
+2: 
+3: import android.content.Context;
+4: import android.graphics.Canvas;
+5: import android.graphics.Paint;
+6: import android.graphics.Path;
+7: import android.graphics.RectF;
+8: import android.view.View;
+9: 
+10: /**
+11:  * 12.0: أيقونات قائمة المشاركة على الكمبيوتر، مرسومة بالخطوط (لا تعتمد على رموز قد لا يحويها الخط في الماك).
+12:  * مربع مستدير بلون التطبيق، وفيه رسم أبيض بسيط. المقاسات على شبكة 48×48 وتُكبَّر لحجم العرض.
+13:  */
+14: final class ShareIcon extends View {
+15:     private final String kind;
+16:     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG), line = new Paint(Paint.ANTI_ALIAS_FLAG), white = new Paint(Paint.ANTI_ALIAS_FLAG);
+17: 
+18:     ShareIcon(Context c, String kind) {
+19:         super(c);
+20:         this.kind = kind;
+21:         fill.setColor(color(kind));
+22:         white.setColor(0xFFFFFFFF);
+23:         line.setColor(0xFFFFFFFF);
+24:         line.setStyle(Paint.Style.STROKE);
+25:         line.setStrokeCap(Paint.Cap.ROUND);
+26:         line.setStrokeJoin(Paint.Join.ROUND);
+27:     }
+28: 
+29:     static int color(String kind) {
+30:         switch (kind) {
+31:             case ShareSheet.WA_APP:
+32:             case ShareSheet.WA_DRAG: return 0xFF25D366;
+33:             case ShareSheet.WA_WEB: return 0xFF128C7E;
+34:             case ShareSheet.TG: return 0xFF2AABEE;
+35:             case ShareSheet.SYSTEM: return 0xFF5B6B8C;
+36:             case ShareSheet.MAIL: return 0xFF3B82F6;
+37:             case ShareSheet.COPY: return 0xFF64748B;
+38:             case ShareSheet.SAVE: return 0xFF0B6B53;
+39:             case ShareSheet.OPEN: return 0xFF8B5CF6;
+40:             case ShareSheet.REVEAL: return 0xFFF59E0B;
+41:             default: return 0xFF888888;
+42:         }
+43:     }
+44: 
+45:     @Override
+46:     protected void onDraw(Canvas c) {
+47:         float s = Math.min(getWidth(), getHeight()) / 48f;
+48:         float ox = (getWidth() - 48 * s) / 2f, oy = (getHeight() - 48 * s) / 2f;
+49:         c.save();
+50:         c.translate(ox, oy);
+51:         c.scale(s, s);
+52:         c.drawRoundRect(new RectF(0, 0, 48, 48), 14, 14, fill);
+53:         line.setStrokeWidth(2.6f);
+54:         Path p = new Path();
+55:         switch (kind) {
+56:             case ShareSheet.WA_APP:
+57:             case ShareSheet.WA_WEB: {
+58:                 // فقاعة محادثة بذيل وسماعة صغيرة
+59:                 c.drawCircle(24, 23, 12, line);
+60:                 p.moveTo(15, 31);
+61:                 p.lineTo(12.5f, 37);
+62:                 p.lineTo(19, 34.5f);
+63:                 c.drawPath(p, line);
+64:                 Path h = new Path();
+65:                 h.moveTo(19.5f, 18.5f);
+66:                 h.quadTo(19, 22, 22.5f, 25.5f);
+67:                 h.quadTo(26, 29, 29.5f, 28.5f);
+68:                 line.setStrokeWidth(3.2f);
+69:                 c.drawPath(h, line);
+70:                 if (kind.equals(ShareSheet.WA_WEB)) {
+71:                     // شارة «ويب»: كرة صغيرة في الزاوية
+72:                     c.drawCircle(38, 38, 7.5f, fill);
+73:                     line.setStrokeWidth(1.6f);
+74:                     c.drawCircle(38, 38, 6, line);
+75:                     c.drawLine(32, 38, 44, 38, line);
+76:                     c.drawOval(new RectF(35.5f, 32, 40.5f, 44), line);
+77:                 }
+78:                 break;
+79:             }
+80:             case ShareSheet.WA_DRAG: {
+81:                 // مجلد وسهم سحب
+82:                 p.moveTo(10, 16);
+83:                 p.lineTo(20, 16);
+84:                 p.lineTo(23, 19);
+85:                 p.lineTo(38, 19);
+86:                 p.lineTo(38, 34);
+87:                 p.lineTo(10, 34);
+88:                 p.close();
+89:                 c.drawPath(p, line);
+90:                 Path a = new Path();
+91:                 a.moveTo(24, 22);
+92:                 a.lineTo(24, 30);
+93:                 a.moveTo(20, 26.5f);
+94:                 a.lineTo(24, 30.5f);
+95:                 a.lineTo(28, 26.5f);
+96:                 c.drawPath(a, line);
+97:                 break;
+98:             }
+99:             case ShareSheet.TG: {
+100:                 // طائرة ورقية
+101:                 p.moveTo(11, 23);
+102:                 p.lineTo(37, 13);
+103:                 p.lineTo(32, 36);
+104:                 p.lineTo(24, 29);
+105:                 p.close();
+106:                 c.drawPath(p, white);
+107:                 Path f = new Path();
+108:                 f.moveTo(37, 13);
+109:                 f.lineTo(21, 27);
+110:                 f.lineTo(22, 34);
+111:                 f.lineTo(24, 29);
+112:                 line.setColor(color(kind));
+113:                 line.setStrokeWidth(1.6f);
+114:                 c.drawPath(f, line);
+115:                 line.setColor(0xFFFFFFFF);
+116:                 break;
+117:             }
+118:             case ShareSheet.SYSTEM: {
+119:                 // رمز المشاركة: ثلاث نقاط متصلة
+120:                 c.drawLine(17, 24, 31, 16, line);
+121:                 c.drawLine(17, 24, 31, 32, line);
+122:                 c.drawCircle(16, 24, 4.2f, white);
+123:                 c.drawCircle(32, 15.5f, 4.2f, white);
+124:                 c.drawCircle(32, 32.5f, 4.2f, white);
+125:                 break;
+126:             }
+127:             case ShareSheet.MAIL: {
+128:                 c.drawRoundRect(new RectF(11, 15, 37, 33), 3, 3, line);
+129:                 p.moveTo(12, 17);
+130:                 p.lineTo(24, 26);
+131:                 p.lineTo(36, 17);
+132:                 c.drawPath(p, line);
+133:                 break;
+134:             }
+135:             case ShareSheet.COPY: {
+136:                 c.drawRoundRect(new RectF(14, 11, 30, 29), 3, 3, line);
+137:                 c.drawRoundRect(new RectF(19, 18, 35, 37), 3, 3, fill);
+138:                 c.drawRoundRect(new RectF(19, 18, 35, 37), 3, 3, line);
+139:                 break;
+140:             }
+141:             case ShareSheet.SAVE: {
+142:                 p.moveTo(24, 11);
+143:                 p.lineTo(24, 28);
+144:                 p.moveTo(17, 21);
+145:                 p.lineTo(24, 28);
+146:                 p.lineTo(31, 21);
+147:                 p.moveTo(12, 30);
+148:                 p.lineTo(12, 36);
+149:                 p.lineTo(36, 36);
+150:                 p.lineTo(36, 30);
+151:                 c.drawPath(p, line);
+152:                 break;
+153:             }
+154:             case ShareSheet.OPEN: {
+155:                 p.moveTo(15, 11);
+156:                 p.lineTo(28, 11);
+157:                 p.lineTo(34, 17);
+158:                 p.lineTo(34, 37);
+159:                 p.lineTo(15, 37);
+160:                 p.close();
+161:                 c.drawPath(p, line);
+162:                 c.drawLine(19, 24, 30, 24, line);
+163:                 c.drawLine(19, 30, 30, 30, line);
+164:                 break;
+165:             }
+166:             case ShareSheet.REVEAL: {
+167:                 p.moveTo(10, 15);
+168:                 p.lineTo(20, 15);
+169:                 p.lineTo(23, 18);
+170:                 p.lineTo(38, 18);
+171:                 p.lineTo(38, 34);
+172:                 p.lineTo(10, 34);
+173:                 p.close();
+174:                 c.drawPath(p, line);
+175:                 c.drawCircle(25, 26, 4, line);
+176:                 c.drawLine(28, 29, 32, 33, line);
+177:                 break;
+178:             }
+179:             default:
+180:                 c.drawCircle(24, 24, 6, white);
+181:         }
+182:         c.restore();
+183:     }
+184: }

@@ -1,0 +1,145 @@
+472:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_feed_date ON audit_feed(created_at)");
+473:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_lines_office_currency ON journal_lines(office_id,currency)");
+474:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_lines_entry ON journal_lines(entry_id)");
+475:         // 12.7: فهرس مغطٍّ لأرصدة المكاتب (يُقرأ وحده دون الجدول) وفهرس حالة الحركات (للملخص)
+476:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_lines_bal ON journal_lines(account,office_id,currency,debit_minor,credit_minor)");
+477:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_tx_status ON tx(status)");
+478:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action,created_at)");
+479:         // 12.7: نص البحث (محلي على هذا الجهاز، داخل الملف المشفّر كاملًا؛ لا يُنسخ ولا يُزامن): البحث بالنص دون فك كل الحركات
+480:         d.execSQL("CREATE TABLE IF NOT EXISTS tx_search(tx_id INTEGER PRIMARY KEY,uuid TEXT,txt TEXT)");
+481:         d.execSQL("CREATE TRIGGER IF NOT EXISTS tx_search_upd AFTER UPDATE OF person,description,notes,dest,user_name,amount_minor,currency ON tx BEGIN DELETE FROM tx_search WHERE tx_id=NEW.id; END");
+482:         d.execSQL("CREATE TRIGGER IF NOT EXISTS tx_search_del AFTER DELETE ON tx BEGIN DELETE FROM tx_search WHERE tx_id=OLD.id; END");
+483:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_entries_tx ON journal_entries(tx_id)");
+484:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_att_tx ON attachments(tx_id)");
+485:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_cash_date ON cash_moves(created_at)");
+486:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_cash_tx ON cash_moves(tx_id)");
+487:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_client_moves ON client_moves(client_id,created_at)");
+488:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_client_cash ON client_moves(cash_uuid)");
+489:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_checks_tx ON tx_checks(tx_id)");
+490:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_wamarks_office ON wa_marks(office_id,created_at)");
+491:         boolean firstV5 = !hasSetting(d, "mig5");
+492:         if (firstV5) {
+493:             d.execSQL("UPDATE office_currencies SET limit_owe_minor=limit_minor WHERE limit_owe_minor IS NULL AND limit_minor IS NOT NULL");
+494:             d.execSQL("UPDATE offices SET usd_owe_limit_minor=usd_limit_minor WHERE usd_owe_limit_minor IS NULL AND usd_limit_minor IS NOT NULL");
+495:             if ("0".equals(rawSetting(d, "weekly_backup"))) d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('reminder_days','0')");
+496:         }
+497:         boolean firstV6 = !hasSetting(d, "mig6");
+498:         if (firstV6) d.execSQL("UPDATE offices SET pinned=0 WHERE pinned IS NULL");
+499:         seedDefaults(d);
+500:         migrateBoxes(d);
+501:         // 10.1: الحسابات القديمة تأخذ صلاحيات دورها صراحة (يعدّلها المدير بعدها واحدة واحدة)
+502:         for (String role : new String[]{Auth.ACCOUNTANT, Auth.EMPLOYEE, Auth.VIEWER}) {
+503:             d.execSQL("UPDATE users SET perms=? WHERE perms IS NULL AND role=?", new Object[]{Auth.legacyPerms(role), role});
+504:         }
+505:         // 10.3: من كان يخضع لاعتماد المبالغ الكبيرة (بلا صلاحية الاعتماد) صار «حركاته تحتاج اعتماد»
+506:         if (!hasSetting(d, "mig_review")) {
+507:             if ("1".equals(rawSetting(d, "approval_on"))) {
+508:                 List<Object[]> us = new ArrayList<>();
+509:                 try (Cursor c = d.rawQuery("SELECT id,role,perms FROM users WHERE role<>'ADMIN'", null)) {
+510:                     while (c.moveToNext()) us.add(new Object[]{c.getLong(0), c.getString(1), c.isNull(2) ? null : c.getString(2)});
+511:                 }
+512:                 for (Object[] x : us) {
+513:                     Model.User u = new Model.User();
+514:                     u.role = (String) x[1];
+515:                     u.perms = (String) x[2];
+516:                     java.util.Set<String> ps = Auth.perms(u);
+517:                     if (ps.contains(Auth.Perm.APPROVE.name()) || ps.contains(Auth.REVIEW)) continue;
+518:                     ps.add(Auth.REVIEW);
+519:                     d.execSQL("UPDATE users SET perms=? WHERE id=?", new Object[]{Auth.csv(ps), x[0]});
+520:                 }
+521:             }
+522:             d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('mig_review','1')");
+523:         }
+524:         SyncStore.ensureSchema(d);
+525:         if (firstV5) d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('mig5','1')");
+526:         if (firstV6) d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('mig6','1')");
+527:     }
+528: 
+529:     private static boolean hasSetting(SQLiteDatabase d, String k) {
+530:         try (Cursor c = d.rawQuery("SELECT 1 FROM settings WHERE k=?", new String[]{k})) {
+531:             return c.moveToFirst();
+532:         }
+533:     }
+534: 
+535:     private static String rawSetting(SQLiteDatabase d, String k) {
+536:         try (Cursor c = d.rawQuery("SELECT v FROM settings WHERE k=?", new String[]{k})) {
+537:             return c.moveToFirst() ? c.getString(0) : null;
+538:         }
+539:     }
+540: 
+541:     private void seedDefaults(SQLiteDatabase d) {
+542:         long n = 0;
+543:         try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM currencies", null)) {
+544:             if (c.moveToFirst()) n = c.getLong(0);
+545:         }
+546:         if (n == 0) {
+547:             String[][] a = {{"USD", "دولار أمريكي", "2"}, {"EUR", "يورو", "2"}, {"TRY", "ليرة تركية", "2"}, {"SYP", "ليرة سورية", "0"}};
+548:             for (String[] x : a) d.execSQL("INSERT INTO currencies(code,name,decimals,active) VALUES(?,?,?,1)", x);
+549:         }
+550:         String[][] st = {
+551:                 {"app_title", "المحاسب الذكي لمكاتب الحوالات"}, {"office_name", ""},
+552:                 {"welcome", "إدارة آمنة وسريعة لحسابات مكاتب الحوالات"},
+553:                 {"primary_color", "#0B6B53"}, {"accent_color", "#C7922F"}, {"header_color", ""}, {"bg_color", "#F7F4ED"},
+554:                 {"home_order", DEFAULT_ORDER}, {"home_hidden", ""}, {"btn_colors", ""}, {"home_layout", "list"}, {"btn_size", "normal"},
+555:                 {"home_logo_mode", "default"}, {"home_logo_size", "medium"},
+556:                 {"developer", "برمجة: Ai creative solutions"}, {"weekly_backup", "1"}, {"reminder_days", "7"}, {"reminder_tx", "20"},
+557:                 {"lock_timeout", "5"}, {"lock_before", "0"}, {"country_code", "963"}, {"confirm_tx", "1"}
+558:         };
+559:         for (String[] x : st) d.execSQL("INSERT OR IGNORE INTO settings(k,v) VALUES(?,?)", x);
+560:         // التوقيع القديم (حتى الإصدار 7.0) يُستبدل بالتوقيع الجديد، وكذلك بعد استعادة نسخة قديمة
+561:         d.execSQL("UPDATE settings SET v=? WHERE k='developer' AND v=?", new Object[]{"برمجة: Ai creative solutions", "برمجة: أبو عمر الجوبراني"});
+562:     }
+563: 
+564:     // ===================================================================================
+565:     // أرقام ومبالغ
+566:     // ===================================================================================
+567: 
+568:     /** المبلغ بالوحدة الصغرى بقراءة واحدة لكل التطبيق (انظر Amounts): «1,500» ألف وخمسمئة لا 1.5. */
+569:     public static long minor(String text, int dec) {
+570:         return Amounts.minor(text, dec);
+571:     }
+572: 
+573:     /** رقم عام (حدود، أسعار، منازل) بقواعد منزلتين؛ المبالغ تمر بـ minor مع منازل عملتها. */
+574:     public static String normalizeNumber(String t) {
+575:         return Amounts.normalize(t, 2);
+576:     }
+577: 
+578:     public static String money(long m, int dec) { return Model.plain(m, dec); }
+579: 
+580:     public static String fmt(long m, int dec) { return Model.fmt(m, dec); }
+581: 
+582:     public static String fmtUsd(BigDecimal v) {
+583:         java.text.DecimalFormat f = new java.text.DecimalFormat("#,##0.00", java.text.DecimalFormatSymbols.getInstance(Locale.US));
+584:         return f.format(v);
+585:     }
+586: 
+587:     public synchronized int decimals(String code) {
+588:         if (code == null) return 2;
+589:         Integer c = decimalsCache.get(code);
+590:         if (c != null) return c;
+591:         int v = 2;
+592:         try (Cursor cur = getReadableDatabase().rawQuery("SELECT decimals FROM currencies WHERE code=?", new String[]{code})) {
+593:             if (cur.moveToFirst()) v = cur.getInt(0);
+594:         }
+595:         decimalsCache.put(code, v);
+596:         return v;
+597:     }
+598: 
+599:     public synchronized Map<String, Integer> decimalsMap() {
+600:         Map<String, Integer> m = new HashMap<>();
+601:         try (Cursor c = getReadableDatabase().rawQuery("SELECT code,decimals FROM currencies", null)) {
+602:             while (c.moveToNext()) m.put(c.getString(0), c.getInt(1));
+603:         }
+604:         return m;
+605:     }
+606: 
+607:     public Map<String, String> currencyNames() {
+608:         Map<String, String> m = new HashMap<>();
+609:         try (Cursor c = getReadableDatabase().rawQuery("SELECT code,name FROM currencies", null)) {
+610:             while (c.moveToNext()) m.put(c.getString(0), c.getString(1));
+611:         }
+612:         return m;
+613:     }
+614: 
+615:     // ===================================================================================
+616:     // الإعدادات

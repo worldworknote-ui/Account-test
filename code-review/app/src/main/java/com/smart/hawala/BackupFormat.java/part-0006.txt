@@ -1,0 +1,44 @@
+965:     private static final class NonClosing extends FilterInputStream {
+966:         NonClosing(InputStream in) { super(in); }
+967:         @Override public void close() { /* لا شيء */ }
+968:     }
+969: 
+970:     /** يحسب البصمة والحجم أثناء القراءة، ويرفض الملفات الأكبر من الحد. */
+971:     private static final class CountingDigestStream extends FilterInputStream {
+972:         final MessageDigest md;
+973:         final long max;
+974:         long count;
+975: 
+976:         CountingDigestStream(InputStream in, MessageDigest md, long max) {
+977:             super(in);
+978:             this.md = md;
+979:             this.max = max;
+980:         }
+981: 
+982:         @Override public int read() throws IOException {
+983:             int b = super.read();
+984:             if (b >= 0) {
+985:                 md.update((byte) b);
+986:                 count++;
+987:                 check();
+988:             }
+989:             return b;
+990:         }
+991: 
+992:         @Override public int read(byte[] b, int off, int len) throws IOException {
+993:             int n = super.read(b, off, len);
+994:             if (n > 0) {
+995:                 md.update(b, off, n);
+996:                 count += n;
+997:                 check();
+998:             }
+999:             return n;
+1000:         }
+1001: 
+1002:         private void check() throws IOException {
+1003:             if (count > max) throw new SecureStreams.CorruptBackupException("صورة داخل النسخة أكبر من الحد المسموح");
+1004:         }
+1005: 
+1006:         @Override public void close() { /* لا يغلق ZipInputStream */ }
+1007:     }
+1008: }

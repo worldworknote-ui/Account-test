@@ -1,0 +1,194 @@
+1: package com.smart.hawala;
+2: 
+3: import java.io.BufferedReader;
+4: import java.io.ByteArrayInputStream;
+5: import java.io.ByteArrayOutputStream;
+6: import java.io.DataInputStream;
+7: import java.io.EOFException;
+8: import java.io.File;
+9: import java.io.FilterInputStream;
+10: import java.io.IOException;
+11: import java.io.InputStream;
+12: import java.io.InputStreamReader;
+13: import java.io.OutputStream;
+14: import java.nio.charset.StandardCharsets;
+15: import java.security.GeneralSecurityException;
+16: import java.security.MessageDigest;
+17: import java.util.ArrayList;
+18: import java.util.Arrays;
+19: import java.util.Base64;
+20: import java.util.HashMap;
+21: import java.util.HashSet;
+22: import java.util.Iterator;
+23: import java.util.LinkedHashMap;
+24: import java.util.List;
+25: import java.util.Map;
+26: import java.util.Set;
+27: import java.util.UUID;
+28: import java.util.zip.GZIPInputStream;
+29: import java.util.zip.ZipEntry;
+30: import java.util.zip.ZipInputStream;
+31: import java.util.zip.ZipOutputStream;
+32: import javax.crypto.AEADBadTagException;
+33: import javax.crypto.Cipher;
+34: import javax.crypto.spec.GCMParameterSpec;
+35: import javax.crypto.spec.SecretKeySpec;
+36: import org.json.JSONArray;
+37: import org.json.JSONException;
+38: import org.json.JSONObject;
+39: 
+40: /**
+41:  * محتوى النسخة الاحتياطية: كتابة، قراءة، وفحص كامل قبل الاستعادة.
+42:  *
+43:  * <p>داخل الغلاف المشفّر يوجد ملف ZIP:
+44:  * <pre>
+45:  *  manifest.json                 معلومات النسخة والأعداد المتوقعة
+46:  *  tables/&lt;name&gt;.ndjson        كل صف في سطر (نصوص مفكوكة، تُشفَّر من جديد بمفتاح الهاتف عند الاستعادة)
+47:  *  attachments/&lt;id&gt;.bin        صور الوصولات مفكوكة (تصلح للاستعادة على هاتف آخر)
+48:  *  attachments/index.ndjson      وصف الصور مع بصمة SHA-256 لكل صورة
+49:  *  summary.json                  يُكتب في النهاية فقط: وجوده دليل على اكتمال الكتابة
+50:  * </pre>
+51:  *
+52:  * <p>يدعم أيضًا قراءة نسخ الإصدار 4.0 (SMARTBK4).
+53:  * لا يستخدم أي واجهة خاصة بأندرويد حتى يمكن اختباره على الكمبيوتر.
+54:  */
+55: public final class BackupFormat {
+56: 
+57:     public static final String APP_ID = "smart-accountant-hawala";
+58:     public static final int FORMAT = 5;
+59:     public static final byte[] MAGIC_V4 = "SMARTBK4".getBytes(StandardCharsets.US_ASCII);
+60: 
+61:     /** ترتيب الجداول يراعي العلاقات بينها (الأب قبل الابن) عند الاستعادة. */
+62:     public static final String[] TABLES = {
+63:             "currencies", "offices", "office_currencies", "tx", "journal_entries", "journal_lines",
+64:             "opening_balances", "exchange_rates", "settings", "audit_logs", "users", "reconciliations", "reconciliation_lines",
+65:             // 9.0: صندوق المكتب (الإصدارات الأقدم تتجاهله برسالة ظاهرة)
+66:             // 10.0: الصناديق قبل حركاتها
+67:             "cash_boxes",
+68:             "cash_moves",
+69:             // 9.0.1: سجل الجرد
+70:             "cash_counts",
+71:             // 9.0.1: حسابات العملاء (العميل قبل حركاته)
+72:             "cash_clients", "client_moves",
+73:             // 10.5: مكاتب المحاسبين، والتحقق من الحركات، وآخر رسالة واتساب نُقلت لكل مكتب
+74:             "user_offices", "tx_checks", "wa_marks",
+75:             // 10.13: حالات عمل المكاتب
+76:             "office_work",
+77:             // 10.16: سجل العمليات المشترك بين الأجهزة
+78:             "audit_feed",
+79:             // 10.17: رسائل المدير
+80:             "admin_msgs",
+81:             // 10.18: الأمانات والمبالغ المجمّدة
+82:             "office_holds"
+83:     };
+84:     public static final String[] REQUIRED = {"currencies", "offices", "tx", "journal_entries", "journal_lines"};
+85:     /** جداول لها عمود id يجب ألا يتكرر. */
+86:     private static final String[] ID_TABLES = {"offices", "tx", "journal_entries", "journal_lines", "opening_balances", "audit_logs", "users",
+87:             "reconciliations", "reconciliation_lines", "cash_moves", "cash_counts", "cash_clients", "client_moves", "cash_boxes"};
+88: 
+89:     private static final long MAX_ATTACHMENT_BYTES = 40L * 1024 * 1024;
+90:     private static final int MAX_TEXT_ENTRY = 8 * 1024 * 1024;
+91: 
+92:     private BackupFormat() {}
+93: 
+94:     // ===================================================================================
+95:     // الواجهات
+96:     // ===================================================================================
+97: 
+98:     /** مصدر البيانات عند الإنشاء (قاعدة البيانات في التطبيق، أو بيانات وهمية في الاختبارات). */
+99:     public interface Source {
+100:         Map<String, Long> counts() throws Exception;
+101:         void rows(String table, RowSink sink) throws Exception;
+102:         List<AttachmentRef> attachments() throws Exception;
+103:         /** يرجع بايتات الصورة مفكوكة، أو null إن كانت تالفة/مفقودة (تُحسب كمتخطاة). */
+104:         byte[] attachmentData(AttachmentRef ref);
+105:         /** ملاحظات تظهر في ملخص النسخة (مثل حقول تعذر فكها). */
+106:         List<String> warnings();
+107: 
+108:         /** 8.0: عدد الحقول التي تعذر فكها فكُتب مكانها نص بديل. نسخة فيها حقول تالفة لا تُحذف بعدها نسخ أقدم. */
+109:         default int unreadable() { return 0; }
+110:     }
+111: 
+112:     public interface RowSink {
+113:         void row(JSONObject row) throws Exception;
+114:     }
+115: 
+116:     /** مكان حفظ الصور مؤقتًا أثناء قراءة النسخة (مجلد تجهيز في التطبيق، أو ذاكرة في الاختبار). */
+117:     public interface AttachmentStore {
+118:         /** يحفظ الصورة ويرجع مرجعًا لها. يجب قراءة المجرى حتى نهايته. */
+119:         Object store(long id, InputStream data) throws Exception;
+120:         void discard(Object handle);
+121:     }
+122: 
+123:     public static final class AttachmentRef {
+124:         public long id;
+125:         public long txId;
+126:         public long createdAt;
+127:         public String mime;
+128:         public Object handle;
+129:     }
+130: 
+131:     public static final class StagedAttachment {
+132:         public long id;
+133:         public long txId;
+134:         public long createdAt;
+135:         public String mime;
+136:         public long size;
+137:         public String sha256;
+138:         public Object handle;
+139:     }
+140: 
+141:     public static final class WriteResult {
+142:         public final Map<String, Long> rows = new LinkedHashMap<>();
+143:         public int attachments;
+144:         /** حقول نصية تعذر فكها في الهاتف عند الإنشاء (كُتب مكانها نص بديل). */
+145:         public int unreadable;
+146:         public int skippedAttachments;
+147:         public final List<String> warnings = new ArrayList<>();
+148:     }
+149: 
+150:     /** نتيجة قراءة نسخة: الجداول والصور المجهزة، دون أي تعديل على بيانات التطبيق. */
+151:     public static final class Parsed {
+152:         public int format;
+153:         public JSONObject manifest = new JSONObject();
+154:         public JSONObject summary;
+155:         public final Map<String, List<JSONObject>> tables = new LinkedHashMap<>();
+156:         public final List<StagedAttachment> attachments = new ArrayList<>();
+157:         public final List<String> warnings = new ArrayList<>();
+158: 
+159:         public int schema() {
+160:             return manifest.optInt("schema", format >= 5 ? 5 : 4);
+161:         }
+162: 
+163:         public List<JSONObject> table(String name) {
+164:             List<JSONObject> t = tables.get(name);
+165:             return t == null ? new ArrayList<JSONObject>() : t;
+166:         }
+167:     }
+168: 
+169:     /** تقرير الفحص الكامل قبل الاستعادة. */
+170:     public static final class Report {
+171:         public final List<String> errors = new ArrayList<>();
+172:         public final List<String> warnings = new ArrayList<>();
+173:         public int offices, currencies, txActive, txCancelled, attachments, entries, cashMoves, clients, clientMoves;
+174:         public long createdAt;
+175:         public String appVersion = "";
+176:         public int format;
+177: 
+178:         public boolean ok() { return errors.isEmpty(); }
+179:     }
+180: 
+181:     // ===================================================================================
+182:     // الكتابة
+183:     // ===================================================================================
+184: 
+185:     /**
+186:      * يكتب محتوى النسخة إلى المجرى (عادة مجرى التشفير). لا يغلق المجرى: يستدعي finish فقط،
+187:      * والمستدعي يغلق مجرى التشفير لكتابة الجزء الأخير.
+188:      */
+189:     public static WriteResult write(Source src, OutputStream out, String appVersion, int schema) throws Exception {
+190:         WriteResult res = new WriteResult();
+191:         ZipOutputStream zip = new ZipOutputStream(out);
+192:         long now = Clock.now();
+193: 
+194:         JSONObject counts = new JSONObject();

@@ -1,0 +1,127 @@
+1395:       var t = a.tables.filter(function (x) { return x.excel && x.excel.toLowerCase() === m[1].toLowerCase(); })[0];
+1396:       if (!t) return null;
+1397:       var name = m[2].replace(/^\[|\]$/g, "").replace(/'(.)/g, "$1");
+1398:       var i = t.names.map(function (n) { return n.toLowerCase(); }).indexOf(name.toLowerCase());
+1399:       return i < 0 ? null : { t: t, c: t.c0 + i };
+1400:     }
+1401:     // نطاق عادي: DATA!$C$4:$C$30652 أو C:C
+1402:     var mm = ref.replace(/\$/g, "").match(/^(?:'?([^'!]+)'?!)?([A-Z]+)(\d*):([A-Z]+)(\d*)$/i);
+1403:     if (!mm || mm[2].toUpperCase() !== mm[4].toUpperCase()) return null;
+1404:     var sh = mm[1] || sheet;
+1405:     var c = colIndex(mm[2].toUpperCase());
+1406:     var tt = a.tables.filter(function (x) { return x.sheet === sh && c >= x.c0 && c <= x.c1; })[0];
+1407:     return tt ? { t: tt, c: c } : null;
+1408:   }
+1409: 
+1410:   function criterion(raw, ws) {
+1411:     var s = raw.trim();
+1412:     var lit;
+1413:     if (/^".*"$/.test(s)) lit = s.slice(1, -1).replace(/""/g, '"');
+1414:     else if (/^-?\d+(\.\d+)?$/.test(s)) lit = s;
+1415:     else if (/^\$?[A-Z]+\$?\d+$/i.test(s) && ws) { var cell = ws[s.replace(/\$/g, "").toUpperCase()]; lit = cell ? String(cell.v) : ""; }
+1416:     else return null;
+1417:     var op = "=";
+1418:     var mo = lit.match(/^(<>|>=|<=|=|>|<)(.*)$/);
+1419:     if (mo) { op = mo[1]; lit = mo[2]; }
+1420:     if (op !== "=" && op !== "<>") return null;
+1421:     var rx = /[*?]/.test(lit) ? new RegExp("^" + lit.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$", "i") : null;
+1422:     var low = lit.toLowerCase();
+1423:     return function (v) {
+1424:       var x = v === null || v === undefined ? "" : String(v).toLowerCase();
+1425:       var eq = rx ? rx.test(x) : x === low;
+1426:       return op === "=" ? eq : !eq;
+1427:     };
+1428:   }
+1429: 
+1430:   function cellRaw(cell) {
+1431:     if (!cell) return "";
+1432:     if (cell.s !== undefined) return cell.s;
+1433:     if (cell.n !== undefined) return cell.n;
+1434:     return text(cell);
+1435:   }
+1436: 
+1437:   function formulaChecks(books, a) {
+1438:     var out = [];
+1439:     books.forEach(function (bk) {
+1440:       if (!bk.wb) return;
+1441:       bk.wb.SheetNames.forEach(function (sn) {
+1442:         var ws = bk.wb.Sheets[sn];
+1443:         if (!ws || !ws["!ref"]) return;
+1444:         Object.keys(ws).forEach(function (addr) {
+1445:           if (addr.charAt(0) === "!") return;
+1446:           var cell = ws[addr];
+1447:           if (!cell || !cell.f || typeof cell.v !== "number") return;
+1448:           var m = cell.f.match(/^\s*(SUMIFS|SUMIF)\((.*)\)\s*$/i);
+1449:           if (!m || !wholeCall(m[2])) return;
+1450:           var args = splitArgs(m[2]);
+1451:           var sum, conds = [];
+1452:           if (m[1].toUpperCase() === "SUMIFS") {
+1453:             if (args.length < 3 || args.length % 2 !== 1) return;
+1454:             sum = resolveColumn(a, sn, args[0]);
+1455:             for (var i = 1; i < args.length; i += 2) conds.push({ col: resolveColumn(a, sn, args[i]), f: criterion(args[i + 1], ws) });
+1456:           } else {
+1457:             if (args.length < 2) return;
+1458:             var rng = resolveColumn(a, sn, args[0]);
+1459:             sum = args[2] ? resolveColumn(a, sn, args[2]) : rng;
+1460:             conds.push({ col: rng, f: criterion(args[1], ws) });
+1461:           }
+1462:           if (!sum || conds.some(function (x) { return !x.col || !x.f || x.col.t !== sum.t; })) return;
+1463:           var t = sum.t, total = 0;
+1464:           for (var r = t.first; r <= t.last; r++) {
+1465:             var row = t.rows[r] || [];
+1466:             if (!conds.every(function (x) { return x.f(cellRaw(row[x.col.c])); })) continue;
+1467:             var p = C.parseAmount(row[sum.c]);
+1468:             if (p.ok && !p.empty) total += (p.neg ? -1 : 1) * Number(p.int + (p.frac ? "." + p.frac : ""));
+1469:           }
+1470:           out.push({ sheet: sn, cell: addr, formula: "=" + cell.f, cached: cell.v, computed: Math.round(total * 1e6) / 1e6, ok: Math.abs(total - cell.v) < 1e-6, table: t.label });
+1471:         });
+1472:       });
+1473:     });
+1474:     return out;
+1475:   }
+1476: 
+1477:   /**
+1478:    * تحقق إضافي: نسخة مفلترة لحساب واحد (مثل ورقة Detailed) ← رصيدها لكل عملة من صفوفها
+1479:    * يجب أن يساوي رصيد الحساب نفسه في النقل.
+1480:    */
+1481:   function derivedChecks(a, model, cfg, serialToDate) {
+1482:     var out = [];
+1483:     a.tables.forEach(function (t) {
+1484:       if (t.kind !== "derived" || t.roles.account === undefined || t.roles.currency === undefined) return;
+1485:       var accs = {};
+1486:       for (var r = t.first; r <= t.last; r++) { var v = text((t.rows[r] || [])[t.roles.account]); if (v) accs[key(v)] = clean(v); }
+1487:       var ks = Object.keys(accs);
+1488:       if (ks.length !== 1) return;
+1489:       var sub = newModel();
+1490:       var tt = Object.assign({}, t, { kind: "journal" });
+1491:       buildJournal(sub, Object.assign({}, cfg, { now: Number.MAX_SAFE_INTEGER }), tt, Object.assign({}, t.roles), serialToDate || null);
+1492:       var oi = model.officeIndex[key(cfg.rename && cfg.rename[ks[0]] ? cfg.rename[ks[0]] : accs[ks[0]])];
+1493:       if (oi === undefined) return;
+1494:       var o = model.offices[oi];
+1495:       Object.keys(sub.direct).forEach(function (k) {
+1496:         var code = k.split("|").pop();
+1497:         var mine = model.direct[o.key + "|" + code] || 0n;
+1498:         out.push({ sheet: t.label, account: o.name, code: code, file: sub.direct[k], ours: mine, ok: sub.direct[k] === mine, dec: curDef(cfg, code).dec });
+1499:       });
+1500:     });
+1501:     return out;
+1502:   }
+1503: 
+1504:   /** صفوف الورقة بأرقامها الحقيقية: الصف 0 = الصف 1 في Excel حتى لو بدأت الورقة من صف لاحق. */
+1505:   function sheetRows(ws, XLSX) {
+1506:     if (!ws || !ws["!ref"]) return [];
+1507:     var rg = XLSX.utils.decode_range(ws["!ref"]);
+1508:     var rows = C.sheetRows(ws, XLSX);
+1509:     var pad = [];
+1510:     for (var i = 0; i < rg.s.r; i++) pad.push(null);
+1511:     return pad.concat(rows);
+1512:   }
+1513: 
+1514:   return {
+1515:     sheetRows: sheetRows, excelTables: excelTables, decodeRef: decodeRef, guessDir: guessDir, guessCur: guessCur, guessTables: guessTables, inferRoles: inferRoles,
+1516:     analyze: analyze, build: build, suggestDecimals: suggestDecimals, formulaChecks: formulaChecks, derivedChecks: derivedChecks,
+1517:     detectSummaries: detectSummaries, detectFeeDirs: detectFeeDirs, reclassify: reclassify, collectValues: collectValues, balanceMinor: balanceMinor, OPEN_RE: OPEN_RE,
+1518:     REASONS: REASONS, colName: colName, key: key, topValues: topValues, curDef: curDef
+1519:   };
+1520: })(typeof Core !== "undefined" ? Core : require("../migration-tool/core.js"));
+1521: if (typeof module !== "undefined") module.exports = Smart;

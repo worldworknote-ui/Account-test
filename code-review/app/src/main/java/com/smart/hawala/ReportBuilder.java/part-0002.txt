@@ -1,0 +1,167 @@
+149:         /** أثر هذه الحركات على أرصدة المكاتب: صافي الحوالات + صافي الأجور. */
+150:         public long impact() { return net() + feesNet(); }
+151: 
+152:         void add(Agg o) {
+153:             count += o.count;
+154:             us += o.us;
+155:             them += o.them;
+156:             feeUs += o.feeUs;
+157:             feeThem += o.feeThem;
+158:             max = Math.max(max, o.max);
+159:         }
+160: 
+161:         public long measure(int m) {
+162:             switch (m) {
+163:                 case M_COUNT: return count;
+164:                 case M_US: return us;
+165:                 case M_THEM: return them;
+166:                 case M_VOLUME: return volume();
+167:                 case M_FEES_NET: return feesNet();
+168:                 case M_IMPACT: return impact();
+169:                 default: return net();
+170:             }
+171:         }
+172:     }
+173: 
+174:     // ===================================================================================
+175:     // التصفية والتصنيف
+176:     // ===================================================================================
+177: 
+178:     static boolean isDebit(Model.Tx t) { return Model.TYPE_DEBIT.equals(t.type); }
+179: 
+180:     public static boolean matches(Spec s, Data d, Model.Tx t, long from, long to) {
+181:         if (t.createdAt < from || (to > 0 && t.createdAt >= to)) return false;
+182:         if (!s.offices.isEmpty() && !s.offices.contains(t.officeId)) return false;
+183:         if (!s.currencies.isEmpty() && !s.currencies.contains(t.currency) && !(t.hasFee() && s.currencies.contains(t.feeCurrency))) return false;
+184:         if (s.direction == DIR_US && !isDebit(t)) return false;
+185:         if (s.direction == DIR_THEM && isDebit(t)) return false;
+186:         boolean feeRow = OwnerReports.feeRow(t);
+187:         switch (s.kind) {
+188:             case K_TRANSFERS: if (feeRow) return false; break;
+189:             case K_FEE_ROWS: if (!feeRow) return false; break;
+190:             case K_RAJE: if (!OwnerReports.rajeRow(t)) return false; break;
+191:             case K_WITH_FEE: if (feeRow || !t.hasFee()) return false; break;
+192:             case K_NO_FEE: if (feeRow || t.hasFee()) return false; break;
+193:             case K_FX: if (!t.isFx()) return false; break;
+194:             case K_XFER: if (!t.isTransfer()) return false; break;
+195:             default: break;
+196:         }
+197:         switch (s.status) {
+198:             case S_ALL: break;
+199:             case S_CANCELLED: if (!"CANCELLED".equals(t.status)) return false; break;
+200:             case S_EDITED: if (t.replacesId == null && !replaced(d, t.id)) return false; break;
+201:             case S_PENDING: if (!t.isPending()) return false; break;
+202:             default: if (!t.isActive()) return false;
+203:         }
+204:         if (!s.text.trim().isEmpty()) {
+205:             String q = OwnerReports.norm(s.text);
+206:             String hay = OwnerReports.norm(Model.nz(t.person) + " " + Model.nz(t.description) + " " + Model.nz(t.notes) + " " + Model.nz(t.dest) + " " + Model.nz(t.service));
+207:             for (String w : q.split(" ")) if (!w.isEmpty() && !hay.contains(w)) return false;
+208:         }
+209:         if (!s.service.trim().isEmpty() && !OwnerReports.norm(t.service).contains(OwnerReports.norm(s.service))) return false;
+210:         if (!s.dest.trim().isEmpty() && !OwnerReports.norm(t.dest).contains(OwnerReports.norm(s.dest))) return false;
+211:         if (!s.user.trim().isEmpty() && !OwnerReports.norm(t.userName).contains(OwnerReports.norm(s.user))) return false;
+212:         int dec = dec(d, t.currency);
+213:         if (s.minAmount != null && BigDecimal.valueOf(t.amount, dec).compareTo(s.minAmount) < 0) return false;
+214:         if (s.maxAmount != null && BigDecimal.valueOf(t.amount, dec).compareTo(s.maxAmount) > 0) return false;
+215:         return true;
+216:     }
+217: 
+218:     private static final Map<Data, Set<Long>> REPLACED = java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+219: 
+220:     static boolean replaced(Data d, long id) {
+221:         Set<Long> r = REPLACED.get(d);
+222:         if (r == null) {
+223:             r = new HashSet<>();
+224:             for (Model.Tx t : d.txs) if (t.replacesId != null) r.add(t.replacesId);
+225:             REPLACED.put(d, r);
+226:         }
+227:         return r.contains(id);
+228:     }
+229: 
+230:     static int dec(Data d, String c) {
+231:         Integer x = d.decimals.get(c);
+232:         return x == null ? 2 : x;
+233:     }
+234: 
+235:     /** يضيف أثر الحركة إلى مجاميع عملاتها (الأصل في عملته، والأجرة في عملتها). */
+236:     static void accumulate(Map<String, Agg> m, Model.Tx t, Set<String> onlyCurrencies) {
+237:         boolean feeRow = OwnerReports.feeRow(t);
+238:         if (onlyCurrencies.isEmpty() || onlyCurrencies.contains(t.currency)) {
+239:             Agg a = m.computeIfAbsent(t.currency, k -> new Agg());
+240:             a.count++;
+241:             if (feeRow) {
+242:                 if (isDebit(t)) a.feeUs += t.amount;
+243:                 else a.feeThem += t.amount;
+244:             } else {
+245:                 if (isDebit(t)) a.us += t.amount;
+246:                 else a.them += t.amount;
+247:                 a.max = Math.max(a.max, t.amount);
+248:             }
+249:         }
+250:         if (!feeRow && t.hasFee() && (onlyCurrencies.isEmpty() || onlyCurrencies.contains(t.feeCurrency))) {
+251:             Agg f = m.computeIfAbsent(t.feeCurrency, k -> new Agg());
+252:             if (Model.FEE_US.equals(t.feeType)) f.feeUs += t.fee;
+253:             else f.feeThem += t.fee;
+254:         }
+255:     }
+256: 
+257:     // ===================================================================================
+258:     // مفاتيح التجميع
+259:     // ===================================================================================
+260: 
+261:     /** مفتاح ترتيب + نص عرض. المفتاح الزمني رقم يرتّب زمنيًا. */
+262:     public static String[] key(int g, Data d, Model.Tx t) {
+263:         Calendar c = Model.cal();
+264:         c.setTimeInMillis(t.createdAt);
+265:         int y = c.get(Calendar.YEAR), mo = c.get(Calendar.MONTH) + 1, da = c.get(Calendar.DAY_OF_MONTH);
+266:         switch (g) {
+267:             case G_OFFICE: return new String[]{"" + t.officeId, name(d, t.officeId)};
+268:             case G_CURRENCY: return new String[]{t.currency, t.currency};
+269:             case G_DAY: return new String[]{String.format(Locale.US, "%04d%02d%02d", y, mo, da), String.format(Locale.US, "%04d/%02d/%02d", y, mo, da)};
+270:             case G_WEEK: {
+271:                 // الأسبوع يبدأ السبت
+272:                 int back = (c.get(Calendar.DAY_OF_WEEK) - Calendar.SATURDAY + 7) % 7;
+273:                 c.add(Calendar.DAY_OF_MONTH, -back);
+274:                 String k = String.format(Locale.US, "%04d%02d%02d", c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1, c.get(Calendar.DAY_OF_MONTH));
+275:                 return new String[]{k, "أسبوع " + String.format(Locale.US, "%04d/%02d/%02d", c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1, c.get(Calendar.DAY_OF_MONTH))};
+276:             }
+277:             case G_MONTH: return new String[]{String.format(Locale.US, "%04d%02d", y, mo), String.format(Locale.US, "%04d/%02d", y, mo)};
+278:             case G_QUARTER: return new String[]{y + "Q" + ((mo - 1) / 3 + 1), y + " — الربع " + ((mo - 1) / 3 + 1)};
+279:             case G_YEAR: return new String[]{"" + y, "" + y};
+280:             case G_WEEKDAY: {
+281:                 int w = c.get(Calendar.DAY_OF_WEEK);   // 1=الأحد
+282:                 int order = (w - Calendar.SATURDAY + 7) % 7;   // السبت أولًا
+283:                 return new String[]{"" + order, WEEKDAYS[w - 1]};
+284:             }
+285:             case G_HOUR: {
+286:                 int h = c.get(Calendar.HOUR_OF_DAY);
+287:                 return new String[]{String.format(Locale.US, "%02d", h), String.format(Locale.US, "%02d:00–%02d:00", h, (h + 1) % 24)};
+288:             }
+289:             case G_SERVICE: return txt(t.service, "بلا خدمة");
+290:             case G_DEST: return txt(t.dest, "بلا وجهة");
+291:             case G_USER: return txt(t.userName, "غير معروف");
+292:             case G_PERSON: return txt(t.person, "بلا اسم");
+293:             case G_DIRECTION: return isDebit(t) ? new String[]{"1", "لنا"} : new String[]{"2", "علينا"};
+294:             case G_KIND: {
+295:                 if (t.isFx()) return new String[]{"4", "قص عملات"};
+296:                 if (t.isTransfer()) return new String[]{"5", "بين مكتبين"};
+297:                 if (OwnerReports.rajeRow(t)) return new String[]{"2", "أجور"};
+298:                 if (OwnerReports.feeRow(t)) return new String[]{"2", "أجور"};
+299:                 return new String[]{"1", t.hasFee() ? "حوالة بأجرة" : "حوالة"};
+300:             }
+301:             case G_SIZE: {
+302:                 BigDecimal v = BigDecimal.valueOf(t.amount, dec(d, t.currency));
+303:                 int i = 0;
+304:                 while (i < SIZE_EDGES.length && v.compareTo(BigDecimal.valueOf(SIZE_EDGES[i])) >= 0) i++;
+305:                 String label = i == 0 ? "أقل من " + Model.fmt(SIZE_EDGES[0], 0)
+306:                         : i == SIZE_EDGES.length ? Model.fmt(SIZE_EDGES[i - 1], 0) + " فأكثر"
+307:                         : Model.fmt(SIZE_EDGES[i - 1], 0) + " – " + Model.fmt(SIZE_EDGES[i], 0);
+308:                 return new String[]{"" + i, label};
+309:             }
+310:             default: return new String[]{"", "الكل"};
+311:         }
+312:     }
+313: 
+314:     static String[] txt(String v, String empty) {
+315:         String s = v == null ? "" : v.trim();

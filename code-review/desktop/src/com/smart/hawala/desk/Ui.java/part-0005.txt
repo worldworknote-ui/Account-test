@@ -1,0 +1,196 @@
+772:     // ===================================================================================
+773: 
+774:     /** حقل نص بتلميح داخلي. */
+775:     static final class Field extends JTextField {
+776:         String hint;
+777: 
+778:         Field(String hint) {
+779:             setFont(font(14, false));
+780:             setHorizontalAlignment(JTextField.RIGHT);
+781:             setComponentOrientation(RTL);
+782:             setHint(hint);
+783:             setAlignmentX(Component.RIGHT_ALIGNMENT);
+784:         }
+785: 
+786:         /** 10.4: تلميح داخلي يرسمه FlatLaf (يختفي عند الكتابة). */
+787:         void setHint(String h) {
+788:             hint = h;
+789:             putClientProperty("JTextField.placeholderText", h);
+790:             repaint();
+791:         }
+792: 
+793:         @Override public Dimension getMaximumSize() { return new Dimension(Integer.MAX_VALUE, getPreferredSize().height); }
+794: 
+795:         String val() { return getText().trim(); }
+796:     }
+797: 
+798:     static Field field(String hint) { return new Field(hint); }
+799: 
+800:     static Field numeric(String hint) {
+801:         Field f = new Field(hint);
+802:         f.setFont(font(15, true));
+803:         return f;
+804:     }
+805: 
+806:     static JPasswordField password() {
+807:         JPasswordField p = new JPasswordField();
+808:         p.setFont(font(14, false));
+809:         p.setHorizontalAlignment(JTextField.RIGHT);
+810:         // 10.5: الخاصية القديمة «JTextField.showRevealButton» لا تعرفها FlatLaf، فلم يكن الزر يظهر أصلًا
+811:         p.putClientProperty("FlatLaf.style", "showRevealButton: true");
+812:         p.getAccessibleContext().setAccessibleDescription("اضغط العين لإظهار ما كتبته أو إخفائه");
+813:         p.setAlignmentX(Component.RIGHT_ALIGNMENT);
+814:         p.setMaximumSize(new Dimension(Integer.MAX_VALUE, 40));
+815:         return p;
+816:     }
+817: 
+818:     static JTextArea area(int rows) {
+819:         JTextArea a = new JTextArea(rows, 20);
+820:         a.setFont(font(14, false));
+821:         a.setLineWrap(true);
+822:         a.setWrapStyleWord(true);
+823:         a.setComponentOrientation(RTL);
+824:         return a;
+825:     }
+826: 
+827:     static JScrollPane areaBox(JTextArea a) {
+828:         JScrollPane sp = new JScrollPane(a);
+829:         sp.setAlignmentX(Component.RIGHT_ALIGNMENT);
+830:         sp.setComponentOrientation(RTL);
+831:         return sp;
+832:     }
+833: 
+834:     // ---- 10.18: قوائم الاختيار كالهاتف: القائمة الطويلة تفتح نافذة فيها خانة كتابة تُصفّي الخيارات فورًا ----
+835:     /** من هذا العدد فما فوق تُفتح نافذة الاختيار بالبحث بدل القائمة المنسدلة. */
+836:     static final int PICK_MIN = 8;
+837: 
+838:     /** قائمة اختيار تدعم الكتابة للتصفية (كل القوائم تُنشأ من هنا). */
+839:     static <T> JComboBox<T> pickCombo() {
+840:         return new JComboBox<T>() {
+841:             @Override public void setPopupVisible(boolean v) {
+842:                 if (v && getItemCount() >= PICK_MIN && isShowing()) pick(this, "");
+843:                 else super.setPopupVisible(v);
+844:             }
+845: 
+846:             @Override public void processKeyEvent(java.awt.event.KeyEvent e) {
+847:                 // الكتابة مباشرة فوق القائمة تفتح البحث بالحرف المكتوب
+848:                 if (e.getID() == java.awt.event.KeyEvent.KEY_TYPED && getItemCount() >= PICK_MIN && !e.isControlDown() && !e.isAltDown() && !e.isMetaDown()
+849:                         && (Character.isLetterOrDigit(e.getKeyChar()) || e.getKeyChar() == '/')) {
+850:                     pick(this, "" + e.getKeyChar());
+851:                     e.consume();
+852:                     return;
+853:                 }
+854:                 super.processKeyEvent(e);
+855:             }
+856:         };
+857:     }
+858: 
+859:     @SuppressWarnings({"unchecked", "rawtypes"})
+860:     static String itemText(JComboBox c, int i) {
+861:         Object v = c.getItemAt(i);
+862:         try {
+863:             Component r = c.getRenderer().getListCellRendererComponent(new JList(), v, i, false, false);
+864:             if (r instanceof JLabel && ((JLabel) r).getText() != null) return ((JLabel) r).getText();
+865:         } catch (Exception ignored) {
+866:             // عارض مخصص لا يقبل قائمة فارغة: نص العنصر نفسه
+867:         }
+868:         return String.valueOf(v);
+869:     }
+870: 
+871:     private static boolean picking;
+872: 
+873:     /** نافذة اختيار: خانة كتابة فوق قائمة مُصفّاة. الأسهم وEnter للاختيار، وEsc أو النقر خارجها للإغلاق. */
+874:     @SuppressWarnings("rawtypes")
+875:     static void pick(final JComboBox c, String initial) {
+876:         if (picking || !c.isEnabled()) return;
+877:         picking = true;
+878:         final int n = c.getItemCount();
+879:         final String[] text = new String[n], norm = new String[n];
+880:         for (int i = 0; i < n; i++) {
+881:             text[i] = itemText(c, i);
+882:             norm[i] = com.smart.hawala.OwnerReports.norm(text[i]);
+883:         }
+884:         final JDialog d = new JDialog(win(c));
+885:         d.setUndecorated(true);
+886:         final Field q = field("اكتب للبحث…");
+887:         final DefaultListModel<Integer> m = new DefaultListModel<>();
+888:         final JList<Integer> list = new JList<>(m);
+889:         list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+890:         list.setFixedCellHeight(32);
+891:         list.setBackground(surface);
+892:         list.setCellRenderer((jl, idx, row, sel, foc) -> {
+893:             JLabel l = label(text[idx], 14, ink, sel);
+894:             l.setOpaque(true);
+895:             l.setBackground(sel ? primarySoft : surface);
+896:             l.setBorder(new EmptyBorder(0, 12, 0, 12));
+897:             l.setHorizontalAlignment(SwingConstants.RIGHT);
+898:             return l;
+899:         });
+900:         final Runnable fill = () -> {
+901:             String f = com.smart.hawala.OwnerReports.norm(q.getText());
+902:             m.clear();
+903:             java.util.List<Integer> rest = new ArrayList<>();
+904:             for (int i = 0; i < n; i++) {
+905:                 if (f.isEmpty() || norm[i].startsWith(f)) m.addElement(i);
+906:                 else {
+907:                     boolean all = true;
+908:                     for (String w : f.split(" ")) all &= w.isEmpty() || norm[i].contains(w);
+909:                     if (all) rest.add(i);
+910:                 }
+911:             }
+912:             for (int i : rest) m.addElement(i);
+913:             int cur = f.isEmpty() ? c.getSelectedIndex() : -1, at = 0;
+914:             for (int i = 0; i < m.size(); i++) if (m.get(i) == cur) at = i;
+915:             if (!m.isEmpty()) {
+916:                 list.setSelectedIndex(at);
+917:                 list.ensureIndexIsVisible(at);
+918:             }
+919:         };
+920:         final Runnable close = () -> {
+921:             picking = false;
+922:             d.dispose();
+923:         };
+924:         final Runnable choose = () -> {
+925:             Integer v = list.getSelectedValue();
+926:             close.run();
+927:             if (v != null) c.setSelectedIndex(v);
+928:             c.requestFocusInWindow();
+929:         };
+930:         q.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+931:             @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { fill.run(); }
+932: 
+933:             @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { fill.run(); }
+934: 
+935:             @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { fill.run(); }
+936:         });
+937:         q.addKeyListener(new java.awt.event.KeyAdapter() {
+938:             @Override public void keyPressed(java.awt.event.KeyEvent e) {
+939:                 int sz = m.getSize(), i = list.getSelectedIndex(), k = e.getKeyCode();
+940:                 if (k == java.awt.event.KeyEvent.VK_DOWN && sz > 0) list.setSelectedIndex(Math.min(sz - 1, i + 1));
+941:                 else if (k == java.awt.event.KeyEvent.VK_UP && sz > 0) list.setSelectedIndex(Math.max(0, i - 1));
+942:                 else if (k == java.awt.event.KeyEvent.VK_PAGE_DOWN && sz > 0) list.setSelectedIndex(Math.min(sz - 1, i + 9));
+943:                 else if (k == java.awt.event.KeyEvent.VK_PAGE_UP && sz > 0) list.setSelectedIndex(Math.max(0, i - 9));
+944:                 else if (k == java.awt.event.KeyEvent.VK_ENTER) {
+945:                     choose.run();
+946:                     e.consume();
+947:                     return;
+948:                 } else if (k == java.awt.event.KeyEvent.VK_ESCAPE) {
+949:                     close.run();
+950:                     c.requestFocusInWindow();
+951:                     e.consume();
+952:                     return;
+953:                 } else return;
+954:                 list.ensureIndexIsVisible(list.getSelectedIndex());
+955:                 e.consume();
+956:             }
+957:         });
+958:         list.addMouseListener(new java.awt.event.MouseAdapter() {
+959:             @Override public void mouseClicked(java.awt.event.MouseEvent e) {
+960:                 if (list.locationToIndex(e.getPoint()) >= 0) choose.run();
+961:             }
+962:         });
+963:         d.addWindowFocusListener(new java.awt.event.WindowAdapter() {
+964:             @Override public void windowLostFocus(java.awt.event.WindowEvent e) { close.run(); }
+965:         });
+966:         JPanel box = new JPanel(new BorderLayout(0, 6));
+967:         box.setBackground(surface);

@@ -1,0 +1,41 @@
+1: package android.graphics.pdf;
+2: 
+3: import android.graphics.Canvas;
+4: import java.io.*;
+5: import java.util.ArrayList;
+6: import java.util.List;
+7: 
+8: /**
+9:  * PdfDocument على الكمبيوتر: كل صفحة تُرسم بـ Canvas نفسه (Java2D) في سجل رسم متجه، ثم تُكتب ملف PDF حقيقيًا
+10:  * (النصوص بخطوط مضمّنة) عبر PdfWriter.
+11:  */
+12: public class PdfDocument {
+13:     public static class PageInfo {
+14:         final int w, h, n;
+15:         PageInfo(int w, int h, int n) { this.w = w; this.h = h; this.n = n; }
+16:         public int getPageWidth() { return w; }
+17:         public int getPageHeight() { return h; }
+18:         public int getPageNumber() { return n; }
+19:         public static class Builder {
+20:             final int w, h, n;
+21:             public Builder(int w, int h, int n) { this.w = w; this.h = h; this.n = n; }
+22:             public Builder setContentRect(android.graphics.Rect r) { return this; }
+23:             public PageInfo create() { return new PageInfo(w, h, n); }
+24:         }
+25:     }
+26:     public class Page {
+27:         final PageInfo info;
+28:         final PdfWriter.PageCanvas pc;
+29:         final Canvas canvas;
+30:         Page(PageInfo i) { info = i; pc = writer.newPage(i.w, i.h); canvas = new Canvas(pc.graphics(), i.w, i.h); }
+31:         public Canvas getCanvas() { return canvas; }
+32:         public PageInfo getInfo() { return info; }
+33:     }
+34:     private final PdfWriter writer = new PdfWriter();
+35:     private final List<PageInfo> pages = new ArrayList<>();
+36:     public Page startPage(PageInfo i) { pages.add(i); return new Page(i); }
+37:     public void finishPage(Page p) { p.pc.finish(); }
+38:     public List<PageInfo> getPages() { return pages; }
+39:     public void writeTo(OutputStream out) throws IOException { writer.write(out); }
+40:     public void close() {}
+41: }

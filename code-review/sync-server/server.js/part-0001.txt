@@ -1,0 +1,184 @@
+1: #!/usr/bin/env node
+2: /*
+3:  * خادم المزامنة الخاص لـ«المحاسب الذكي» 10.4 — اختياري. Node 18+ بلا أي مكتبات خارجية.
+4:  *
+5:  * الخادم «صندوق بريد» لملفات مشفّرة فقط: يحفظ ملفات كل خزنة كما تصله (أسماء معتمة ومحتوى AES-256-GCM)
+6:  * ولا يملك أي مفتاح، فلا يرى اسمًا ولا مبلغًا. الكتابة في خزنة لمن يملك رمزًا مشتقًا من مفتاحها:
+7:  * أول كتابة تسجّل بصمة الرمز (SHA-256)، وكل ما بعدها يجب أن يطابقها.
+8:  *
+9:  *   GET  /v1/health                         الحالة (ويخبر إن كان الخادم يطلب «رمز الخادم»)
+10:  *   GET  /v1/vault/<id>/list?prefix=p-      أسماء الملفات (بالرمز)
+11:  *   GET  /v1/vault/<id>/file/<name>         تنزيل ملف (رأس الخزنة بلا رمز: فيه الملح والمفتاح المغلّف فقط)
+12:  *   PUT  /v1/vault/<id>/file/<name>         رفع ملف (بالرمز)
+13:  *   DELETE /v1/vault/<id>/file/<name>       حذف ملف (بالرمز) — 10.4: تنظيف الحزم القديمة تلقائيًا
+14:  *
+15:  * الإعداد (متغيرات بيئة):
+16:  *   PORT=8090            المنفذ (خلف HTTPS: Caddy أو nginx)
+17:  *   DATA_DIR=./vaults    مكان الملفات
+18:  *   SERVER_KEY=...       اختياري (مستحسن): «رمز الخادم» يُكتب في التطبيق؛ بدونه يُرفض إنشاء خزنة جديدة أو قراءتها
+19:  *   MAX_FILE_MB=64       أكبر ملف (اللقطة الكاملة قد تكون عدة ميغابايت)
+20:  *   MAX_VAULT_MB=2048    أكبر حجم لخزنة واحدة
+21:  *   RATE_PER_MIN=1200    أكثر عدد طلبات في الدقيقة لكل عنوان IP
+22:  *   MAX_TOTAL_MB=20480   أكبر حجم لكل الخزنات معًا (10.11)
+23:  *   TRUST_PROXY=1        خلف Caddy/nginx فقط: عنوان العميل من X-Forwarded-For (آخر عنوان أضافه الوكيل)؛
+24:  *                        بدونه يُستعمل عنوان الاتصال نفسه، فلا يتجاوز أحد حد الطلبات بترويسة مزوّرة (10.11)
+25:  */
+26: "use strict";
+27: var http = require("http"), fs = require("fs"), path = require("path"), crypto = require("crypto");
+28: 
+29: var VERSION = "10.11";
+30: var DATA = process.env.DATA_DIR || path.join(__dirname, "vaults");
+31: var SERVER_KEY = process.env.SERVER_KEY || "";
+32: var MAX_FILE = Number(process.env.MAX_FILE_MB || 64) * 1024 * 1024;
+33: var MAX_VAULT = Number(process.env.MAX_VAULT_MB || 2048) * 1024 * 1024;
+34: var RATE = Number(process.env.RATE_PER_MIN || 1200);
+35: var MAX_TOTAL = Number(process.env.MAX_TOTAL_MB || 20480) * 1024 * 1024;
+36: var TRUST_PROXY = process.env.TRUST_PROXY === "1";
+37: var HEADER = "smart-accountant-sync-vault.json";
+38: var NAME_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/, VAULT_RE = /^[0-9a-f]{8,64}$/;
+39: 
+40: function send(rs, code, obj, type) {
+41:   var body = Buffer.isBuffer(obj) ? obj : Buffer.from(JSON.stringify(obj), "utf8");
+42:   rs.writeHead(code, {
+43:     "Content-Type": type || "application/json; charset=utf-8",
+44:     "Content-Length": body.length,
+45:     "Cache-Control": "no-store",
+46:     "X-Content-Type-Options": "nosniff"
+47:   });
+48:   rs.end(body);
+49: }
+50: 
+51: function eqConst(a, b) {
+52:   var x = Buffer.from(String(a)), y = Buffer.from(String(b));
+53:   return x.length === y.length && crypto.timingSafeEqual(x, y);
+54: }
+55: 
+56: function sha(s) { return crypto.createHash("sha256").update(String(s)).digest("hex"); }
+57: 
+58: function vaultDir(id) { return path.join(DATA, id); }
+59: 
+60: function tokenOk(id, rq) {
+61:   var auth = String(rq.headers["authorization"] || "");
+62:   if (auth.indexOf("Bearer ") !== 0) return false;
+63:   var t = auth.substring(7).trim();
+64:   try {
+65:     var saved = fs.readFileSync(path.join(vaultDir(id), ".token"), "utf8").trim();
+66:     return eqConst(saved, sha(t));
+67:   } catch (e) {
+68:     return false;
+69:   }
+70: }
+71: 
+72: function vaultExists(id) { return fs.existsSync(path.join(vaultDir(id), ".token")); }
+73: 
+74: function vaultSize(id) {
+75:   var n = 0;
+76:   try {
+77:     fs.readdirSync(vaultDir(id)).forEach(function (f) { n += fs.statSync(path.join(vaultDir(id), f)).size; });
+78:   } catch (e) { /* فارغة */ }
+79:   return n;
+80: }
+81: 
+82: /** 10.11: حجم كل الخزنات (يُحسب عند الحاجة، مع ذاكرة قصيرة حتى لا يُمسح القرص في كل طلب). */
+83: var totalCache = { at: 0, n: 0 };
+84: function totalSize() {
+85:   if (Date.now() - totalCache.at < 60000) return totalCache.n;
+86:   var n = 0;
+87:   try {
+88:     fs.readdirSync(DATA).forEach(function (v) { if (VAULT_RE.test(v)) n += vaultSize(v); });
+89:   } catch (e) { /* فارغ */ }
+90:   totalCache = { at: Date.now(), n: n };
+91:   return n;
+92: }
+93: 
+94: /** 10.11 (AUDIT-009): عنوان العميل لحد الطلبات: عنوان الاتصال، أو آخر عنوان أضافه الوكيل الموثوق. */
+95: function clientIp(rq) {
+96:   if (TRUST_PROXY) {
+97:     var xs = String(rq.headers["x-forwarded-for"] || "").split(",").map(function (x) { return x.trim(); }).filter(Boolean);
+98:     if (xs.length) return xs[xs.length - 1];
+99:   }
+100:   return rq.socket.remoteAddress || "";
+101: }
+102: 
+103: function readBody(rq, limit, cb) {
+104:   var chunks = [], size = 0, done = false;
+105:   rq.on("data", function (c) {
+106:     if (done) return;
+107:     size += c.length;
+108:     if (size > limit) {
+109:       done = true;
+110:       cb(new Error("too large"));
+111:       rq.destroy();
+112:       return;
+113:     }
+114:     chunks.push(c);
+115:   });
+116:   rq.on("end", function () {
+117:     if (!done) {
+118:       done = true;
+119:       cb(null, Buffer.concat(chunks));
+120:     }
+121:   });
+122:   rq.on("error", function (e) {
+123:     if (!done) {
+124:       done = true;
+125:       cb(e);
+126:     }
+127:   });
+128: }
+129: 
+130: function handle(rq, rs) {
+131:   var u = new URL(rq.url, "http://x");
+132:   var p = u.pathname;
+133:   var keyOk = !SERVER_KEY || eqConst(String(rq.headers["x-server-key"] || ""), SERVER_KEY);
+134:   if (p === "/v1/health" && rq.method === "GET") {
+135:     return send(rs, 200, { service: "smart-accountant-sync", version: VERSION, keyRequired: !!SERVER_KEY, keyOk: keyOk, time: Date.now() });
+136:   }
+137:   var m = /^\/v1\/vault\/([^/]+)\/(list|file\/([^/]+))$/.exec(p);
+138:   if (!m) return send(rs, 404, { error: "غير موجود" });
+139:   var id = m[1], name = m[3] ? decodeURIComponent(m[3]) : null;
+140:   if (!VAULT_RE.test(id)) return send(rs, 400, { error: "رمز خزنة غير صالح" });
+141:   if (name !== null && !NAME_RE.test(name)) return send(rs, 400, { error: "اسم ملف غير صالح" });
+142:   if (!keyOk) return send(rs, 403, { error: "رمز الخادم غير صحيح" });
+143:   var dir = vaultDir(id);
+144: 
+145:   if (m[2] === "list" && rq.method === "GET") {
+146:     if (!vaultExists(id)) return send(rs, 404, { error: "لا توجد خزنة بهذا الرمز" });
+147:     if (!tokenOk(id, rq)) return send(rs, 401, { error: "رمز الخزنة غير صحيح" });
+148:     var prefix = u.searchParams.get("prefix") || "";
+149:     var files = [];
+150:     fs.readdirSync(dir).forEach(function (f) {
+151:       if (f.charAt(0) === "." || f.indexOf(prefix) !== 0) return;
+152:       var st = fs.statSync(path.join(dir, f));
+153:       files.push({ n: f, s: st.size, m: st.mtimeMs });
+154:     });
+155:     return send(rs, 200, { files: files });
+156:   }
+157: 
+158:   if (name !== null && rq.method === "GET") {
+159:     if (!vaultExists(id)) return send(rs, 404, { error: "لا توجد خزنة بهذا الرمز" });
+160:     // رأس الخزنة يُقرأ بلا رمز (يحتاجه الجهاز المنضم ليفتح المفتاح بكلمة السر)؛ لا يحمل أي بيانات
+161:     if (name !== HEADER && !tokenOk(id, rq)) return send(rs, 401, { error: "رمز الخزنة غير صحيح" });
+162:     var f = path.join(dir, name);
+163:     if (!fs.existsSync(f)) return send(rs, 404, { error: "لا يوجد" });
+164:     return send(rs, 200, fs.readFileSync(f), "application/octet-stream");
+165:   }
+166: 
+167:   if (name !== null && rq.method === "PUT") {
+168:     var auth = String(rq.headers["authorization"] || "");
+169:     if (auth.indexOf("Bearer ") !== 0 || auth.length < 40) return send(rs, 401, { error: "رمز الخزنة مطلوب" });
+170:     var fresh = !vaultExists(id);
+171:     if (!fresh && !tokenOk(id, rq)) return send(rs, 401, { error: "رمز الخزنة غير صحيح" });
+172:     return readBody(rq, MAX_FILE, function (err, body) {
+173:       if (err) return send(rs, 413, { error: "الملف أكبر من " + (MAX_FILE / 1048576) + " ميغابايت" });
+174:       // 10.11 (AUDIT-009): الحد يشمل أول كتابة في خزنة جديدة، ومعه حد لكل الخزنات معًا
+175:       if ((fresh ? 0 : vaultSize(id)) + body.length > MAX_VAULT) return send(rs, 507, { error: "امتلأت مساحة الخزنة على الخادم" });
+176:       if (totalSize() + body.length > MAX_TOTAL) return send(rs, 507, { error: "امتلأت مساحة الخادم" });
+177:       totalCache.n += body.length;
+178:       try {
+179:         fs.mkdirSync(dir, { recursive: true, mode: 448 });
+180:         if (fresh) {
+181:           // أول كتابة تسجّل بصمة الرمز (الخزنة الجديدة لصاحبها)
+182:           fs.writeFileSync(path.join(dir, ".token"), sha(auth.substring(7).trim()), { mode: 384, flag: "wx" });
+183:         }
+184:         var tmp = path.join(dir, ".tmp-" + crypto.randomBytes(8).toString("hex"));

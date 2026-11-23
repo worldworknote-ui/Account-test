@@ -1,0 +1,66 @@
+1: package android.text;
+2: 
+3: public class SpannableStringBuilder implements Editable {
+4:     final StringBuilder sb = new StringBuilder();
+5:     final SpanStore spans = new SpanStore();
+6:     private InputFilter[] filters = new InputFilter[0];
+7:     /** للربط بخانة كتابة: يُستدعى بعد كل تعديل. */
+8:     public Runnable onChange;
+9: 
+10:     public SpannableStringBuilder() {}
+11:     public SpannableStringBuilder(CharSequence s) { this(s, 0, s == null ? 0 : s.length()); }
+12:     public SpannableStringBuilder(CharSequence s, int a, int b) {
+13:         if (s == null) return;
+14:         sb.append(s, a, b);
+15:         if (s instanceof SpannableStringBuilder) spans.list.addAll(((SpannableStringBuilder) s).spans.copy(a, b).list);
+16:         else if (s instanceof SpannableString) spans.list.addAll(((SpannableString) s).spans.copy(a, b).list);
+17:     }
+18:     public static SpannableStringBuilder valueOf(CharSequence s) { return s instanceof SpannableStringBuilder ? (SpannableStringBuilder) s : new SpannableStringBuilder(s); }
+19: 
+20:     @Override public SpannableStringBuilder replace(int st, int en, CharSequence s, int start, int end) {
+21:         CharSequence src = s.subSequence(start, end);
+22:         for (InputFilter f : filters) {
+23:             CharSequence r = f.filter(src, 0, src.length(), this, st, en);
+24:             if (r != null) src = r;
+25:         }
+26:         sb.replace(st, en, src.toString());
+27:         spans.replaced(st, en, src.length());
+28:         if (src instanceof Spanned) {
+29:             Spanned sp = (Spanned) src;
+30:             for (Object o : sp.getSpans(0, src.length(), Object.class)) spans.set(o, st + sp.getSpanStart(o), st + sp.getSpanEnd(o), sp.getSpanFlags(o));
+31:         }
+32:         if (onChange != null) onChange.run();
+33:         return this;
+34:     }
+35:     @Override public SpannableStringBuilder replace(int st, int en, CharSequence s) { return replace(st, en, s, 0, s.length()); }
+36:     @Override public SpannableStringBuilder insert(int where, CharSequence s) { return replace(where, where, s); }
+37:     public SpannableStringBuilder insert(int where, CharSequence s, int a, int b) { return replace(where, where, s, a, b); }
+38:     @Override public SpannableStringBuilder delete(int st, int en) { return replace(st, en, ""); }
+39:     @Override public SpannableStringBuilder append(CharSequence s) { return replace(sb.length(), sb.length(), s == null ? "null" : s); }
+40:     @Override public SpannableStringBuilder append(CharSequence s, int a, int b) { return replace(sb.length(), sb.length(), s, a, b); }
+41:     @Override public SpannableStringBuilder append(char c) { return append(String.valueOf(c)); }
+42:     public SpannableStringBuilder append(CharSequence s, Object what, int flags) {
+43:         int st = sb.length();
+44:         append(s);
+45:         setSpan(what, st, sb.length(), flags);
+46:         return this;
+47:     }
+48:     @Override public void clear() { replace(0, sb.length(), ""); }
+49:     @Override public void clearSpans() { spans.list.clear(); }
+50:     @Override public void setFilters(InputFilter[] f) { filters = f == null ? new InputFilter[0] : f; }
+51:     @Override public InputFilter[] getFilters() { return filters; }
+52:     @Override public void setSpan(Object w, int s, int e, int f) { spans.set(w, s, e, f); if (onChange != null && !(w instanceof NoCopySpan)) { } }
+53:     @Override public void removeSpan(Object w) { spans.remove(w); }
+54:     @Override public <T> T[] getSpans(int s, int e, Class<T> t) { return spans.get(s, e, t); }
+55:     @Override public int getSpanStart(Object w) { SpanStore.S x = spans.find(w); return x == null ? -1 : x.start; }
+56:     @Override public int getSpanEnd(Object w) { SpanStore.S x = spans.find(w); return x == null ? -1 : x.end; }
+57:     @Override public int getSpanFlags(Object w) { SpanStore.S x = spans.find(w); return x == null ? 0 : x.flags; }
+58:     @Override public int nextSpanTransition(int s, int l, Class t) { return spans.next(s, l, t); }
+59:     @Override public void getChars(int s, int e, char[] d, int off) { sb.getChars(s, e, d, off); }
+60:     @Override public int length() { return sb.length(); }
+61:     @Override public char charAt(int i) { return sb.charAt(i); }
+62:     @Override public CharSequence subSequence(int s, int e) { return new SpannableStringBuilder(this, s, e); }
+63:     @Override public String toString() { return sb.toString(); }
+64:     /** نسخة بلا ربط (للحفظ). */
+65:     public void setRaw(String s) { sb.setLength(0); sb.append(s); spans.list.clear(); }
+66: }

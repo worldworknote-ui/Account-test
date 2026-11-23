@@ -1,0 +1,169 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.awt.event.MouseAdapter;
+6: import java.awt.event.MouseEvent;
+7: import java.math.BigDecimal;
+8: import java.math.RoundingMode;
+9: import java.util.*;
+10: import java.util.List;
+11: import javax.swing.*;
+12: import javax.swing.border.EmptyBorder;
+13: import javax.swing.table.DefaultTableModel;
+14: 
+15: /**
+16:  * «صندوق المكتب» على الماك والويندوز — الحساب نفسه في CashBox وDb المشتركين مع الهاتف.
+17:  * 10.0: عدة صناديق (لكل صندوق ربطه بالمكاتب، ويُعطَّل أو يُحذف)، بيع وشراء العملات بالسعر والمقابل، تحويل بين الصناديق،
+18:  * استلام وتسليم لحساب مكتب أو عميل (ولو بعملة أخرى)، تفاصيل كاملة قبل كل تسجيل، جرد يقارن الزيادة بالعجز وسجله، وإخفاء المبالغ.
+19:  */
+20: final class CashView extends View {
+21:     static final Color NAVY = new Color(22, 42, 74), GOLD = new Color(201, 162, 39);
+22:     final JComboBox<String> period = Ui.combo(ReportBuilder.PERIODS);
+23:     final JComboBox<String> kindFilter = Ui.combo(new String[]{"كل الحركات", "استلام", "تسليم", "المصاريف", "بيع وشراء", "عملاء", "لحساب مكاتب", "تحويل", "الملغاة"});
+24:     final JPanel head = Ui.column();
+25:     JTable table;
+26:     List<CashBox.Move> shown = new ArrayList<>();
+27: 
+28:     CashView(App app) {
+29:         super(app, "صندوق المكتب");
+30:         period.setSelectedIndex(ReportBuilder.P_MONTH);
+31:         period.removeItemAt(ReportBuilder.P_CUSTOM);
+32:         period.addActionListener(e -> fill());
+33:         kindFilter.addActionListener(e -> fill());
+34:     }
+35: 
+36:     @Override void build() {
+37:         JPanel center = new JPanel(new BorderLayout());
+38:         center.setBackground(Ui.bg);
+39:         head.setBorder(new EmptyBorder(4, 24, 8, 24));
+40:         center.add(head, BorderLayout.NORTH);
+41:         table = Ui.table(new DefaultTableModel());
+42:         JPanel holder = new JPanel(new BorderLayout());
+43:         holder.setBackground(Ui.bg);
+44:         holder.setBorder(new EmptyBorder(0, 24, 20, 24));
+45:         holder.add(Ui.tableBox(table));
+46:         center.add(holder, BorderLayout.CENTER);
+47:         add(center, BorderLayout.CENTER);
+48:         table.addMouseListener(new MouseAdapter() {
+49:             @Override public void mouseClicked(MouseEvent e) {
+50:                 if (e.getClickCount() == 2 && table.getSelectedRow() >= 0) details(shown.get(table.convertRowIndexToModel(table.getSelectedRow())));
+51:             }
+52:         });
+53:     }
+54: 
+55:     static String iso(String s) { return Ui.ltr(s); }
+56: 
+57:     String money(long v, String cur) { return Ui.ltr(Model.fmt(v, db.decimals(cur)) + " " + cur); }
+58: 
+59:     String m(String s) { return app.hidden() ? "••••" : s; }
+60: 
+61:     // ---- 10.16: قفل الصندوق (المفاتيح نفسها التي في الهاتف: cash_lock / cash_pin_salt / cash_pin_hash، خاصة بالجهاز) ----
+62:     static long openUntil;
+63:     static final long OPEN_MS = 10 * 60000L;
+64: 
+65:     boolean lockOn() { return "pin".equals(db.setting("cash_lock", "0")) && !db.setting("cash_pin_hash", "").isEmpty(); }
+66: 
+67:     void unlock() {
+68:         long until = db.settingLong("cash_locked_until", 0);
+69:         if (until > Clock.now()) {
+70:             Ui.toast("محاولات خاطئة كثيرة. حاول بعد " + Math.max(1, (until - Clock.now()) / 1000) + " ثانية.");
+71:             return;
+72:         }
+73:         JPasswordField f = Ui.password();
+74:         JPanel q = Ui.column();
+75:         q.add(Ui.label("كلمة سر الصندوق", 14, Ui.ink, true));
+76:         q.add(Ui.gap(8));
+77:         q.add(f);
+78:         if (!Ui.form(this, "فتح الصندوق", q, "فتح")) return;
+79:         if (Pin.verify(new String(f.getPassword()), db.setting("cash_pin_salt", ""), db.setting("cash_pin_hash", ""))) {
+80:             db.setSettingQuiet("cash_fails", "0");
+81:             openUntil = Clock.now() + OPEN_MS;
+82:             refresh();
+83:             return;
+84:         }
+85:         int fails = (int) db.settingLong("cash_fails", 0) + 1;
+86:         db.setSettingQuiet("cash_fails", "" + fails);
+87:         long wait = Pin.lockoutMillis(fails);
+88:         if (wait > 0) {
+89:             db.setSettingQuiet("cash_locked_until", "" + (Clock.now() + wait));
+90:             Ui.toast("محاولات خاطئة كثيرة. انتظر " + wait / 1000 + " ثانية.");
+91:         } else Ui.toast("كلمة السر غير صحيحة");
+92:     }
+93: 
+94:     void lockSetup() {
+95:         if (lockOn()) {
+96:             if (!Ui.confirm(this, "قفل الصندوق", "الصندوق مقفل بكلمة سر على هذا الجهاز. إلغاء القفل؟ (لتغيير كلمة السر: ألغِ القفل ثم فعّله من جديد)", "إلغاء القفل")) return;
+97:             UsersView.confirmAdmin(this, db, "إلغاء قفل الصندوق", () -> {
+98:                 db.setSettingQuiet("cash_lock", "0");
+99:                 db.audit("SETTING", "settings", 0, "cash_lock off");
+100:                 Ui.toast("أُلغي قفل الصندوق");
+101:                 refresh();
+102:             });
+103:             return;
+104:         }
+105:         JPasswordField p1 = Ui.password(), p2 = Ui.password();
+106:         JPanel q = Ui.column();
+107:         q.add(Ui.para("كلمة سر خاصة بشاشة الصندوق على هذا الجهاز (4 أحرف أو أرقام على الأقل). تُطلب عند كل دخول إلى الصندوق.", 14, Ui.ink, 420));
+108:         q.add(Ui.gap(8));
+109:         q.add(Ui.labeled("كلمة السر", p1));
+110:         q.add(Ui.labeled("تأكيدها", p2));
+111:         if (!Ui.form(this, "قفل الصندوق", q, "تفعيل القفل")) return;
+112:         String s1 = new String(p1.getPassword()), s2 = new String(p2.getPassword());
+113:         if (s1.length() < 4) {
+114:             Ui.toast("كلمة السر قصيرة (4 على الأقل)");
+115:             return;
+116:         }
+117:         if (!s1.equals(s2)) {
+118:             Ui.toast("الكلمتان غير متطابقتين");
+119:             return;
+120:         }
+121:         String salt = Pin.newSalt();
+122:         db.setSettingQuiet("cash_pin_salt", salt);
+123:         db.setSettingQuiet("cash_pin_hash", Pin.hash(s1, salt));
+124:         db.setSettingQuiet("cash_lock", "pin");
+125:         db.setSettingQuiet("cash_fails", "0");
+126:         db.audit("SETTING", "settings", 0, "cash_lock on");
+127:         openUntil = Clock.now() + OPEN_MS;
+128:         Ui.toast("فُعّل قفل الصندوق ✓");
+129:         refresh();
+130:     }
+131: 
+132:     List<CashBox.Config> activeBoxes() {
+133:         List<CashBox.Config> out = new ArrayList<>();
+134:         for (CashBox.Config c : db.cashBoxes()) if (c.on && c.active) out.add(c);
+135:         return out;
+136:     }
+137: 
+138:     @Override void refresh() {
+139:         actions.removeAll();
+140:         head.removeAll();
+141:         CashBox.Config cfg = db.cashConfig();
+142:         if (!cfg.on) {
+143:             subtitle.setText("النقد الموجود لديك فعلًا بكل عملة — مستقل عن أرصدة المكاتب");
+144:             if (can(Auth.Perm.SETTINGS)) action(Ui.primary("إعداد الصندوق", e -> setup(true)));
+145:             head.add(Ui.para("الصندوق لم يُعَد بعد. حساباته مستقلة عن أرصدة المكاتب ولا تؤثر عليها: تسجّل فيه ما يدخل ويخرج من النقد بكل عملة مع خانة للأجور، "
+146:                     + "وحين تسلّم أو تستلم لحساب مكتب أو عميل يُسجَّل على حسابه مباشرة. وتبيع وتشتري العملات، وتضيف المصاريف، وتجرد الصندوق متى شئت.", 14, Ui.ink, textWidth()));
+147:             if (table != null) table.setModel(new DefaultTableModel());
+148:             done();
+149:             return;
+150:         }
+151:         // 10.16: قفل الصندوق بكلمة سر خاصة (كالهاتف): يُفتح لهذه الزيارة ويُقفل عند مغادرة الشاشة أو بعد 10 دقائق
+152:         if (lockOn() && Clock.now() > openUntil) {
+153:             titleLabel.setText(cfg.name);
+154:             subtitle.setText("الصندوق مقفل بكلمة سر");
+155:             action(Ui.primary("فتح الصندوق", e -> unlock()));
+156:             head.add(Ui.para("هذا الصندوق مقفل بكلمة سر خاصة به على هذا الجهاز. اضغط «فتح الصندوق» واكتبها.", 14, Ui.ink, textWidth()));
+157:             if (table != null) table.setModel(new DefaultTableModel());
+158:             done();
+159:             return;
+160:         }
+161:         if (lockOn()) openUntil = Clock.now() + OPEN_MS;
+162:         titleLabel.setText(cfg.name);
+163:         subtitle.setText(cfg.strict ? "هذا الصندوق مربوط بالمكاتب: الاستلام والتسليم لحساب مكتب أو عميل فقط" : "النقد الموجود لديك بكل عملة — مستقل عن أرصدة المكاتب");
+164:         boolean internal = !cfg.strict || cfg.allowInternal;
+165:         List<CashBox.Config> boxes = activeBoxes();
+166:         if (can(Auth.Perm.CASH)) {
+167:             action(Ui.button("استلام", Ui.green, e -> move(CashBox.IN, null)));
+168:             action(Ui.button("تسليم", Ui.red, e -> move(CashBox.OUT, null)));
+169:             if (internal) {

@@ -1,0 +1,55 @@
+1: package android.text;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.List;
+5: 
+6: /** تخزين التنسيقات (الألوان والعريض...) مع مواضعها. */
+7: final class SpanStore {
+8:     static final class S { Object what; int start, end, flags; S(Object w, int s, int e, int f) { what = w; start = s; end = e; flags = f; } }
+9:     final List<S> list = new ArrayList<>();
+10: 
+11:     void set(Object w, int s, int e, int f) {
+12:         for (S x : list) if (x.what == w) { x.start = s; x.end = e; x.flags = f; return; }
+13:         list.add(new S(w, s, e, f));
+14:     }
+15:     void remove(Object w) { list.removeIf(x -> x.what == w); }
+16:     S find(Object w) { for (S x : list) if (x.what == w) return x; return null; }
+17: 
+18:     @SuppressWarnings("unchecked")
+19:     <T> T[] get(int s, int e, Class<T> type) {
+20:         List<T> r = new ArrayList<>();
+21:         for (S x : list) {
+22:             if (type != null && !type.isInstance(x.what)) continue;
+23:             if (x.start <= e && x.end >= s && !(x.end == s && x.start < s && s != e) || (s == e && x.start <= s && x.end >= s)) r.add((T) x.what);
+24:         }
+25:         T[] a = (T[]) java.lang.reflect.Array.newInstance(type == null ? Object.class : type, r.size());
+26:         return r.toArray(a);
+27:     }
+28:     int next(int start, int limit, Class<?> type) {
+29:         int n = limit;
+30:         for (S x : list) {
+31:             if (type != null && !type.isInstance(x.what)) continue;
+32:             if (x.start > start && x.start < n) n = x.start;
+33:             if (x.end > start && x.end < n) n = x.end;
+34:         }
+35:         return n;
+36:     }
+37:     /** تعديل المواضع بعد استبدال [s,e) بنص طوله len. */
+38:     void replaced(int s, int e, int len) {
+39:         int d = len - (e - s);
+40:         for (java.util.Iterator<S> it = list.iterator(); it.hasNext(); ) {
+41:             S x = it.next();
+42:             if (x.start >= e) x.start += d; else if (x.start > s) x.start = s + Math.min(len, x.start - s);
+43:             if (x.end >= e) x.end += d; else if (x.end > s) x.end = s + Math.min(len, x.end - s);
+44:             if (x.end < x.start) it.remove();
+45:         }
+46:     }
+47:     SpanStore copy(int s, int e) {
+48:         SpanStore c = new SpanStore();
+49:         for (S x : list) {
+50:             int a = Math.max(s, x.start), b = Math.min(e, x.end);
+51:             if (a < b || (a == b && x.start == x.end && a >= s && a <= e)) c.list.add(new S(x.what, a - s, b - s, x.flags));
+52:         }
+53:         return c;
+54:     }
+55: }

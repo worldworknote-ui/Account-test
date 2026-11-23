@@ -1,0 +1,171 @@
+1: #!/usr/bin/env python3
+2: """8.0: يشغّل استعلامات الفحص التلقائي والترقية وحدود المجاني كما هي في Db.java على SQLite.
+3: - هوية الأرصدة (BALANCE_IDENTITY_SQL): صفر فروق على بيانات سليمة، وفروق عند قيد ناقص أو إلغاء بلا عكس.
+4: - أرضية عدّادات المجاني: الحركات الأصلية لكل مكتب (التصحيحات لا تُحتسب، والملغاة تُحتسب).
+5: - ترقية المخطط (ت12): قاعدة بأعمدة الإصدار الأول تُرقّى بأوامر COLS نفسها دون فقد بيانات، وكل أمر ALTER صالح.
+6: الاستعمال: python3 tests/health_sql_test.py [ملفات ‎*.tables.json ...]  (افتراضيًا tests/data)"""
+7: import glob
+8: import json
+9: import os
+10: import re
+11: import sqlite3
+12: import sys
+13: 
+14: HERE = os.path.dirname(os.path.abspath(__file__))
+15: SRC = os.path.join(HERE, "..", "app", "src", "main", "java", "com", "smart", "hawala")
+16: db_java = open(os.path.join(SRC, "Db.java"), encoding="utf-8").read()
+17: model = open(os.path.join(SRC, "Model.java"), encoding="utf-8").read()
+18: fails = 0
+19: 
+20: 
+21: def check(c, m):
+22:     global fails
+23:     print(("  PASS " if c else "  FAIL ") + m)
+24:     fails += 0 if c else 1
+25: 
+26: 
+27: def const(name):
+28:     return re.search(r'%s = "([^"]+)"' % name, model).group(1)
+29: 
+30: 
+31: DEBIT, CREDIT, FUS, FTHEM, FNONE = const("TYPE_DEBIT"), const("TYPE_CREDIT"), const("FEE_US"), const("FEE_THEM"), const("FEE_NONE")
+32: 
+33: 
+34: def java_concat(name):
+35:     """قيمة ثابت نصي مبني بـ + في Db.java."""
+36:     i = db_java.index("static final String %s =" % name)
+37:     body = db_java[i:db_java.index(";", i)]
+38:     return "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', body))
+39: 
+40: 
+41: IDENTITY = java_concat("BALANCE_IDENTITY_SQL")
+42: ddl_block = db_java[db_java.index("private static final String[] DDL"):db_java.index("};", db_java.index("private static final String[] DDL"))]
+43: DDL = re.findall(r'"(CREATE TABLE[^"]+)"', re.sub(r'"\s*\+\s*"', '', ddl_block))   # 12.7.1: جمل مقسومة على أسطر بـ +
+44: cols_block = db_java[db_java.index("private static final String[][] COLS"):db_java.index("};", db_java.index("private static final String[][] COLS"))]
+45: COLS = re.findall(r'\{"(\w+)", "(\w+)", "([^"]+)"\}', cols_block)
+46: check(len(DDL) >= 15 and len(COLS) >= 60, "قُرئ المخطط من Db.java: %d جدول و%d عمود مضاف" % (len(DDL), len(COLS)))
+47: check("prev_hash" in [c[1] for c in COLS] and any("audit_archive" in d for d in DDL), "أعمدة سلسلة التدقيق وجدول الأرشيف في المخطط")
+48: 
+49: 
+50: def fresh():
+51:     db = sqlite3.connect(":memory:")
+52:     for s in DDL:
+53:         db.execute(s)
+54:     for t, c, ty in COLS:
+55:         have = [r[1] for r in db.execute("PRAGMA table_info(%s)" % t)]
+56:         if c not in have:
+57:             db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (t, c, ty))
+58:     return db
+59: 
+60: 
+61: def load(db, tables):
+62:     order = ["currencies", "offices", "office_currencies", "tx", "journal_entries", "journal_lines", "opening_balances", "exchange_rates",
+63:              "settings", "audit_logs", "reconciliations", "reconciliation_lines"]
+64:     for t in order:
+65:         rows = tables.get(t) or []
+66:         if not rows:
+67:             continue
+68:         have = set(r[1] for r in db.execute("PRAGMA table_info(%s)" % t))
+69:         for r in rows:
+70:             ks = [k for k in r if k in have]
+71:             db.execute("INSERT INTO %s(%s) VALUES(%s)" % (t, ",".join(ks), ",".join("?" * len(ks))), [r[k] for k in ks])
+72: 
+73: 
+74: def identity(db):
+75:     return db.execute(IDENTITY, (DEBIT, FUS, FTHEM)).fetchall()
+76: 
+77: 
+78: files = sys.argv[1:] or sorted(glob.glob(os.path.join(HERE, "data", "*.tables.json")))
+79: print("== هوية الأرصدة على ملفات النقل (%d)" % len(files))
+80: for f in files:
+81:     tables = json.load(open(f, encoding="utf-8"))
+82:     db = fresh()
+83:     load(db, tables)
+84:     n_tx = db.execute("SELECT COUNT(*) FROM tx").fetchone()[0]
+85:     bad = identity(db)
+86:     check(not bad, "%s: %d حركة، صفر فروق %s" % (os.path.basename(f), n_tx, bad[:3]))
+87: 
+88: print("== هوية الأرصدة تكشف الخلل")
+89: db = fresh()
+90: db.execute("INSERT INTO currencies(code,name,decimals,active) VALUES('USD','دولار',2,1)")   # 12.5: أعمدة المعادن بقيمها الافتراضية
+91: db.execute("INSERT INTO offices(id,name,active,pinned) VALUES(1,'أ',1,0)")
+92: 
+93: 
+94: def post(tx, kind, office, cur, od, oc, t=1):
+95:     eid = db.execute("INSERT INTO journal_entries(tx_id,kind,created_at) VALUES(?,?,?)", (tx, kind, t)).lastrowid
+96:     db.execute("INSERT INTO journal_lines(entry_id,account,office_id,currency,debit_minor,credit_minor) VALUES(?,?,?,?,?,?)", (eid, "OFFICE", office, cur, od, oc))
+97:     contra = ("FEE_REVENUE" if od > 0 else "FEE_EXPENSE") if kind == "FEE" else ("OPENING" if kind == "OPENING" else "SETTLEMENT")
+98:     db.execute("INSERT INTO journal_lines(entry_id,account,office_id,currency,debit_minor,credit_minor) VALUES(?,?,NULL,?,?,?)", (eid, contra, cur, oc, od))
+99:     return eid
+100: 
+101: 
+102: def tx(i, typ, amt, fee_type=FNONE, fee=0, replaces=None):
+103:     db.execute("INSERT INTO tx(id,uuid,office_id,type,amount_minor,currency,fee_type,fee_minor,fee_currency,created_at,status,replaces_id) VALUES(?,?,1,?,?,'USD',?,?,'USD',1,'ACTIVE',?)",
+104:                (i, "u%d" % i, typ, amt, fee_type, fee, replaces))
+105:     post(i, "PRINCIPAL", 1, "USD", amt if typ == DEBIT else 0, amt if typ == CREDIT else 0)
+106:     if fee:
+107:         post(i, "FEE", 1, "USD", fee if fee_type == FUS else 0, fee if fee_type == FTHEM else 0)
+108: 
+109: 
+110: def cancel(i):
+111:     for (old,) in db.execute("SELECT id FROM journal_entries WHERE tx_id=? AND COALESCE(kind,'')<>'REVERSAL'", (i,)).fetchall():
+112:         ne = db.execute("INSERT INTO journal_entries(tx_id,kind,created_at,reverses_id) VALUES(?,'REVERSAL',2,?)", (i, old)).lastrowid
+113:         db.execute("INSERT INTO journal_lines(entry_id,account,office_id,currency,debit_minor,credit_minor) SELECT ?,account,office_id,currency,credit_minor,debit_minor FROM journal_lines WHERE entry_id=?", (ne, old))
+114:     db.execute("UPDATE tx SET status='CANCELLED' WHERE id=?", (i,))
+115: 
+116: 
+117: eo = post(None, "OPENING", 1, "USD", 50000, 0)
+118: db.execute("INSERT INTO opening_balances(office_id,currency,type,amount_minor,entry_id) VALUES(1,'USD','لنا',50000,?)", (eo,))
+119: tx(1, DEBIT, 100000, FUS, 500)
+120: tx(2, CREDIT, 70000, FTHEM, 300)
+121: tx(3, DEBIT, 30000)
+122: cancel(3)
+123: tx(4, CREDIT, 25000, replaces=2)   # تصحيح الحركة 2
+124: cancel(2)
+125: check(not identity(db), "رصيد سابق + حركات بأجور + إلغاء + تصحيح: صفر فروق")
+126: db.commit()
+127: db.execute("DELETE FROM journal_lines WHERE id=(SELECT MAX(id) FROM journal_lines WHERE account='OFFICE')")
+128: check(len(identity(db)) == 1, "قيد ناقص يظهر فرقًا")
+129: db.rollback()
+130: check(not identity(db), "بعد التراجع: صفر فروق")
+131: db.execute("UPDATE tx SET status='CANCELLED' WHERE id=1")
+132: check(len(identity(db)) >= 1, "حركة معلَّمة ملغاة بلا قيد عكسي تظهر فرقًا")
+133: db.rollback()
+134: 
+135: print("== دمج مكتبين (MERGE_SQL كما في Db.java)")
+136: mb = db_java[db_java.index("static final String[] MERGE_SQL"):db_java.index("};", db_java.index("static final String[] MERGE_SQL"))]
+137: MERGE = re.findall(r'"((?:[^"\\]|\\.)*)"', mb)
+138: check(len(MERGE) >= 12 and MERGE[-1].startswith("DELETE FROM offices") and any("cash_moves" in q for q in MERGE) and any("office_holds" in q for q in MERGE),
+139:       "أوامر الدمج مقروءة (%d) ومعها ربط حركات الصندوق (9.0) والأمانات (12.4)" % len(MERGE))
+140: 
+141: 
+142: def bal(d, office):
+143:     return dict(d.execute("SELECT currency,SUM(debit_minor-credit_minor) FROM journal_lines WHERE account='OFFICE' AND office_id=? GROUP BY currency", (office,)).fetchall())
+144: 
+145: 
+146: for f in files:
+147:     tables = json.load(open(f, encoding="utf-8"))
+148:     md = fresh()
+149:     md.execute("PRAGMA foreign_keys=ON")
+150:     load(md, tables)
+151:     names = dict(md.execute("SELECT name,id FROM offices").fetchall())
+152:     pair = os.environ.get("MERGE_PAIR", "").split("|")   # اختياري: «اسم المصدر|اسم الهدف» من ملفك
+153:     if len(pair) == 2 and pair[0] in names and pair[1] in names:
+154:         a, b = names[pair[0]], names[pair[1]]
+155:     else:
+156:         busy = [r[0] for r in md.execute("SELECT office_id FROM tx GROUP BY office_id ORDER BY COUNT(*) DESC LIMIT 2")]
+157:         if len(busy) < 2:
+158:             continue
+159:         a, b = busy
+160:     want = bal(md, b)
+161:     for k, v in bal(md, a).items():
+162:         want[k] = want.get(k, 0) + v
+163:     n_tx = md.execute("SELECT COUNT(*) FROM tx").fetchone()[0]
+164:     for q in MERGE:
+165:         md.execute(q.replace("{from}", str(a)).replace("{into}", str(b)))
+166:     got = bal(md, b)
+167:     check(got == {k: v for k, v in want.items() if v != 0 or k in got} and not identity(md) and md.execute("SELECT COUNT(*) FROM tx").fetchone()[0] == n_tx
+168:           and md.execute("SELECT COUNT(*) FROM offices WHERE id=?", (a,)).fetchone()[0] == 0 and not md.execute("PRAGMA foreign_key_check").fetchall(),
+169:           "%s: دمج %s في %s — الرصيد = مجموع الرصيدين، والحركات كلها باقية، وهوية الأرصدة سليمة %s" % (os.path.basename(f), a, b, got))
+170: 
+171: print("== أرضية عدّادات المجاني")

@@ -1,0 +1,152 @@
+543:             a.db.audit("AUTO_PW_REVEAL", "backup", 0, "عُرضت كلمة مرور النسخ التلقائي");
+544:             new AlertDialog.Builder(a).setTitle("كلمة مرور النسخ التلقائي")
+545:                     .setMessage("اكتبها على ورقة واحفظها بعيدًا عن هذا الهاتف:\n\n" + pw)
+546:                     .setPositiveButton("نسخ", (x, y) -> copySecret("كلمة مرور النسخ", pw)).setNegativeButton("إغلاق", null).show();
+547:         });
+548:     }
+549: 
+550:     /** 8.0 (ت7): يكتبها المستخدم من ذاكرته وتُقارن بالمحفوظة. 10.14: وللمدير «عرضها» بعد تأكيد رمزه. */
+551:     private void recallTest() {
+552:         final EditText p = new EditText(a);
+553:         Ui.secret(p, false);
+554:         p.setHint("كلمة مرور النسخ التلقائي");
+555:         LinearLayout l = new LinearLayout(a);
+556:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+557:         l.addView(p, new LinearLayout.LayoutParams(-1, -2));
+558:         new AlertDialog.Builder(a).setTitle("هل تتذكرها؟").setMessage("اكتبها من ذاكرتك أو من الورقة التي حفظتها فيها.").setView(l)
+559:                 .setPositiveButton("تحقق", (d, w) -> {
+560:                     final boolean ok = sameAutoPassword(p.getText().toString());
+561:                     a.db.audit("AUTO_PW_RECALL", "backup", 0, ok ? "ok" : "mismatch");
+562:                     new AlertDialog.Builder(a).setTitle(ok ? "صحيحة ✓" : "غير مطابقة")
+563:                             .setMessage(ok ? "ستستطيع فتح نسخك على هاتف آخر." : "ما كتبته لا يطابق كلمة مرور النسخ التلقائي. غيّرها الآن إلى كلمة تحفظها خارج الهاتف، فالنسخ القديمة لن تُفتح بدونها.")
+564:                             .setPositiveButton(ok ? "حسنًا" : "تغييرها الآن", (x, y) -> { if (!ok) autoPassword(false); })
+565:                             .setNegativeButton(ok ? null : "لاحقًا", null).show();
+566:                 }).setNegativeButton("إلغاء", null).show();
+567:     }
+568: 
+569:     private boolean sameAutoPassword(String typed) {
+570:         try {
+571:             return Crypto.decStrict(a.db.setting("auto_backup_pw", "")).equals(typed);
+572:         } catch (Exception e) {
+573:             return false;
+574:         }
+575:     }
+576: 
+577:     private void runAutoNow() {
+578:         a.busy("جارٍ إنشاء نسخة تلقائية وحفظها والتحقق منها…", p -> AutoBackup.runNow(a, a.db), res -> {
+579:             String fails = (a.db.setting("auto_backup_error", "").isEmpty() ? "" : "\n\n⚠ المجلد:\n" + a.db.setting("auto_backup_error", ""))
+580:                     + (a.db.setting("drive_backup_error", "").isEmpty() ? "" : "\n\n⚠ Google Drive:\n" + a.db.setting("drive_backup_error", ""));
+581:             if (fails.isEmpty()) a.toast("تم حفظ النسخة:\n" + res);
+582:             else new AlertDialog.Builder(a).setTitle("نجح جزئيًا").setMessage("حُفظت النسخة في:\n" + res + fails).setPositiveButton("حسنًا", null).show();
+583:             show();
+584:         });
+585:     }
+586: 
+587:     private void askNotifications() {
+588:         if (Build.VERSION.SDK_INT >= 33 && a.checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
+589:             try {
+590:                 a.markOwn();
+591:                 a.requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 77);
+592:             } catch (Exception ignored) {
+593:                 a.ownActivity = false;
+594:             }
+595:         }
+596:     }
+597: 
+598:     // ===================================================================================
+599:     // إنشاء نسخة يدوية
+600:     // ===================================================================================
+601: 
+602:     /** نافذة كلمة المرور بحقلين للتأكد من حفظها وإدخالها بشكل صحيح. */
+603:     void passwordDialog(String title, String message, String okLabel, final PwCb cb) {
+604:         LinearLayout l = new LinearLayout(a);
+605:         l.setOrientation(LinearLayout.VERTICAL);
+606:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), a.dp(4));
+607:         final EditText p1 = new EditText(a);
+608:         p1.setHint("كلمة المرور (8 محارف على الأقل)");
+609:         final EditText p2 = new EditText(a);
+610:         p2.setHint("أعد كتابة كلمة المرور للتأكيد");
+611:         for (EditText e : new EditText[]{p1, p2}) {
+612:             Ui.secret(e, false);
+613:             l.addView(e);
+614:         }
+615:         final CheckBox showPw = new CheckBox(a);
+616:         showPw.setText("إظهار كلمة المرور");
+617:         showPw.setOnCheckedChangeListener((b, c) -> {
+618:             for (EditText e : new EditText[]{p1, p2}) {
+619:                 e.setTransformationMethod(c ? HideReturnsTransformationMethod.getInstance() : PasswordTransformationMethod.getInstance());
+620:                 e.setSelection(e.getText().length());
+621:             }
+622:         });
+623:         l.addView(showPw);
+624:         final TextView hint = a.text("", 13, a.muted, false);
+625:         l.addView(hint);
+626:         Runnable check = () -> {
+627:             int n1 = p1.getText().length();
+628:             if (n1 == 0) hint.setText("");
+629:             else if (n1 < 8) {
+630:                 hint.setText("قصيرة: " + n1 + " من 8 محارف على الأقل");
+631:                 hint.setTextColor(a.red);
+632:             } else if (p2.getText().length() > 0 && !p1.getText().toString().equals(p2.getText().toString())) {
+633:                 hint.setText("الكلمتان غير متطابقتين");
+634:                 hint.setTextColor(a.red);
+635:             } else if (p2.getText().length() > 0) {
+636:                 hint.setText("✓ الكلمتان متطابقتان");
+637:                 hint.setTextColor(a.primary);
+638:             } else {
+639:                 hint.setText("أعد كتابتها في الحقل الثاني");
+640:                 hint.setTextColor(a.muted);
+641:             }
+642:         };
+643:         p1.addTextChangedListener(Ui.watcher(check));
+644:         p2.addTextChangedListener(Ui.watcher(check));
+645:         final AlertDialog dlg = new AlertDialog.Builder(a).setTitle(title).setMessage(message)
+646:                 .setView(l).setPositiveButton(okLabel, null).setNegativeButton("إلغاء", null).create();
+647:         dlg.setOnShowListener(d -> dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+648:             Editable e1 = p1.getText(), e2 = p2.getText();
+649:             if (e1.length() < 8) {
+650:                 hint.setText("كلمة المرور يجب ألا تقل عن 8 محارف");
+651:                 hint.setTextColor(a.red);
+652:                 return;
+653:             }
+654:             if (!e1.toString().equals(e2.toString())) {
+655:                 hint.setText("كلمتا المرور غير متطابقتين. أعد كتابتهما.");
+656:                 hint.setTextColor(a.red);
+657:                 return;
+658:             }
+659:             final char[] pw = new char[e1.length()];
+660:             e1.getChars(0, e1.length(), pw, 0);
+661:             p1.setText("");
+662:             p2.setText("");
+663:             dlg.dismiss();
+664:             cb.on(pw);
+665:         }));
+666:         dlg.show();
+667:     }
+668: 
+669:     void backupDialog() {
+670:         if (!a.require(Auth.Perm.BACKUP)) return;
+671:         passwordDialog("نسخة احتياطية مشفرة", "احفظ كلمة المرور في مكان آمن؛ لا يمكن فتح النسخة بدونها، ولا يستطيع أحد استرجاعها لك.",
+672:                 "إنشاء النسخة", this::createBackup);
+673:     }
+674: 
+675:     private void createBackup(final char[] pw) {
+676:         final String version = a.versionName();
+677:         a.busy("جارٍ إنشاء النسخة…", p -> {
+678:             try {
+679:                 return BackupManager.createLocal(a, a.db, pw, version, p);
+680:             } finally {
+681:                 Arrays.fill(pw, '\0');
+682:             }
+683:         }, res -> {
+684:             final BackupManager.Created c = (BackupManager.Created) res;
+685:             a.db.recordBackup("CREATE", "تم الإنشاء والتحقق", c.file.getName(), c.size, c.counts, true,
+686:                     c.result.skippedAttachments > 0 ? "تم تخطي " + c.result.skippedAttachments + " صورة تالفة" : "");
+687:             StringBuilder sb = new StringBuilder("تم إنشاء النسخة وفكّها بالكامل للتحقق منها ✓\n\n");
+688:             sb.append("الحجم: ").append(BackupManager.size(c.size)).append("\nالمكاتب: ").append(c.counts.get("offices"))
+689:                     .append(" • الحركات: ").append(c.counts.get("tx")).append(" • الصور: ").append(c.result.attachments);
+690:             for (String w : c.result.warnings) sb.append("\n⚠ ").append(w);
+691:             if (c.result.skippedAttachments > 0) sb.append("\n⚠ تم تخطي ").append(c.result.skippedAttachments).append(" صورة تالفة أو مفقودة.");
+692:             sb.append("\n\nالخطوة التالية: احفظها خارج الهاتف (ذاكرة خارجية، Google Drive، أو أرسلها لنفسك).");
+693:             new AlertDialog.Builder(a).setTitle("النسخة جاهزة").setMessage(sb.toString()).setCancelable(false)
+694:                     .setPositiveButton("حفظ في ملف…", (d, w) -> saveBackupTo(c.file))

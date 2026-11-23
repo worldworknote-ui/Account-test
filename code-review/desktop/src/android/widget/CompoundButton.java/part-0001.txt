@@ -1,0 +1,81 @@
+1: package android.widget;
+2: 
+3: import android.content.Context;
+4: import android.content.res.ColorStateList;
+5: import android.graphics.*;
+6: import android.graphics.drawable.Drawable;
+7: import android.view.Gravity;
+8: import java.util.List;
+9: 
+10: public abstract class CompoundButton extends Button implements Checkable {
+11:     public interface OnCheckedChangeListener { void onCheckedChanged(CompoundButton b, boolean checked); }
+12:     private boolean checked, broadcasting;
+13:     private OnCheckedChangeListener listener;
+14:     protected ColorStateList tint;
+15:     protected final float d;
+16: 
+17:     public CompoundButton(Context c) {
+18:         super(c);
+19:         d = c.getResources().getDisplayMetrics().density;
+20:         setBackground(null);
+21:         setElevation(0);
+22:         setStateListAnimator(null);
+23:         setAllCaps(false);
+24:         setTypeface(Typeface.DEFAULT);
+25:         setTextSize(14);
+26:         setMinimumWidth(0);
+27:         setMinWidth(0);
+28:         setMinimumHeight(Math.round(48 * d));
+29:         setMinHeight(Math.round(48 * d));
+30:         setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+31:         setPadding(0, 0, 0, 0);
+32:     }
+33:     @Override public boolean isChecked() { return checked; }
+34:     @Override public void setChecked(boolean c) {
+35:         if (checked == c) return;
+36:         checked = c;
+37:         refreshDrawableState();
+38:         invalidate();
+39:         if (broadcasting) return;
+40:         broadcasting = true;
+41:         if (listener != null) listener.onCheckedChanged(this, c);
+42:         broadcasting = false;
+43:     }
+44:     @Override public void toggle() { setChecked(!checked); }
+45:     @Override public boolean performClick() { toggle(); return super.performClick() || true; }
+46:     public void setOnCheckedChangeListener(OnCheckedChangeListener l) { listener = l; }
+47:     public void setButtonTintList(ColorStateList t) { tint = t; invalidate(); }
+48:     public ColorStateList getButtonTintList() { return tint; }
+49:     public void setButtonDrawable(Drawable dr) {}
+50:     public void setButtonDrawable(int res) {}
+51:     public Drawable getButtonDrawable() { return null; }
+52:     @Override protected void addStates(List<Integer> s) { if (checked) s.add(android.R.attr.state_checked); s.add(android.R.attr.state_checkable); }
+53: 
+54:     /** عرض الزر الرسومي في طرف النص. */
+55:     protected abstract int buttonWidth();
+56:     @Override protected void onMeasure(int ws, int hs) {
+57:         int pl = getPaddingLeft(), pr = getPaddingRight();
+58:         setPaddingQuiet(pl + (isRtl() ? 0 : buttonWidth()), pr + (isRtl() ? buttonWidth() : 0));
+59:         super.onMeasure(ws, hs);
+60:         setPaddingQuiet(pl, pr);
+61:     }
+62:     private void setPaddingQuiet(int l, int r) { mPaddingLeft = l; mPaddingRight = r; }
+63:     protected int accent() {
+64:         if (tint != null) return tint.getColorForState(getDrawableState(), tint.getDefaultColor());
+65:         return getContext() instanceof android.app.Activity ? ((android.app.Activity) getContext()).themeAccent() : 0xFF0B6B53;
+66:     }
+67:     protected int offColor() {
+68:         if (tint != null && !tint.isStateful()) return tint.getDefaultColor();
+69:         return getContext() instanceof android.app.Activity && ((android.app.Activity) getContext()).themeNight() ? 0xB3FFFFFF : 0x8A000000;
+70:     }
+71:     @Override protected void onDraw(Canvas c) {
+72:         int w = buttonWidth();
+73:         int x = isRtl() ? getWidth() - getPaddingRight() - w : getPaddingLeft();
+74:         drawButton(c, x, w);
+75:         int pl = getPaddingLeft(), pr = getPaddingRight();
+76:         setPaddingQuiet(pl + (isRtl() ? 0 : w), pr + (isRtl() ? w : 0));
+77:         super.onDraw(c);
+78:         setPaddingQuiet(pl, pr);
+79:     }
+80:     protected abstract void drawButton(Canvas c, int x, int w);
+81: }

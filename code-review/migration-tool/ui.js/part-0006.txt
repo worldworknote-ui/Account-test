@@ -1,0 +1,133 @@
+645:     var blob = new Blob([bytes], { type: type || "application/octet-stream" });
+646:     var a = document.createElement("a");
+647:     a.href = URL.createObjectURL(blob);
+648:     a.download = name;
+649:     document.body.appendChild(a);
+650:     a.click();
+651:     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+652:   }
+653: 
+654:   function stamp() {
+655:     var d = new Date();
+656:     function p(n) { return (n < 10 ? "0" : "") + n; }
+657:     return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes());
+658:   }
+659: 
+660:   function make() {
+661:     var r = S.result;
+662:     if (!r) return;
+663:     var m = $("makeMsg");
+664:     $("make").disabled = true;
+665:     m.dataset.done = "";
+666:     m.innerHTML = '<div class="msg info">جارٍ إنشاء الملف وتشفيره… (قد يستغرق بضع ثوانٍ)</div>';
+667:     // اسم مكتبك قد يتغير بعد التحليل
+668:     r.cfg.officeName = $("myOffice").value.trim();
+669:     r.cfg.now = Date.now();
+670:     var T = C.tables(r.model, r.cfg, rand);
+671:     C.makeBackup(T, r.cfg, $("pw1").value, crypto.subtle, rand).then(function (bytes) {
+672:       var name = "نقل-المحاسب-الذكي-" + stamp() + ".sba";
+673:       download(bytes, name);
+674:       m.dataset.done = "1";
+675:       m.innerHTML = '<div class="msg ok"><b>✓ تم إنشاء الملف «' + esc(name) + "»</b> (" + Math.ceil(bytes.length / 1024) + " ك.ب) — " + T.offices.length + " مكتب، " + T.tx.length + " حركة، " +
+676:         T.opening_balances.length + " رصيد سابق.<ul><li>انقله إلى الهاتف (واتساب لنفسك، أو البريد، أو كابل).</li><li>في التطبيق: المزيد ← مساعد النقل من برنامج آخر ← استورد الملف، واكتب كلمة السر، ثم اختر «إضافة إلى بياناتي» حتى لا يُحذف شيء من بياناتك الحالية.</li>" +
+677:         "<li>بعد الاستيراد قارن أرصدة المكاتب في التطبيق بهذا التقرير (احفظه بزر «تنزيل تقرير المطابقة»).</li><li>لا تنسَ كلمة السر: لا يمكن فتح الملف بدونها.</li></ul></div>";
+678:       updateMake();
+679:     }).catch(function (e) {
+680:       m.innerHTML = '<div class="msg err">تعذر إنشاء الملف: ' + esc(e.message || e) + "</div>";
+681:       updateMake();
+682:     });
+683:   }
+684: 
+685:   // ===================================================================================
+686:   // الأحداث
+687:   // ===================================================================================
+688: 
+689:   var timer = null;
+690:   function later() { clearTimeout(timer); timer = setTimeout(function () { renderMap(); analyze(); }, 250); }
+691:   function renderAll() {
+692:     if (S.mode === "statements") { renderStmt(); renderMap(); analyze(); return; }
+693:     renderOpen(); renderTx(); renderMap(); analyze();
+694:   }
+695: 
+696:   function newCode(sel) {
+697:     var c = (prompt("رمز العملة بالإنجليزية (مثل GOLD أو SILVER أو USDT):") || "").trim().toUpperCase();
+698:     if (!/^[A-Z0-9]{2,10}$/.test(c)) { if (c) alert("الرمز يجب أن يكون من 2 إلى 10 أحرف إنجليزية أو أرقام."); return null; }
+699:     var name = (prompt("اسم العملة بالعربية:", c) || c).trim();
+700:     S.currencyDefs[c] = { name: name || c, dec: 2 };
+701:     return c;
+702:   }
+703: 
+704:   document.addEventListener("change", function (e) {
+705:     var t = e.target, d = t.dataset;
+706:     if (t.id === "file" && t.files.length) { var fl = Array.prototype.slice.call(t.files); t.value = ""; readFiles(fl, false); return; }
+707:     if (t.id === "moreFiles" && t.files.length) { var ml = Array.prototype.slice.call(t.files); t.value = ""; readFiles(ml, true); return; }
+708:     if (t.id === "mergeCom") { S.st.mergeCom = t.checked; analyze(); return; }
+709:     if (t.type === "radio" && t.name === "stwhat") { S.st.balancesOnly = t.value === "bal"; renderStmt(); analyze(); return; }
+710:     if (t.id === "openOn") { S.open.enabled = t.checked; renderAll(); return; }
+711:     if (t.id === "txOn") { S.tx.enabled = t.checked; renderAll(); return; }
+712:     if (t.id === "mergeSimilar") { S.mergeSimilar = t.checked; later(); return; }
+713:     if (t.id === "reverse") { S.reverse = t.checked; analyze(); return; }
+714:     if (t.id === "confirmed" || t.id === "force") { updateMake(); return; }
+715:     var val = t.value;
+716:     if (t.tagName === "SELECT" && val === "__new") {
+717:       var c = newCode(t);
+718:       if (!c) { renderAll(); return; }
+719:       val = c;
+720:     }
+721:     if (d.o) {
+722:       if (d.o === "sheet") { S.open.sheet = val; guessOpen(true); }
+723:       else if (d.o === "headerRow") { S.open.headerRow = Math.max(0, (+val || 1) - 1); guessOpen(false); }
+724:       else S.open[d.o] = val;
+725:       renderOpen(); later(); return;
+726:     }
+727:     if (d.oc) { S.open.cols[d.oc] = num(val); renderOpen(); later(); return; }
+728:     if (d.wide !== undefined) {
+729:       var col = +d.wide;
+730:       S.open.wide = S.open.wide.filter(function (w) { return w.col !== col; });
+731:       if (val) S.open.wide.push({ col: col, code: val });
+732:       renderOpen(); later(); return;
+733:     }
+734:     if (d.t) {
+735:       if (d.t === "headerRow") { S.tx.headerRow = Math.max(0, (+val || 1) - 1); guessTx(false); }
+736:       else S.tx[d.t] = val;
+737:       renderTx(); later(); return;
+738:     }
+739:     if (d.tb) { S.tx[d.tb] = t.checked; later(); return; }
+740:     if (d.tc) { S.tx.cols[d.tc] = num(val); renderTx(); later(); return; }
+741:     if (d.desc !== undefined) { S.tx.descCols[+d.desc] = num(val); later(); return; }
+742:     if (d.sheet !== undefined) {
+743:       var n = d.sheet;
+744:       S.tx.sheets = S.sheets.filter(function (x) { return x === n ? t.checked : S.tx.sheets.indexOf(x) >= 0; });
+745:       if (S.tx.sheets.length > 1 && S.tx.cols.office === undefined) S.tx.officeFrom = "sheet";
+746:       if (S.tx.sheets.length === 1 && t.checked) guessTx(true);
+747:       renderTx(); later(); return;
+748:     }
+749:     if (d.curmap !== undefined) { S.currencyMap[d.curmap] = val; renderMap(); analyze(); return; }
+750:     if (d.typemap !== undefined) { S.typeMap[d.typemap] = val; analyze(); return; }
+751:     if (d.curname) { S.currencyDefs[d.curname].name = val; later(); return; }
+752:     if (d.curdec) { S.currencyDefs[d.curdec].dec = +val; later(); return; }
+753:     if (d.rename !== undefined) { S.rename[d.rename] = val; later(); return; }
+754:     if (t.type === "radio") {
+755:       var map = { olayout: ["open", "layout"], ocurfrom: ["open", "currencyFrom"], opos: ["open", "positiveIs"], tofrom: ["tx", "officeFrom"], tlayout: ["tx", "layout"],
+756:         tcurfrom: ["tx", "currencyFrom"], tpos: ["tx", "positiveIs"], tfeedir: ["tx", "feeDir"], tbalpos: ["tx", "balancePositiveIs"] };
+757:       var m = map[t.name];
+758:       if (m) { S[m[0]][m[1]] = val; if (m[0] === "open") renderOpen(); else renderTx(); later(); }
+759:     }
+760:   });
+761:   ["pw1", "pw2"].forEach(function (id) { $(id).addEventListener("input", updateMake); });
+762:   $("make").addEventListener("click", make);
+763:   $("csv").addEventListener("click", function () {
+764:     var r = S.result;
+765:     if (!r) return;
+766:     download(C.reportCsv(r.rep, r.model), "تقرير-المطابقة-" + stamp() + ".csv", "text/csv;charset=utf-8");
+767:   });
+768:   $("print").addEventListener("click", function () { window.print(); });
+769:   var drop = $("drop");
+770:   ["dragenter", "dragover"].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("over"); }); });
+771:   ["dragleave", "drop"].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove("over"); }); });
+772:   drop.addEventListener("drop", function (e) { if (e.dataTransfer.files.length) readFiles(e.dataTransfer.files, false); });
+773:   if (!window.crypto || !crypto.subtle || typeof BigInt === "undefined") {
+774:     $("fileInfo").className = "msg err";
+775:     $("fileInfo").textContent = "هذا المتصفح قديم ولا يدعم التشفير المطلوب. افتح الأداة بأحدث نسخة من Chrome أو Edge أو Firefox.";
+776:   }
+777: })();

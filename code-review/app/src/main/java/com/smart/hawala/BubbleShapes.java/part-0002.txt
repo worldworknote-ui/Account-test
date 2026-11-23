@@ -1,0 +1,37 @@
+162:         // 12.3: لون الفقاعة على الشاشة ثابت تمامًا، فالسماح صغير حتى لا تذوب فقاعة لونها قريب من الخلفية (واتساب ماك الفاتح)
+163:         return dr <= TOL && dg <= TOL && db <= TOL;
+164:     }
+165: 
+166:     /**
+167:      * أقل نسبة بين الجهات الأربع (بعد إزاحة بكسلين للداخل، ومن دون الزوايا المستديرة) لما هو بلون المنطقة نفسها.
+168:      * الفقاعة جهاتها الأربع مستقيمة بلونها (النص لا يلمس الحافة)، أما الخلفية بزخارفها وشرائط التدرج المائلة والنص والصور فلا.
+169:      * الجهة الملاصقة لحافة الصورة (فقاعة قصّها التمرير) لا تُحسب.
+170:      */
+171:     private static double edgeCover(int[] label, int sw, int sh, int id, int x1, int y1, int x2, int y2) {
+172:         int in = 2;
+173:         int ax = x1 + in, ay = y1 + in, bx = x2 - in, by = y2 - in;
+174:         if (bx - ax < 8 || by - ay < 4) return 0;
+175:         int cut = Math.min(8, Math.min((bx - ax) / 4, (by - ay) / 3));
+176:         double min = 1;
+177:         int[] hit = new int[4], tot = new int[4];
+178:         for (int x = ax + cut; x <= bx - cut; x++) {
+179:             tot[0]++;
+180:             tot[1]++;
+181:             if (label[ay * sw + x] == id) hit[0]++;
+182:             if (label[by * sw + x] == id) hit[1]++;
+183:         }
+184:         for (int y = ay + cut; y <= by - cut; y++) {
+185:             tot[2]++;
+186:             tot[3]++;
+187:             if (label[y * sw + ax] == id) hit[2]++;
+188:             if (label[y * sw + bx] == id) hit[3]++;
+189:         }
+190:         boolean[] border = {y1 == 0, y2 == sh - 1, x1 == 0, x2 == sw - 1};
+191:         if (DEBUG) System.err.println("   sides top=" + hit[0] + "/" + tot[0] + " bottom=" + hit[1] + "/" + tot[1] + " left=" + hit[2] + "/" + tot[2] + " right=" + hit[3] + "/" + tot[3]);
+192:         for (int i = 0; i < 4; i++) {
+193:             if (border[i] || tot[i] == 0) continue;
+194:             min = Math.min(min, hit[i] / (double) tot[i]);
+195:         }
+196:         return min;
+197:     }
+198: }

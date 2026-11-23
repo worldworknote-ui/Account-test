@@ -1,0 +1,165 @@
+1: #!/usr/bin/env python3
+2: """اختبار الأداة في متصفح حقيقي (Chromium): اختيار ملف، مراجعة، إنشاء ملف ‎.sba وتنزيله، وصور للشاشة."""
+3: import json
+4: import os
+5: import sys
+6: from playwright.sync_api import sync_playwright
+7: 
+8: HTML, SAMPLES, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
+9: os.makedirs(OUT, exist_ok=True)
+10: fails = 0
+11: 
+12: 
+13: def check(name, ok, extra=None):
+14:     global fails
+15:     print(("  PASS " if ok else "  FAIL ") + name + ("" if ok or extra is None else " — " + str(extra)))
+16:     if not ok:
+17:         fails += 1
+18: 
+19: 
+20: with sync_playwright() as p:
+21:     b = p.chromium.launch()
+22:     ctx = b.new_context(viewport={"width": 1100, "height": 900}, accept_downloads=True, locale="ar")
+23:     page = ctx.new_page()
+24:     errors = []
+25:     page.on("pageerror", lambda e: errors.append(str(e)))
+26:     page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+27: 
+28:     # ------------------------------------------------------------- A: أرصدة + حركات
+29:     print("== sample A")
+30:     page.goto("file://" + HTML)
+31:     page.set_input_files("#file", os.path.join(SAMPLES, "sample-A.xlsx"))
+32:     page.wait_for_selector("#fileInfo.ok", timeout=15000)
+33:     page.wait_for_timeout(800)
+34:     check("both sections enabled", page.is_checked("#openOn") and page.is_checked("#txOn"))
+35:     page.screenshot(path=os.path.join(OUT, "A-1-setup.png"), full_page=True)
+36:     stats = page.inner_text("#review .stats")
+37:     check("stats show 3 offices / 4 tx / 5 openings", "3\nمكتب" in stats and "4\nحركة" in stats and "5\nرصيد سابق" in stats, stats)
+38:     check("no rejected rows", "0\nصف مرفوض" in stats, stats)
+39:     review = page.inner_text("#review")
+40:     check("balance كاش شام USD 1,305.25 shown", "1,305.25" in review, review[:400])
+41:     check("SYP 1,250,000 shown", "1,250,000" in review)
+42:     check("similar names warning", "متشابهة" in review)
+43:     page.screenshot(path=os.path.join(OUT, "A-2-review.png"), full_page=True)
+44:     # الإنشاء
+45:     page.fill("#myOffice", "مكتب الاختبار")
+46:     page.fill("#pw1", "pass-A-1234")
+47:     page.fill("#pw2", "pass-A-1234")
+48:     check("make disabled before confirmation", page.is_disabled("#make"))
+49:     page.check("#confirmed")
+50:     check("make enabled after confirmation", page.is_enabled("#make"))
+51:     with page.expect_download(timeout=30000) as dl:
+52:         page.click("#make")
+53:     d = dl.value
+54:     d.save_as(os.path.join(OUT, "A.sba"))
+55:     check("download name .sba", d.suggested_filename.endswith(".sba"), d.suggested_filename)
+56:     page.wait_for_selector("#makeMsg .msg.ok", timeout=30000)
+57:     with page.expect_download() as dl2:
+58:         page.click("#csv")
+59:     dl2.value.save_as(os.path.join(OUT, "A-report.csv"))
+60:     csv = open(os.path.join(OUT, "A-report.csv"), encoding="utf-8-sig").read()
+61:     check("csv report has office rows", "كاش شام" in csv and "لنا 1,305.25" in csv, csv[:300])
+62:     page.screenshot(path=os.path.join(OUT, "A-3-done.png"), full_page=True)
+63:     # عكس الاتجاه يقلب الأرصدة
+64:     page.check("#reverse")
+65:     page.wait_for_timeout(400)
+66:     row = page.inner_text("#review table tr:nth-child(2)")
+67:     check("reverse toggle recomputes (SYP row flips to لنا)", "لنا" in row and "علينا" not in row, row)
+68:     page.uncheck("#reverse")
+69: 
+70:     # ------------------------------------------------------------- B: دفتر Excel (ورقة لكل مكتب)
+71:     print("== sample B (ledger)")
+72:     page.goto("file://" + HTML)
+73:     page.set_input_files("#file", os.path.join(SAMPLES, "sample-B-ledger.xlsx"))
+74:     page.wait_for_selector("#fileInfo.ok", timeout=15000)
+75:     page.wait_for_timeout(800)
+76:     check("only transactions enabled", page.is_checked("#txOn") and not page.is_checked("#openOn"))
+77:     check("office from sheet name", page.is_checked("input[name=tofrom][value=sheet]"))
+78:     review = page.inner_text("#review")
+79:     check("asks for currency (fixed USD default) and balance column matches", "تطابق عمود الرصيد" in review, review[:600])
+80:     page.screenshot(path=os.path.join(OUT, "B-1-review.png"), full_page=True)
+81:     page.fill("#pw1", "كلمة سر عربية ١٢٣")
+82:     page.fill("#pw2", "كلمة سر عربية ١٢٣")
+83:     page.check("#confirmed")
+84:     with page.expect_download(timeout=30000) as dl:
+85:         page.click("#make")
+86:     dl.value.save_as(os.path.join(OUT, "B.sba"))
+87: 
+88:     # ------------------------------------------------------------- D: كشوفات حساب متعددة
+89:     print("== statements (many files)")
+90:     sdir = os.path.join(SAMPLES, "statements")
+91:     good = [os.path.join(sdir, f) for f in sorted(os.listdir(sdir))]
+92:     bad = os.path.join(SAMPLES, "statements-bad-fajr.xlsx")
+93:     page.goto("file://" + HTML)
+94:     page.set_input_files("#file", good + [bad])
+95:     page.wait_for_selector("#fileInfo.ok", timeout=20000)
+96:     page.wait_for_timeout(800)
+97:     info = page.inner_text("#fileInfo")
+98:     check("5 files read as 5 statements", "5 ملف" in info and "5 كشف" in info, info)
+99:     check("statements panel shown, single setup hidden", page.is_visible("#stmtPanel") and not page.is_visible("#singleSetup"))
+100:     review = page.inner_text("#review")
+101:     check("tampered statement reported and not imported", "لم يُنقل" in review and "لا يساوي" in review, review[:500])
+102:     table = page.inner_text("#stmtTable")
+103:     check("statement table shows per-file status", "رصيدًا مطابقًا" in table and "لا يساوي" in table, table[:400])
+104:     page.screenshot(path=os.path.join(OUT, "D-1-with-bad.png"), full_page=True)
+105:     page.set_input_files("#file", good)
+106:     page.wait_for_timeout(1200)
+107:     review = page.inner_text("#review")
+108:     stats = page.inner_text("#review .stats")
+109:     check("all 4 statements verified", "كل الكشوفات (4) صحيحة" in review, review[:300])
+110:     check("3 offices, 8 tx, 2 openings", "3\nمكتب" in stats and "8\nحركة" in stats and "2\nرصيد سابق" in stats, stats)
+111:     check("الخال merged across USD and EUR", review.count("الخال") >= 2 and "495.00" in review and "1,010.00" in review, review[:800])
+112:     page.check("#mergeCom")
+113:     page.wait_for_timeout(600)
+114:     check("merge Com → 7 tx", "7\nحركة" in page.inner_text("#review .stats"), page.inner_text("#review .stats"))
+115:     page.uncheck("#mergeCom")
+116:     page.click("label:has(input[name=stwhat][value=bal])")
+117:     page.wait_for_timeout(600)
+118:     stats = page.inner_text("#review .stats")
+119:     check("balances only → 0 tx, 4 openings", "0\nحركة" in stats and "4\nرصيد سابق" in stats, stats)
+120:     page.click("label:has(input[name=stwhat][value=all])")
+121:     page.wait_for_timeout(600)
+122:     page.screenshot(path=os.path.join(OUT, "D-2-review.png"), full_page=True)
+123:     page.fill("#pw1", "كشوفات-2026")
+124:     page.fill("#pw2", "كشوفات-2026")
+125:     page.check("#confirmed")
+126:     with page.expect_download(timeout=30000) as dl:
+127:         page.click("#make")
+128:     dl.value.save_as(os.path.join(OUT, "D.sba"))
+129:     page.wait_for_selector("#makeMsg .msg.ok", timeout=30000)
+130:     # إضافة ملف لاحقًا
+131:     page.set_input_files("#moreFiles", [bad])
+132:     page.wait_for_timeout(1000)
+133:     check("add more files appends (5 statements)", "5 كشف" in page.inner_text("#fileInfo"), page.inner_text("#fileInfo"))
+134:     # عرض الهاتف للكشوفات
+135:     mob0 = b.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2)
+136:     mp0 = mob0.new_page()
+137:     mp0.goto("file://" + HTML)
+138:     mp0.set_input_files("#file", good)
+139:     mp0.wait_for_selector("#fileInfo.ok", timeout=15000)
+140:     mp0.wait_for_timeout(800)
+141:     sw0 = mp0.evaluate("document.documentElement.scrollWidth")
+142:     check("statements: no horizontal page scroll on phone", sw0 <= 391, sw0)
+143:     mp0.screenshot(path=os.path.join(OUT, "D-phone.png"), full_page=True)
+144:     mob0.close()
+145: 
+146:     # ------------------------------------------------------------- عرض الهاتف
+147:     mob = b.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2)
+148:     mp = mob.new_page()
+149:     mp.goto("file://" + HTML)
+150:     mp.set_input_files("#file", os.path.join(SAMPLES, "sample-A.xlsx"))
+151:     mp.wait_for_selector("#fileInfo.ok", timeout=15000)
+152:     mp.wait_for_timeout(600)
+153:     sw = mp.evaluate("document.documentElement.scrollWidth")
+154:     check("no horizontal page scroll on phone width", sw <= 391, sw)
+155:     mp.screenshot(path=os.path.join(OUT, "M-phone.png"), full_page=False)
+156:     check("no page errors", not errors, errors)
+157:     b.close()
+158: 
+159: json.dump({
+160:     "A": {"password": "pass-A-1234", "offices": 3, "tx": 4, "openings": 5, "entries": 10, "lines": 20,
+161:           "balances": [["كاش شام", "USD", 130525], ["كاش شام", "SYP", -1250000], ["الأمين للصرافة", "USD", -20000],
+162:                        ["الأمين للصرافة", "EUR", 5000], ["الامين للصرافه", "USD", 1000]]},
+163:     "B": {"password": "كلمة سر عربية ١٢٣", "offices": 2, "tx": 4, "openings": 1, "entries": 5, "lines": 10,
+164:           "balances": [["كاش شام", "USD", 90000], ["الأمين", "USD", -10000]]},
+165:     "D": {"password": "كشوفات-2026", "offices": 3, "tx": 8, "openings": 2, "entries": 10, "lines": 20,

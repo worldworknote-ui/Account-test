@@ -1,0 +1,115 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.Arrays;
+5: import java.util.LinkedHashSet;
+6: import java.util.List;
+7: import java.util.Set;
+8: 
+9: /**
+10:  * المستخدمون والصلاحيات. بدون مستخدمين مسجّلين يعمل التطبيق بصلاحيات كاملة كما كان.
+11:  *
+12:  * <p>10.1: المدير له كل شيء؛ وكل مستخدم آخر يختار له المدير صلاحياته واحدة واحدة (لا قوالب ثابتة). الحسابات القديمة
+13:  * (محاسب، موظف، مشاهد) تتحول تلقائيًا إلى الصلاحيات نفسها التي كانت لها، ويستطيع المدير تعديلها.
+14:  */
+15: public final class Auth {
+16:     private Auth() {}
+17: 
+18:     public static final String ADMIN = "ADMIN", ACCOUNTANT = "ACCOUNTANT", EMPLOYEE = "EMPLOYEE", VIEWER = "VIEWER";
+19:     /** 10.1: مستخدم بصلاحيات يختارها المدير. */
+20:     public static final String CUSTOM = "CUSTOM";
+21:     public static final String[] ROLES = {ADMIN, ACCOUNTANT, EMPLOYEE, VIEWER};
+22: 
+23:     public enum Perm { TX_ADD, TX_EDIT, TX_CANCEL, VIEW, EXPORT, OFFICES, CURRENCIES, SETTINGS, BACKUP, RESTORE, USERS, DESIGN, DELETE, APPROVE, CASH, SYNC, VERIFY, DEVICES, NOTIFS, AUDIT,
+24:         // 12.0: صلاحيات تفصيلية حسب أقسام التطبيق
+25:         FX, XFER, TX_WA, BACKDATE, STATEMENT, RECON, HOLDS, CLIENTS, REPORTS, OWNER, RATES, LICENSE,
+26:         // 12.4: الحركات الخاصة (ناقصة أجور، تحتاج مراجعة…): تسجيلها وتعديلها وتحويلها لحركات عادية
+27:         SPECIAL,
+28:         // 12.6: العملات والمعادن والأسعار مفصّلة: المعادن، وتحديث الأسعار من الإنترنت (منفصلة عن التعديل اليدوي)
+29:         METALS, RATES_ONLINE,
+30:         // 12.6: الصندوق مفصّلًا: «الصندوق» = الدخول والاستلام والتسليم والتحويل؛ وهذه فوقه
+31:         CASH_EXPENSE, CASH_FX, CASH_COUNT }
+32: 
+33:     /** 10.3: ليست صلاحية بل قيد: كل حركات هذا المستخدم تنتظر الاعتماد قبل أن تدخل الأرصدة (أيًا كان مبلغها). */
+34:     public static final String REVIEW = "REVIEW";
+35: 
+36:     /**
+37:      * 12.0: الصلاحيات حسب أقسام التطبيق، يختار المدير كل واحدة لكل مستخدم. القسم الأول يُفتح افتراضيًا، والبقية بسهم.
+38:      * علامة {@link #DETAILED} في قائمة المستخدم تعني أنها اختيرت تفصيليًا (12.0)؛ القوائم الأقدم بلا علامة تُشتق منها
+39:      * الصلاحيات الجديدة من القديمة (التسجيل ← القص وبين مكتبين وواتساب والتاريخ السابق والأمانات… إلخ)، فلا يفقد أحد ما كان له.
+40:      */
+41:     public static final Object[][] SECTIONS = {
+42:             {"الحركات", new Perm[]{Perm.VIEW, Perm.TX_ADD, Perm.FX, Perm.XFER, Perm.TX_WA, Perm.BACKDATE, Perm.SPECIAL, Perm.TX_EDIT, Perm.TX_CANCEL, Perm.APPROVE, Perm.VERIFY}},
+43:             {"المكاتب", new Perm[]{Perm.STATEMENT, Perm.RECON, Perm.HOLDS, Perm.OFFICES, Perm.DELETE}},
+44:             {"الصندوق والعملاء", new Perm[]{Perm.CASH, Perm.CASH_EXPENSE, Perm.CASH_FX, Perm.CASH_COUNT, Perm.CLIENTS}},
+45:             {"التقارير والتصدير", new Perm[]{Perm.REPORTS, Perm.OWNER, Perm.EXPORT, Perm.DESIGN}},
+46:             {"العملات والمعادن والأسعار", new Perm[]{Perm.CURRENCIES, Perm.METALS, Perm.RATES, Perm.RATES_ONLINE}},
+47:             {"المزامنة", new Perm[]{Perm.SYNC, Perm.DEVICES}},
+48:             {"السجلات والتنبيهات", new Perm[]{Perm.NOTIFS, Perm.AUDIT}},
+49:             {"الإعدادات والإدارة", new Perm[]{Perm.SETTINGS, Perm.LICENSE, Perm.BACKUP, Perm.RESTORE, Perm.USERS}}};
+50: 
+51:     /** 12.0: علامة «اختيرت تفصيليًا» داخل قائمة صلاحيات المستخدم. */
+52:     public static final String DETAILED = "P12";
+53: 
+54:     /** 12.6: علامة «القائمة تعرف صلاحيات 12.6» (المعادن والأسعار أونلاين). قائمة 12.0–12.5 بدونها تُشتق منها كما كانت تعمل. */
+55:     public static final String DETAILED126 = "P126";
+56: 
+57:     /** علامات داخل القائمة ليست صلاحيات. */
+58:     public static boolean marker(String p) { return REVIEW.equals(p) || DETAILED.equals(p) || DETAILED126.equals(p); }
+59: 
+60:     /** 10.3: الصلاحيات في مجموعات للعرض: [العنوان، الصلاحيات]. */
+61:     public static final Object[][] GROUPS = {
+62:             {"الحركات", new Perm[]{Perm.VIEW, Perm.TX_ADD, Perm.TX_EDIT, Perm.TX_CANCEL, Perm.APPROVE, Perm.VERIFY}},
+63:             {"الصندوق والعملاء", new Perm[]{Perm.CASH}},
+64:             {"المكاتب والعملات", new Perm[]{Perm.OFFICES, Perm.DELETE, Perm.CURRENCIES}},
+65:             {"التقارير والتصدير", new Perm[]{Perm.EXPORT, Perm.DESIGN}},
+66:             {"السجلات", new Perm[]{Perm.NOTIFS, Perm.AUDIT, Perm.DEVICES}},
+67:             {"الإدارة", new Perm[]{Perm.SETTINGS, Perm.BACKUP, Perm.RESTORE, Perm.SYNC, Perm.USERS}}};
+68: 
+69:     /** هل تنتظر حركات هذا المستخدم اعتمادًا؟ (المدير أبدًا) */
+70:     public static boolean needsReview(Model.User u) { return u != null && !isAdmin(u) && perms(u).contains(REVIEW); }
+71: 
+72:     /** ترتيب العرض في شاشة الصلاحيات، مع الشرح. */
+73:     public static final Perm[] ORDER = {Perm.VIEW, Perm.TX_ADD, Perm.FX, Perm.XFER, Perm.TX_WA, Perm.BACKDATE, Perm.SPECIAL, Perm.TX_EDIT, Perm.TX_CANCEL, Perm.APPROVE, Perm.VERIFY,
+74:             Perm.STATEMENT, Perm.RECON, Perm.HOLDS, Perm.OFFICES, Perm.DELETE, Perm.CASH, Perm.CASH_EXPENSE, Perm.CASH_FX, Perm.CASH_COUNT, Perm.CLIENTS, Perm.REPORTS, Perm.OWNER, Perm.EXPORT, Perm.DESIGN,
+75:             Perm.CURRENCIES, Perm.METALS, Perm.RATES, Perm.RATES_ONLINE, Perm.SYNC, Perm.DEVICES, Perm.NOTIFS, Perm.AUDIT, Perm.SETTINGS, Perm.LICENSE, Perm.BACKUP, Perm.RESTORE, Perm.USERS};
+76: 
+77:     public static String title(Perm p) {
+78:         switch (p) {
+79:             case VIEW: return "عرض كل الحركات والأرصدة والتقارير";
+80:             case TX_ADD: return "تسجيل حركات جديدة";
+81:             case TX_EDIT: return "تعديل الحركات";
+82:             case TX_CANCEL: return "إلغاء الحركات";
+83:             case APPROVE: return "اعتماد الحركات المعلّقة";
+84:             case CASH: return "الصندوق: الاستلام والتسليم والتحويل بين الصناديق";
+85:             case CASH_EXPENSE: return "مصاريف الصندوق (رواتب، إيجار…)";
+86:             case CASH_FX: return "بيع وشراء العملات بالصندوق";
+87:             case CASH_COUNT: return "جرد الصندوق وتصحيح الفرق";
+88:             case OFFICES: return "إضافة المكاتب وتعديلها";
+89:             case DELETE: return "حذف المكاتب ودمجها";
+90:             case CURRENCIES: return "إضافة العملات وتعديلها وتفعيلها";
+91:             case METALS: return "المعادن الثمينة: إضافة العيارات وتعديلها";
+92:             case EXPORT: return "التصدير والطباعة والمشاركة";
+93:             case DESIGN: return "تصميم الكشوف والتقارير";
+94:             case SETTINGS: return "الإعدادات (ومنها إعدادات الصندوق والترخيص)";
+95:             case BACKUP: return "النسخ الاحتياطي";
+96:             case RESTORE: return "الاستعادة من نسخة احتياطية";
+97:             case SYNC: return "إدارة المزامنة (الإنشاء والإيقاف وكلمة السر)";
+98:             case USERS: return "إدارة المستخدمين وصلاحياتهم";
+99:             case VERIFY: return "التحقق من الحركات («تم التحقق»)";
+100:             case DEVICES: return "رؤية أجهزة المزامنة وسجلاتها";
+101:             case NOTIFS: return "سجل الإشعارات وتنبيهات المزامنة";
+102:             case FX: return "قص العملات";
+103:             case XFER: return "الحركات بين مكتبين";
+104:             case TX_WA: return "التسجيل من رسائل واتساب (رسالة أو عدة رسائل)";
+105:             case BACKDATE: return "تسجيل حركة بتاريخ سابق";
+106:             case STATEMENT: return "كشف حساب المكتب";
+107:             case RECON: return "مطابقة الرصيد (الإرسال والتأكيد)";
+108:             case HOLDS: return "الأمانات والمبالغ المجمّدة";
+109:             case SPECIAL: return "الحركات الخاصة (ناقصة أجور، تحتاج مراجعة…) وتحويلها لعادية";
+110:             case CLIENTS: return "حسابات العملاء";
+111:             case REPORTS: return "مركز التقارير والتقرير اليومي";
+112:             case OWNER: return "تقارير صاحب المكتب";
+113:             case RATES: return "تعديل الأسعار يدويًا (العملات والمعادن)";
+114:             case RATES_ONLINE: return "تحديث الأسعار من الإنترنت وتغيير مصدرها";
+115:             case LICENSE: return "الترخيص والتفعيل";

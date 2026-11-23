@@ -1,0 +1,44 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.Context;
+4: import java.io.File;
+5: 
+6: /**
+7:  * 10.4: إعادة تعيين البرنامج على هذا الجهاز فقط (مشترك: الهاتف والماك والويندوز).
+8:  * <ul>
+9:  *   <li>«حذف البيانات»: الحركات والمكاتب والصناديق والعملاء والصور والمستخدمون والإعدادات والنسخ الداخلية، وتبقى الرخصة.</li>
+10:  *   <li>«حذف كل شيء»: ما سبق والرخصة أيضًا (يُفعَّل من جديد برمز التفعيل).</li>
+11:  * </ul>
+12:  * لا يُرسل الحذف إلى الأجهزة الأخرى أبدًا: تُحذف قاعدة البيانات نفسها لا صفوفها، فلا تلتقط المزامنة شيئًا.
+13:  * النسخ الاحتياطية المحفوظة خارج البرنامج (في مجلد اخترته) لا تُمس.
+14:  */
+15: public final class AppReset {
+16:     private AppReset() {}
+17: 
+18:     public static final String CONFIRM_WORD = "حذف";
+19: 
+20:     /** يحذف البيانات. بعده يجب إعادة تشغيل التطبيق (قاعدة جديدة فارغة). */
+21:     public static void wipe(Context ctx, Db db, boolean keepLicense) {
+22:         try {
+23:             db.close();
+24:         } catch (Throwable ignored) {
+25:             // نكمل
+26:         }
+27:         File dbf = ctx.getDatabasePath(Db.NAME);
+28:         File dir = dbf.getParentFile();
+29:         File[] all = dir == null ? null : dir.listFiles();
+30:         if (all != null) for (File f : all) deleteTree(f);
+31:         String keep = keepLicense ? "license.txt" : null;
+32:         File[] files = ctx.getFilesDir().listFiles();
+33:         if (files != null) for (File f : files) if (keep == null || !f.getName().equals(keep)) deleteTree(f);
+34:         File[] cache = ctx.getCacheDir().listFiles();
+35:         if (cache != null) for (File f : cache) deleteTree(f);
+36:         Crypto.clearCache();
+37:     }
+38: 
+39:     static void deleteTree(File f) {
+40:         File[] kids = f.listFiles();
+41:         if (kids != null) for (File k : kids) deleteTree(k);
+42:         f.delete();
+43:     }
+44: }

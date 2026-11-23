@@ -1,0 +1,142 @@
+175:                     Uri doc = DocumentsContract.createDocument(cr, parent, "application/octet-stream", name);
+176:                     if (doc == null) throw new IllegalStateException("تعذر إنشاء ملف في مجلد النسخ التلقائي. أعد اختيار المجلد من شاشة النسخ الاحتياطي.");
+177:                     BackupManager.Delivery d = BackupManager.copyToUri(ctx, created.file, doc);
+178:                     db.recordBackup("AUTO", d.verified ? "نسخ تلقائي متحقق منه" : "نسخ تلقائي دون إعادة قراءة", name, d.size, created.counts, d.verified, d.note);
+179:                     allVerified &= d.verified;
+180:                     db.deleteSetting("auto_backup_error");
+181:                     // 8.0: نسخة فيها حقول تالفة لا تحذف الأقدم السليمة (والحد الأدنى للاحتفاظ 3)
+182:                     int keep = (int) Math.max(3, db.settingLong("auto_backup_keep", 7));
+183:                     if (created.result.unreadable == 0) prune(cr, tree, treeDoc, prefix(ctx), keep);
+184:                     else db.setSettingQuiet("auto_backup_error", Model.date(now) + "\nالنسخة الأخيرة فيها " + created.result.unreadable
+185:                             + " حقلًا لم يمكن فكه؛ لم تُحذف النسخ الأقدم. افتح «الإعدادات ← فحص البيانات».");
+186:                     saved.add(name);
+187:                     try {
+188:                         monthlyReadable(ctx, db, cr, tree, treeDoc);
+189:                     } catch (Exception e) {
+190:                         db.setSettingQuiet("readable_export_error", Model.date(now) + "\n" + message(e));
+191:                     }
+192:                 } catch (Exception e) {
+193:                     String msg = message(e);
+194:                     db.setSettingQuiet("auto_backup_error", Model.date(now) + "\n" + msg);
+195:                     failed.add("المجلد: " + msg);
+196:                 }
+197:             }
+198: 
+199:             if (hasDrive(db)) {
+200:                 try {
+201:                     // 8.0: ملف Drive يُستبدل كل مرة، فلا يُكتب فوقه بنسخة فيها حقول تالفة
+202:                     if (created.result.unreadable > 0) throw new IllegalStateException("النسخة الأخيرة فيها " + created.result.unreadable
+203:                             + " حقلًا لم يمكن فكه؛ أُبقي ملف Google Drive السابق كما هو.");
+204:                     Uri file = Uri.parse(db.setting("drive_backup_uri", ""));
+205:                     String name = db.setting("drive_backup_name", driveFileName(ctx));
+206:                     BackupManager.Delivery d = BackupManager.copyToUri(ctx, created.file, file, false);
+207:                     db.recordBackup("AUTO", d.verified ? "نسخ تلقائي إلى Google Drive متحقق منه" : "نسخ تلقائي إلى Google Drive دون إعادة قراءة",
+208:                             name, d.size, created.counts, d.verified, d.note);
+209:                     allVerified &= d.verified;
+210:                     db.setSettingQuiet("last_drive_backup", "" + now);
+211:                     db.deleteSetting("drive_backup_error");
+212:                     saved.add("Google Drive: " + name);
+213:                 } catch (Exception e) {
+214:                     String msg = message(e);
+215:                     if (e instanceof SecurityException || (e.getCause() instanceof SecurityException)
+216:                             || (e instanceof BackupManager.BackupException && e.getCause() instanceof java.io.FileNotFoundException)) {
+217:                         msg += "\nربما حُذف الملف من Google Drive أو أُلغيت صلاحية الوصول إليه. اختر ملف Drive من جديد من شاشة النسخ الاحتياطي.";
+218:                     }
+219:                     db.setSettingQuiet("drive_backup_error", Model.date(now) + "\n" + msg);
+220:                     failed.add("Google Drive: " + msg);
+221:                 }
+222:             }
+223: 
+224:             if (saved.isEmpty()) {
+225:                 String all = join(failed);
+226:                 notifyFailure(ctx, all);
+227:                 throw new AllFailed(all);
+228:             }
+229:             if (!hasFolder(db)) db.deleteSetting("auto_backup_error");
+230:             db.setSettingQuiet("last_auto_backup", "" + now);
+231:             db.setSettingQuiet("last_backup", "" + now);
+232:             db.setSettingQuiet("last_backup_tx", "" + db.txCount());
+233:             db.setSettingQuiet("last_backup_status", allVerified ? "verified" : "unverified");
+234:             if (!failed.isEmpty()) notifyFailure(ctx, "حُفظت النسخة في: " + join(saved) + "\nوفشل الحفظ في:\n" + join(failed));
+235:             else Notifier.backupDone(ctx, db, join(saved), created.counts, allVerified);
+236:             Reliability.healthAsync(db);
+237:             return join(saved);
+238:         } catch (AllFailed e) {
+239:             throw new Exception(e.getMessage());
+240:         } catch (Exception e) {
+241:             String msg = message(e);
+242:             db.setSettingQuiet("auto_backup_error", Model.date(Clock.now()) + "\n" + msg);
+243:             notifyFailure(ctx, msg);
+244:             throw e;
+245:         } finally {
+246:             if (pw != null) Arrays.fill(pw, '\0');
+247:         }
+248:     }
+249: 
+250:     static final String XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+251: 
+252:     /**
+253:      * 8.0 (ت9): نسخة مقروءة شهرية (اختيارية) في مجلد النسخ: أرصدة كل المكاتب الآن، وحركات الشهر الماضي، بصيغة Excel.
+254:      * تُفتح بلا التطبيق وبلا كلمة مرور، فتقي من فشل صيغة النسخ أو ضياع المفتاح. غير مشفّرة: لذلك هي اختيارية.
+255:      */
+256:     static void monthlyReadable(Context ctx, Db db, ContentResolver cr, Uri tree, String treeDoc) throws Exception {
+257:         if (!"1".equals(db.setting("readable_export", "0"))) return;
+258:         java.util.Calendar c = Model.cal();
+259:         String month = String.format(java.util.Locale.US, "%04d-%02d", c.get(java.util.Calendar.YEAR), c.get(java.util.Calendar.MONTH) + 1);
+260:         if (month.equals(db.setting("readable_export_month", ""))) return;
+261:         long now = Clock.now();
+262:         Uri parent = DocumentsContract.buildDocumentUriUsingTree(tree, treeDoc);
+263:         String issuer = db.setting("office_name", "");
+264:         Entitlements ent = License.current;
+265:         Report bal = Reports.balances(db.officeTotals(null), db.decimalsMap(), db.currencyNames(), false, issuer, now);
+266:         bal.stamp(ent.watermark(), ent.lid);
+267:         writeXlsx(cr, parent, prefix(ctx).replace("-auto-", "-readable-") + month + "-balances.xlsx", bal);
+268:         c.set(java.util.Calendar.DAY_OF_MONTH, 1);
+269:         c.set(java.util.Calendar.HOUR_OF_DAY, 0);
+270:         c.set(java.util.Calendar.MINUTE, 0);
+271:         c.set(java.util.Calendar.SECOND, 0);
+272:         c.set(java.util.Calendar.MILLISECOND, 0);
+273:         long thisMonth = c.getTimeInMillis();
+274:         c.add(java.util.Calendar.MONTH, -1);
+275:         Db.TxFilter f = new Db.TxFilter();
+276:         f.from = c.getTimeInMillis();
+277:         f.to = thisMonth;
+278:         f.includeCancelled = true;
+279:         String prev = String.format(java.util.Locale.US, "%04d-%02d", c.get(java.util.Calendar.YEAR), c.get(java.util.Calendar.MONTH) + 1);
+280:         Report txs = Reports.txList("حركات شهر " + prev, new ArrayList<String>(), db.txLog(f), db.officeNames(), db.decimalsMap(), issuer, now);
+281:         txs.stamp(ent.watermark(), ent.lid);
+282:         writeXlsx(cr, parent, prefix(ctx).replace("-auto-", "-readable-") + prev + "-transactions.xlsx", txs);
+283:         db.setSettingQuiet("readable_export_month", month);
+284:         db.setSettingQuiet("readable_export_at", "" + now);
+285:         db.deleteSetting("readable_export_error");
+286:     }
+287: 
+288:     private static void writeXlsx(ContentResolver cr, Uri parent, String name, Report r) throws Exception {
+289:         Uri doc = DocumentsContract.createDocument(cr, parent, XLSX, name);
+290:         if (doc == null) throw new IllegalStateException("تعذر إنشاء " + name);
+291:         try (java.io.OutputStream o = cr.openOutputStream(doc)) {
+292:             if (o == null) throw new IllegalStateException("تعذر الكتابة في " + name);
+293:             XlsxWriter.write(r, o, null, Model.zone());
+294:         }
+295:     }
+296: 
+297:     private static String message(Exception e) {
+298:         return e instanceof BackupManager.BackupException ? ((BackupManager.BackupException) e).userMessage() : String.valueOf(e.getMessage());
+299:     }
+300: 
+301:     private static String join(List<String> parts) {
+302:         StringBuilder b = new StringBuilder();
+303:         for (String p : parts) {
+304:             if (b.length() > 0) b.append('\n');
+305:             b.append(p);
+306:         }
+307:         return b.toString();
+308:     }
+309: 
+310:     private static void prune(ContentResolver cr, Uri tree, String treeDoc, String prefix, int keep) {
+311:         List<String[]> found = new ArrayList<>();
+312:         Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, treeDoc);
+313:         try (Cursor c = cr.query(children, new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null)) {
+314:             if (c == null) return;
+315:             while (c.moveToNext()) {
+316:                 String n = c.getString(1);

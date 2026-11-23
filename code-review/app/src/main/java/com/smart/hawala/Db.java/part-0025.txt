@@ -1,0 +1,168 @@
+3586:                 return Crypto.decBytes(readAll(attachmentFile(c.getString(0))));
+3587:             } catch (Exception e) {
+3588:                 return null;
+3589:             }
+3590:         }
+3591:     }
+3592: 
+3593:     public List<Long> attachmentIds(long tx) {
+3594:         List<Long> a = new ArrayList<>();
+3595:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id FROM attachments WHERE tx_id=" + tx + " ORDER BY id", null)) {
+3596:             while (c.moveToNext()) a.add(c.getLong(0));
+3597:         }
+3598:         return a;
+3599:     }
+3600: 
+3601:     public Map<Long, Integer> attachmentCounts(Long office) {
+3602:         Map<Long, Integer> m = new HashMap<>();
+3603:         String q = "SELECT a.tx_id,COUNT(*) FROM attachments a JOIN tx t ON t.id=a.tx_id" + (office == null ? "" : " WHERE t.office_id=" + office.longValue()) + " GROUP BY a.tx_id";
+3604:         try (Cursor c = getReadableDatabase().rawQuery(q, null)) {
+3605:             while (c.moveToNext()) m.put(c.getLong(0), c.getInt(1));
+3606:         }
+3607:         return m;
+3608:     }
+3609: 
+3610:     static byte[] readAll(File f) throws IOException {
+3611:         try (FileInputStream i = new FileInputStream(f)) {
+3612:             return readAll(i);
+3613:         }
+3614:     }
+3615: 
+3616:     static byte[] readAll(InputStream i) throws IOException {
+3617:         ByteArrayOutputStream o = new ByteArrayOutputStream();
+3618:         byte[] b = new byte[8192];
+3619:         int n;
+3620:         while ((n = i.read(b)) > 0) o.write(b, 0, n);
+3621:         return o.toByteArray();
+3622:     }
+3623: 
+3624:     // ===================================================================================
+3625:     // الأرصدة والكشوفات
+3626:     // ===================================================================================
+3627: 
+3628:     /** رصيد مكتب لكل عملة (موجب = لنا، سالب = علينا)، مع عملات المكتب المفعّلة بقيمة صفر. */
+3629:     public Map<String, Long> balances(long office) {
+3630:         Map<String, Long> m = new TreeMap<>();
+3631:         try (Cursor c = getReadableDatabase().rawQuery(
+3632:                 "SELECT currency,SUM(debit_minor-credit_minor) FROM journal_lines WHERE account='OFFICE' AND office_id=" + office + " GROUP BY currency", null)) {
+3633:             while (c.moveToNext()) m.put(c.getString(0), c.getLong(1));
+3634:         }
+3635:         for (String x : officeCurrencies(office)) if (!m.containsKey(x)) m.put(x, 0L);
+3636:         return m;
+3637:     }
+3638: 
+3639:     public Map<Long, Map<String, Long>> officeBalances() {
+3640:         Map<Long, Map<String, Long>> m = new LinkedHashMap<>();
+3641:         try (Cursor c = getReadableDatabase().rawQuery(
+3642:                 "SELECT office_id,currency,SUM(debit_minor-credit_minor) FROM journal_lines WHERE account='OFFICE' AND office_id IS NOT NULL GROUP BY office_id,currency", null)) {
+3643:             while (c.moveToNext()) {
+3644:                 Map<String, Long> per = m.get(c.getLong(0));
+3645:                 if (per == null) {
+3646:                     per = new TreeMap<>();
+3647:                     m.put(c.getLong(0), per);
+3648:                 }
+3649:                 per.put(c.getString(1), c.getLong(2));
+3650:             }
+3651:         }
+3652:         return m;
+3653:     }
+3654: 
+3655:     /**
+3656:      * لكل مكتب ولكل عملة: كل ما لنا (مجموع المدين)، كل ما علينا (مجموع الدائن)، والرصيد.
+3657:      * الحركات الملغاة وقيودها العكسية مستبعدة من المجاميع (صافيها صفر) حتى لا تُضخّم الأرقام.
+3658:      */
+3659:     public List<Model.OfficeTotals> officeTotals(Long onlyOffice) {
+3660:         Map<Long, Map<String, long[]>> g = new HashMap<>();
+3661:         // 12.7: نفس النتيجة بطريقة أسرع بكثير: مجموع كل أسطر المكاتب (من الفهرس وحده) ناقص أسطر قيود الحركات غير النشطة
+3662:         // والقيود المرتبطة بحركة غير موجودة. كانت تربط كل سطر بقيده وحركته (ثوانٍ مع مئات آلاف الأسطر).
+3663:         String only = onlyOffice == null ? "" : " AND l.office_id=" + onlyOffice.longValue();
+3664:         SQLiteDatabase rd = getReadableDatabase();
+3665:         try (Cursor c = rd.rawQuery("SELECT l.office_id,l.currency,SUM(l.debit_minor),SUM(l.credit_minor) FROM journal_lines l"
+3666:                 + " WHERE l.account='OFFICE' AND l.office_id IS NOT NULL" + only + " GROUP BY l.office_id,l.currency", null)) {
+3667:             while (c.moveToNext()) {
+3668:                 Map<String, long[]> per = g.get(c.getLong(0));
+3669:                 if (per == null) {
+3670:                     per = new TreeMap<>();
+3671:                     g.put(c.getLong(0), per);
+3672:                 }
+3673:                 long d = c.getLong(2), cr = c.getLong(3);
+3674:                 per.put(c.getString(1), new long[]{d, cr, d - cr});
+3675:             }
+3676:         }
+3677:         String[] minus = {
+3678:                 "SELECT l.office_id,l.currency,SUM(l.debit_minor),SUM(l.credit_minor) FROM tx t JOIN journal_entries e ON e.tx_id=t.id"
+3679:                         + " JOIN journal_lines l ON l.entry_id=e.id WHERE t.status<>'ACTIVE' AND l.account='OFFICE' AND l.office_id IS NOT NULL" + only
+3680:                         + " GROUP BY l.office_id,l.currency",
+3681:                 "SELECT l.office_id,l.currency,SUM(l.debit_minor),SUM(l.credit_minor) FROM journal_entries e JOIN journal_lines l ON l.entry_id=e.id"
+3682:                         + " WHERE e.tx_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM tx x WHERE x.id=e.tx_id) AND l.account='OFFICE' AND l.office_id IS NOT NULL" + only
+3683:                         + " GROUP BY l.office_id,l.currency"};
+3684:         for (String q : minus) {
+3685:             try (Cursor c = rd.rawQuery(q, null)) {
+3686:                 while (c.moveToNext()) {
+3687:                     Map<String, long[]> per = g.get(c.getLong(0));
+3688:                     long[] v = per == null ? null : per.get(c.getString(1));
+3689:                     if (v == null) continue;
+3690:                     v[0] -= c.getLong(2);
+3691:                     v[1] -= c.getLong(3);
+3692:                     v[2] = v[0] - v[1];
+3693:                 }
+3694:             }
+3695:         }
+3696:         Map<Long, List<String>> curs = new HashMap<>();
+3697:         try (Cursor c = rd.rawQuery("SELECT office_id,code FROM office_currencies ORDER BY office_id,code", null)) {
+3698:             while (c.moveToNext()) curs.computeIfAbsent(c.getLong(0), k -> new ArrayList<>()).add(c.getString(1));
+3699:         }
+3700:         List<Model.OfficeTotals> out = new ArrayList<>();
+3701:         List<Model.Office> offs;
+3702:         if (onlyOffice == null) offs = offices();
+3703:         else {
+3704:             offs = new ArrayList<>();
+3705:             Model.Office o = office(onlyOffice);
+3706:             if (o != null) offs.add(o);
+3707:         }
+3708:         for (Model.Office o : offs) {
+3709:             Model.OfficeTotals t = new Model.OfficeTotals();
+3710:             t.officeId = o.id;
+3711:             t.name = o.name;
+3712:             t.pinned = o.pinned;
+3713:             t.active = o.active;
+3714:             Map<String, long[]> per = new TreeMap<>();
+3715:             if (g.get(o.id) != null) per.putAll(g.get(o.id));
+3716:             List<String> oc = curs.get(o.id);
+3717:             if (oc != null) for (String code : oc) if (!per.containsKey(code)) per.put(code, new long[3]);
+3718:             t.perCurrency.putAll(per);
+3719:             out.add(t);
+3720:         }
+3721:         return out;
+3722:     }
+3723: 
+3724:     /** أسطر كشف المكتب من دفتر القيود خلال فترة [from, to). */
+3725:     public List<Model.Line> statementLines(long office, long from, long to) {
+3726:         return readLines(" AND COALESCE(e.created_at,0)>=" + from + " AND COALESCE(e.created_at,0)<" + to, office);
+3727:     }
+3728: 
+3729:     /** أسطر المكتب المسجّلة بعد قيد معيّن (بعد آخر مطابقة)، بما فيها حركات بتاريخ سابق وإلغاءات لحركات قديمة. */
+3730:     public List<Model.Line> statementLinesAfter(long office, long cutoffEntry) {
+3731:         return readLines(" AND l.entry_id>" + cutoffEntry, office);
+3732:     }
+3733: 
+3734:     /** 10.0: بعد مطابقة (بنطاقات أرقام الأجهزة إن وُجدت). */
+3735:     public List<Model.Line> statementLinesAfter(long office, Model.Recon r) {
+3736:         return readLines(" AND NOT " + SyncStore.upTo("l.entry_id", r.cutoffEntry, r.cutoffMarks), office);
+3737:     }
+3738: 
+3739:     public Map<String, Long> balanceUpTo(long office, Model.Recon r) {
+3740:         Map<String, Long> m = new TreeMap<>();
+3741:         String q = "SELECT currency,SUM(debit_minor-credit_minor) FROM journal_lines WHERE account='OFFICE' AND office_id=" + office
+3742:                 + " AND " + SyncStore.upTo("entry_id", r.cutoffEntry, r.cutoffMarks) + " GROUP BY currency";
+3743:         try (Cursor c = getReadableDatabase().rawQuery(q, null)) {
+3744:             while (c.moveToNext()) m.put(c.getString(0), c.getLong(1));
+3745:         }
+3746:         return m;
+3747:     }
+3748: 
+3749:     /** الرصيد لكل عملة حتى قيد معيّن (شاملًا). */
+3750:     public Map<String, Long> balanceUpTo(long office, long cutoffEntry) {
+3751:         Map<String, Long> m = new TreeMap<>();
+3752:         String q = "SELECT currency,SUM(debit_minor-credit_minor) FROM journal_lines WHERE account='OFFICE' AND office_id=" + office
+3753:                 + " AND entry_id<=" + cutoffEntry + " GROUP BY currency";

@@ -1,0 +1,140 @@
+157:             add(Ui.para("لا خزنة بعد: أنشئ المزامنة من الجهاز الذي فيه بياناتك الكاملة (مرة واحدة)، ثم انضم من الأجهزة الأخرى.", 14, Ui.ink, w));
+158:             add(Ui.row(Ui.primary("2) إنشاء المزامنة من بيانات هذا الجهاز…", e -> create()), Box.createHorizontalGlue()));
+159:         }
+160:     }
+161: 
+162:     void clientDialog() {
+163:         Ui.Field id = Ui.field("…apps.googleusercontent.com");
+164:         id.setText(db.setting("drive_client_id", ""));
+165:         JPasswordField sec = Ui.password();
+166:         sec.setText(db.setting("drive_client_secret", ""));
+167:         JPanel c = Ui.column();
+168:         c.add(Ui.labeled("معرّف العميل (Client ID)", id));
+169:         c.add(Ui.labeled("سر العميل (Client secret)", sec));
+170:         c.add(Ui.para("من Google Cloud ← APIs & Services ← Credentials ← عميل OAuth من نوع Desktop app.", 12.5f, Ui.muted, 420));
+171:         if (!Ui.form(this, "عميل Google للكمبيوتر", Ui.rtl(c), "حفظ")) return;
+172:         db.setSettingQuiet("drive_client_id", id.val().trim());
+173:         db.setSettingQuiet("drive_client_secret", new String(sec.getPassword()).trim());
+174:         refresh();
+175:     }
+176: 
+177:     void driveLogin(Runnable after) {
+178:         Ui.toast("سيُفتح المتصفح: اختر حساب Google ووافق، ثم ارجع إلى البرنامج.");
+179:         Ui.busy(this, "بانتظار الدخول في المتصفح…", p -> DeskDriveAuth.login(db, DeskDriveAuth.REFRESH, db.setting("drive_account", "")), email -> {
+180:             db.setSettingQuiet("sync_drive_ok", "1");
+181:             if (!email.isEmpty()) db.setSettingQuiet("drive_account", email);
+182:             Ui.toast("تم الاتصال بـ " + (email.isEmpty() ? "Google Drive" : email) + " ✓");
+183:             after.run();
+184:         });
+185:     }
+186: 
+187:     void pick() {
+188:         JFileChooser ch = new JFileChooser(db.setting("sync_dir", System.getProperty("user.home")));
+189:         ch.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+190:         ch.setDialogTitle("اختر المجلد المشترك للمزامنة");
+191:         ch.applyComponentOrientation(Ui.RTL);
+192:         if (ch.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
+193:         File f = ch.getSelectedFile();
+194:         if (f == null || !f.isDirectory() || !f.canWrite()) {
+195:             Ui.info(this, "المزامنة", "لا يمكن الكتابة في هذا المجلد. اختر مجلدًا آخر.");
+196:             return;
+197:         }
+198:         db.setSettingQuiet("sync_dir", f.getAbsolutePath());
+199:         refresh();
+200:     }
+201: 
+202:     void create() {
+203:         Ui.Field name = Ui.field("اسم هذا الجهاز (مثل: ماك المحل)");
+204:         JPasswordField p1 = Ui.password(), p2 = Ui.password();
+205:         JPanel c = Ui.column();
+206:         c.add(Ui.labeled("اسم الجهاز", name));
+207:         c.add(Ui.labeled("كلمة سر المزامنة (8 محارف على الأقل)", p1));
+208:         c.add(Ui.labeled("أعد كتابتها", p2));
+209:         c.add(Ui.para("تُطلب كلمة السر على كل جهاز ينضم. لا تُسترد إن نسيتها، إلا برمز الاسترداد الذي يظهر بعد الإنشاء.", 12.5f, Ui.muted, 420));
+210:         if (!Ui.form(this, "إنشاء المزامنة", Ui.rtl(c), "إنشاء")) return;
+211:         char[] a = p1.getPassword();
+212:         if (a.length < 8 || !new String(a).equals(new String(p2.getPassword()))) {
+213:             Ui.info(this, "إنشاء المزامنة", a.length < 8 ? "كلمة السر 8 محارف على الأقل" : "كلمتا السر غير متطابقتين");
+214:             return;
+215:         }
+216:         Ui.busy(this, "جارٍ إنشاء الخزنة المشفّرة ورفع لقطة البيانات…", p -> new SyncEngine(db, folder(db)).create(a, name.val()), rc -> {
+217:             if ("server".equals(transport(db))) db.setSettingQuiet("sync_server_vault", SyncEngine.status(db).vaultId);
+218:             JTextField code = new JTextField(rc);
+219:             code.setEditable(false);
+220:             code.setFont(Ui.font(18, true));
+221:             JPanel q = Ui.column();
+222:             q.add(Ui.para("أُنشئت المزامنة ✓\n\nإن نُسيت كلمة السر فهذا الرمز وحده يفتح الخزنة. يظهر مرة واحدة فقط: انسخه واحفظه في مكان آمن.", 14, Ui.ink, 460));
+223:             q.add(Ui.gap(8));
+224:             q.add(code);
+225:             Ui.form(this, "رمز الاسترداد — احفظه الآن", Ui.rtl(q), "حفظته");
+226:             app.changed();
+227:             refresh();
+228:         });
+229:     }
+230: 
+231:     void join() {
+232:         Ui.Field name = Ui.field("اسم هذا الجهاز (مثل: ماك البيت)");
+233:         JComboBox<String> how = Ui.combo(new String[]{"كلمة سر المزامنة", "رمز الاسترداد"});
+234:         JPasswordField pw = Ui.password();
+235:         JPanel c = Ui.column();
+236:         c.add(Ui.labeled("اسم الجهاز", name));
+237:         c.add(Ui.labeled("بماذا تفتح الخزنة", how));
+238:         c.add(Ui.labeled("كلمة السر أو الرمز", pw));
+239:         c.add(Ui.para("! تُستبدل بيانات هذا الجهاز ببيانات المزامنة.", 13, Ui.red, 420));
+240:         if (!Ui.form(this, "الانضمام إلى المزامنة", Ui.rtl(c), "انضمام")) return;
+241:         char[] s = pw.getPassword();
+242:         boolean rc = how.getSelectedIndex() == 1;
+243:         Ui.busy(this, "جارٍ فتح الخزنة وتنزيل البيانات…", p -> {
+244:             new SyncEngine(db, folder(db)).join(s, rc, name.val());
+245:             return true;
+246:         }, ok -> {
+247:             Ui.toast("انضم هذا الجهاز إلى المزامنة ✓");
+248:             app.reloadAll();
+249:             // 10.1: إن كان في بيانات المزامنة مستخدمون يدخل كل شخص بحسابه
+250:             if (db.usersEnabled()) app.lock();
+251:             else app.go("sync");
+252:         });
+253:     }
+254: 
+255:     void status(SyncEngine.Status st, int w) {
+256:         String tr = transport(db);
+257:         boolean admin = app.can(Auth.Perm.SYNC);
+258:         // ——— تنبيهات ———
+259:         if (SyncEngine.headerMissing(db)) {
+260:             add(Ui.para("! ملفات المزامنة غير موجودة في المكان المختار (" + st.folder + "). إن نقلت المزامنة إلى هنا فاضغط «إصلاح»، أو اختر المكان الصحيح من «نقل المزامنة».", 14, Ui.red, w));
+261:             add(Ui.row(Ui.primary("إصلاح: كتابة ملفات المزامنة هنا…", e -> repair()), Box.createHorizontalGlue()));
+262:             space(8);
+263:         }
+264:         if (!st.digestAlert.isEmpty()) add(Ui.para("! " + st.digestAlert, 14, Ui.red, w));
+265:         if (!st.movedTo.isEmpty()) movedNotice(st, w);
+266:         else if (!st.lastError.isEmpty()) add(Ui.para("آخر خطأ: " + st.lastError, 14, Ui.red, w));
+267:         if (st.paused) {
+268:             add(Ui.row(Ui.label(" المزامنة التلقائية موقوفة مؤقتًا على هذا الجهاز؛ تغييراتك محفوظة وتُرسل عند الاستئناف.", 14, Ui.goldInk, true), Box.createHorizontalGlue(),
+269:                     Ui.ghost("استئناف", e -> {
+270:                         db.setSettingQuiet("sync_paused", "0");
+271:                         refresh();
+272:                     })));
+273:             space(6);
+274:         }
+275:         for (JSONObject m : st.stale) {
+276:             long days = (Clock.now() - m.optLong("at")) / 86_400_000L;
+277:             boolean canRemove = admin && !m.optString("dev").equals(st.founderDev);
+278:             JPanel r = Ui.row(Ui.label("! «" + m.optString("name") + "» لم يتزامن منذ " + days + " يومًا: ما لم يستلمه من الملفات لا يُحذف حتى يعود أو يُزال.", 13.5f, Ui.red, false),
+279:                     Box.createHorizontalGlue());
+280:             if (canRemove) r.add(Ui.danger("إزالة…", e -> removeDevice(m)));
+281:             add(r);
+282:             space(4);
+283:         }
+284:         action(Ui.primary("مزامنة الآن", e -> Ui.busy(this, "جارٍ المزامنة…", p -> {
+285:             // 10.16: جولة تلقائية تعمل الآن؟ القفل العام يجعل هذه تنتظرها ثم تجري (لا جولتان معًا على الخزنة)
+286:             return new SyncEngine(db, folder(db)).sync();
+287:         }, r -> {
+288:             Ui.toast(r.summary());
+289:             if (r.received > 0) app.reloadAll();
+290:             if (!afterSync(app)) app.go("sync");
+291:         })));
+292: 
+293:         action(Ui.ghost("سجل الإشعارات", e -> NotifLog.open(this, db)));   // 10.18
+294:         // 10.16: الحجم وعدد الملفات في مكان المزامنة (كان على الهاتف وحده)
+295:         action(Ui.ghost("الحجم وعدد الملفات", e -> Ui.busy(this, "جارٍ قراءة مكان المزامنة…", p -> new SyncEngine(db, folder(db)).usage(), u -> Ui.info(this, "مكان المزامنة",
+296:                 u.total() + " ملفًا" + (u.bytes >= 0 ? " — " + SyncEngine.size(u.bytes) : "") + "\n\nبطاقات الأجهزة: " + u.members + "\nحزم التغييرات: " + u.packets

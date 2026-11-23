@@ -1,0 +1,122 @@
+148:         check(throwsMsg(() -> P.saveOnlineRates(on, Clock.now()), "صلاحية"), "بلا «الأسعار أونلاين»: التحديث من الإنترنت مرفوض");
+149:         check(throwsMsg(() -> P.setRatesUrl("https://x.example"), "صلاحية"), "وتغيير مصدر الأسعار مرفوض");
+150:         P.setManualRate("TRY", new BigDecimal("0.031"));
+151:         check(P.rates().get("TRY").manual != null, "والسعر اليدوي يعمل بـ«الأسعار اليدوية»");
+152:         SmartApp.currentUser = admin;
+153:         Db.currentUserName = admin.name;
+154:         P.cashSetup("", Arrays.asList("USD", "TRY"), Collections.singletonMap("USD", 100000L), false, true);
+155:         SmartApp.currentUser = am;
+156:         Db.currentUserName = am.name;
+157:         CashBox.Input ex = new CashBox.Input();
+158:         ex.kind = CashBox.EXPENSE;
+159:         ex.currency = "USD";
+160:         ex.amount = 1000;
+161:         ex.category = "إيجار";
+162:         ex.boxId = 1;
+163:         ex.when = Clock.now();
+164:         check(throwsMsg(io(() -> P.addCashMove(ex)), "صلاحية"), "بلا «مصاريف الصندوق»: المصروف مرفوض في طبقة البيانات");
+165:         CashBox.Input in = new CashBox.Input();
+166:         in.kind = CashBox.IN;
+167:         in.currency = "USD";
+168:         in.amount = 500;
+169:         in.category = "استلام من شخص";
+170:         in.boxId = 1;
+171:         in.when = Clock.now();
+172:         P.addCashMove(in);
+173:         check(P.cashBalances().get("USD") == 100500, "والاستلام يعمل بـ«الصندوق» وحده");
+174:         check(throwsMsg(() -> P.cashCount(1, Collections.singletonMap("USD", 100500L), "", new ArrayList<>()), "صلاحية"), "بلا «الجرد»: الجرد مرفوض");
+175:         SmartApp.currentUser = null;
+176: 
+177:         System.out.println("== 5) سقوف المجانية الجديدة ورخصة مخصصة");
+178:         Object[] dv2 = DeskCoreTest.device("r126f");
+179:         Db F = (Db) dv2[1];
+180:         License.current = Entitlements.of(null, BuildInfo.BUILD_DATE);
+181:         check(Entitlements.FREE_OFFICES == 15 && Entitlements.FREE_TX_PER_OFFICE == 1500, "المجانية: 15 مكتبًا و1500 حركة لكل مكتب");
+182:         for (int i = 1; i <= 25; i++) {
+183:             ClientBook.Client k = new ClientBook.Client();
+184:             k.name = "عميل " + i;
+185:             F.saveClient(k);
+186:         }
+187:         ClientBook.Client k26 = new ClientBook.Client();
+188:         k26.name = "عميل 26";
+189:         check(throwsMsg(() -> F.saveClient(k26), "25"), "العميل 26 مرفوض في المجانية");
+190:         long firstId = F.clients().get(0).id;
+191:         F.setClientActive(firstId, false);
+192:         F.saveClient(k26);
+193:         check(F.clients().stream().filter(c -> c.active).count() == 25, "أرشفة عميل تعيد مكانه");
+194:         check(throwsMsg(() -> F.setClientActive(firstId, true), "25"), "وإعادة المؤرشف فوق الحد مرفوضة");
+195:         F.cashSetup("", Arrays.asList("USD"), new HashMap<>(), false, true);
+196:         check(throwsMsg(() -> F.addCashBox("خزنة 2", Arrays.asList("USD"), null), "صندوق واحد"), "صندوق ثانٍ مرفوض في المجانية");
+197:         Model.User owner = F.user(F.addUser("المالك", Auth.ADMIN, null, "778899"));
+198:         SmartApp.currentUser = owner;
+199:         Db.currentUserName = owner.name;
+200:         check(throwsMsg(() -> F.addUser("موظف", Auth.CUSTOM, "VIEW", "1231"), "مستخدم واحد"), "المجانية لا تضيف مستخدمين");
+201:         Map<String, String> g = new HashMap<>();
+202:         g.put("ft", "users,boxes,clients,export");
+203:         g.put("lid", "TEST-CUSTOM");
+204:         g.put("uu", "29991231");
+205:         g.put("mu", "2");
+206:         g.put("mb", "2");
+207:         g.put("mc", "30");
+208:         java.lang.reflect.Constructor<LicenseToken.Grant> gc = LicenseToken.Grant.class.getDeclaredConstructor(Map.class);
+209:         gc.setAccessible(true);
+210:         License.current = Entitlements.of(gc.newInstance(g), BuildInfo.BUILD_DATE);
+211:         F.addUser("موظف", Auth.CUSTOM, "VIEW", "1231");
+212:         check(throwsMsg(() -> F.addUser("موظف2", Auth.CUSTOM, "VIEW", "3213"), "2"), "رخصة بمستخدمَين: الثالث مرفوض برسالة الرقم");
+213:         long b2 = F.addCashBox("خزنة 2", Arrays.asList("USD"), null);
+214:         check(b2 > 0 && throwsMsg(() -> F.addCashBox("خزنة 3", Arrays.asList("USD"), null), "2"), "رخصة بصندوقين: الثاني يُضاف والثالث مرفوض");
+215:         License.current = Entitlements.of(null, BuildInfo.BUILD_DATE);
+216:         check(F.cashBoxes().size() == 2 && F.users(false).size() == 2, "بعد العودة للمجانية: الصناديق والمستخدمون الموجودون باقون كما هم");
+217:         SmartApp.currentUser = null;
+218: 
+219:         System.out.println("== 6) المعادن: كل عيار حساب واحد، ولا عيار غامض");
+220:         License.current = Entitlements.of(DeskCoreTest.fullGrant(), BuildInfo.BUILD_DATE);
+221:         SmartApp.currentUser = owner;
+222:         Db.currentUserName = owner.name;
+223:         F.saveMetal("XAU21", "ذهب 21", Metals.GOLD, 875, "g", false, true);
+224:         check(throwsMsg(() -> F.saveMetal("XAU21B", "ذهب 21 مكرر", Metals.GOLD, 875, "g", false, true), "كل عيار حساب واحد"), "العيار نفسه بالوحدة نفسها مرفوض باسم آخر");
+225:         check(throwsMsg(() -> F.saveMetal("XAUX", "ذهب بلا عيار", Metals.GOLD, 0, "g", false, true), "اختر العيار"), "ذهب بلا عيار بجانب ذهب آخر مرفوض (يلتبس)");
+226:         F.saveMetal("XAU21K", "ذهب 21 كيلو", Metals.GOLD, 875, "kg", false, true);
+227:         F.saveMetal("XAU18", "ذهب 18", Metals.GOLD, 750, "g", false, true);
+228:         check(F.metals().size() == 3, "عيار آخر أو وحدة أخرى حساب مستقل");
+229:         F.saveMetal("XAU21", "ذهب عيار 21", Metals.GOLD, 875, "g", false, false);
+230:         check(!F.currencies(true).stream().filter(c -> c.code.equals("XAU21")).findFirst().get().active, "تعديل الاسم والتفعيل لحساب قائم يعمل");
+231:         List<String> taken = new ArrayList<>();
+232:         for (Model.Currency c : F.currencies(true)) taken.add(c.code);
+233:         check(Metals.uniqueCode(Metals.GOLD, 875, "g", taken).equals("XAU21G") && Metals.uniqueCode(Metals.GOLD, 916, "g", taken).equals("XAU22"),
+234:                 "الرمز المقترح لا يتكرر (XAU21 موجود ← XAU21G)، وعيار جديد ← XAU22");
+235:         check(Metals.show("1.500", "XAU18").equals("1.500 غ ذهب عيار 18") && Metals.qtyWord("XAU18").equals("الوزن") && Metals.qtyWord("USD").equals("المبلغ"),
+236:                 "المعدن يُعرض بوزنه ووحدته: «1.500 غ ذهب عيار 18»");
+237: 
+238:         SmartApp.currentUser = null;
+239:         System.out.println("== 7) الاشتراك بتاريخ انتهاء لا يمتد بإرجاع الساعة");
+240:         Object[] dv3 = DeskCoreTest.device("r126d");
+241:         Db D = (Db) dv3[1];
+242:         D.setSettingQuiet("license_day", "20300101");
+243:         check(D.licenseDay() == 20300101, "أكبر يوم رآه التطبيق يبقى ولو رجعت ساعة الجهاز");
+244: 
+245:         System.out.println();
+246:         System.out.println(fails == 0 ? "نجحت اختبارات 12.6 كلها (" + passes + ")" : "فشل " + fails + " من " + (passes + fails));
+247:         System.exit(fails == 0 ? 0 : 1);
+248:     }
+249: 
+250:     interface IoRun { void run() throws Exception; }
+251: 
+252:     static Runnable io(IoRun r) {
+253:         return () -> {
+254:             try {
+255:                 r.run();
+256:             } catch (RuntimeException e) {
+257:                 throw e;
+258:             } catch (Exception e) {
+259:                 throw new RuntimeException(e);
+260:             }
+261:         };
+262:     }
+263: 
+264:     static void deleteTree(File f) {
+265:         File[] l = f.listFiles();
+266:         if (l != null) for (File x : l) deleteTree(x);
+267:         f.delete();
+268:     }
+269: }

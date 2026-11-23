@@ -1,0 +1,161 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.content.ClipDescription;
+5: import android.content.ClipboardManager;
+6: import android.content.Context;
+7: import android.graphics.Bitmap;
+8: import android.graphics.Color;
+9: import android.os.Build;
+10: import android.view.Gravity;
+11: import android.view.View;
+12: import android.view.ViewGroup;
+13: import android.widget.Button;
+14: import android.widget.FrameLayout;
+15: import android.widget.ImageView;
+16: import android.widget.LinearLayout;
+17: import android.widget.Switch;
+18: import android.widget.TextView;
+19: import java.math.BigDecimal;
+20: import java.util.ArrayList;
+21: import java.util.Collections;
+22: import java.util.HashMap;
+23: import java.util.List;
+24: import java.util.Map;
+25: import java.util.Set;
+26: 
+27: /**
+28:  * الصفحة الرئيسية الحديثة: عناصر يختارها المستخدم ويرتبها كما يريد (المزيد ← المظهر، أو زر القلم في الرئيسية).
+29:  * كل الأرقام من دفتر القيود مباشرة (Ledger.totals على أرصدة المكاتب، Db.dailyStats…) دون أي حساب موازٍ.
+30:  */
+31: final class HomeScreen {
+32:     private final MainActivity a;
+33:     /** مكان بطاقة «نسخت نصًا قبل قليل»؛ تُملأ عندما تحصل النافذة على التركيز (شرط أندرويد لقراءة الحافظة). */
+34:     private LinearLayout clipSlot;
+35: 
+36:     HomeScreen(MainActivity a) { this.a = a; }
+37: 
+38:     // ===================================================================================
+39:     // العناصر المتاحة
+40:     // ===================================================================================
+41: 
+42:     static final class Widget {
+43:         final String key, title, desc;
+44:         final boolean defOn, hasOptions;
+45: 
+46:         Widget(String key, String title, String desc, boolean defOn, boolean hasOptions) {
+47:             this.key = key;
+48:             this.title = title;
+49:             this.desc = desc;
+50:             this.defOn = defOn;
+51:             this.hasOptions = hasOptions;
+52:         }
+53:     }
+54: 
+55:     static final Widget[] WIDGETS = {
+56:             new Widget("search", "البحث", "شريط البحث في الحركات والمكاتب", true, false),
+57:             new Widget("welcome", "الرسالة الترحيبية", "النص الذي تكتبه في «المظهر»", true, false),
+58:             new Widget("alerts", "التنبيهات", "دفعة واتساب غير مكتملة، النسخ الاحتياطي، رمز الاسترداد", true, false),
+59:             new Widget("cash", "صندوق المكتب", "النقد في الصندوق بكل عملة (يظهر بعد إعداد الصندوق)", true, false),
+60:             new Widget("clipboard", "اقتراح اللصق", "بطاقة تظهر عندما تنسخ نصًا من واتساب قبل قليل", true, false),
+61:             new Widget("net", "صافي الأرصدة لكل عملة", "بطاقة لكل عملة: الصافي ومجموع لنا وعلينا", true, true),
+62:             new Widget("totals", "جدول الإجمالي لكل عملة", "لنا وعلينا والصافي وعدد المكاتب لكل عملة", false, true),
+63:             new Widget("usd", "التقويم التقريبي بالدولار", "مجموع لنا وعلينا والصافي بالدولار حسب أسعار الصرف", false, false),
+64:             new Widget("today", "اليوم", "عدد حركات اليوم، المطابقات المنتظرة، المسودة", true, false),
+65:             new Widget("daily", "ملخص اليوم بالعملات", "لنا وعلينا والأجور لكل عملة اليوم", false, true),
+66:             new Widget("offices", "أرصدة المكاتب", "مكاتب بأرصدتها: المثبّتة، أو الأكبر رصيدًا", false, true),
+67:             new Widget("recent_tx", "آخر الحركات", "آخر الحركات المسجّلة", false, true),
+68:             new Widget("recons", "المطابقات بانتظار التأكيد", "المكاتب التي لم تؤكد رصيدها بعد", false, false),
+69:             new Widget("limits", "تجاوز حدود المكاتب", "المكاتب التي تجاوزت الحد الذي وضعته", false, false),
+70:             new Widget("recent_offices", "آخر المكاتب", "أزرار سريعة لآخر المكاتب التي فتحتها", true, false),
+71:             new Widget("paste", "لصق رسائل واتساب", "زر كبير للصق رسالة أو عدة رسائل منسوخة", true, false),
+72:             new Widget("shortcuts", "الاختصارات", "أزرار الوصول السريع (ترتيبها وألوانها من «المظهر»)", true, false),
+73:             new Widget("rates", "أسعار الصرف", "سعر كل عملة مقابل الدولار", false, true)
+74:     };
+75:     // 12.6: اسم البرنامج وإصداره لم يعودا عنصرًا يُخفى: يظهران دائمًا آخر الصفحة (signature() بعد كل العناصر).
+76: 
+77:     static Widget widget(String key) {
+78:         for (Widget w : WIDGETS) if (w.key.equals(key)) return w;
+79:         return null;
+80:     }
+81: 
+82:     /** الترتيب والإظهار: «key» ظاهر، «-key» مخفي. العناصر الجديدة تُضاف في آخر القائمة بحالتها الافتراضية. */
+83:     static List<String[]> layout(Db db) {
+84:         List<String[]> out = new ArrayList<>();
+85:         java.util.Set<String> seen = new java.util.HashSet<>();
+86:         for (String part : db.setting("home_widgets", "").split(",")) {
+87:             String p = part.trim();
+88:             if (p.isEmpty()) continue;
+89:             boolean on = !p.startsWith("-");
+90:             String k = on ? p : p.substring(1);
+91:             if (widget(k) == null || !seen.add(k)) continue;
+92:             out.add(new String[]{k, on ? "1" : "0"});
+93:         }
+94:         for (Widget w : WIDGETS) if (!seen.contains(w.key)) out.add(new String[]{w.key, w.defOn ? "1" : "0"});
+95:         return out;
+96:     }
+97: 
+98:     static void saveLayout(Db db, List<String[]> l) {
+99:         StringBuilder sb = new StringBuilder();
+100:         for (String[] x : l) {
+101:             if (sb.length() > 0) sb.append(',');
+102:             sb.append("1".equals(x[1]) ? x[0] : "-" + x[0]);
+103:         }
+104:         db.setSettingQuiet("home_widgets", sb.toString());
+105:     }
+106: 
+107:     static int iconFor(String key) {
+108:         switch (key) {
+109:             case "tx": return R.drawable.ic_plus;
+110:             case "log": return R.drawable.ic_list;
+111:             case "statement": return R.drawable.ic_doc;
+112:             case "totals": return R.drawable.ic_scale;
+113:             case "daily": return R.drawable.ic_calendar;
+114:             case "search": return R.drawable.ic_search;
+115:             case "office": return R.drawable.ic_offices;
+116:             case "currency": return R.drawable.ic_coins;
+117:             case "backup": return R.drawable.ic_shield;
+118:             case "cash": return R.drawable.ic_cash;
+119:             case "reports": return R.drawable.ic_report;
+120:             case "mine": return R.drawable.ic_check2;
+121:             default: return R.drawable.ic_sliders;
+122:         }
+123:     }
+124: 
+125:     // ===================================================================================
+126:     // الرسم
+127:     // ===================================================================================
+128: 
+129:     void show() {
+130:         String office = a.db.setting("office_name", "").trim();
+131:         String title = office.isEmpty() ? a.db.setting("app_title", "المحاسب الذكي لمكاتب الحوالات") : office;
+132:         a.here(this::show);
+133:         a.rootScreen(title, "home");
+134:         a.onHome = true;
+135:         clipSlot = null;
+136:         a.screenTitle.setTextColor(a.flatHeader ? a.primaryInk : a.headerInk);
+137: 
+138:         // اسم المستخدم الداخل (بلا تحية) فوق العنوان، والشعار في بداية الشريط
+139:         Model.User u = SmartApp.currentUser;
+140:         ViewGroup barRow = (ViewGroup) a.screenTitle.getParent();
+141:         int at = barRow.indexOfChild(a.screenTitle);
+142:         barRow.removeView(a.screenTitle);
+143:         LinearLayout tcol = new LinearLayout(a);
+144:         tcol.setOrientation(LinearLayout.VERTICAL);
+145:         tcol.setGravity(Gravity.CENTER_VERTICAL);
+146:         a.screenTitle.setPadding(a.dp(6), 0, a.dp(6), 0);
+147:         if (u != null && u.name != null && !u.name.trim().isEmpty()) {
+148:             TextView g = a.text(u.name, 13, a.flatHeader ? a.muted : a.headerInk, false);
+149:             g.setPadding(a.dp(6), 0, a.dp(6), 0);
+150:             g.setSingleLine(true);
+151:             tcol.addView(g);
+152:         }
+153:         // العنوان (اسم المكتب) كان يحمل مقاسات الشريط الأفقي (عرض 0 بوزن)، فيختفي داخل العمود العمودي
+154:         tcol.addView(a.screenTitle, new LinearLayout.LayoutParams(-1, -2));
+155:         barRow.addView(tcol, at, new LinearLayout.LayoutParams(0, -1, 1));
+156:         Bitmap logo = "none".equals(a.db.setting("home_logo_mode", "default")) ? null : a.homeLogo();
+157:         if (logo != null) {
+158:             ImageView iv = new ImageView(a);
+159:             iv.setImageBitmap(logo);
+160:             iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+161:             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(a.dp(40), a.dp(40));

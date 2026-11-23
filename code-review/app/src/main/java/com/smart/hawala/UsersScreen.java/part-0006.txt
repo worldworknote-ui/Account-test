@@ -1,0 +1,165 @@
+794:                     a.toast("تمت إضافة «" + n + "». أرسل له اسمه ورمزه ليدخل.");
+795:                 } else {
+796:                     a.db.updateUser(old.id, n, r, perms, active.isChecked());
+797:                     if (!nick.getText().toString().trim().equals(Model.nz(old.nick).trim())) a.db.setNick(old.id, nick.getText().toString());
+798:                     dlg.dismiss();
+799:                     Model.User me = SmartApp.currentUser;
+800:                     if (me != null && me.id == old.id) {
+801:                         if (!active.isChecked()) {
+802:                             SmartApp.currentUser = null;
+803:                             Db.currentUserName = "المستخدم المحلي";
+804:                             a.afterUnlock();
+805:                             return;
+806:                         }
+807:                         SmartApp.currentUser = a.db.user(old.id);
+808:                         Db.currentUserName = n;
+809:                         if (!a.can(Auth.Perm.USERS)) {
+810:                             a.showHome();
+811:                             return;
+812:                         }
+813:                     }
+814:                     if (Auth.ADMIN.equals(r) && !Auth.ADMIN.equals(old.role)) {
+815:                         a.toast("صار «" + n + "» مديرًا. غيّر رمزه إلى 6 أرقام على الأقل من «تغيير الرمز».");
+816:                     } else a.toast("تم الحفظ");
+817:                 }
+818:                 showManager();
+819:             } catch (Exception e) {
+820:                 a.error(e);
+821:             }
+822:         }));
+823:         dlg.show();
+824:     }
+825: 
+826:     private void newPinDialog(final Model.User u, String title, final boolean cancelable, final Runnable after) {
+827:         newPinDialog(u, title, cancelable, after, null);
+828:     }
+829: 
+830:     /** ownOld != null: المستخدم يغيّر رمزه بنفسه (يُتحقق من رمزه الحالي في Db). */
+831:     private void newPinDialog(final Model.User u, String title, final boolean cancelable, final Runnable after, final String ownOld) {
+832:         final EditText p1 = pinField(Auth.ADMIN.equals(u.role) ? "الرمز الجديد (6 إلى 8 أرقام)" : "الرمز الجديد (4 إلى 8 أرقام)");
+833:         final EditText p2 = pinField("أعد كتابة الرمز");
+834:         LinearLayout l = padded(p1, p2);
+835:         AlertDialog.Builder b = new AlertDialog.Builder(a).setTitle(title).setView(l).setPositiveButton("حفظ", null);
+836:         b.setNegativeButton("إلغاء", null);
+837:         final AlertDialog dlg = b.create();
+838:         // 10.5 (AUDIT-035): إذن الاسترداد لا يبقى مفتوحًا إن أُغلقت النافذة دون حفظ
+839:         dlg.setOnDismissListener(x -> Db.recoveryGrant = false);
+840:         dlg.setOnShowListener(d -> dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+841:             String pin = p1.getText().toString();
+842:             if (!pinOk(u.role, pin)) {
+843:                 p1.setError(pinRule(u.role));
+844:                 return;
+845:             }
+846:             if (!pin.equals(p2.getText().toString())) {
+847:                 p2.setError("غير متطابق");
+848:                 return;
+849:             }
+850:             try {
+851:                 if (ownOld != null) a.db.changeOwnPin(ownOld, pin);
+852:                 else a.db.setPin(u.id, pin);
+853:                 dlg.dismiss();
+854:                 a.toast("تم تغيير الرمز");
+855:                 if (after != null) after.run();
+856:             } catch (Exception e) {
+857:                 a.error(e);
+858:             }
+859:         }));
+860:         dlg.show();
+861:     }
+862: 
+863:     /** يغيّر المستخدم الحالي رمزه بعد إدخال الرمز القديم. */
+864:     /** 10.17: المستخدم يختار اسمه الظاهر لبقية المحاسبين (المدير يرى اسم الدخول دائمًا). */
+865:     void changeOwnNick() {
+866:         final Model.User me = SmartApp.currentUser;
+867:         if (me == null) return;
+868:         Model.User now = a.db.user(me.id);
+869:         LinearLayout l = new LinearLayout(a);
+870:         l.setOrientation(LinearLayout.VERTICAL);
+871:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+872:         final EditText n = a.field("الاسم الظاهر (اتركه فارغًا لاسم الدخول)");
+873:         n.setText(now == null ? "" : now.nick);
+874:         l.addView(n, a.lp(-1, 50, 3));
+875:         l.addView(a.text("يراه بقية المحاسبين بجانب حركاتك بدل اسم دخولك «" + me.name + "». المدير يرى اسم الدخول دائمًا.", 12, a.muted, false));
+876:         new AlertDialog.Builder(a).setTitle("اسمي الظاهر").setView(l).setPositiveButton("حفظ", (d, w) -> {
+877:             try {
+878:                 a.db.setNick(me.id, n.getText().toString());
+879:                 a.toast(n.getText().toString().trim().isEmpty() ? "يظهر اسم دخولك" : "حُفظ الاسم الظاهر ✓");
+880:             } catch (Exception e) {
+881:                 a.error(e);
+882:             }
+883:         }).setNegativeButton("إلغاء", null).show();
+884:     }
+885: 
+886:     /** 10.17: المدير يكتب رسالة للمحاسبين (الكل أو واحد)، ويرى ما أرسله ويسحبه. */
+887:     void adminMessages() {
+888:         final List<Model.User> to = new java.util.ArrayList<>();
+889:         for (Model.User u : a.db.users(true)) if (SmartApp.currentUser == null || u.id != SmartApp.currentUser.id) to.add(u);
+890:         if (to.isEmpty()) {
+891:             a.toast("لا مستخدمين آخرين بعد");
+892:             return;
+893:         }
+894:         LinearLayout l = new LinearLayout(a);
+895:         l.setOrientation(LinearLayout.VERTICAL);
+896:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+897:         final String[] names = new String[to.size() + 1];
+898:         names[0] = "كل المحاسبين";
+899:         for (int i = 0; i < to.size(); i++) names[i + 1] = to.get(i).name;
+900:         final int[] sel = {0};
+901:         final android.widget.Button who = a.smallButton("إلى: كل المحاسبين", a.accent, null);
+902:         who.setOnClickListener(v -> new AlertDialog.Builder(a).setTitle("إلى مَن؟").setItems(names, (d, w) -> {
+903:             sel[0] = w;
+904:             who.setText("إلى: " + names[w]);
+905:         }).show());
+906:         l.addView(who);
+907:         final EditText body = a.field("نص الرسالة (حتى 500 حرف)");
+908:         body.setSingleLine(false);
+909:         body.setMinLines(3);
+910:         l.addView(body, a.lp(-1, -2, 4));
+911:         l.addView(a.text("تظهر إشعارًا عند المحاسب وفي صفحته الرئيسية حتى يضغط «قرأتها»" + (SyncEngine.enabled(a.db) ? " (تصل لأجهزتهم مع المزامنة التالية)." : "."), 12, a.muted, false));
+912:         final List<Db.AdminMsg> sent = a.db.adminMsgsSent(10);
+913:         if (!sent.isEmpty()) {
+914:             l.addView(a.text("آخر ما أرسلته (اضغط رسالة لسحبها):", 13, a.primaryInk, true));
+915:             for (final Db.AdminMsg m : sent) {
+916:                 TextView t = a.text("• " + (m.toUser == null ? "للكل" : "إلى " + m.toName) + " — " + Model.date(m.at) + "\n" + m.body, 13, a.ink, false);
+917:                 t.setOnClickListener(v -> a.confirm("سحب الرسالة", "تختفي الرسالة عند من لم يقرأها بعد.", "سحب", () -> {
+918:                     a.db.deleteAdminMsg(m.uuid);
+919:                     a.toast("سُحبت الرسالة");
+920:                     a.syncScreen.syncSoon();
+921:                 }));
+922:                 l.addView(t);
+923:             }
+924:         }
+925:         android.widget.ScrollView sv = new android.widget.ScrollView(a);
+926:         sv.addView(l);
+927:         new AlertDialog.Builder(a).setTitle("رسالة إلى المحاسبين").setView(sv).setPositiveButton("إرسال", (d, w) -> {
+928:             try {
+929:                 a.db.sendAdminMsg(sel[0] == 0 ? null : to.get(sel[0] - 1).id, body.getText().toString());
+930:                 a.toast("أُرسلت الرسالة ✓");
+931:                 a.syncScreen.syncSoon();
+932:             } catch (Exception e) {
+933:                 a.error(e);
+934:             }
+935:         }).setNegativeButton("إغلاق", null).show();
+936:     }
+937: 
+938:     void changeOwnPin() {
+939:         final Model.User me = SmartApp.currentUser;
+940:         if (me == null || !canTry()) return;
+941:         final EditText old = pinField("الرمز الحالي");
+942:         final AlertDialog dlg = new AlertDialog.Builder(a).setTitle("تغيير رمزي السري").setView(padded(old))
+943:                 .setPositiveButton("متابعة", null).setNegativeButton("إلغاء", null).create();
+944:         dlg.setOnShowListener(d -> dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+945:             if (lockRemaining() > 0) {
+946:                 dlg.dismiss();
+947:                 canTry();
+948:                 return;
+949:             }
+950:             if (!a.db.verifyPin(me.id, old.getText().toString())) {
+951:                 old.setText("");
+952:                 int f = recordFail(me.name, me.id);
+953:                 if (Pin.lockoutMillis(f) > 0) dlg.dismiss();
+954:                 failMessage(old, f);
+955:                 return;
+956:             }
+957:             resetFails();
+958:             dlg.dismiss();

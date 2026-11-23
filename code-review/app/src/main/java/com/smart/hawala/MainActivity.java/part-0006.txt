@@ -1,0 +1,169 @@
+971:             case "offices": case "reports": case "balances": case "daily": return can(Auth.Perm.VIEW);
+972:             default: return true;
+973:         }
+974:     }
+975: 
+976:     /** الترتيب المحفوظ للشريط السفلي (على هذا الجهاز)، أو الافتراضي. */
+977:     java.util.List<String> savedTabs() {
+978:         java.util.List<String> out = new java.util.ArrayList<>();
+979:         String s = db == null ? "" : db.setting("tabs", "");
+980:         if (!s.isEmpty()) for (String k : s.split(",")) if (!k.isEmpty() && !out.contains(k)) out.add(k);
+981:         if (out.isEmpty()) {
+982:             out.addAll(java.util.Arrays.asList(TAB_KEYS));
+983:             // 10.7: «مكاتبي» في الشريط افتراضيًا للمحاسب (غير المدير) الذي خُصصت له مكاتب أو يتحقق من الحركات
+984:             Model.User u = SmartApp.currentUser;
+985:             if (u != null && !Auth.isAdmin(db.user(u.id)) && mineScreen.available()) out.add(out.indexOf("more"), "mine");
+986:         }
+987:         if (!out.contains("more")) out.add("more");
+988:         return out;
+989:     }
+990: 
+991:     @Override java.util.List<String> tabKeys() {
+992:         java.util.List<String> out = new java.util.ArrayList<>();
+993:         for (String k : savedTabs()) if (tabAllowed(k)) out.add(k);
+994:         // 11.5: الحد بحسب عرض الشاشة (6 في الهاتف، وحتى 10 في الشاشات العريضة والكمبيوتر)؛ «المزيد» يبقى دائمًا
+995:         int max = maxTabs();
+996:         for (int i = out.size() - 1; out.size() > max && i >= 0; i--) if (!"more".equals(out.get(i))) out.remove(i);
+997:         return out;
+998:     }
+999: 
+1000:     /** 11.5: أقصى عدد لعناصر الشريط السفلي على هذه الشاشة (نحو 60 نقطة لكل عنصر). */
+1001:     int maxTabs() {
+1002:         int w = getResources().getConfiguration().screenWidthDp;
+1003:         return Math.max(TabsScreen.MIN_MAX, Math.min(10, w / 60));
+1004:     }
+1005: 
+1006:     void showHome() {
+1007:         if (db.usersEnabled() && SmartApp.currentUser == null) {
+1008:             usersScreen.showLogin();
+1009:             return;
+1010:         }
+1011:         if (keyMissing) {
+1012:             showKeyMissing();
+1013:             return;
+1014:         }
+1015:         // 10.12: لكل مستخدم وضعه وخطه — بعد الدخول (أو تبديل المستخدم) تُعاد الشاشة بسمته إن اختلفت
+1016:         if (!appliedTheme.equals(themeSig())) {
+1017:             restyle("home");
+1018:             return;
+1019:         }
+1020:         sessionStart();
+1021:         waMove.startWatch();
+1022:         if (waQueue.openPending()) return;
+1023:         if (openShortcut()) return;
+1024:         applyColors();
+1025:         if (!"classic".equals(db.setting("home_style", "modern"))) {
+1026:             homeScreen.show();
+1027:             return;
+1028:         }
+1029:         showClassicHome();
+1030:     }
+1031: 
+1032:     /** الصفحة الرئيسية الكلاسيكية (أزرار كبيرة كما في الإصدارات السابقة) لمن يفضّلها. */
+1033:     void showClassicHome() {
+1034:         String title = db.setting("app_title", "المحاسب الذكي لمكاتب الحوالات");
+1035:         base(title, null);
+1036:         onHome = true;
+1037:         int queued = waQueue.remaining();
+1038:         if (queued > 0 && can(Auth.Perm.TX_ADD)) {
+1039:             LinearLayout qc = card();
+1040:             qc.setBackground(round(Color.rgb(232, 244, 238), primary, 16));
+1041:             qc.addView(text("دفعة رسائل واتساب لم تكتمل: بقيت " + queued + " رسالة", 15, primary, true));
+1042:             LinearLayout qr = row();
+1043:             qr.addView(smallButton("متابعة التسجيل", primary, v -> waQueue.showCurrent()), weight(44, 1.3f, 2));
+1044:             qr.addView(smallButton("إنهاء الدفعة", Color.rgb(120, 120, 120), v -> waQueue.stop()), weight(44, 1, 2));
+1045:             qc.addView(qr);
+1046:         }
+1047:         Bitmap logo = homeLogo();
+1048:         if (logo != null) {
+1049:             ImageView iv = new ImageView(this);
+1050:             iv.setImageBitmap(logo);
+1051:             iv.setAdjustViewBounds(true);
+1052:             String size = db.setting("home_logo_size", "medium");
+1053:             int h = "small".equals(size) ? 70 : "large".equals(size) ? 150 : 100;
+1054:             body.addView(iv, lp(-1, h, 4));
+1055:         }
+1056:         String office = db.setting("office_name", "").trim();
+1057:         if (!office.isEmpty()) {
+1058:             TextView on = text(office, 22, primary, true);
+1059:             on.setGravity(Gravity.CENTER);
+1060:             add(on);
+1061:         }
+1062:         String welcome = welcomeText(db.setting("welcome", ""), office);
+1063:         if (!welcome.isEmpty()) {
+1064:             TextView w = text(welcome, 17, dark, false);
+1065:             w.setGravity(Gravity.CENTER);
+1066:             add(w);
+1067:         }
+1068:         Model.User u = SmartApp.currentUser;
+1069:         if (u != null) {
+1070:             LinearLayout ur = row();
+1071:             TextView un = text("المستخدم: " + u.name + " (" + Auth.shortLabel(u.role) + ")", 14, muted, false);
+1072:             ur.addView(un, new LinearLayout.LayoutParams(0, -2, 1));
+1073:             ur.addView(smallButton("خروج", Color.rgb(120, 120, 120), v -> {
+1074:                 SmartApp.currentUser = null;
+1075:                 Db.currentUserName = "المستخدم المحلي";
+1076:                 usersScreen.showLogin();
+1077:             }), new LinearLayout.LayoutParams(-2, dp(40)));
+1078:             body.addView(ur);
+1079:             if (Auth.ADMIN.equals(u.role) && !db.hasRecoveryCode()) {
+1080:                 LinearLayout rc = card();
+1081:                 rc.setBackground(round(Color.rgb(252, 232, 232), Color.rgb(220, 120, 120), 16));
+1082:                 rc.addView(text("⚠ لا يوجد رمز استرداد للمدير. إن نُسي رمز المدير لن يمكن استعادة الدخول.", 14, red, true));
+1083:                 rc.addView(smallButton("إنشاء رمز الاسترداد الآن", red, v -> usersScreen.createRecoveryFromHome()), lp(-1, 44, 4));
+1084:             }
+1085:         }
+1086:         String reminder = backupReminderText();
+1087:         if (reminder != null && can(Auth.Perm.BACKUP)) {
+1088:             LinearLayout c = card();
+1089:             c.setBackground(round(Color.rgb(253, 240, 228), Color.rgb(230, 160, 110), 16));
+1090:             c.addView(text("⚠ " + reminder, 15, Color.rgb(140, 60, 20), true));
+1091:             c.addView(smallButton("إنشاء نسخة احتياطية الآن", Color.rgb(200, 90, 30), v -> backupScreen.backupDialog()), lp(-1, 46, 4));
+1092:         }
+1093:         String autoErr = db.setting("auto_backup_error", "");
+1094:         if (!autoErr.isEmpty() && can(Auth.Perm.BACKUP)) {
+1095:             LinearLayout c = card();
+1096:             c.setBackground(round(Color.rgb(252, 232, 232), Color.rgb(220, 120, 120), 16));
+1097:             c.addView(text("فشل النسخ التلقائي الأخير — اضغط للتفاصيل", 14, red, true));
+1098:             c.setOnClickListener(v -> backupScreen.show());
+1099:         }
+1100:         String driveErr = db.setting("drive_backup_error", "");
+1101:         if (!driveErr.isEmpty() && can(Auth.Perm.BACKUP)) {
+1102:             LinearLayout c = card();
+1103:             c.setBackground(round(Color.rgb(252, 232, 232), Color.rgb(220, 120, 120), 16));
+1104:             c.addView(text("فشل حفظ النسخة التلقائية في Google Drive — اضغط للتفاصيل", 14, red, true));
+1105:             c.setOnClickListener(v -> backupScreen.show());
+1106:         }
+1107:         Map<String, String> names = homeNames();
+1108:         Set<String> hidden = parseSet(db.setting("home_hidden", ""));
+1109:         Map<String, String> colors = parseColors(db.setting("btn_colors", ""));
+1110:         boolean grid = "grid".equals(db.setting("home_layout", "list"));
+1111:         boolean big = "big".equals(db.setting("btn_size", "normal"));
+1112:         int h = big ? 68 : 54;
+1113:         LinearLayout pending = null;
+1114:         for (String k : parseOrder(db.setting("home_order", Db.DEFAULT_ORDER))) {
+1115:             if (hidden.contains(k)) continue;
+1116:             Auth.Perm p = permFor(k);
+1117:             if (p != null && !can(p)) continue;
+1118:             if (k.equals("mine") && !mineScreen.available()) continue;
+1119:             final String key = k;
+1120:             int col = parseColor(colors.get(k), primary);
+1121:             Button b = makeButton(names.get(k), col, v -> openHome(key));
+1122:             if (big) b.setTextSize(18);
+1123:             if (!grid) body.addView(b, lp(-1, h, 4));
+1124:             else if (pending == null) {
+1125:                 pending = row();
+1126:                 body.addView(pending, lp(-1, -2, 0));
+1127:                 pending.addView(b, weight(h + 14, 1, 4));
+1128:             } else {
+1129:                 pending.addView(b, weight(h + 14, 1, 4));
+1130:                 pending = null;
+1131:             }
+1132:         }
+1133:         if (pending != null) pending.addView(new View(this), weight(h + 14, 1, 4));
+1134:         TextView dev = text(db.setting("developer", "برمجة: Ai creative solutions"), 14, muted, true);
+1135:         dev.setGravity(Gravity.CENTER);
+1136:         body.addView(dev, lp(-1, -2, 12));
+1137:         TextView ver = text("الإصدار " + versionName(), 12, muted, false);
+1138:         ver.setGravity(Gravity.CENTER);
+1139:         add(ver);

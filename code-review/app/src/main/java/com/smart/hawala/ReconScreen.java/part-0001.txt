@@ -1,0 +1,174 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.content.ClipData;
+5: import android.content.ClipboardManager;
+6: import android.content.Context;
+7: import android.content.Intent;
+8: import android.graphics.Bitmap;
+9: import android.graphics.Color;
+10: import android.view.View;
+11: import android.widget.CheckBox;
+12: import android.widget.EditText;
+13: import android.widget.ImageView;
+14: import android.widget.LinearLayout;
+15: import android.widget.ScrollView;
+16: import android.widget.TextView;
+17: import java.io.File;
+18: import java.io.FileOutputStream;
+19: import java.io.OutputStream;
+20: import java.text.SimpleDateFormat;
+21: import java.util.ArrayList;
+22: import java.util.Collections;
+23: import java.util.Date;
+24: import java.util.LinkedHashMap;
+25: import java.util.LinkedHashSet;
+26: import java.util.List;
+27: import java.util.Locale;
+28: import java.util.Map;
+29: import java.util.Set;
+30: 
+31: /**
+32:  * مطابقة الأرصدة مع المكاتب:
+33:  * - إرسال الرصيد فقط (نص لواتساب أو صورة أو الاثنين) بقالب قابل للتعديل.
+34:  * - تسجيل كل إرسال كمطابقة «بانتظار التأكيد»، ثم «مطابِقة ✓» أو «غير مطابِقة ✗» حسب رد المكتب.
+35:  * - كشف بالحركات التي سُجّلت بعد آخر مطابقة (لكل العملات أو لعملات محددة) من نافذة التصدير.
+36:  */
+37: final class ReconScreen {
+38:     static final int TEXT = 0, IMAGE = 1, BOTH = 2;
+39: 
+40:     private final MainActivity a;
+41: 
+42:     ReconScreen(MainActivity a) { this.a = a; }
+43: 
+44:     Reconcile.Template template() { return Reconcile.Template.from(a.db.settings(Reconcile.Template.KEYS)); }
+45: 
+46:     private int accent() {
+47:         String c = a.db.setting("st_color", "");
+48:         return Ui.parseColor(c, a.primary);
+49:     }
+50: 
+51:     /** أرصدة المكتب الحالية لكل عملة مفعّلة (والأصفار). */
+52:     private Map<String, Long> currentBalances(Model.Office o) {
+53:         Map<String, Long> m = new java.util.TreeMap<>();
+54:         for (String code : a.db.officeCurrencies(o.id)) m.put(code, 0L);
+55:         m.putAll(a.db.balances(o.id));
+56:         return m;
+57:     }
+58: 
+59:     static String statusText(Model.Recon r) {
+60:         String s = r.statusLabel();
+61:         if (r.confirmedAt > 0 && !Model.RECON_SENT.equals(r.status)) s += " (" + Model.date(r.confirmedAt) + ")";
+62:         return s;
+63:     }
+64: 
+65:     int statusColor(Model.Recon r) {
+66:         return Model.RECON_CONFIRMED.equals(r.status) ? a.green : Model.RECON_DISPUTED.equals(r.status) ? a.red : Color.rgb(176, 110, 30);
+67:     }
+68: 
+69:     // ===================================================================================
+70:     // إرسال الرصيد / إنشاء مطابقة
+71:     // ===================================================================================
+72: 
+73:     void sendDialog(final Model.Office o, final Runnable after) {
+74:         if (!a.require(Auth.Perm.EXPORT) || !a.require(Auth.Perm.RECON)) return;   // 12.0
+75:         final Map<String, Long> bal = currentBalances(o);
+76:         final Map<String, String> names = a.db.currencyNames();
+77:         final Reconcile.Template t = template();
+78:         ScrollView sv = new ScrollView(a);
+79:         LinearLayout l = new LinearLayout(a);
+80:         l.setOrientation(LinearLayout.VERTICAL);
+81:         l.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+82:         l.setPadding(a.dp(16), a.dp(6), a.dp(16), a.dp(6));
+83:         sv.addView(l);
+84:         l.addView(a.text("يُرسل الرصيد فقط، بدون تفاصيل الحركات.", 13, a.muted, false));
+85:         l.addView(a.label("العملات"));
+86:         final Map<String, CheckBox> checks = new LinkedHashMap<>();
+87:         for (Map.Entry<String, Long> e : bal.entrySet()) {
+88:             CheckBox ck = new CheckBox(a);
+89:             int d = a.db.decimals(e.getKey());
+90:             String nm = names.get(e.getKey());
+91:             ck.setText((nm == null ? e.getKey() : nm) + ":  " + (e.getValue() == 0 ? "صفر" : Model.fmt(Math.abs(e.getValue()), d) + " " + (e.getValue() > 0 ? t.plusWord : t.minusWord)));
+92:             ck.setChecked(e.getValue() != 0 || t.showZero);
+93:             l.addView(ck);
+94:             checks.put(e.getKey(), ck);
+95:         }
+96:         l.addView(a.label("الشكل"));
+97:         final Ui.Seg fmt = a.new Seg(new String[]{"نص", "صورة", "صورة + نص"}, null, (int) Math.max(0, Math.min(2, a.db.settingLong("rc_format", BOTH))), false);
+98:         l.addView(fmt.view);
+99:         final CheckBox record = new CheckBox(a);
+100:         record.setText("تسجيل كمطابقة بانتظار تأكيد المكتب");
+101:         record.setChecked(a.can(Auth.Perm.TX_ADD));
+102:         record.setEnabled(a.can(Auth.Perm.TX_ADD));
+103:         l.addView(record);
+104:         l.addView(a.text("عند تأكيد المكتب أن رصيده مطابق، اضغط «أكّد المكتب» في سجل المطابقات. بعدها تستطيع تصدير الحركات التي جاءت بعد هذه المطابقة فقط.", 12, a.muted, false));
+105: 
+106:         // 11.3: الأمانات والمبالغ المجمّدة (لا تدخل في الرصيد): اختيارية في كل إرسال، ويُحفظ آخر اختيار
+107:         final List<String> holdLines = holdLines(o, null);
+108:         final CheckBox holds = new CheckBox(a);
+109:         if (!holdLines.isEmpty()) {
+110:             holds.setText("إظهار الأمانات والمبالغ المجمّدة (" + holdLines.size() + ") تحت الرصيد");
+111:             holds.setChecked("1".equals(a.db.setting("rc_holds", "0")));
+112:             l.addView(holds);
+113:         }
+114: 
+115:         // 11.6: «الميزان»: مجموع الأرصدة المختارة مقوّمًا بالدولار، اختياري ويُحفظ آخر اختيار
+116:         final CheckBox scale = new CheckBox(a);
+117:         scale.setText("إضافة الميزان (مجموع الأرصدة بالدولار)");
+118:         scale.setChecked("1".equals(a.db.setting("rc_scale", "0")));
+119:         l.addView(scale);
+120: 
+121:         final AlertDialog[] dlg = new AlertDialog[1];
+122:         final java.util.function.IntConsumer act = mode -> {
+123:             Set<String> only = new LinkedHashSet<>();
+124:             for (Map.Entry<String, CheckBox> e : checks.entrySet()) if (e.getValue().isChecked()) only.add(e.getKey());
+125:             if (only.isEmpty()) {
+126:                 a.toast("اختر عملة واحدة على الأقل");
+127:                 return;
+128:             }
+129:             a.db.setSettingQuiet("rc_format", "" + fmt.selected);
+130:             if (!holdLines.isEmpty()) a.db.setSettingQuiet("rc_holds", holds.isChecked() ? "1" : "0");
+131:             a.db.setSettingQuiet("rc_scale", scale.isChecked() ? "1" : "0");
+132:             final Reconcile.Template use = withScale(withSpecials(withHolds(template(), holds.isChecked() ? holdLines(o, only) : null), specialLines(o, only)), scale.isChecked() ? scaleLine(bal, only) : null);
+133:             long at = Clock.now();
+134:             if (record.isChecked()) {
+135:                 try {
+136:                     a.db.createRecon(o.id);
+137:                 } catch (Exception e) {
+138:                     a.error(e);
+139:                     return;
+140:                 }
+141:             }
+142:             if (dlg[0] != null) dlg[0].dismiss();
+143:             List<Reconcile.Row> rows = Reconcile.rows(bal, names, a.db.decimalsMap(), only, true);
+144:             if (mode < 0) copyText(use, o, at, rows);
+145:             else deliver(use, o, at, rows, fmt.selected);
+146:             if (record.isChecked()) a.toast("سُجّلت المطابقة بانتظار تأكيد المكتب.");
+147:             if (after != null && record.isChecked()) after.run();
+148:         };
+149:         l.addView(a.makeButton("إرسال / مشاركة", a.primary, v -> act.accept(0)), a.lp(-1, 50, 4));
+150:         l.addView(a.makeButton("نسخ النص فقط", a.accent, v -> act.accept(-1)), a.lp(-1, 46, 4));
+151:         LinearLayout r2 = a.row();
+152:         r2.addView(a.smallButton("معاينة", Color.rgb(120, 120, 120), v -> {
+153:             Set<String> only = new LinkedHashSet<>();
+154:             for (Map.Entry<String, CheckBox> e : checks.entrySet()) if (e.getValue().isChecked()) only.add(e.getKey());
+155:             preview(withScale(withSpecials(withHolds(template(), holds.isChecked() ? holdLines(o, only) : null), specialLines(o, only)), scale.isChecked() ? scaleLine(bal, only) : null), o.name, Clock.now(),
+156:                     Reconcile.rows(bal, names, a.db.decimalsMap(), only, true), fmt.selected);
+157:         }), a.weight(42, 1, 2));
+158:         if (a.can(Auth.Perm.DESIGN)) {
+159:             r2.addView(a.smallButton("تعديل القالب", Color.rgb(120, 120, 120), v -> {
+160:                 if (dlg[0] != null) dlg[0].dismiss();
+161:                 templateScreen(() -> {
+162:                     a.statementScreen.show(o);
+163:                     sendDialog(o, after);
+164:                 });
+165:             }), a.weight(42, 1, 2));
+166:         }
+167:         l.addView(r2);
+168:         dlg[0] = new AlertDialog.Builder(a).setTitle("مطابقة رصيد: " + o.name).setView(sv).setNegativeButton("إغلاق", null).create();
+169:         dlg[0].show();
+170:     }
+171: 
+172:     private String issuer() { return a.db.setting("office_name", ""); }
+173: 
+174:     /**

@@ -1,0 +1,132 @@
+1296:             a.toast("لا يوجد صندوق آخر. أضفه من «+ صندوق».");
+1297:             return;
+1298:         }
+1299:         screen("تحويل من «" + cfg.name + "»", this::home);
+1300:         final Map<String, Integer> dec = a.db.decimalsMap();
+1301:         a.hint("ينقل نقدًا من هذا الصندوق إلى صندوق آخر لك (مثل: من صندوق المحل إلى خزنة البيت). مجموع النقد لا يتغير.");
+1302:         a.add(a.label("إلى الصندوق"));
+1303:         String[] names = new String[others.size()];
+1304:         for (int i = 0; i < names.length; i++) names[i] = others.get(i).name;
+1305:         final Ui.Seg to = a.new Seg(names, null, names.length == 1 ? 0 : -1, names.length > 3);
+1306:         a.body.addView(to.view, a.lp(-1, -2, 2));
+1307:         a.add(a.label("العملة"));
+1308:         final Ui.Seg cur = a.new Seg(cfg.currencies.toArray(new String[0]), null, cfg.currencies.size() == 1 ? 0 : -1, cfg.currencies.size() > 4);
+1309:         a.body.addView(cur.view, a.lp(-1, -2, 2));
+1310:         final EditText amount = a.amountInput("المبلغ");
+1311:         amount.setTextSize(20);
+1312:         final EditText desc = a.input("البيان (اختياري)");
+1313:         dateButton(null);
+1314:         a.footer(a.makeButton("مراجعة التحويل", teal(), v -> {
+1315:             try {
+1316:                 if (to.none()) throw new Exception("اختر الصندوق");
+1317:                 if (cur.none()) throw new Exception("اختر العملة");
+1318:                 CashBox.Input x = new CashBox.Input();
+1319:                 x.kind = CashBox.TRANSFER;
+1320:                 x.boxId = cfg.id;
+1321:                 x.toBox = others.get(to.selected).id;
+1322:                 x.currency = cur.label();
+1323:                 x.amount = Db.minor(amount.getText().toString(), dec(dec, x.currency));
+1324:                 x.description = desc.getText().toString().trim();
+1325:                 x.when = now();
+1326:                 String err = CashBox.validate(x, cfg, Clock.now());
+1327:                 if (err != null) throw new Exception(err);
+1328:                 if (!others.get(to.selected).currencies.contains(x.currency))
+1329:                     throw new Exception("العملة " + x.currency + " غير مفعّلة في «" + others.get(to.selected).name + "». أضفها من إعداداته.");
+1330:                 preview(x, this::home);
+1331:             } catch (Exception e) {
+1332:                 a.error(e);
+1333:             }
+1334:         }));
+1335:     }
+1336: 
+1337:     // ===================================================================================
+1338:     // الجرد، ومراجعته (زيادة عملة مقابل عجز أخرى)، وسجله
+1339:     // ===================================================================================
+1340: 
+1341:     void count() {
+1342:         if (!a.require(Auth.Perm.CASH) || !a.require(Auth.Perm.CASH_COUNT)) return;
+1343:         final CashBox.Config cfg = a.db.cashConfig();
+1344:         screen("جرد «" + cfg.name + "»", this::home);
+1345:         final Map<String, Integer> dec = a.db.decimalsMap();
+1346:         // 10.5 (AUDIT-028): المسجّل = الرصيد + نقد حركات معلّقة بانتظار الاعتماد (موجود في الصندوق ولم يُحسب بعد)
+1347:         final Map<String, Long> bal = a.db.cashExpected(cfg.id);
+1348:         final Map<String, Long> pend = a.db.cashPending(cfg.id);
+1349:         a.hint("اعدد النقد الموجود فعلًا واكتبه لكل عملة، ثم «مراجعة الجرد»: يظهر العجز والزيادة، ويُقارن زيادة عملة بعجز أخرى (هل هي عملية بيع لم تُسجَّل؟) قبل الحفظ. اترك الحقل فارغًا لعملة لم تعدّها.");
+1350:         if (!pend.isEmpty()) a.notice(R.drawable.ic_info, "في الصندوق نقد لحركات مكاتب بانتظار الاعتماد، وهو داخل في «المسجّل» أدناه لأنه موجود فعلًا. "
+1351:                 + "لا تُسجَّل له تسوية، ولا يُحسب مرة ثانية عند اعتماده. إن رُفضت الحركة فأعد النقد لصاحبه أو سجّله من جديد.", false, null, null);
+1352:         final Map<String, EditText> fields = new LinkedHashMap<>();
+1353:         for (final String c : cfg.currencies) {
+1354:             LinearLayout card = a.card();
+1355:             final int d = dec(dec, c);
+1356:             final long b = bal.containsKey(c) ? bal.get(c) : 0;
+1357:             card.addView(a.text(c + " — المسجّل: " + iso(Model.fmt(b, d)), 15, a.ink, true));
+1358:             if (pend.containsKey(c)) card.addView(a.text("منه معلّق بانتظار الاعتماد: " + iso(Model.fmt(pend.get(c), d)), 12, a.goldInk, false));
+1359:             final EditText f = a.field("المعدود فعلًا");
+1360:             Ui.numeric(f);
+1361:             card.addView(f, a.lp(-1, 50, 2));
+1362:             final TextView df = a.text("", 13, a.muted, true);
+1363:             card.addView(df);
+1364:             f.addTextChangedListener(Ui.watcher(() -> {
+1365:                 try {
+1366:                     long v = Db.minor(f.getText().toString(), d);
+1367:                     long diff = v - b;
+1368:                     df.setText(diff == 0 ? "مطابق ✓" : (diff > 0 ? "زيادة " : "عجز ") + iso(Model.fmt(Math.abs(diff), d) + " " + c));
+1369:                     df.setTextColor(diff == 0 ? a.green : diff > 0 ? a.primaryInk : a.red);
+1370:                 } catch (Exception e) {
+1371:                     df.setText("");
+1372:                 }
+1373:             }));
+1374:             fields.put(c, f);
+1375:         }
+1376:         final EditText note = a.input("ملاحظة (اختياري)");
+1377:         a.footer(a.makeButton("مراجعة الجرد", a.primary, v -> {
+1378:             try {
+1379:                 final Map<String, Long> counted = new LinkedHashMap<>();
+1380:                 for (Map.Entry<String, EditText> e : fields.entrySet()) {
+1381:                     String t = e.getValue().getText().toString().trim();
+1382:                     if (t.isEmpty()) continue;
+1383:                     counted.put(e.getKey(), Db.minor(t, dec(dec, e.getKey())));
+1384:                 }
+1385:                 if (counted.isEmpty()) throw new Exception("اكتب المعدود لعملة واحدة على الأقل");
+1386:                 countReview(cfg, counted, note.getText().toString().trim());
+1387:             } catch (Exception e) {
+1388:                 a.error(e);
+1389:             }
+1390:         }));
+1391:     }
+1392: 
+1393:     private void countReview(final CashBox.Config cfg, final Map<String, Long> counted, final String note) {
+1394:         screen("مراجعة الجرد", this::count);
+1395:         final Map<String, Integer> dec = a.db.decimalsMap();
+1396:         Map<String, Long> bal = a.db.cashExpected(cfg.id);
+1397:         Map<String, BigDecimal> rates = a.db.usdRates();
+1398:         final List<CashBox.CountLine> lines = new ArrayList<>();
+1399:         for (Map.Entry<String, Long> e : counted.entrySet()) lines.add(new CashBox.CountLine(e.getKey(), bal.containsKey(e.getKey()) ? bal.get(e.getKey()) : 0, e.getValue()));
+1400:         LinearLayout g = a.group();
+1401:         BigDecimal up = BigDecimal.ZERO, down = BigDecimal.ZERO;
+1402:         for (CashBox.CountLine l : lines) {
+1403:             int d = dec(dec, l.currency);
+1404:             long df = l.diff();
+1405:             BigDecimal u = CashBox.usd(Math.abs(df), l.currency, rates, dec);
+1406:             if (u != null && df > 0) up = up.add(u);
+1407:             if (u != null && df < 0) down = down.add(u);
+1408:             a.groupRow(g, df == 0 ? R.drawable.ic_check : df > 0 ? R.drawable.ic_download : R.drawable.ic_upload, df == 0 ? a.green : df > 0 ? a.primaryInk : a.red,
+1409:                     l.currency + (df == 0 ? " — مطابق" : df > 0 ? " — زيادة" : " — عجز"),
+1410:                     "المسجّل " + iso(Model.fmt(l.recorded, d)) + " • المعدود " + iso(Model.fmt(l.counted, d)) + (u != null && df != 0 && !"USD".equals(l.currency) ? " • ≈ " + iso(u.setScale(2, RoundingMode.HALF_EVEN) + " $") : ""),
+1411:                     df == 0 ? "✓" : iso((df > 0 ? "+" : "−") + Model.fmt(Math.abs(df), d)), null);
+1412:         }
+1413:         List<String> missing = new ArrayList<>();
+1414:         BigDecimal net = CashBox.netUsd(lines, rates, dec, missing);
+1415:         LinearLayout c = a.card();
+1416:         c.addView(a.text("المقارنة بالدولار", 15, a.primaryInk, true));
+1417:         c.addView(a.text("مجموع الزيادة ≈ " + iso(up.setScale(2, RoundingMode.HALF_EVEN) + " $") + "   •   مجموع العجز ≈ " + iso(down.setScale(2, RoundingMode.HALF_EVEN) + " $"), 13, a.ink, false));
+1418:         c.addView(a.text(net.signum() == 0 ? "الصافي: متساويان تقريبًا" : (net.signum() > 0 ? "الصافي: زيادة ≈ " : "الصافي: عجز ≈ ") + iso(net.abs().setScale(2, RoundingMode.HALF_EVEN) + " $"),
+1419:                 14, net.signum() < 0 ? a.red : a.green, true));
+1420:         if (!missing.isEmpty()) c.addView(a.text("بلا سعر صرف (لم تدخل المقارنة): " + Model.join(missing, "، "), 12, a.muted, false));
+1421: 
+1422:         final List<CashBox.Suggestion> sugg = CashBox.analyze(lines, rates, dec);
+1423:         final List<CheckBox> picks = new ArrayList<>();
+1424:         boolean internal = !cfg.strict || cfg.allowInternal;
+1425:         if (!sugg.isEmpty()) {
+1426:             a.section("هل هي عملية بيع لم تُسجَّل؟", null, null);
+1427:             for (CashBox.Suggestion s : sugg) {

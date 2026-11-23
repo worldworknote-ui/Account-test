@@ -1,0 +1,179 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.graphics.Bitmap;
+5: import android.graphics.Color;
+6: import android.view.View;
+7: import android.widget.CheckBox;
+8: import android.widget.EditText;
+9: import android.widget.ImageView;
+10: import android.widget.LinearLayout;
+11: import android.widget.ScrollView;
+12: import android.widget.Spinner;
+13: import android.widget.TextView;
+14: import java.io.File;
+15: import java.io.FileOutputStream;
+16: import java.math.BigDecimal;
+17: import java.util.ArrayList;
+18: import java.util.Collections;
+19: import java.util.List;
+20: import java.util.Locale;
+21: import java.util.Map;
+22: 
+23: /** سجل كل الحركات مع البحث والفلترة (نص، مكتب، نوع، عملة، فترة، مبلغ)، والتفاصيل والتعديل والإلغاء والتصدير. */
+24: final class LogScreen {
+25:     private final MainActivity a;
+26:     private Db.TxFilter filter = new Db.TxFilter();
+27:     private String term = "";
+28:     private String minText = "", maxText = "";
+29:     /** 10.18: نوع الحركة (0 الكل، 1 عادية، 2 قص عملات، 3 بين مكتبين، 4 مع أجرة، 5 بمرفقات، 6 معدّلة) ومن سجّلها. */
+30:     private int kindSel;
+31:     private String whoSel;
+32:     static final String[] KINDS = {"كل الحركات", "عادية", "قص عملات", "بين مكتبين", "مع أجرة", "بمرفقات", "معدّلة (مصحّحة)"};
+33:     private StatementScreen.Period period = StatementScreen.Period.all();
+34:     private int shownLimit = 100;
+35: 
+36:     LogScreen(MainActivity a) { this.a = a; }
+37: 
+38:     /**
+39:      * 10.3: من لا يملك «العرض» يرى حركاته التي سجّلها هو فقط (آخر 300)، بحالتها: نشطة، بانتظار الاعتماد، مرفوضة، ملغاة.
+40:      */
+41:     void showMine() {
+42:         if (!a.require(Auth.Perm.TX_ADD)) return;
+43:         a.here(this::showMine);
+44:         a.rootScreen("حركاتي", "log");
+45:         Model.User u = SmartApp.currentUser;
+46:         String me = u == null ? Db.currentUserName : u.name;
+47:         a.hint("الحركات التي سجّلتها أنت. اضغط الحركة لتفاصيلها.");
+48:         Db.TxFilter f = new Db.TxFilter();
+49:         f.limit = 1500;
+50:         f.includeCancelled = true;
+51:         Map<Long, String> names = a.db.officeNames();
+52:         int n = 0;
+53:         for (Model.Tx t : a.db.txLog(f)) {
+54:             if (!(u != null ? Db.enteredBy(t, u) : t.realUser().equals(me))) continue;   // 10.5 (§7): برقمه الثابت
+55:             LinearLayout x = a.card();
+56:             x.addView(txRow(t, names.get(t.officeId), null));
+57:             if (t.isPending()) x.addView(a.text("بانتظار الاعتماد — لا أثر لها في الأرصدة بعد", 12, a.warnInk, true));
+58:             else if (t.isRejected()) x.addView(a.text("مرفوضة", 12, a.red, true));
+59:             else if (t.isUnposted()) x.addView(a.text("⏳ خاصة: " + t.special + " — لا تُحسب في الرصيد", 12, a.warnInk, true));
+60:             else if (Model.STATUS_CONVERTED.equals(t.status)) x.addView(a.text("خاصة حُوّلت إلى حركة عادية", 12, a.muted, true));
+61:             else if (Model.STATUS_VOIDED.equals(t.status)) x.addView(a.text("خاصة ملغاة", 12, a.muted, true));
+62:             else if (!t.isActive()) x.addView(a.text("ملغاة أو معدّلة", 12, a.muted, true));
+63:             else if (t.isSpecial()) x.addView(a.text("⏳ معلّقة: " + t.special + " — تُحسب في الرصيد", 12, a.warnInk, true));
+64:             final Model.Tx ft = t;
+65:             x.setOnClickListener(v -> details(ft, this::showMine));
+66:             if (++n >= 300) break;
+67:         }
+68:         if (n == 0) a.add(a.text("لم تسجّل حركات بعد.", 15, a.muted, false));
+69:     }
+70: 
+71:     void show(boolean expandFilters) {
+72:         if (!a.can(Auth.Perm.VIEW) && a.can(Auth.Perm.TX_ADD)) {
+73:             showMine();
+74:             return;
+75:         }
+76:         if (!a.require(Auth.Perm.VIEW)) return;
+77:         shownLimit = 100;
+78:         render(expandFilters);
+79:     }
+80: 
+81:     /** بحث من الصفحة الرئيسية: نص واحد يبحث في المكاتب والحركات. */
+82:     void searchFor(String text) {
+83:         if (!a.require(Auth.Perm.VIEW)) return;
+84:         filter = new Db.TxFilter();
+85:         period = StatementScreen.Period.all();
+86:         minText = "";
+87:         maxText = "";
+88:         term = text == null ? "" : text.trim();
+89:         shownLimit = 100;
+90:         render(false);
+91:         if (term.isEmpty() && searchField != null) {
+92:             searchField.requestFocus();
+93:             searchField.postDelayed(() -> {
+94:                 android.view.inputmethod.InputMethodManager im = (android.view.inputmethod.InputMethodManager) a.getSystemService(android.content.Context.INPUT_METHOD_SERVICE);
+95:                 if (im != null && searchField != null) im.showSoftInput(searchField, 0);
+96:             }, 150);
+97:         }
+98:     }
+99: 
+100:     private EditText searchField;
+101: 
+102:     private void render(final boolean expanded) {
+103:         a.here(() -> render(expanded));
+104:         // 11.5: البحث المتقدم صفحة فرعية (يُفتح من مركز التقارير): سهم الرجوع يعيد إلى ما قبله لا إلى الرئيسية
+105:         if (expanded) a.tabbedScreen("البحث المتقدم", () -> render(false), "log");
+106:         else a.rootScreen("الحركات", "log");
+107:         final LinearLayout filters = new LinearLayout(a);
+108:         filters.setOrientation(LinearLayout.VERTICAL);
+109:         a.body.addView(filters);
+110:         LinearLayout bar = a.officeHub.searchBox("بحث: شخص، بيان، ملاحظة، مكتب، مبلغ، مرجع");
+111:         final EditText q = (EditText) bar.getTag();
+112:         searchField = q;
+113:         q.setText(term);
+114:         q.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+115:         q.setOnEditorActionListener((v, id, ev) -> {
+116:             term = q.getText().toString().trim();
+117:             render(expanded);
+118:             return true;
+119:         });
+120:         bar.addView(a.smallButton("بحث", a.primary, v -> {
+121:             term = q.getText().toString().trim();
+122:             render(expanded);
+123:         }), new LinearLayout.LayoutParams(a.dp(64), a.dp(40)));
+124:         filters.addView(bar, a.lp(-1, 50, 4));
+125:         if (!term.isEmpty()) {
+126:             // مكاتب مطابقة لنص البحث: الانتقال لصفحة المكتب مباشرة
+127:             String tl = term.toLowerCase(Locale.ROOT);
+128:             LinearLayout oc = a.row();
+129:             int found = 0;
+130:             for (final Model.Office o : a.db.offices()) {
+131:                 String hay = (Model.nz(o.name) + " " + Model.nz(o.shortName) + " " + Model.nz(o.phone)).toLowerCase(Locale.ROOT);
+132:                 if (!hay.contains(tl)) continue;
+133:                 found++;
+134:                 oc.addView(a.pill(o.name, false, v -> a.officeHub.showOffice(o)), a.gap(-2, -2, 3));
+135:             }
+136:             if (found > 0) {
+137:                 filters.addView(a.text("مكاتب مطابقة", 13, a.muted, true));
+138:                 filters.addView(a.strip(oc), a.lp(-1, -2, 2));
+139:             }
+140:         }
+141: 
+142:         final LinearLayout adv = new LinearLayout(a);
+143:         adv.setOrientation(LinearLayout.VERTICAL);
+144:         adv.setVisibility(expanded ? View.VISIBLE : View.GONE);
+145:         filters.addView(a.smallButton(expanded ? "إخفاء الفلاتر" : "فلاتر متقدمة: المكتب، النوع، العملة، الفترة، المبلغ", Color.rgb(120, 120, 120),
+146:                 v -> render(!expanded)), a.lp(-1, 42, 3));
+147:         filters.addView(adv);
+148: 
+149:         final List<Model.Office> offices = a.db.offices();
+150:         List<String> on = new ArrayList<>();
+151:         on.add("كل المكاتب");
+152:         int selOffice = 0;
+153:         for (int i = 0; i < offices.size(); i++) {
+154:             on.add((offices.get(i).pinned ? "📌 " : "") + offices.get(i).name);
+155:             if (filter.office != null && offices.get(i).id == filter.office) selOffice = i + 1;
+156:         }
+157:         final Spinner office = new Spinner(a);
+158:         a.setItems(office, on);
+159:         office.setSelection(selOffice);
+160:         adv.addView(office, a.lp(-1, 50, 2));
+161:         final Spinner type = a.spinner(new String[]{"كل الأنواع", "لنا (مدين)", "علينا (دائن)"});
+162:         type.setSelection(filter.type == null ? 0 : Model.TYPE_DEBIT.equals(filter.type) ? 1 : 2);
+163:         adv.addView(type, a.lp(-1, 50, 2));
+164:         List<String> cs = new ArrayList<>();
+165:         cs.add("كل العملات");
+166:         for (Model.Currency c : a.db.currencies(true)) cs.add(c.code);
+167:         final Spinner cur = new Spinner(a);
+168:         a.setItems(cur, cs);
+169:         Ui.select(cur, filter.currency);
+170:         adv.addView(cur, a.lp(-1, 50, 2));
+171:         adv.addView(a.smallButton("الفترة: " + period.label, a.accent, v -> a.statementScreen.choosePeriod(p -> {
+172:             period = p;
+173:             render(true);
+174:         })), a.lp(-1, 44, 3));
+175:         final Spinner kind = a.spinner(KINDS);
+176:         kind.setSelection(kindSel);
+177:         adv.addView(kind, a.lp(-1, 50, 2));
+178:         final List<String> whoNames = new ArrayList<>();
+179:         whoNames.add("كل المحاسبين");

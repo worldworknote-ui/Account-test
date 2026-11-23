@@ -1,0 +1,136 @@
+2309:         try (Cursor c = getReadableDatabase().rawQuery("SELECT uo.office_id,u.name FROM user_offices uo JOIN users u ON u.id=uo.user_id WHERE u.active=1 AND COALESCE(uo.role,'OWN')='OWN' AND u.id<>"
+2310:                 + exceptUser + " ORDER BY u.name", null)) {
+2311:             while (c.moveToNext()) out.computeIfAbsent(c.getLong(0), k -> new ArrayList<>()).add(c.getString(1));
+2312:         }
+2313:         return out;
+2314:     }
+2315: 
+2316:     private void checkAssign(long userId) {
+2317:         require(Auth.Perm.USERS);
+2318:         Model.User target = user(userId);
+2319:         if (target == null || target.deleted) throw new IllegalArgumentException("المستخدم غير موجود");
+2320:         if (Auth.isAdmin(target)) requireAdmin("مكاتب حساب المدير يحددها المدير وحده.");
+2321:         Model.User me = actor();
+2322:         if (me != null && !Auth.isAdmin(me) && me.id == userId) throw new SecurityException("لا تحدد مكاتبك بنفسك؛ يحددها المدير.");
+2323:     }
+2324: 
+2325:     /** يخصص مكاتب لمستخدم (الجديدة «يسجّل»، والباقية بدورها). بصلاحية «المستخدمون»؛ حساب المدير للمدير وحده، ولا يخصص المستخدم لنفسه. */
+2326:     public void setUserOffices(long userId, Set<Long> offices) {
+2327:         Map<Long, String> now = officeRoles(userId), roles = new LinkedHashMap<>();
+2328:         for (Long o : offices) roles.put(o, now.containsKey(o) ? now.get(o) : ROLE_OWN);
+2329:         setUserOffices(userId, roles);
+2330:     }
+2331: 
+2332:     /** 10.8: مكاتب المستخدم بأدوارها (يسجّل / يتحقق)؛ ما لم يُذكر يُزال. */
+2333:     public void setUserOffices(long userId, Map<Long, String> roles) {
+2334:         checkAssign(userId);
+2335:         SQLiteDatabase d = getWritableDatabase();
+2336:         d.beginTransaction();
+2337:         try {
+2338:             Map<Long, String> now = officeRoles(d, userId);
+2339:             for (Long o : now.keySet()) if (!roles.containsKey(o)) d.delete("user_offices", "user_id=" + userId + " AND office_id=" + o, null);
+2340:             int own = 0, check = 0;
+2341:             for (Map.Entry<Long, String> e : roles.entrySet()) {
+2342:                 String role = ROLE_CHECK.equals(e.getValue()) ? ROLE_CHECK : ROLE_OWN;
+2343:                 if (role.equals(ROLE_OWN)) own++;
+2344:                 else check++;
+2345:                 if (role.equals(now.get(e.getKey()))) continue;
+2346:                 if (office(e.getKey()) == null) throw new IllegalArgumentException("مكتب غير موجود");
+2347:                 ContentValues v = new ContentValues();
+2348:                 v.put("role", role);
+2349:                 if (d.update("user_offices", v, "user_id=" + userId + " AND office_id=" + e.getKey(), null) == 0) {
+2350:                     v.put("user_id", userId);
+2351:                     v.put("office_id", e.getKey());
+2352:                     d.insertOrThrow("user_offices", null, v);
+2353:                 }
+2354:             }
+2355:             audit(d, "USER_OFFICES", "user", userId, "يسجّل " + own + " مكتب، يتحقق من " + check);
+2356:             d.setTransactionSuccessful();
+2357:         } finally {
+2358:             d.endTransaction();
+2359:         }
+2360:     }
+2361: 
+2362:     /** فريق المكتب: من يسجّل ومن يتحقق. */
+2363:     public static final class Team {
+2364:         public Model.Office office;
+2365:         public final List<Model.User> owners = new ArrayList<>(), checkers = new ArrayList<>();
+2366:     }
+2367: 
+2368:     /** فرق كل المكاتب النشطة (بترتيب المكاتب). */
+2369:     public List<Team> teams() {
+2370:         Map<Long, Team> m = new LinkedHashMap<>();
+2371:         for (Model.Office o : offices()) {
+2372:             if (!o.active) continue;
+2373:             Team t = new Team();
+2374:             t.office = o;
+2375:             m.put(o.id, t);
+2376:         }
+2377:         try (Cursor c = getReadableDatabase().rawQuery("SELECT uo.office_id,COALESCE(uo.role,'OWN'),u.id FROM user_offices uo JOIN users u ON u.id=uo.user_id"
+2378:                 + " WHERE u.active=1 AND u.deleted_at IS NULL ORDER BY u.name", null)) {
+2379:             while (c.moveToNext()) {
+2380:                 Team t = m.get(c.getLong(0));
+2381:                 Model.User u = user(c.getLong(2));
+2382:                 if (t == null || u == null) continue;
+2383:                 (ROLE_CHECK.equals(c.getString(1)) ? t.checkers : t.owners).add(u);
+2384:             }
+2385:         }
+2386:         return new ArrayList<>(m.values());
+2387:     }
+2388: 
+2389:     /**
+2390:      * 10.12: تقرير «التسجيل والتحقق بين المحاسبين» للفترة [from, to): لكل مكتب من يسجّله ومن يتحقق منه، وكم حركة سُجّلت فيه
+2391:      * وكم منها تحقق منها محاسب غير مُدخلها؛ ولكل محاسب ما سجّله وما تحقق منه وما ينتظر تحققه؛ ومطابقات الفترة وهل تُحقق منها.
+2392:      * القراءة فقط (لا يغيّر شيئًا)، ويحتاج صلاحية «عرض التقارير».
+2393:      */
+2394:     public Report teamCheckReport(long from, long to, String periodLabel) {
+2395:         require(Auth.Perm.VIEW);
+2396:         if (to <= 0) to = Long.MAX_VALUE;
+2397:         SQLiteDatabase d = getReadableDatabase();
+2398:         Report r = new Report();
+2399:         r.title = "التسجيل والتحقق بين المحاسبين";
+2400:         r.fileBase = "team-check";
+2401:         if (periodLabel != null && !periodLabel.isEmpty()) r.headerLines.add("الفترة: " + periodLabel);
+2402:         r.headerLines.add("«تحقق منها» = تحقق منها محاسب غير الذي سجّلها. الحركات النشطة فقط.");
+2403:         String range = " AND created_at>=" + from + " AND created_at<" + to;
+2404:         String verified = "EXISTS(SELECT 1 FROM tx_checks k WHERE k.tx_id=tx.id AND k.status='VALID' AND (tx.user_id IS NULL OR k.user_id<>tx.user_id))";
+2405:         // ---- المكاتب
+2406:         Report.Section so = r.section("المكاتب: من يسجّل ومن يتحقق", "المكاتب");
+2407:         so.col("المكتب", 2.2f, Report.TEXT).col("يسجّلها", 2f, Report.TEXT).col("يتحقق منها", 2f, Report.TEXT)
+2408:                 .col("الحركات", 1f, Report.INT).col("تحقق منها", 1f, Report.INT).col("بلا تحقق", 1f, Report.INT).col("النسبة", 0.9f, Report.TEXT);
+2409:         long all = 0, ok = 0;
+2410:         Map<Long, long[]> perOffice = new HashMap<>();
+2411:         try (Cursor c = d.rawQuery("SELECT office_id,COUNT(*),SUM(CASE WHEN " + verified + " THEN 1 ELSE 0 END) FROM tx WHERE status='ACTIVE'" + range + " GROUP BY office_id", null)) {
+2412:             while (c.moveToNext()) perOffice.put(c.getLong(0), new long[]{c.getLong(1), c.getLong(2)});
+2413:         }
+2414:         for (Team t : teams()) {
+2415:             long[] n = perOffice.get(t.office.id);
+2416:             long cnt = n == null ? 0 : n[0], v = n == null ? 0 : n[1];
+2417:             if (cnt == 0 && t.owners.isEmpty() && t.checkers.isEmpty()) continue;
+2418:             all += cnt;
+2419:             ok += v;
+2420:             Report.Row row = so.row(cnt > v ? Report.NORMAL : Report.MUTED, t.office.name, t.owners.isEmpty() ? "—" : names(t.owners),
+2421:                     t.checkers.isEmpty() ? "لا أحد" : names(t.checkers), cnt, v, cnt - v, pct(v, cnt));
+2422:             if (t.checkers.isEmpty() && cnt > 0) row.style = Report.SHADED;
+2423:         }
+2424:         so.row(Report.TOTAL, "المجموع", "", "", all, ok, all - ok, pct(ok, all));
+2425:         so.kv("حركات الفترة", all, false).kv("تحقق منها محاسب آخر", ok, false).kv("بلا تحقق", all - ok, true).kv("نسبة التحقق", pct(ok, all), true);
+2426:         so.note = "المكاتب المظلّلة لها حركات ولا أحد يتحقق منها: وزّع التحقق من «فرز المكاتب بين المحاسبين».";
+2427:         // ---- المحاسبون
+2428:         Report.Section su = r.section("المحاسبون: ما سجّله كل منهم وما تحقق منه", "المحاسبون");
+2429:         su.col("المحاسب", 2f, Report.TEXT).col("سجّل", 1f, Report.INT).col("تحقق غيره مما سجّله", 1.3f, Report.INT)
+2430:                 .col("تحقق هو منه", 1.2f, Report.INT).col("ينتظر تحققه", 1.2f, Report.INT).col("أدواره", 3f, Report.TEXT);
+2431:         for (Model.User u : users(false)) {
+2432:             long rec = 0, recOk = 0, did = 0, wait = 0;
+2433:             try (Cursor c = d.rawQuery("SELECT COUNT(*),SUM(CASE WHEN " + verified + " THEN 1 ELSE 0 END) FROM tx WHERE status='ACTIVE' AND user_id=" + u.id + range, null)) {
+2434:                 if (c.moveToFirst()) {
+2435:                     rec = c.getLong(0);
+2436:                     recOk = c.getLong(1);
+2437:                 }
+2438:             }
+2439:             try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM tx_checks k JOIN tx ON tx.id=k.tx_id WHERE k.status='VALID' AND k.user_id=" + u.id
+2440:                     + " AND (tx.user_id IS NULL OR tx.user_id<>" + u.id + ") AND k.created_at>=" + from + " AND k.created_at<" + to, null)) {
+2441:                 if (c.moveToFirst()) did = c.getLong(0);
+2442:             }
+2443:             try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM tx WHERE status='ACTIVE'" + range + " AND (user_id IS NULL OR user_id<>" + u.id + ")"
+2444:                     + " AND office_id IN (SELECT office_id FROM user_offices WHERE user_id=" + u.id + " AND role='" + ROLE_CHECK + "')"

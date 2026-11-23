@@ -1,0 +1,65 @@
+921:         s.kv("بيانات مختلفة", q.distinctDescriptions + " (الخدمة والمدينة في خانتيهما تجعلها قابلة للعدّ)", false);
+922:         s.col("الملاحظة", 1.2f, Report.TEXT).col("التفاصيل", 2.6f, Report.TEXT);
+923:         for (int i = 0; i < q.bulkDays.size() && i < 10; i++) s.row(Report.NORMAL, "تسجيل دفعة واحدة", Model.day(q.bulkDays.get(i)[0]) + ": " + q.bulkDays.get(i)[1] + " عملية");
+924:         for (String[] p : q.similarNames) s.row(Report.NORMAL, "اسمان متشابهان", "«" + p[0] + "» و«" + p[1] + "»");
+925:     }
+926: 
+927:     // ===================================================================================
+928:     // التقرير الكامل والخلاصة
+929:     // ===================================================================================
+930: 
+931:     /** الخلاصة: أربعة أسئلة صاحب المكتب — هل يكبر عملي؟ على من أعتمد؟ أين مالي معلّق؟ من يربحني؟ */
+932:     public static List<String> headlines(Input in) {
+933:         List<String> h = new ArrayList<>();
+934:         Growth g = growth(in);
+935:         // 10.16: خلاصة لا تقول إلا ما تسنده البيانات: المتوسط على أشهر البيانات، والمقارنة حين توجد سنة سابقة،
+936:         // والتركّز حين يكون المكاتب أكثر من عشرة (وإلا «أكبر 10 = 100%» بديهية)، والديون القديمة بما هو قديم فعلًا.
+937:         if (g.ops12 > 0) {
+938:             h.add("العمل: متوسط " + g.avg12() + " عملية شهريًا في " + g.span() + (g.comparable ? " مقابل " + g.avgPrev12() + " في السنة قبلها (" + ratio(g.avg12(), g.avgPrev12()) + ")." : "."));
+939:         }
+940:         Concentration c = concentration(in, in.now - 365 * DAY);
+941:         if (c.total > 0 && c.ranked.size() > 10) h.add("التركّز: أكبر 10 مكاتب = " + pct(c.top10, c.total) + " من عمليات آخر 12 شهرًا.");
+942:         else if (c.total > 0 && c.ranked.size() >= 3) h.add("التركّز: أكثر مكتب تعاملًا = " + pct(c.ranked.get(0)[1], c.total) + " من عمليات آخر 12 شهرًا (من " + c.ranked.size() + " مكاتب).");
+943:         Map<String, long[]> tot = agingTotals(aging(in, true));
+944:         String main = null;
+945:         long best = -1;
+946:         for (Map.Entry<String, long[]> e : tot.entrySet()) if (e.getValue()[1] > best) {
+947:             best = e.getValue()[1];
+948:             main = e.getKey();
+949:         }
+950:         if (main != null && best > 0) {
+951:             long[] t = tot.get(main);
+952:             if (t[2] > 0) h.add("ديون قديمة: " + fmt(in, main, t[2]) + " من أصل " + fmt(in, main, t[0]) + " لنا بـ" + main + " (" + pct(t[2], t[0]) + ") عمرها أكثر من 90 يومًا.");
+953:         }
+954:         Fees f = fees(in, in.now - 365 * DAY);
+955:         for (Map.Entry<String, long[]> e : f.perCurrency.entrySet()) {
+956:             long[] x = e.getValue();
+957:             if (x[1] > x[0]) h.add("أجور " + e.getKey() + " خاسرة: دفعت " + fmt(in, e.getKey(), x[1]) + " وقبضت " + fmt(in, e.getKey(), x[0]) + " في 12 شهرًا.");
+958:         }
+959:         int dormant = 0;
+960:         for (Dormant d : dormant(in, 90)) dormant += d.balances.size();
+961:         if (dormant > 0) h.add("أرصدة متوقفة: " + count(dormant, "رصيد", "رصيدان", "أرصدة", "رصيدًا") + " لم تتحرك منذ أكثر من 90 يومًا.");
+962:         return h;
+963:     }
+964: 
+965:     public static Report build(Input in, String issuer, boolean allTime) {
+966:         Report r = new Report();
+967:         r.title = "تقارير صاحب المكتب";
+968:         if (issuer != null && !issuer.trim().isEmpty()) r.headerLines.add("صادر عن: " + issuer.trim());
+969:         r.headerLines.add("حتى: " + Model.date(in.now));
+970:         r.headerLines.addAll(headlines(in));
+971:         r.fileBase = "تقارير-صاحب-المكتب";
+972:         monthly(r, in, 25);
+973:         concentrationSection(r, in, allTime ? 0 : in.now - 365 * DAY, allTime ? "كل الفترة" : "آخر 12 شهرًا");
+974:         agingSection(r, in, true);
+975:         agingSection(r, in, false);
+976:         dormantSection(r, in);
+977:         trendSection(r, in);
+978:         feesSection(r, in);
+979:         returnsSection(r, in);
+980:         servicesSection(r, in);
+981:         sizeSection(r, in);
+982:         qualitySection(r, in);
+983:         return r;
+984:     }
+985: }

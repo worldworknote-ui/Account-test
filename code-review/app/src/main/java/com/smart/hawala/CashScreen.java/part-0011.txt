@@ -1,0 +1,150 @@
+1556:             a.body.addView(a.smallButton("+ بند مصروف جديد", Color.rgb(130, 130, 130), v -> newCategory(CashBox.EXPENSE, () -> setup(false))), a.lp(-2, 38, 2));
+1557:         }
+1558:         a.footer(a.makeButton(first ? "إنشاء الصندوق" : "حفظ", a.primary, v -> {
+1559:             try {
+1560:                 List<String> codes = new ArrayList<>();
+1561:                 Map<String, Long> openings = openingsOf(checks, opens, codes);
+1562:                 if (codes.isEmpty()) throw new Exception("اختر عملة واحدة على الأقل");
+1563:                 a.db.cashSetup(cfg.id, name.getText().toString(), codes, openings, strict.isChecked(), internal.isChecked());
+1564:                 draftChecks = null;
+1565:                 draftOpen = null;
+1566:                 draftName = null;
+1567:                 a.toast(first ? "أُنشئ الصندوق ✓" : "حُفظت الإعدادات");
+1568:                 open = true;
+1569:                 home();
+1570:             } catch (Exception e) {
+1571:                 a.error(e);
+1572:             }
+1573:         }));
+1574:     }
+1575: 
+1576:     private Map<String, Long> openingsOf(Map<String, CheckBox> checks, Map<String, EditText> opens, List<String> codes) {
+1577:         Map<String, Long> openings = new LinkedHashMap<>();
+1578:         for (Map.Entry<String, CheckBox> e : checks.entrySet()) {
+1579:             if (!e.getValue().isChecked()) continue;
+1580:             codes.add(e.getKey());
+1581:             EditText op = opens.get(e.getKey());
+1582:             if (op != null && !op.getText().toString().trim().isEmpty()) openings.put(e.getKey(), Db.minor(op.getText().toString(), a.db.decimals(e.getKey())));
+1583:         }
+1584:         return openings;
+1585:     }
+1586: 
+1587:     /** نص سعر العملة: «1 EUR = 1.08 USD» أو «1 USD = 13,000 SYP» للعملات الصغيرة. */
+1588:     String rateText(String code, Db.Rate r) {
+1589:         if ("USD".equals(code)) return "العملة الأساس";
+1590:         if (r == null || r.usd == null) return "بلا سعر صرف";
+1591:         String src = r.at > 0 ? " — " + r.source + " " + MainActivity.ago(r.at) : " — " + r.source;
+1592:         if (r.usd.compareTo(BigDecimal.ONE) >= 0) return iso("1 " + code + " = " + r.usd.setScale(4, RoundingMode.HALF_EVEN).stripTrailingZeros().toPlainString() + " USD") + src;
+1593:         BigDecimal inv = BigDecimal.ONE.divide(r.usd, 4, RoundingMode.HALF_EVEN);
+1594:         return iso("1 USD = " + Model.fmt(inv.movePointRight(2).setScale(0, RoundingMode.HALF_EVEN).longValue(), 2).replaceAll("\\.00$", "") + " " + code) + src;
+1595:     }
+1596: 
+1597:     /**
+1598:      * 9.0.1: كل عملات التطبيق (المفعّلة وغير المفعّلة) مع سعر صرفها، وتحديث الأسعار من الإنترنت، وإضافة أي عملة أخرى من قائمة الأسعار.
+1599:      * selected: العملات المختارة حاليًا (null = إعداد أول)؛ withOpen: حقول الرصيد الافتتاحي للعملات الجديدة.
+1600:      */
+1601:     void currencyPicker(Set<String> selected, Map<String, Long> bal, Map<String, CheckBox> checks, Map<String, EditText> opens, boolean first, final Runnable redraw) {
+1602:         a.title("العملات والرصيد الموجود الآن");
+1603:         a.hint(selected == null ? "اختر عملات الصندوق، واكتب النقد الموجود لديك الآن بكل عملة (الرصيد الافتتاحي)."
+1604:                 : "يمكن إضافة عملة مع رصيدها الافتتاحي. لا تُزال عملة رصيدها ليس صفرًا.");
+1605:         Map<String, Db.Rate> rates = a.db.rates();
+1606:         for (Model.Currency c : a.db.currencies(true)) {
+1607:             LinearLayout box = new LinearLayout(a);
+1608:             box.setOrientation(LinearLayout.VERTICAL);
+1609:             box.setPadding(a.dp(6), a.dp(4), a.dp(6), a.dp(4));
+1610:             box.setBackground(a.round(a.surface, a.line, 12));
+1611:             LinearLayout r = a.row();
+1612:             CheckBox cb = new CheckBox(a);
+1613:             cb.setText(c.code + " — " + c.name + (c.active ? "" : " (غير مفعّلة في المكاتب)"));
+1614:             boolean had = selected != null && selected.contains(c.code);
+1615:             cb.setChecked(draftChecks != null ? draftChecks.contains(c.code) : had);
+1616:             r.addView(cb, new LinearLayout.LayoutParams(0, -2, 1.3f));
+1617:             if (!had) {
+1618:                 EditText op = a.field("الموجود الآن");
+1619:                 Ui.numeric(op);
+1620:                 op.setTextSize(14);
+1621:                 if (draftOpen != null && draftOpen.containsKey(c.code)) op.setText(draftOpen.get(c.code));
+1622:                 r.addView(op, a.weight(46, 1, 2));
+1623:                 opens.put(c.code, op);
+1624:             } else {
+1625:                 Long b = bal.get(c.code);
+1626:                 r.addView(a.text("الرصيد " + iso(Model.fmt(b == null ? 0 : b, c.decimals)), 13, a.muted, false), new LinearLayout.LayoutParams(0, -2, 1));
+1627:             }
+1628:             box.addView(r);
+1629:             box.addView(a.text(rateText(c.code, rates.get(c.code)), 11, a.muted, false));
+1630:             a.body.addView(box, a.lp(-1, -2, 2));
+1631:             checks.put(c.code, cb);
+1632:         }
+1633:         final Runnable keep = () -> {
+1634:             draftChecks = new TreeSet<>();
+1635:             draftOpen = new HashMap<>();
+1636:             for (Map.Entry<String, CheckBox> e : checks.entrySet()) if (e.getValue().isChecked()) draftChecks.add(e.getKey());
+1637:             for (Map.Entry<String, EditText> e : opens.entrySet()) draftOpen.put(e.getKey(), e.getValue().getText().toString());
+1638:         };
+1639:         LinearLayout btns = a.row();
+1640:         if (a.can(Auth.Perm.RATES_ONLINE)) btns.addView(a.smallButton("تحديث الأسعار من الإنترنت", Color.rgb(130, 130, 130), v -> {
+1641:             keep.run();
+1642:             a.busy("جارٍ تحديث الأسعار…", p -> ExchangeRates.refresh(a.db), res -> {
+1643:                 a.toast("حُدّثت أسعار " + res + " عملة");
+1644:                 redraw.run();
+1645:             });
+1646:         }), a.weight(40, 1, 2));
+1647:         if (a.can(Auth.Perm.CURRENCIES)) btns.addView(a.smallButton("+ عملة أخرى", Color.rgb(130, 130, 130), v -> {
+1648:             keep.run();
+1649:             addWorldCurrency(redraw);
+1650:         }), a.weight(40, 1, 2));
+1651:         a.body.addView(btns, a.lp(-1, -2, 4));
+1652:     }
+1653: 
+1654:     /** يضيف للتطبيق عملة من قائمة أسعار الإنترنت (أو من القائمة المعروفة) باسمها العربي ومنازلها. */
+1655:     private void addWorldCurrency(final Runnable after) {
+1656:         Set<String> have = new TreeSet<>();
+1657:         for (Model.Currency c : a.db.currencies(true)) have.add(c.code);
+1658:         Set<String> codes = new TreeSet<>(a.db.rates().keySet());
+1659:         codes.addAll(WorldCurrencies.ALL.keySet());
+1660:         codes.removeAll(have);
+1661:         final List<String> known = new ArrayList<>(), rest = new ArrayList<>();
+1662:         for (String c : codes) {
+1663:             if (!c.matches("[A-Z]{3}")) continue;
+1664:             if (WorldCurrencies.ALL.containsKey(c)) known.add(c);
+1665:             else rest.add(c);
+1666:         }
+1667:         final List<String> all = new ArrayList<>(known);
+1668:         all.addAll(rest);
+1669:         if (all.isEmpty()) {
+1670:             a.toast("كل العملات المعروفة مضافة. حدّث الأسعار من الإنترنت لتظهر عملات أكثر.");
+1671:             return;
+1672:         }
+1673:         final String[] labels = new String[all.size()];
+1674:         for (int i = 0; i < labels.length; i++) labels[i] = all.get(i) + " — " + WorldCurrencies.name(all.get(i));
+1675:         new AlertDialog.Builder(a).setTitle("إضافة عملة (" + all.size() + ")").setItems(labels, (d, w) -> {
+1676:             String code = all.get(w);
+1677:             try {
+1678:                 a.db.saveCurrency(code, WorldCurrencies.name(code), WorldCurrencies.decimals(code), true);
+1679:                 if (draftChecks != null) draftChecks.add(code);
+1680:                 a.toast("أُضيفت " + code + " — " + WorldCurrencies.name(code) + " (" + WorldCurrencies.decimals(code) + " منازل)");
+1681:                 after.run();
+1682:             } catch (Exception e) {
+1683:                 a.error(e);
+1684:             }
+1685:         }).setNegativeButton("إلغاء", null).show();
+1686:     }
+1687: 
+1688:     private void lockSection() {
+1689:         a.title("قفل الصندوق");
+1690:         final String mode = lockMode();
+1691:         final Ui.Seg s = a.seg(new String[]{"بدون", "البصمة", "كلمة سر"}, LOCK_BIO.equals(mode) ? 1 : LOCK_PIN.equals(mode) ? 2 : 0, null);
+1692:         s.listener = i -> {
+1693:             if (i == 0) {
+1694:                 a.db.setSettingQuiet("cash_lock", LOCK_OFF);
+1695:                 a.toast("أُلغي قفل الصندوق");
+1696:             } else if (i == 1) {
+1697:                 bio("تفعيل قفل الصندوق", () -> {
+1698:                     a.db.setSettingQuiet("cash_lock", LOCK_BIO);
+1699:                     authAt = SystemClock.elapsedRealtime();
+1700:                     a.toast("يُفتح الصندوق بالبصمة أو بقفل الشاشة ✓");
+1701:                     setup(false);
+1702:                 });
+1703:                 s.set(LOCK_BIO.equals(mode) ? 1 : LOCK_PIN.equals(mode) ? 2 : 0, false);
+1704:             } else {
+1705:                 newPin(() -> setup(false));

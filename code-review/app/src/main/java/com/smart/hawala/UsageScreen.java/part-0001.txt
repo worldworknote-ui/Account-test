@@ -1,0 +1,167 @@
+1: package com.smart.hawala;
+2: 
+3: import android.widget.LinearLayout;
+4: import java.text.SimpleDateFormat;
+5: import java.util.ArrayList;
+6: import java.util.Date;
+7: import java.util.LinkedHashMap;
+8: import java.util.List;
+9: import java.util.Locale;
+10: import java.util.Map;
+11: 
+12: /**
+13:  * 11.5: سجل الاستخدام: متى فتح كل مستخدم التطبيق وكم بقي عليه، على كل الأجهزة.
+14:  * كل جلسة سطر «LOGIN_SESSION» في سجل العمليات (مدتها بالثواني في رقم السطر) فينتقل بالمزامنة ولا يُعدَّل،
+15:  * والعرض لآخر سنة. الجلسة تبدأ عند فتح التطبيق أو الدخول، وتنتهي عند تركه (الخروج منه أو تصغير النافذة) أو قفله أو الخروج من الحساب.
+16:  */
+17: final class UsageScreen {
+18:     static final String ACTION = "LOGIN_SESSION";
+19:     static final long YEAR = 365L * 86_400_000L;
+20:     private static final String[] PERIODS = {"اليوم", "7 أيام", "30 يومًا", "سنة"};
+21:     private static final long[] SPANS = {0, 7L * 86_400_000L, 30L * 86_400_000L, YEAR};
+22: 
+23:     private final MainActivity a;
+24:     private int period = 1;
+25: 
+26:     UsageScreen(MainActivity a) { this.a = a; }
+27: 
+28:     /** 11.6: للمدير وحده (أو بلا نظام مستخدمين). */
+29:     static boolean allowed(MainActivity a) {
+30:         return !a.db.usersEnabled() || (SmartApp.currentUser != null && Auth.isAdmin(SmartApp.currentUser));
+31:     }
+32: 
+33:     static String describe(long start, long end) {
+34:         return "من " + hm(start) + " إلى " + hm(end) + (Model.day(start).equals(Model.day(end)) ? "" : " (" + Model.day(end) + ")") + " — " + dur((end - start) / 1000);
+35:     }
+36: 
+37:     static String hm(long t) { return new SimpleDateFormat("HH:mm", Locale.US).format(new Date(t)); }
+38: 
+39:     static String dur(long sec) {
+40:         if (sec < 60) return "أقل من دقيقة";
+41:         long m = sec / 60, h = m / 60;
+42:         m %= 60;
+43:         if (h == 0) return m + " دقيقة";
+44:         return h + " س" + (m > 0 ? " و" + m + " د" : "");
+45:     }
+46: 
+47:     private long since() {
+48:         if (period == 0) {
+49:             java.util.Calendar c = java.util.Calendar.getInstance();
+50:             c.setTimeInMillis(Clock.now());
+51:             c.set(java.util.Calendar.HOUR_OF_DAY, 0);
+52:             c.set(java.util.Calendar.MINUTE, 0);
+53:             c.set(java.util.Calendar.SECOND, 0);
+54:             c.set(java.util.Calendar.MILLISECOND, 0);
+55:             return c.getTimeInMillis();
+56:         }
+57:         return Clock.now() - SPANS[period];
+58:     }
+59: 
+60:     void show() {
+61:         if (!allowed(a)) {
+62:             a.toast("سجل الاستخدام للمدير وحده");
+63:             return;
+64:         }
+65:         a.here(this::show);
+66:         a.tabbedScreen("سجل الاستخدام", a.moreScreen::show, "more");
+67:         a.seg(PERIODS, period, i -> {
+68:             period = i;
+69:             show();
+70:         });
+71:         // 12.7: مدة الخمول التي تُنهي الجلسة (تصل لكل الأجهزة بالمزامنة)
+72:         long idleNow = a.idleMinutes();
+73:         LinearLayout ig = a.group();
+74:         a.groupRow(ig, R.drawable.ic_clock, a.primaryInk, "تتوقف الجلسة بعد الخمول", idleNow == 0 ? "بلا حد" : idleNow + " دقائق بلا لمس ولا كتابة", "تغيير", v -> {
+75:             final long[] opts = {3, 5, 10, 15, 30, 0};
+76:             String[] names = new String[opts.length];
+77:             for (int i = 0; i < opts.length; i++) names[i] = opts[i] == 0 ? "بلا حد (حتى ترك التطبيق)" : opts[i] + " دقائق";
+78:             new android.app.AlertDialog.Builder(a).setTitle("مدة الخمول").setItems(names, (d, w) -> {
+79:                 a.db.setSetting("usage_idle_min", "" + opts[w]);
+80:                 show();
+81:             }).show();
+82:         });
+83:         final long since = since();
+84:         a.busy("جارٍ جمع الجلسات…", p -> new Object[]{a.db.usageSessions(since), a.db.txCountsByUser(since)}, res -> {
+85:             Object[] r = (Object[]) res;
+86:             counts = castCounts(r[1]);
+87:             render(cast(r[0]));
+88:         });
+89:     }
+90: 
+91:     @SuppressWarnings("unchecked")
+92:     private static List<Object[]> cast(Object o) { return (List<Object[]>) o; }
+93: 
+94:     @SuppressWarnings("unchecked")
+95:     private static Map<String, Long> castCounts(Object o) { return (Map<String, Long>) o; }
+96: 
+97:     /** 12.7: حركات كل مستخدم في الفترة (بالاسم المعروض في السجل). */
+98:     private Map<String, Long> counts = new LinkedHashMap<>();
+99: 
+100:     private long txOf(String shown) {
+101:         long n = 0;
+102:         for (Map.Entry<String, Long> e : counts.entrySet()) if (userName(e.getKey()).equals(shown)) n += e.getValue();
+103:         return n;
+104:     }
+105: 
+106:     private void render(List<Object[]> rows) {
+107:         // لكل مستخدم: المجموع، وعدد الجلسات، وآخر نشاط وجهازه
+108:         Map<String, long[]> tot = new LinkedHashMap<>();
+109:         Map<String, String> lastDev = new LinkedHashMap<>();
+110:         for (Object[] r : rows) {
+111:             String u = userName((String) r[2]);
+112:             long[] t = tot.get(u);
+113:             if (t == null) {
+114:                 t = new long[3];
+115:                 tot.put(u, t);
+116:                 lastDev.put(u, (String) r[3]);
+117:             }
+118:             t[0] += (Long) r[1];
+119:             t[1]++;
+120:             t[2] = Math.max(t[2], (Long) r[0]);
+121:         }
+122:         if (rows.isEmpty()) {
+123:             a.hint("لا توجد جلسات في هذه الفترة. تُسجَّل الجلسات من الإصدار 11.5 فصاعدًا.");
+124:         } else {
+125:             LinearLayout g = a.group();
+126:             for (Map.Entry<String, long[]> e : tot.entrySet()) {
+127:                 final String u = e.getKey();
+128:                 long[] t = e.getValue();
+129:                 a.groupRow(g, R.drawable.ic_clock, a.primaryInk, u,
+130:                         "المجموع " + dur(t[0]) + " في " + t[1] + " جلسة • سجّل " + txOf(u) + " حركة\nآخر نشاط: " + Model.date(t[2]) + " • " + lastDev.get(u), "الجلسات", v -> user(u, rows));
+131:             }
+132:         }
+133:         a.hint("الجلسة تبدأ عند فتح التطبيق أو الدخول، وتنتهي عند تركه أو قفله أو الخروج من الحساب، أو بعد " + a.idleMinutes()
+134:                 + " دقائق بلا لمس ولا كتابة (تُحسب حتى آخر نشاط)، وعلى الكمبيوتر حين تصير النافذة خلف برامج أخرى. "
+135:                 + "الجلسة الجارية تُحفظ كل دقيقة فلا تضيع إن أُغلق التطبيق غصبًا. "
+136:                 + "لا تُسجَّل الجلسات الأقصر من 10 ثوانٍ. يُعرض آخر سنة" + (SyncEngine.enabled(a.db) ? "، من كل أجهزة المزامنة." : "."));
+137:     }
+138: 
+139:     static String userName(String u) { return u == null || u.isEmpty() || "المستخدم المحلي".equals(u) ? "المستخدم (بلا نظام مستخدمين)" : u; }
+140: 
+141:     /** جلسات مستخدم واحد مجمّعة باليوم. */
+142:     private void user(final String u, final List<Object[]> rows) {
+143:         a.here(() -> user(u, rows));
+144:         a.tabbedScreen(u, this::show, "more");
+145:         Map<String, List<Object[]>> byDay = new LinkedHashMap<>();
+146:         for (Object[] r : rows) {
+147:             if (!u.equals(userName((String) r[2]))) continue;
+148:             String day = Model.day((Long) r[0] - (Long) r[1] * 1000);
+149:             byDay.computeIfAbsent(day, k -> new ArrayList<>()).add(r);
+150:         }
+151:         int shownDays = 0;
+152:         for (Map.Entry<String, List<Object[]>> e : byDay.entrySet()) {
+153:             if (++shownDays > 120) {
+154:                 a.hint("تظهر آخر 120 يومًا؛ اختر فترة أقصر للتفاصيل.");
+155:                 break;
+156:             }
+157:             long sum = 0;
+158:             for (Object[] r : e.getValue()) sum += (Long) r[1];
+159:             a.section(e.getKey() + " — " + dur(sum), null, null);
+160:             LinearLayout g = a.group();
+161:             for (Object[] r : e.getValue()) {
+162:                 long end = (Long) r[0], start = end - (Long) r[1] * 1000;
+163:                 a.groupRow(g, R.drawable.ic_clock, a.muted, hm(start) + " ← " + hm(end) + " • " + dur((Long) r[1]), (String) r[3], null, null);
+164:             }
+165:         }
+166:     }
+167: }

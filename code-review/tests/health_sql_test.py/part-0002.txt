@@ -1,0 +1,64 @@
+172: q_live = "SELECT office_id,COUNT(*) FROM tx WHERE replaces_id IS NULL"
+173: check(q_live in db_java and " GROUP BY office_id" in db_java, "الاستعلام موجود كما هو في Db.java")
+174: live = dict(db.execute(q_live + " AND office_id=1 GROUP BY office_id").fetchall())
+175: check(live.get(1) == 3, "الحركات 1 و2 و3 أصلية (الملغاة تُحتسب) والتصحيح 4 لا يُحتسب: %s" % live)
+176: # 9.0: حذف المكتب يعيد مكانه: عدّاد المكاتب = الموجودة فعلًا دائمًا (لا أرضية من سجل التدقيق)
+177: check("q.offices = 0;" in db_java and "SELECT COUNT(*) FROM offices" in db_java, "9.0: عدّاد المكاتب = المكاتب الموجودة فعلًا (الحذف يعيد المكان)")
+178: 
+179: print("== أرشيف سجل العمليات عند الاستعادة")
+180: arch = re.search(r'"(INSERT INTO audit_archive\([^"]+)"\s*\+\s*"(SELECT id,action[^"]+)"', db_java)
+181: check(arch is not None, "أمر الأرشفة موجود في Db.java")
+182: db.execute("INSERT INTO audit_logs(action,entity,entity_id,user_name,reason,created_at,prev_hash,row_hash) VALUES('CREATE_TRANSACTION','tx',1,'x','y',5,'','h1')")
+183: db.execute(arch.group(1) + arch.group(2) + "77 FROM audit_logs")
+184: check(db.execute("SELECT orig_id,row_hash,archived_at FROM audit_archive").fetchall() == [(1, "h1", 77)], "الأسطر تُنقل كما هي إلى الأرشيف")
+185: 
+186: print("== ترقية المخطط (ت12)")
+187: for t, c, ty in COLS:
+188:     bad = re.search(r"NOT NULL(?!.*DEFAULT)|PRIMARY|UNIQUE", ty)
+189:     if bad:
+190:         check(False, "عمود يُضاف بـ ALTER لا يقبل: %s.%s %s" % (t, c, ty))
+191: check(True, "كل أعمدة COLS صالحة لـ ALTER TABLE ADD COLUMN")
+192: # قاعدة الإصدار الأول: الأعمدة الأساسية فقط
+193: v1 = sqlite3.connect(":memory:")
+194: v1.execute("CREATE TABLE currencies(code TEXT PRIMARY KEY,name TEXT,decimals INTEGER)")
+195: v1.execute("CREATE TABLE offices(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL)")
+196: v1.execute("CREATE TABLE office_currencies(office_id INTEGER,code TEXT,limit_minor INTEGER,PRIMARY KEY(office_id,code))")
+197: v1.execute("CREATE TABLE tx(id INTEGER PRIMARY KEY AUTOINCREMENT,office_id INTEGER NOT NULL,type TEXT NOT NULL,amount_minor INTEGER NOT NULL,currency TEXT NOT NULL,created_at INTEGER NOT NULL,status TEXT)")
+198: v1.execute("CREATE TABLE journal_entries(id INTEGER PRIMARY KEY AUTOINCREMENT,tx_id INTEGER)")
+199: v1.execute("CREATE TABLE journal_lines(id INTEGER PRIMARY KEY AUTOINCREMENT,entry_id INTEGER NOT NULL,account TEXT NOT NULL,office_id INTEGER,currency TEXT NOT NULL,debit_minor INTEGER NOT NULL,credit_minor INTEGER NOT NULL)")
+200: v1.execute("CREATE TABLE settings(k TEXT PRIMARY KEY,v TEXT)")
+201: v1.execute("CREATE TABLE audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT)")
+202: v1.execute("INSERT INTO currencies VALUES('USD','دولار',2)")
+203: v1.execute("INSERT INTO offices(id,name) VALUES(1,'الأمل')")
+204: v1.execute("INSERT INTO office_currencies VALUES(1,'USD',500000)")
+205: v1.execute("INSERT INTO tx VALUES(1,1,?,150000,'USD',1700000000000,'ACTIVE')", (DEBIT,))
+206: v1.execute("INSERT INTO journal_entries VALUES(1,1)")
+207: v1.execute("INSERT INTO journal_lines VALUES(1,1,'OFFICE',1,'USD',150000,0)")
+208: v1.execute("INSERT INTO journal_lines VALUES(2,1,'SETTLEMENT',NULL,'USD',0,150000)")
+209: v1.execute("INSERT INTO audit_logs(id) VALUES(1)")
+210: # ensureSchema كما في Db.java: إنشاء الناقص، ثم الأعمدة الناقصة، ثم ملء uuid
+211: for s in DDL:
+212:     v1.execute(s)
+213: filled = False
+214: for t, c, ty in COLS:
+215:     have = [r[1].lower() for r in v1.execute("PRAGMA table_info(%s)" % t)]
+216:     if c not in have:
+217:         v1.execute("ALTER TABLE %s ADD COLUMN %s %s" % (t, c, ty))
+218:         if t == "tx" and c == "uuid":
+219:             v1.execute("UPDATE tx SET uuid=lower(hex(randomblob(16))) WHERE uuid IS NULL OR uuid=''")
+220:             filled = True
+221: check("UPDATE tx SET uuid=lower(hex(randomblob(16))) WHERE uuid IS NULL OR uuid=''" in db_java and filled, "مراجع الحركات القديمة تُملأ عند إضافة uuid")
+222: v1.execute("UPDATE office_currencies SET limit_owe_minor=limit_minor WHERE limit_owe_minor IS NULL AND limit_minor IS NOT NULL")
+223: for t in ["tx", "audit_logs", "office_currencies", "offices"]:
+224:     want = set(c for tt, c, ty in COLS if tt == t)
+225:     have = set(r[1] for r in v1.execute("PRAGMA table_info(%s)" % t))
+226:     check(want <= have, "الجدول %s فيه كل أعمدة 8.0 بعد الترقية" % t)
+227: r = v1.execute("SELECT amount_minor,currency,status,length(uuid),fee_type,fee_minor FROM tx").fetchone()
+228: check(r[0] == 150000 and r[1] == "USD" and r[2] == "ACTIVE" and r[3] == 32 and r[4] == FNONE and r[5] == 0, "الحركة القديمة سليمة بعد الترقية: %s" % (r,))
+229: check(v1.execute("SELECT limit_minor,limit_owe_minor FROM office_currencies").fetchone() == (500000, 500000), "حد «علينا» يُنسخ من الحد القديم (ترقية 5)")
+230: check(v1.execute("SELECT SUM(debit_minor-credit_minor) FROM journal_lines WHERE account='OFFICE'").fetchone()[0] == 150000, "الرصيد لم يتغير")
+231: check(v1.execute("SELECT active,pinned FROM offices").fetchone() == (1, 0), "قيم افتراضية للأعمدة الجديدة")
+232: check(not v1.execute(IDENTITY, (DEBIT, FUS, FTHEM)).fetchall(), "هوية الأرصدة سليمة على القاعدة المرقّاة")
+233: 
+234: print("ALL PASSED" if fails == 0 else "%d FAILED" % fails)
+235: sys.exit(1 if fails else 0)

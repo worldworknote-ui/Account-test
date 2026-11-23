@@ -1,0 +1,146 @@
+310:         String os = System.getProperty("os.name", "").toLowerCase();
+311:         try {
+312:             if (os.contains("win")) {
+313:                 new ProcessBuilder("rundll32", "url.dll,FileProtocolHandler", url).start();
+314:                 // إن لم يوجد التطبيق يعرض ويندوز نفسه «اختر تطبيقًا» (لا يُفتح المتصفح بدلًا منه)
+315:                 return true;
+316:             }
+317:             if (MAC) {
+318:                 Process p = new ProcessBuilder("open", url).start();
+319:                 if (p.waitFor(10, java.util.concurrent.TimeUnit.SECONDS) && p.exitValue() == 0) return true;
+320:                 Process p2 = new ProcessBuilder("open", "-a", appName).start();
+321:                 return p2.waitFor(10, java.util.concurrent.TimeUnit.SECONDS) && p2.exitValue() == 0;
+322:             }
+323:             Desktop.getDesktop().browse(new java.net.URI(url));
+324:             return true;
+325:         } catch (Exception e) {
+326:             return false;
+327:         }
+328:     }
+329: 
+330:     private static boolean webOpened;
+331: 
+332:     /** 11.3: واتساب ويب يُفتح مرة واحدة في الجلسة (كان كل إرسال يفتح نافذة جديدة)؛ بعدها النص يُنسخ للصق في النافذة المفتوحة. */
+333:     static boolean openWebOnce(String text) {
+334:         if (webOpened) return true;
+335:         webOpened = true;
+336:         return Platform.browseQuiet("https://web.whatsapp.com/" + (text == null || text.isEmpty() ? "" : "send?text=" + Uri.encode(text)));
+337:     }
+338: 
+339:     /**
+340:      * 11.3: خطوات اللصق: الصورة أو الملف أولًا (منسوخ الآن)، ثم زر «نسخ النص» للصقه بعدها، و«فتح واتساب» إن لزم.
+341:      * الحافظة لا تحمل الصورة والنص للصق واحد، فكان ينتقل أحدهما فقط.
+342:      */
+343:     static void pasteSteps(Context ctx, List<File> files, String text, String app) {
+344:         boolean hasFiles = !files.isEmpty();
+345:         boolean hasText = text != null && !text.trim().isEmpty();
+346:         android.content.ClipboardManager cm = (android.content.ClipboardManager) ctx.getSystemService(Context.CLIPBOARD_SERVICE);
+347:         if (hasFiles) copyFiles(files);
+348:         else if (hasText) cm.setText(text);
+349:         String paste = MAC ? "⌘V" : "Ctrl+V";
+350:         StringBuilder m = new StringBuilder();
+351:         if (hasFiles) {
+352:             m.append("1) ").append(files.size() == 1 ? (isImage(files.get(0)) ? "الصورة" : "الملف") : files.size() + " ملفات")
+353:                     .append(" منسوخ الآن: افتح المحادثة في ").append(app).append(" واضغط ").append(paste).append(".");
+354:             if (hasText) m.append("\n2) ثم اضغط «نسخ النص» هنا، والصقه في المحادثة نفسها.");
+355:         } else {
+356:             m.append("النص منسوخ: الصقه في المحادثة في ").append(app).append(" (").append(paste).append(").");
+357:         }
+358:         AlertDialog.Builder b = new AlertDialog.Builder(ctx).setTitle("الإرسال إلى " + app).setMessage(m.toString());
+359:         if (hasFiles && hasText) b.setPositiveButton("نسخ النص", null);
+360:         if (hasFiles) b.setNeutralButton(files.size() == 1 && isImage(files.get(0)) ? "نسخ الصورة مرة أخرى" : "نسخ الملف مرة أخرى", null);
+361:         b.setNegativeButton("تم", null);
+362:         AlertDialog d = b.show();
+363:         if (hasFiles && hasText) d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+364:             cm.setText(text);
+365:             Toast.makeText(ctx, "نُسخ النص: الصقه الآن (" + paste + ")", Toast.LENGTH_SHORT).show();
+366:         });
+367:         if (hasFiles) d.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+368:             copyFiles(files);
+369:             Toast.makeText(ctx, "نُسخ: الصقه الآن (" + paste + ")", Toast.LENGTH_SHORT).show();
+370:         });
+371:     }
+372: 
+373:     static boolean isImage(File f) { return f.getName().toLowerCase().matches(".*\\.(png|jpe?g)$"); }
+374: 
+375:     /** يفتح رابطًا؛ false إن لم يوجد برنامج له (تطبيق غير مثبّت). */
+376:     static boolean browse(String url) {
+377:         try {
+378:             if (MAC && !url.startsWith("http")) {
+379:                 // open يعيد رمز خطأ إن لم يوجد تطبيق للرابط
+380:                 Process pr = new ProcessBuilder("open", url).start();
+381:                 return pr.waitFor() == 0;
+382:             }
+383:             Desktop.getDesktop().browse(new java.net.URI(url));
+384:             return true;
+385:         } catch (Exception e) {
+386:             return false;
+387:         }
+388:     }
+389: 
+390:     static void copyText(String t) {
+391:         try {
+392:             Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new java.awt.datatransfer.StringSelection(t), null);
+393:         } catch (Exception ignored) {
+394:             // الحافظة مشغولة: يبقى زر «نسخ النص»
+395:         }
+396:     }
+397: 
+398:     /**
+399:      * 11.6: على الماك تُنسخ الملفات بالطريقة التي يستعملها Finder (روابط ملفات في حافظة النظام)، فيقبلها واتساب
+400:      * عند اللصق (كان PDF لا يُلصق أبدًا والصورة أحيانًا: صيغة جافا للحافظة لا يفهمها واتساب). false إن تعذّر.
+401:      */
+402:     static boolean macCopyFiles(List<File> files) {
+403:         if (!MAC) return false;
+404:         try {
+405:             StringBuilder js = new StringBuilder("ObjC.import('AppKit');var pb=$.NSPasteboard.generalPasteboard;pb.clearContents;var a=$.NSMutableArray.array;");
+406:             for (File f : files) js.append("a.addObject($.NSURL.fileURLWithPath(").append(jsString(f.getAbsolutePath())).append("));");
+407:             js.append("pb.writeObjects(a) ? 'ok' : 'no';");
+408:             Process p = new ProcessBuilder("osascript", "-l", "JavaScript", "-e", js.toString()).redirectErrorStream(true).start();
+409:             if (!p.waitFor(8, java.util.concurrent.TimeUnit.SECONDS)) {
+410:                 p.destroyForcibly();
+411:                 return false;
+412:             }
+413:             String out = new String(p.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim();
+414:             return p.exitValue() == 0 && out.endsWith("ok");
+415:         } catch (Exception e) {
+416:             return false;
+417:         }
+418:     }
+419: 
+420:     static String jsString(String s) {
+421:         StringBuilder b = new StringBuilder("\"");
+422:         for (char c : s.toCharArray()) {
+423:             if (c == '"' || c == '\\') b.append('\\').append(c);
+424:             else if (c < 0x20 || c > 0x7e) b.append(String.format("\\u%04x", (int) c));
+425:             else b.append(c);
+426:         }
+427:         return b.append('"').toString();
+428:     }
+429: 
+430:     /** ينسخ الملفات إلى الحافظة (وللصورة الواحدة: الصورة نفسها أيضًا) للصق في واتساب وتلغرام والبريد. */
+431:     static void copyFiles(List<File> files) {
+432:         if (macCopyFiles(files)) return;
+433:         final List<File> fl = new ArrayList<>(files);
+434:         java.awt.Image img = null;
+435:         if (fl.size() == 1 && fl.get(0).getName().toLowerCase().matches(".*\\.(png|jpe?g)$")) {
+436:             try { img = javax.imageio.ImageIO.read(fl.get(0)); } catch (Exception ignored) { /* الملف وحده */ }
+437:         }
+438:         final java.awt.Image im = img;
+439:         Transferable tr = new Transferable() {
+440:             @Override public DataFlavor[] getTransferDataFlavors() {
+441:                 return im != null ? new DataFlavor[]{DataFlavor.imageFlavor, DataFlavor.javaFileListFlavor} : new DataFlavor[]{DataFlavor.javaFileListFlavor};
+442:             }
+443:             @Override public boolean isDataFlavorSupported(DataFlavor f) {
+444:                 for (DataFlavor x : getTransferDataFlavors()) if (x.equals(f)) return true;
+445:                 return false;
+446:             }
+447:             @Override public Object getTransferData(DataFlavor f) throws UnsupportedFlavorException {
+448:                 if (DataFlavor.imageFlavor.equals(f) && im != null) return im;
+449:                 if (DataFlavor.javaFileListFlavor.equals(f)) return fl;
+450:                 throw new UnsupportedFlavorException(f);
+451:             }
+452:         };
+453:         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(tr, null);
+454:     }
+455: }

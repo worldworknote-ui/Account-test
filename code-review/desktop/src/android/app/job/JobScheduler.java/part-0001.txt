@@ -1,0 +1,42 @@
+1: package android.app.job;
+2: 
+3: import java.util.*;
+4: 
+5: /** المهام الدورية (النسخ التلقائي، التذكير، المزامنة) تعمل داخل البرنامج ما دام مفتوحًا. */
+6: public class JobScheduler {
+7:     public static final int RESULT_SUCCESS = 1, RESULT_FAILURE = 0;
+8:     private static final Map<Integer, JobInfo> jobs = new HashMap<>();
+9:     private static final Map<Integer, javax.swing.Timer> timers = new HashMap<>();
+10:     public JobScheduler(android.content.Context c) {}
+11: 
+12:     public synchronized int schedule(JobInfo j) {
+13:         cancel(j.id);
+14:         jobs.put(j.id, j);
+15:         long first = j.latency > 0 ? j.latency : j.period > 0 ? j.period : Math.max(1000, j.deadline);
+16:         javax.swing.Timer t = new javax.swing.Timer((int) Math.min(Integer.MAX_VALUE, Math.max(1000, first)), e -> run(j));
+17:         t.setRepeats(j.period > 0);
+18:         if (j.period > 0) t.setDelay((int) Math.min(Integer.MAX_VALUE, j.period));
+19:         t.setInitialDelay((int) Math.min(Integer.MAX_VALUE, Math.max(1000, first)));
+20:         timers.put(j.id, t);
+21:         t.start();
+22:         return RESULT_SUCCESS;
+23:     }
+24:     private void run(JobInfo j) {
+25:         try {
+26:             Class<?> k = Class.forName(j.comp.getClassName());
+27:             JobService s = (JobService) k.getDeclaredConstructor().newInstance();
+28:             s.onStartJob(new JobParameters(j.id, j.extras));
+29:         } catch (Throwable e) {
+30:             android.util.Log.w("JobScheduler", "job " + j.id + " failed", e);
+31:         }
+32:         if (j.period <= 0) synchronized (this) { jobs.remove(j.id); timers.remove(j.id); }
+33:     }
+34:     public synchronized void cancel(int id) {
+35:         javax.swing.Timer t = timers.remove(id);
+36:         if (t != null) t.stop();
+37:         jobs.remove(id);
+38:     }
+39:     public synchronized void cancelAll() { for (Integer id : new ArrayList<>(jobs.keySet())) cancel(id); }
+40:     public synchronized JobInfo getPendingJob(int id) { return jobs.get(id); }
+41:     public synchronized List<JobInfo> getAllPendingJobs() { return new ArrayList<>(jobs.values()); }
+42: }

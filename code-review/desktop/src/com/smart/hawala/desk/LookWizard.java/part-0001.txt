@@ -1,0 +1,181 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.awt.event.*;
+6: import javax.swing.*;
+7: import javax.swing.border.EmptyBorder;
+8: 
+9: /**
+10:  * 11.0: معالج الشكل على الماك والويندوز: يظهر عند أول تشغيل (ومن «المظهر» أو قائمة «عرض» متى شئت).
+11:  * نافذة صغيرة بجانب البرنامج؛ كل اختيار يُطبَّق فورًا على نافذة البرنامج نفسها فتراه كما سيبقى (معاينة حية):
+12:  * الشكل (مثل الهاتف أو القديم)، والحجم في النافذة، والتكبير (70٪…170٪)، والوضع فاتح/ليلي.
+13:  */
+14: public final class LookWizard {
+15:     private LookWizard() {}
+16: 
+17:     static JDialog dlg;
+18:     private static boolean first;
+19:     private static JPanel body;
+20: 
+21:     /** يفتح المعالج (أو يقدّمه إن كان مفتوحًا). */
+22:     public static void open(boolean firstRun) {
+23:         if (dlg != null) {
+24:             dlg.toFront();
+25:             return;
+26:         }
+27:         Db db = SmartApp.db;
+28:         if (db == null) return;
+29:         dlg = new JDialog((Frame) null, "تخصيص الشكل", false);
+30:         dlg.setType(Window.Type.UTILITY);
+31:         dlg.setAlwaysOnTop(true);
+32:         dlg.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
+33:         dlg.addWindowListener(new WindowAdapter() {
+34:             @Override public void windowClosing(WindowEvent e) { finish(); }
+35:         });
+36:         try { dlg.setIconImages(java.util.Arrays.asList(Main.appIcon(16), Main.appIcon(32), Main.appIcon(64))); } catch (Throwable ignored) { /* بلا أيقونة */ }
+37:         body = new JPanel();
+38:         body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
+39:         body.setBorder(new EmptyBorder(18, 20, 18, 20));
+40:         first = firstRun;
+41:         build(firstRun);
+42:         dlg.setContentPane(body);
+43:         dlg.pack();
+44:         dlg.setSize(Math.max(400, dlg.getWidth()), dlg.getHeight());
+45:         place(firstRun);
+46:         dlg.setVisible(true);
+47:     }
+48: 
+49:     /** يضع المعالج بجانب نافذة البرنامج (وعند أول تشغيل يزيح النافذة قليلًا ليظهر الاثنان معًا). */
+50:     static void place(boolean firstRun) {
+51:         Window main = current();
+52:         Rectangle scr = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
+53:         int w = dlg.getWidth(), h = Math.min(dlg.getHeight(), scr.height - 20);
+54:         dlg.setSize(w, h);
+55:         if (main == null) { dlg.setLocationRelativeTo(null); return; }
+56:         Rectangle m = main.getBounds();
+57:         int gap = 16;
+58:         if (firstRun && m.width + w + gap <= scr.width && (main instanceof Frame) && (((Frame) main).getExtendedState() & Frame.MAXIMIZED_BOTH) == 0) {
+59:             int total = m.width + gap + w;
+60:             int x0 = scr.x + (scr.width - total) / 2;
+61:             // المعالج يسار النافذة (الكتابة من اليمين: البرنامج في مكانه المعتاد يمينًا)
+62:             dlg.setLocation(x0, Math.max(scr.y, m.y + (m.height - h) / 2));
+63:             main.setLocation(x0 + w + gap, m.y);
+64:         } else if (m.x - scr.x >= w + gap) {
+65:             dlg.setLocation(m.x - w - gap, Math.max(scr.y, m.y + (m.height - h) / 2));
+66:         } else if (scr.x + scr.width - (m.x + m.width) >= w + gap) {
+67:             dlg.setLocation(m.x + m.width + gap, Math.max(scr.y, m.y + (m.height - h) / 2));
+68:         } else {
+69:             dlg.setLocation(Math.max(scr.x, m.x + 24), Math.max(scr.y, m.y + m.height - h - 24));
+70:         }
+71:     }
+72: 
+73:     static Window current() {
+74:         if (PhoneWindow.frame != null) return PhoneWindow.frame;
+75:         return App.frame;
+76:     }
+77: 
+78:     static boolean phone() { return !"classic".equals(SmartApp.db.setting("desk_ui", "phone")); }
+79: 
+80:     private static void rebuild() {
+81:         if (dlg == null) return;
+82:         body.removeAll();
+83:         build(first);
+84:         body.applyComponentOrientation(Ui.RTL);
+85:         body.revalidate();
+86:         body.repaint();
+87:         Dimension p = body.getPreferredSize();
+88:         dlg.setSize(Math.max(dlg.getWidth(), p.width + 4), Math.min(p.height + dlg.getInsets().top + dlg.getInsets().bottom + 4,
+89:                 GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds().height - 20));
+90:     }
+91: 
+92:     private static void build(boolean firstRun) {
+93:         Db db = SmartApp.db;
+94:         boolean phone = phone();
+95:         body.setBackground(Ui.surface);
+96:         JLabel t = new JLabel(firstRun ? "أهلًا بك! اختر شكل البرنامج" : "تخصيص الشكل والحجم");
+97:         t.setFont(Ui.font(20f, true));
+98:         t.setForeground(Ui.primaryInk);
+99:         add(t);
+100:         add(note("كل اختيار يظهر فورًا في نافذة البرنامج بجانبك. تغيّره لاحقًا من «المزيد ← المظهر»"
+101:                 + " (أو «عرض ← معالج الشكل» في الشكل القديم)."));
+102: 
+103:         // ---------------------------------------------------------------- الشكل
+104:         add(head("الشكل"));
+105:         add(choices(new String[]{"مثل الهاتف (جديد)", "الشكل القديم"}, phone ? 0 : 1, i -> {
+106:             String want = i == 0 ? "phone" : "classic";
+107:             if (want.equals(db.setting("desk_ui", "phone"))) return;
+108:             Main.switchUi(want);
+109:             SwingUtilities.invokeLater(() -> {
+110:                 rebuild();
+111:                 if (dlg != null) dlg.toFront();
+112:             });
+113:         }));
+114:         add(note(phone ? "شاشات الهاتف نفسها بكل ميزاتها وأزرارها وبحثها."
+115:                 : "واجهة الكمبيوتر السابقة: قائمة جانبية وجداول عريضة."));
+116: 
+117:         // ---------------------------------------------------------------- الحجم (شكل الهاتف)
+118:         if (phone) {
+119:             add(head("الحجم في النافذة"));
+120:             String col = PhoneWindow.column(db);
+121:             String[] keys = DeskLook.COLS;
+122:             int ci = DeskLook.indexOf(keys, col);
+123:             add(choices(new String[]{"تلقائي مع النافذة", "عمود 480", "عمود 600", "كامل العرض"}, ci < 0 ? 0 : ci, i -> {
+124:                 db.setSettingQuiet("desk_column", keys[i]);
+125:                 PhoneWindow.refresh();
+126:             }));
+127:             add(note("«تلقائي»: اسحب طرف النافذة أو زاويتها فيكبر كل شيء أو يصغر معها تلقائيًا."));
+128: 
+129:             add(head("التكبير"));
+130:             int z;
+131:             try { z = Integer.parseInt(db.setting("desk_zoom", "100")); } catch (Exception e) { z = 100; }
+132:             JSlider s = new JSlider(70, 170, Math.max(70, Math.min(170, z)));
+133:             s.setMajorTickSpacing(25);
+134:             s.setMinorTickSpacing(5);
+135:             s.setSnapToTicks(true);
+136:             s.setPaintTicks(true);
+137:             s.setOpaque(false);
+138:             JLabel v = new JLabel(s.getValue() + "٪");
+139:             v.setFont(Ui.font(15f, true));
+140:             v.setForeground(Ui.primaryInk);
+141:             s.addChangeListener(e -> {
+142:                 v.setText(s.getValue() + "٪");
+143:                 db.setSettingQuiet("desk_zoom", String.valueOf(s.getValue()));
+144:                 PhoneWindow.refresh();
+145:             });
+146:             JPanel zr = new JPanel(new BorderLayout(10, 0));
+147:             zr.setOpaque(false);
+148:             zr.add(s, BorderLayout.CENTER);
+149:             zr.add(v, BorderLayout.LINE_END);
+150:             add(zr);
+151:             add(note("حجم النصوص والأزرار وكل شيء، من 70٪ إلى 170٪."));
+152:         }
+153: 
+154:         // ---------------------------------------------------------------- الوضع
+155:         add(head("الوضع"));
+156:         boolean night = phone ? "dark".equals(db.setting("theme_mode", "light")) : "dark".equals(db.setting("desk_theme", "light"));
+157:         add(choices(new String[]{"فاتح", "ليلي"}, night ? 1 : 0, i -> {
+158:             String m = i == 1 ? "dark" : "light";
+159:             db.setSettingQuiet("theme_mode", m);
+160:             Ui.switchTheme(db, i == 1);
+161:             if (PhoneWindow.activity != null) PhoneWindow.activity.restyleAll();
+162:             if (App.instance != null && App.frame != null) App.instance.reloadAll();
+163:             SwingUtilities.invokeLater(LookWizard::rebuild);
+164:         }));
+165: 
+166:         // ---------------------------------------------------------------- إنهاء
+167:         body.add(Box.createVerticalStrut(18));
+168:         JButton done = new JButton(firstRun ? "ابدأ العمل" : "تم");
+169:         done.setFont(Ui.font(16f, true));
+170:         done.setBackground(Ui.primary);
+171:         done.setForeground(Ui.onColor(Ui.primary));
+172:         done.putClientProperty("JButton.buttonType", "roundRect");
+173:         done.setAlignmentX(Component.RIGHT_ALIGNMENT);
+174:         done.setMaximumSize(new Dimension(Integer.MAX_VALUE, 46));
+175:         done.setPreferredSize(new Dimension(320, 46));
+176:         done.addActionListener(e -> finish());
+177:         body.add(done);
+178:         body.applyComponentOrientation(Ui.RTL);
+179:     }
+180: 
+181:     static void finish() {

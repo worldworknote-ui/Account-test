@@ -1,0 +1,150 @@
+318:             String driveErr = a.db.setting("drive_backup_error", "");
+319:             if (!driveErr.isEmpty()) a.notice(R.drawable.ic_warn, "فشل حفظ النسخة في Google Drive", true, "التفاصيل", v -> a.backupScreen.show());
+320:             String reminder = a.backupReminderText();
+321:             if (reminder != null) a.notice(R.drawable.ic_shield, reminder, false, "نسخة الآن", v -> a.backupScreen.backupDialog());
+322:             // 8.0 (ت14): شارة الاعتمادية: تظهر حين يحتاج شيء انتباهًا (9.0: يمكن إخفاؤها من لوحة الاعتمادية)
+323:             if (Reliability.homeAlerts(a.db)) try {
+324:                 List<Reliability.Item> rel = Reliability.items(a);
+325:                 int lv = Reliability.overall(rel);
+326:                 if (lv != Reliability.GREEN) {
+327:                     String first = "";
+328:                     for (Reliability.Item i : rel) if (i.level == lv) { first = i.title; break; }
+329:                     a.notice(R.drawable.ic_pulse, "اعتمادية التطبيق: " + Reliability.word(lv) + " — " + first, lv == Reliability.RED, "التفاصيل", v -> Reliability.screen(a));
+330:                 }
+331:             } catch (Throwable ignored) {
+332:                 // لا تمنع الرئيسية
+333:             }
+334:         }
+335:     }
+336: 
+337:     // ===================================================================================
+338:     // اقتراح اللصق: يُقرأ وصف الحافظة فقط (وقت النسخ)، ولا يُقرأ النص إلا عند ضغط المستخدم
+339:     // ===================================================================================
+340: 
+341:     void refreshClipCard() {
+342:         final LinearLayout slot = clipSlot;
+343:         if (slot == null || !a.onHome) return;
+344:         slot.removeAllViews();
+345:         // 12.1: وضع التجميع: شريط بعدد ما جُمع وزر «نقل»
+346:         if (a.waMove.collecting) {
+347:             LinearLayout r = a.row();
+348:             r.setPadding(a.dp(12), a.dp(8), a.dp(8), a.dp(8));
+349:             r.setBackground(a.round(a.primarySoft, a.primarySoft, 14));
+350:             int n = a.waMove.collected.size();
+351:             LinearLayout col = new LinearLayout(a);
+352:             col.setOrientation(LinearLayout.VERTICAL);
+353:             col.addView(a.text("وضع التجميع: " + (n == 0 ? "لم تُجمع رسائل بعد" : "جُمعت " + n + (n == 1 ? " رسالة" : " رسائل")), 14, a.primaryInk, true));
+354:             col.addView(a.text(WaMove.desktop() ? "انسخ كل رسالة من واتساب وحدها (Ctrl+C أو ⌘C)، فتُضاف هنا." : "انسخ رسالة في واتساب ثم ارجع هنا، وكرّر لكل رسالة.", 12, a.primaryInk, false));
+355:             r.addView(col, new LinearLayout.LayoutParams(0, -2, 1));
+356:             Button mv = a.smallButton("نقل", a.primary, v -> a.waMove.moveCollected());
+357:             mv.setEnabled(n > 0);
+358:             r.addView(mv, new LinearLayout.LayoutParams(-2, a.dp(36)));
+359:             r.addView(a.iconButton(R.drawable.ic_close, a.primaryInk, "إيقاف التجميع", v -> a.waMove.stopCollect()), new LinearLayout.LayoutParams(a.dp(40), a.dp(40)));
+360:             slot.addView(r, a.lp(-1, -2, 5));
+361:             return;
+362:         }
+363:         // 12.1: على الكمبيوتر تُقرأ الحافظة مباشرة (لا قيود أندرويد): بطاقة بعدد رسائل واتساب المنسوخة
+364:         if (WaMove.desktop()) {
+365:             int n;
+366:             String sig;
+367:             try {
+368:                 n = a.waMove.clipCount();
+369:                 sig = "d" + WaText.fingerprint(WaClip.read(a).text).hashCode();
+370:             } catch (Throwable t) {
+371:                 return;
+372:             }
+373:             if (n <= 0 || sig.equals(a.db.setting("clip_seen", ""))) return;
+374:             final String seen = sig;
+375:             LinearLayout r = a.row();
+376:             r.setPadding(a.dp(12), a.dp(10), a.dp(8), a.dp(10));
+377:             r.setBackground(a.round(a.goldSoft, a.goldSoft, 14));
+378:             r.addView(a.icon(R.drawable.ic_paste, a.goldInk, 22), new LinearLayout.LayoutParams(a.dp(22), a.dp(22)));
+379:             LinearLayout col = new LinearLayout(a);
+380:             col.setOrientation(LinearLayout.VERTICAL);
+381:             col.addView(a.text(n == 1 ? "نسخت رسالة حوالة" : "في الحافظة " + n + " رسائل من واتساب", 14, a.goldInk, true));
+382:             col.addView(a.text(n == 1 ? "اضغط لنقلها إلى نموذج التسجيل." : "اضغط لنقلها إلى البرنامج: تظهر قائمتها فتسجّل كل رسالة وحدها.", 12, a.goldInk, false));
+383:             r.addView(col, new LinearLayout.LayoutParams(0, -2, 1));
+384:             r.addView(a.iconButton(R.drawable.ic_close, a.goldInk, "إخفاء", v -> {
+385:                 a.db.setSettingQuiet("clip_seen", seen);
+386:                 slot.removeAllViews();
+387:             }), new LinearLayout.LayoutParams(a.dp(40), a.dp(40)));
+388:             r.setOnClickListener(v -> {
+389:                 a.db.setSettingQuiet("clip_seen", seen);
+390:                 pasteFromClipboard();
+391:             });
+392:             slot.addView(r, a.lp(-1, -2, 5));
+393:             return;
+394:         }
+395:         long ts = 0;
+396:         try {
+397:             ClipboardManager cm = (ClipboardManager) a.getSystemService(Context.CLIPBOARD_SERVICE);
+398:             ClipDescription d = cm == null ? null : cm.getPrimaryClipDescription();
+399:             if (d == null || !(d.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN) || d.hasMimeType("text/*"))) return;
+400:             if (Build.VERSION.SDK_INT >= 26) ts = d.getTimestamp();
+401:         } catch (Exception ignored) {
+402:             return;
+403:         }
+404:         long now = Clock.now();
+405:         if (ts <= 0 || now - ts > 15 * 60000L || now < ts - 60000L) return;
+406:         if (String.valueOf(ts).equals(a.db.setting("clip_seen", ""))) return;
+407:         final String seen = String.valueOf(ts);
+408:         LinearLayout r = a.row();
+409:         r.setPadding(a.dp(12), a.dp(10), a.dp(8), a.dp(10));
+410:         r.setBackground(a.round(a.goldSoft, a.goldSoft, 14));
+411:         r.addView(a.icon(R.drawable.ic_paste, a.goldInk, 22), new LinearLayout.LayoutParams(a.dp(22), a.dp(22)));
+412:         LinearLayout col = new LinearLayout(a);
+413:         col.setOrientation(LinearLayout.VERTICAL);
+414:         col.addView(a.text("نسخت نصًا قبل قليل", 14, a.goldInk, true));
+415:         col.addView(a.text("اضغط لتسجيله. إن كان عدة رسائل من واتساب تُعرض كدفعة لتسجّلها واحدة تلو الأخرى.", 12, a.goldInk, false));
+416:         r.addView(col, new LinearLayout.LayoutParams(0, -2, 1));
+417:         r.addView(a.iconButton(R.drawable.ic_close, a.goldInk, "إخفاء", v -> {
+418:             a.db.setSettingQuiet("clip_seen", seen);
+419:             slot.removeAllViews();
+420:         }), new LinearLayout.LayoutParams(a.dp(40), a.dp(40)));
+421:         r.setOnClickListener(v -> {
+422:             a.db.setSettingQuiet("clip_seen", seen);
+423:             pasteFromClipboard();
+424:         });
+425:         slot.addView(r, a.lp(-1, -2, 5));
+426:     }
+427: 
+428:     // ===================================================================================
+429:     // الأرصدة
+430:     // ===================================================================================
+431: 
+432:     private Map<String, Ledger.CurrencyTotal> totals() {
+433:         return Ledger.totals(a.db.officeBalances());
+434:     }
+435: 
+436:     private void netBalances() {
+437:         if (!a.can(Auth.Perm.VIEW)) return;
+438:         Map<String, Ledger.CurrencyTotal> totals = totals();
+439:         Map<String, String> names = a.db.currencyNames();
+440:         Map<String, Integer> dec = a.db.decimalsMap();
+441:         Set<String> only = chosenCurrencies("hw_net_curs");
+442:         a.section("صافي الأرصدة", "كل المكاتب", v -> a.balancesScreen.show());
+443:         LinearLayout strip = a.row();
+444:         strip.setGravity(Gravity.TOP);
+445:         int n = 0;
+446:         for (Ledger.CurrencyTotal t : totals.values()) {
+447:             if (t.receivable == 0 && t.payable == 0) continue;
+448:             if (!only.isEmpty() && !only.contains(t.code)) continue;
+449:             n++;
+450:             int d = dec.containsKey(t.code) ? dec.get(t.code) : 2;
+451:             long net = t.net();
+452:             LinearLayout c = new LinearLayout(a);
+453:             c.setOrientation(LinearLayout.VERTICAL);
+454:             c.setPadding(a.dp(12), a.dp(10), a.dp(12), a.dp(10));
+455:             c.setBackground(a.ripple(a.round(a.surface, a.line, 16), 16));
+456:             String nm = names.get(t.code);
+457:             c.addView(small((nm == null || nm.isEmpty() ? "" : nm + " · ") + t.code, 12, a.muted, false));
+458:             TextView amt = small(a.mf(Math.abs(net), d), 20, a.ink, true);
+459:             amt.setTextDirection(View.TEXT_DIRECTION_LTR);
+460:             amt.setGravity(Gravity.RIGHT);
+461:             c.addView(amt);
+462:             TextView chip = net > 0 ? a.chip("لنا", a.green, a.creditBg) : net < 0 ? a.chip("علينا", a.red, a.debitBg) : a.chip("متوازن", a.muted, a.line);
+463:             LinearLayout cr = a.row();
+464:             cr.addView(chip, new LinearLayout.LayoutParams(-2, -2));
+465:             c.addView(cr);
+466:             c.addView(small("لنا " + a.mf(t.receivable, d) + " · علينا " + a.mf(t.payable, d), 11, a.muted, false));
+467:             c.setOnClickListener(v -> a.balancesScreen.show());

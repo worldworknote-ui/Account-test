@@ -1,0 +1,48 @@
+182:         r.headerLines.add("الفترة: " + (from <= 0 ? "من البداية" : "من " + Model.day(from)) + " " + (to <= 0 ? "حتى الآن" : "إلى " + Model.day(to - 1)));
+183:         Report.Section s = r.section("الرصيد", "الرصيد");
+184:         s.col("العملة", 0.6f, Report.TEXT).col("أول الفترة", 1f, Report.TEXT).col("لنا عليه (+)", 1f, Report.MONEY).col("علينا له (−)", 1f, Report.MONEY)
+185:                 .col("آخر الفترة", 1f, Report.TEXT);
+186:         Set<String> curs = new TreeSet<>();
+187:         for (Move x : moves) curs.add(x.currency);
+188:         for (String cur : curs) {
+189:             int d = CashBox.dec(decimals, cur);
+190:             long open = 0, plus = 0, minus = 0;
+191:             for (Move x : moves) {
+192:                 if (!cur.equals(x.currency) || !x.counts()) continue;
+193:                 if (x.createdAt < from) open += x.effect();
+194:                 else if (to <= 0 || x.createdAt < to) {
+195:                     if (x.dir > 0) plus += x.amount;
+196:                     else minus += x.amount;
+197:                 }
+198:             }
+199:             long close = open + plus - minus;
+200:             s.row(Report.TOTAL, cur, Model.fmt(Math.abs(open), d) + " " + side(open), new Report.Money(plus, d), new Report.Money(minus, d),
+201:                     Model.fmt(Math.abs(close), d) + " " + side(close));
+202:             s.kv("بـ" + cur, Model.fmt(Math.abs(close), d) + " " + cur + " " + side(close), close != 0);
+203:         }
+204:         if (curs.isEmpty()) s.kv("لا حركات", "لا توجد حركات على هذا الحساب", false);
+205:         s.note = "«لنا»: العميل مدين لنا. «علينا»: له عندنا. حسابات العملاء مستقلة عن حسابات المكاتب.";
+206:         for (String cur : curs) {
+207:             int d = CashBox.dec(decimals, cur);
+208:             long bal = 0;
+209:             for (Move x : moves) if (cur.equals(x.currency) && x.createdAt < from) bal += x.effect();
+210:             Report.Section t = r.section("كشف " + cur, "كشف " + cur);
+211:             t.col("التاريخ", 0.9f, Report.DATE).col("الحركة", 1.8f, Report.TEXT).col("البيان", 1.4f, Report.TEXT).col("لنا (+)", 0.9f, Report.MONEY)
+212:                     .col("علينا (−)", 0.9f, Report.MONEY).col("الرصيد", 1.1f, Report.TEXT).col("الحالة", 0.6f, Report.TEXT);
+213:             t.row(Report.SHADED, new Report.DateV(from > 0 ? from : (moves.isEmpty() ? 0 : moves.get(0).createdAt)), "الرصيد قبل الفترة", "", "", "",
+214:                     Model.fmt(Math.abs(bal), d) + " " + side(bal), "");
+215:             int n = 0;
+216:             for (Move x : moves) {
+217:                 if (!cur.equals(x.currency) || x.createdAt < from || (to > 0 && x.createdAt >= to)) continue;
+218:                 bal += x.effect();
+219:                 t.row(x.counts() ? Report.NORMAL : Report.MUTED, new Report.DateV(x.createdAt), text(x, decimals), Model.nz(x.description),
+220:                         x.dir > 0 ? new Report.Money(x.amount, d) : "", x.dir < 0 ? new Report.Money(x.amount, d) : "",
+221:                         Model.fmt(Math.abs(bal), d) + " " + side(bal), x.cancelled() ? "ملغاة" : "");
+222:                 n++;
+223:             }
+224:             t.row(Report.TOTAL, new Report.DateV(to > 0 ? to - 1 : Clock.now()), "الرصيد آخر الفترة", n + " حركة", "", "",
+225:                     Model.fmt(Math.abs(bal), d) + " " + side(bal), "");
+226:         }
+227:         return r;
+228:     }
+229: }

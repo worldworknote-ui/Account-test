@@ -1,0 +1,149 @@
+196:         Color c = new Color(h.hostColor(), true);
+197:         f.setForeground(c);
+198:         f.setCaretColor(c);
+199:         f.setDisabledTextColor(c);
+200:         int hl = h.hostHighlight();
+201:         f.setSelectionColor(new Color((hl & 0xFFFFFF) | 0x55000000, true));
+202:         f.setSelectedTextColor(c);
+203:         f.setEditable(h.editable());
+204:         ComponentOrientation o = h.rtlText() ? ComponentOrientation.RIGHT_TO_LEFT : ComponentOrientation.LEFT_TO_RIGHT;
+205:         f.setComponentOrientation(o);
+206:         if (f instanceof JTextField) ((JTextField) f).setHorizontalAlignment(h.align());
+207:         String want = h.hostText();
+208:         if (!want.equals(f.getText())) {
+209:             l.quiet = true;
+210:             f.setText(want);
+211:             l.quiet = false;
+212:         }
+213:     }
+214: 
+215:     /** بعد أي تخطيط أو تمرير: الموضع والقص والإظهار. */
+216:     public static void sync(ViewRootImpl r) {
+217:         Live l = map.get(r);
+218:         if (l == null) return;
+219:         View v = l.view;
+220:         if (v.attachInfo == null || v.root() != r) { hide(r); return; }
+221:         boolean ok = v.isShown();
+222:         float alpha = 1f;
+223:         boolean transformed = false;
+224:         Rectangle vis = new Rectangle(0, 0, r.width(), r.height());
+225:         for (View a = v; a != null; a = a.parent instanceof View ? (View) a.parent : null) {
+226:             alpha *= a.getAlpha();
+227:             if (!a.hasIdentityTransform()) transformed = true;
+228:             if (a != v) {
+229:                 float[] o = {0, 0};
+230:                 a.mapToRoot(o);
+231:                 vis = vis.intersection(new Rectangle(Math.round(o[0]), Math.round(o[1]), a.getWidth(), a.getHeight()));
+232:             }
+233:         }
+234:         if (alpha < 0.97f || transformed || vis.isEmpty()) ok = false;
+235:         refreshText(l);
+236:         if (!ok) {
+237:             if (l.shown) { l.clip.setVisible(false); l.shown = false; l.host.liveChanged(false); v.invalidate(); }
+238:             return;
+239:         }
+240:         // 11.2: دون مساحة الرسوم الجانبية (مثل «العين» في خانات السر) فتصل النقرة عليها إلى العنصر
+241:         int pl = v instanceof android.widget.TextView ? ((android.widget.TextView) v).getCompoundPaddingLeft() : v.getPaddingLeft();
+242:         int pr = v instanceof android.widget.TextView ? ((android.widget.TextView) v).getCompoundPaddingRight() : v.getPaddingRight();
+243:         float[] o = {pl, v.getPaddingTop()};
+244:         v.mapToRoot(o);
+245:         int cw = Math.max(1, v.getWidth() - pl - pr), ch = Math.max(1, v.getHeight() - v.getPaddingTop() - v.getPaddingBottom());
+246:         Rectangle content = new Rectangle(Math.round(o[0]), Math.round(o[1]), cw, ch);
+247:         Rectangle clip = content.intersection(vis);
+248:         // 11.0: الخانة الحقيقية بإحداثيات الشاشة الفعلية (المقياس العام)
+249:         float sc = ViewRootImpl.scale();
+250:         if (sc != 1f) {
+251:             content = sx(content, sc);
+252:             clip = sx(clip, sc);
+253:         }
+254:         if (clip.isEmpty()) { if (l.shown) { l.clip.setVisible(false); l.shown = false; l.host.liveChanged(false); v.invalidate(); } return; }
+255:         if (!l.clip.getBounds().equals(clip)) l.clip.setBounds(clip);
+256:         int fh = ch;
+257:         fh = content.height;
+258:         if (!l.single) fh = Math.max(fh, l.field.getPreferredSize().height);
+259:         Rectangle fb = new Rectangle(content.x - clip.x, content.y - clip.y, content.width, fh);
+260:         if (!l.field.getBounds().equals(fb)) l.field.setBounds(fb);
+261:         if (!l.shown) {
+262:             l.clip.setVisible(true);
+263:             l.shown = true;
+264:             l.host.liveChanged(true);
+265:             v.invalidate();
+266:             final Live fl = l;
+267:             SwingUtilities.invokeLater(() -> { if (fl.field.isShowing() && !fl.field.hasFocus()) fl.field.requestFocusInWindow(); });
+268:         }
+269:     }
+270: 
+271:     /** نص تغيّر من الكود (setText) أثناء ظهور الخانة. */
+272:     private static void refreshText(Live l) {
+273:         String want = l.host.hostText();
+274:         if (!want.equals(l.field.getText())) {
+275:             l.quiet = true;
+276:             int caret = Math.min(Math.max(0, l.host.selEnd()), want.length());
+277:             l.field.setText(want);
+278:             l.field.setCaretPosition(caret);
+279:             l.quiet = false;
+280:         }
+281:     }
+282: 
+283:     /** النص تغيّر برمجيًا: تحديث فوري للخانة الظاهرة. */
+284:     public static void textChanged(View v) {
+285:         if (v.attachInfo == null) return;
+286:         Live l = map.get(v.attachInfo.root);
+287:         if (l == null || l.view != v) return;
+288:         // تعديل من مراقب النص أثناء كتابة المستخدم: يُطبَّق بعد انتهاء إشعار الخانة
+289:         if (l.notifying) {
+290:             final Live fl = l;
+291:             SwingUtilities.invokeLater(() -> { if (map.get(v.attachInfo == null ? null : v.attachInfo.root) == fl) textChanged(v); });
+292:             return;
+293:         }
+294:         // 11.2: إظهار/إخفاء كلمة السر (العين): خانة حقيقية من النوع الجديد في المكان نفسه
+295:         if (l.pwd != l.host.password()) {
+296:             final ViewRootImpl root = v.attachInfo.root;
+297:             SwingUtilities.invokeLater(() -> {
+298:                 if (v.attachInfo != null && v.isFocused()) {
+299:                     show(root, v, -1, -1);
+300:                     Live n = map.get(root);
+301:                     if (n != null && n.field != null) n.field.requestFocusInWindow();
+302:                 }
+303:             });
+304:             return;
+305:         }
+306:         refresh(l);
+307:         int s = Math.max(0, Math.min(l.host.selStart(), l.field.getDocument().getLength())), e = Math.max(0, Math.min(l.host.selEnd(), l.field.getDocument().getLength()));
+308:         l.quiet = true;
+309:         l.field.setCaretPosition(s);
+310:         if (e != s) l.field.moveCaretPosition(e);
+311:         l.quiet = false;
+312:     }
+313: 
+314:     /** يقصر المدخلات على الأرقام وعلى الطول الأقصى كما في لوحة مفاتيح الهاتف. */
+315:     private static final class Filter extends DocumentFilter {
+316:         final TextHost h;
+317:         Filter(TextHost h) { this.h = h; }
+318:         String clean(String s, int curLen) {
+319:             if (s == null) return null;
+320:             int num = h.numeric();
+321:             if (h.singleLine()) s = s.replace("\r", "").replace('\n', ' ');
+322:             if (num == 1 || num == 2) {
+323:                 StringBuilder b = new StringBuilder();
+324:                 for (char c : s.toCharArray()) {
+325:                     if (Character.isDigit(c) || c == '-' || c == '+' || (num == 2 && (c == '.' || c == ',' || c == '٫' || c == '٬'))) b.append(c);
+326:                 }
+327:                 s = b.toString();
+328:             } else if (num == 3) {
+329:                 StringBuilder b = new StringBuilder();
+330:                 for (char c : s.toCharArray()) if (Character.isDigit(c) || "+-() #*".indexOf(c) >= 0) b.append(c);
+331:                 s = b.toString();
+332:             }
+333:             int max = h.maxLength();
+334:             if (max > 0 && curLen + s.length() > max) s = s.substring(0, Math.max(0, max - curLen));
+335:             return s;
+336:         }
+337:         @Override public void insertString(FilterBypass fb, int off, String s, AttributeSet a) throws BadLocationException {
+338:             super.insertString(fb, off, clean(s, fb.getDocument().getLength()), a);
+339:         }
+340:         @Override public void replace(FilterBypass fb, int off, int len, String s, AttributeSet a) throws BadLocationException {
+341:             super.replace(fb, off, len, clean(s, fb.getDocument().getLength() - len), a);
+342:         }
+343:     }
+344: }

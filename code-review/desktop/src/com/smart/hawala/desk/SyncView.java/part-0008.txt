@@ -1,0 +1,98 @@
+994:         UsersView.confirmAdmin(this, db, "حذف ملفات المزامنة", () -> Ui.busy(this, "جارٍ حفظ نسخة أمان وحذف ملفات المزامنة…", p -> new SyncEngine(db, folder(db)).wipe(app.ctx, sec, rc), n -> {
+995:             Ui.info(this, "حُذفت ملفات المزامنة ✓", "حُذف " + n + " ملفًا. خرج هذا الجهاز من المزامنة وبياناته كما هي، وستخرج الأجهزة الأخرى في جولتها التالية. "
+996:                     + "حُفظت نسخة أمان من بيانات هذا الجهاز قبل الحذف (النسخ الاحتياطي ← نسخ الأمان).");
+997:             refresh();
+998:         }));
+999:     }
+1000: 
+1001:     /** المزامنة التلقائية في الخلفية (من مؤقت النافذة). */
+1002:     static volatile boolean running;
+1003:     static volatile long lastAuto;
+1004: 
+1005:     static void auto(App app) {
+1006:         if (running || !SyncEngine.enabled(app.db) || !License.current.sync() || SyncEngine.paused(app.db)) return;
+1007:         SyncFolder f = folder(app.db);
+1008:         if (f == null) return;
+1009:         running = true;
+1010:         lastAuto = Clock.now();
+1011:         new SwingWorker<SyncEngine.Result, Void>() {
+1012:             @Override protected SyncEngine.Result doInBackground() throws Exception { return new SyncEngine(app.db, f).sync(); }
+1013: 
+1014:             @Override protected void done() {
+1015:                 running = false;
+1016:                 try {
+1017:                     SyncEngine.Result r = get();
+1018:                     if (!app.locked) DeskNotify.afterSync(app, r);
+1019:                     if (r.received > 0 && !app.locked) {
+1020:                         Ui.toast("وصلت تحديثات من الأجهزة الأخرى (" + r.rows + " تغييرًا)");
+1021:                         if (afterSync(app)) return;
+1022:                         View v = app.views.get(app.current);
+1023:                         if (v != null && !(v instanceof TxView)) v.refresh();
+1024:                     }
+1025:                 } catch (Exception ignored) {
+1026:                     // يظهر في شاشة المزامنة
+1027:                 }
+1028:             }
+1029:         }.execute();
+1030:     }
+1031: 
+1032:     /** بعد وصول تغييرات: إن صار الدخول مطلوبًا أو أُوقف الحساب الحالي يُطلب الدخول (true). */
+1033:     static boolean afterSync(App app) {
+1034:         Db db = app.db;
+1035:         if (!db.usersEnabled() || app.locked) return false;
+1036:         Model.User u = SmartApp.currentUser;
+1037:         Model.User now = u == null ? null : db.user(u.id);
+1038:         if (now != null && now.active) {
+1039:             SmartApp.currentUser = now;
+1040:             app.updateFoot();
+1041:             return false;
+1042:         }
+1043:         if (u != null) Ui.toast("أُوقف حسابك أو تغيّر من الجهاز الرئيسي. سجّل الدخول من جديد.");
+1044:         app.lock();
+1045:         return true;
+1046:     }
+1047: 
+1048:     /** زر «مزامنة الآن» السريع (الشريط الجانبي أو القائمة). */
+1049:     static void now(App app) {
+1050:         if (!SyncEngine.enabled(app.db)) {
+1051:             Ui.toast("المزامنة غير مفعّلة على هذا الجهاز");
+1052:             return;
+1053:         }
+1054:         if (!License.current.sync()) {
+1055:             Ui.toast("المزامنة ميزة في النسخة المدفوعة");
+1056:             return;
+1057:         }
+1058:         if (running) {
+1059:             Ui.toast("المزامنة جارية الآن…");
+1060:             return;
+1061:         }
+1062:         SyncFolder f = folder(app.db);
+1063:         if (f == null) {
+1064:             Ui.toast("اختر مجلد المزامنة من «المزامنة»");
+1065:             return;
+1066:         }
+1067:         running = true;
+1068:         Ui.toast("جارٍ المزامنة…");
+1069:         new SwingWorker<SyncEngine.Result, Void>() {
+1070:             @Override protected SyncEngine.Result doInBackground() throws Exception { return new SyncEngine(app.db, f).sync(); }
+1071: 
+1072:             @Override protected void done() {
+1073:                 running = false;
+1074:                 try {
+1075:                     SyncEngine.Result r = get();
+1076:                     Ui.toast("✓ " + r.summary() + (r.errors.isEmpty() ? "" : " — " + r.errors.get(0)));
+1077:                     if (r.received > 0) {
+1078:                         if (afterSync(app)) return;
+1079:                         View v = app.views.get(app.current);
+1080:                         if (v != null && !(v instanceof TxView)) v.refresh();
+1081:                     } else if ("sync".equals(app.current)) app.go("sync");
+1082:                 } catch (Exception e) {
+1083:                     Throwable c = e.getCause() != null ? e.getCause() : e;
+1084:                     Ui.toast("تعذرت المزامنة: " + Ui.friendly(c));
+1085:                 }
+1086:             }
+1087:         }.execute();
+1088:     }
+1089: 
+1090:     static Color tint() { return Ui.primary; }
+1091: }

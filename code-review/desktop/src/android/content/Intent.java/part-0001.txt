@@ -1,0 +1,111 @@
+1: package android.content;
+2: 
+3: import android.net.Uri;
+4: import android.os.Bundle;
+5: import android.os.Parcelable;
+6: import java.util.ArrayList;
+7: 
+8: public class Intent implements Parcelable, Cloneable {
+9:     public static final String ACTION_MAIN = "android.intent.action.MAIN", ACTION_VIEW = "android.intent.action.VIEW", ACTION_SEND = "android.intent.action.SEND",
+10:             ACTION_SEND_MULTIPLE = "android.intent.action.SEND_MULTIPLE", ACTION_OPEN_DOCUMENT = "android.intent.action.OPEN_DOCUMENT",
+11:             ACTION_CREATE_DOCUMENT = "android.intent.action.CREATE_DOCUMENT", ACTION_OPEN_DOCUMENT_TREE = "android.intent.action.OPEN_DOCUMENT_TREE",
+12:             ACTION_GET_CONTENT = "android.intent.action.GET_CONTENT", ACTION_DIAL = "android.intent.action.DIAL", ACTION_CHOOSER = "android.intent.action.CHOOSER",
+13:             ACTION_SENDTO = "android.intent.action.SENDTO", ACTION_PICK = "android.intent.action.PICK", ACTION_EDIT = "android.intent.action.EDIT",
+14:             ACTION_BOOT_COMPLETED = "android.intent.action.BOOT_COMPLETED", ACTION_APPLICATION_DETAILS_SETTINGS = "android.settings.APPLICATION_DETAILS_SETTINGS",
+15:             ACTION_PROCESS_TEXT = "android.intent.action.PROCESS_TEXT";
+16:     public static final String CATEGORY_OPENABLE = "android.intent.category.OPENABLE", CATEGORY_LAUNCHER = "android.intent.category.LAUNCHER",
+17:             CATEGORY_DEFAULT = "android.intent.category.DEFAULT", CATEGORY_BROWSABLE = "android.intent.category.BROWSABLE";
+18:     public static final String EXTRA_TEXT = "android.intent.extra.TEXT", EXTRA_STREAM = "android.intent.extra.STREAM", EXTRA_SUBJECT = "android.intent.extra.SUBJECT",
+19:             EXTRA_TITLE = "android.intent.extra.TITLE", EXTRA_ALLOW_MULTIPLE = "android.intent.extra.ALLOW_MULTIPLE", EXTRA_MIME_TYPES = "android.intent.extra.MIME_TYPES",
+20:             EXTRA_INTENT = "android.intent.extra.INTENT", EXTRA_EMAIL = "android.intent.extra.EMAIL", EXTRA_PROCESS_TEXT = "android.intent.extra.PROCESS_TEXT",
+21:             EXTRA_LOCAL_ONLY = "android.intent.extra.LOCAL_ONLY", EXTRA_CHOOSER_TARGETS = "android.intent.extra.CHOOSER_TARGETS", EXTRA_INITIAL_INTENTS = "android.intent.extra.INITIAL_INTENTS";
+22:     public static final int FLAG_GRANT_READ_URI_PERMISSION = 1, FLAG_GRANT_WRITE_URI_PERMISSION = 2, FLAG_GRANT_PERSISTABLE_URI_PERMISSION = 0x40,
+23:             FLAG_GRANT_PREFIX_URI_PERMISSION = 0x80, FLAG_ACTIVITY_NEW_TASK = 0x10000000, FLAG_ACTIVITY_CLEAR_TOP = 0x4000000, FLAG_ACTIVITY_CLEAR_TASK = 0x8000,
+24:             FLAG_ACTIVITY_SINGLE_TOP = 0x20000000, FLAG_ACTIVITY_NO_HISTORY = 0x40000000, FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS = 0x800000, FLAG_ACTIVITY_MULTIPLE_TASK = 0x8000000,
+25:             FLAG_ACTIVITY_NEW_DOCUMENT = 0x80000, FLAG_RECEIVER_FOREGROUND = 0x10000000, FLAG_IMMUTABLE = 0x4000000, FLAG_UPDATE_CURRENT = 0x8000000;
+26: 
+27:     private String action, type;
+28:     private Uri data;
+29:     private final Bundle extras = new Bundle();
+30:     private ComponentName component;
+31:     private ClipData clip;
+32:     private int flags;
+33:     private final java.util.Set<String> categories = new java.util.HashSet<>();
+34:     private String pkg;
+35: 
+36:     public Intent() {}
+37:     public Intent(String action) { this.action = action; }
+38:     public Intent(String action, Uri data) { this.action = action; this.data = data; }
+39:     public Intent(Context c, Class<?> cls) { component = new ComponentName(c, cls); }
+40:     public Intent(Intent o) {
+41:         action = o.action; type = o.type; data = o.data; extras.putAll(o.extras); component = o.component; clip = o.clip; flags = o.flags; categories.addAll(o.categories);
+42:     }
+43: 
+44:     public static Intent makeRestartActivityTask(ComponentName c) { Intent i = new Intent(ACTION_MAIN); i.setComponent(c); return i; }
+45:     public static Intent makeMainActivity(ComponentName c) { return makeRestartActivityTask(c); }
+46:     public static Intent createChooser(Intent target, CharSequence title) {
+47:         Intent i = new Intent(ACTION_CHOOSER);
+48:         i.putExtra(EXTRA_INTENT, target);
+49:         i.putExtra(EXTRA_TITLE, title);
+50:         return i;
+51:     }
+52: 
+53:     public String getAction() { return action; }
+54:     public Intent setAction(String a) { action = a; return this; }
+55:     public Uri getData() { return data; }
+56:     public Intent setData(Uri u) { data = u; return this; }
+57:     public String getDataString() { return data == null ? null : data.toString(); }
+58:     public String getType() { return type; }
+59:     public Intent setType(String t) { type = t; return this; }
+60:     public Intent setDataAndType(Uri u, String t) { data = u; type = t; return this; }
+61:     public Intent setPackage(String p) { pkg = p; return this; }
+62:     public String getPackage() { return pkg; }
+63:     public Intent setComponent(ComponentName c) { component = c; return this; }
+64:     public ComponentName getComponent() { return component; }
+65:     public Intent setClass(Context c, Class<?> k) { component = new ComponentName(c, k); return this; }
+66:     public Intent setClassName(String p, String c) { component = new ComponentName(p, c); return this; }
+67:     public Intent addCategory(String c) { categories.add(c); return this; }
+68:     public boolean hasCategory(String c) { return categories.contains(c); }
+69:     public java.util.Set<String> getCategories() { return categories; }
+70:     public Intent addFlags(int f) { flags |= f; return this; }
+71:     public Intent setFlags(int f) { flags = f; return this; }
+72:     public int getFlags() { return flags; }
+73:     public ClipData getClipData() { return clip; }
+74:     public void setClipData(ClipData c) { clip = c; }
+75:     public Bundle getExtras() { return extras.isEmpty() ? null : new Bundle(extras); }
+76:     public boolean hasExtra(String k) { return extras.containsKey(k); }
+77:     public Intent putExtras(Bundle b) { extras.putAll(b); return this; }
+78:     public Intent putExtra(String k, String v) { extras.putString(k, v); return this; }
+79:     public Intent putExtra(String k, CharSequence v) { extras.putCharSequence(k, v); return this; }
+80:     public Intent putExtra(String k, int v) { extras.putInt(k, v); return this; }
+81:     public Intent putExtra(String k, long v) { extras.putLong(k, v); return this; }
+82:     public Intent putExtra(String k, boolean v) { extras.putBoolean(k, v); return this; }
+83:     public Intent putExtra(String k, String[] v) { extras.putStringArray(k, v); return this; }
+84:     public Intent putExtra(String k, Parcelable v) { extras.putParcelable(k, v); return this; }
+85:     public Intent putExtra(String k, Parcelable[] v) { extras.putParcelableArray(k, v); return this; }
+86:     public Intent putExtra(String k, java.io.Serializable v) { extras.putSerializable(k, v); return this; }
+87:     public Intent putExtra(String k, Bundle v) { extras.putBundle(k, v); return this; }
+88:     public Intent putExtra(String k, byte[] v) { extras.putByteArray(k, v); return this; }
+89:     public Intent putParcelableArrayListExtra(String k, ArrayList<? extends Parcelable> v) { extras.putParcelableArrayList(k, v); return this; }
+90:     public Intent putStringArrayListExtra(String k, ArrayList<String> v) { extras.putStringArrayList(k, v); return this; }
+91:     public void removeExtra(String k) { extras.remove(k); }
+92:     public String getStringExtra(String k) { return extras.getString(k); }
+93:     public CharSequence getCharSequenceExtra(String k) { Object o = extras.get(k); return o instanceof CharSequence ? (CharSequence) o : null; }
+94:     public int getIntExtra(String k, int d) { return extras.getInt(k, d); }
+95:     public long getLongExtra(String k, long d) { return extras.getLong(k, d); }
+96:     public boolean getBooleanExtra(String k, boolean d) { return extras.getBoolean(k, d); }
+97:     public ArrayList<CharSequence> getCharSequenceArrayListExtra(String k) { return extras.getCharSequenceArrayList(k); }
+98:     public Intent putCharSequenceArrayListExtra(String k, ArrayList<CharSequence> v) { extras.putCharSequenceArrayList(k, v); return this; }
+99:     public String[] getStringArrayExtra(String k) { return extras.getStringArray(k); }
+100:     public ArrayList<String> getStringArrayListExtra(String k) { return extras.getStringArrayList(k); }
+101:     public byte[] getByteArrayExtra(String k) { return extras.getByteArray(k); }
+102:     public Bundle getBundleExtra(String k) { return extras.getBundle(k); }
+103:     public java.io.Serializable getSerializableExtra(String k) { return extras.getSerializable(k); }
+104:     @SuppressWarnings("unchecked") public <T extends Parcelable> T getParcelableExtra(String k) { return (T) extras.get(k); }
+105:     @SuppressWarnings("unchecked") public <T> T getParcelableExtra(String k, Class<T> c) { return (T) extras.get(k); }
+106:     @SuppressWarnings("unchecked") public <T extends Parcelable> ArrayList<T> getParcelableArrayListExtra(String k) { return (ArrayList<T>) extras.get(k); }
+107:     @SuppressWarnings("unchecked") public <T> ArrayList<T> getParcelableArrayListExtra(String k, Class<T> c) { return (ArrayList<T>) extras.get(k); }
+108:     public Intent resolveActivity(android.content.pm.PackageManager pm) { return this; }
+109:     @Override public Intent clone() { return new Intent(this); }
+110:     @Override public String toString() { return "Intent{" + action + " " + data + "}"; }
+111: }

@@ -1,0 +1,130 @@
+297:                         + "\nاللقطات: " + u.snapshots + (u.snapBytes >= 0 ? " (" + SyncEngine.size(u.snapBytes) + ")" : "") + "\nالصور: " + u.images
+298:                         + (u.imageBytes >= 0 ? " (" + SyncEngine.size(u.imageBytes) + ")" : "") + (u.other > 0 ? "\nملفات أخرى: " + u.other : "")
+299:                         + "\n\nالملفات القديمة التي استلمتها كل الأجهزة تُحذف تلقائيًا."))));
+300: 
+301:         // ——— هذا الجهاز ———
+302:         Ui.Card c = Ui.card();
+303:         c.add(Ui.row(Ui.heading("✓ المزامنة مفعّلة — " + st.deviceName + (st.founder ? " (الجهاز الرئيسي)" : "")), Box.createHorizontalGlue(),
+304:                 Ui.ghost("تغيير الاسم…", e -> renameDialog(st.deviceName))));
+305:         if (!st.founder) {
+306:             JPanel fr = Ui.row(Ui.label("الجهاز الرئيسي: " + st.founderName(), 13, Ui.muted, false), Box.createHorizontalGlue());
+307:             if (admin) fr.add(Ui.ghost("ضاع الجهاز الرئيسي؟ استلم دوره…", e -> claimFounder(st)));
+308:             c.add(fr);
+309:         }
+310:         c.add(Ui.gap(4));
+311:         c.add(Ui.label("آخر مزامنة: " + (st.lastSync > 0 ? Model.date(st.lastSync) : "لم تتم بعد") + "   •   بانتظار الإرسال: "
+312:                 + (st.pending + st.unsent == 0 ? "لا شيء" : (st.pending + st.unsent) + ""), 13.5f, Ui.ink, false));
+313:         c.add(Ui.label("الطريقة: " + kindName(tr) + " — " + st.folder, 13, Ui.muted, false));
+314:         if ("server".equals(tr)) {
+315:             String link = HttpSyncFolder.link(db.setting("sync_server", ""), st.vaultId);
+316:             c.add(Ui.gap(4));
+317:             c.add(Ui.row(Ui.label("رابط الانضمام: " + link, 12.5f, Ui.ink, false), Box.createHorizontalGlue(), Ui.ghost("نسخ", e -> {
+318:                 java.awt.Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new java.awt.datatransfer.StringSelection(link), null);
+319:                 Ui.toast("نُسخ رابط الانضمام. أرسله لجهازك الآخر مع كلمة سر المزامنة.");
+320:             })));
+321:         }
+322:         c.add(Ui.gap(6));
+323:         c.add(Ui.flow(Ui.ghost("شرح مفصّل…", e -> help(tr))));
+324:         add(c);
+325:         space(12);
+326: 
+327:         // ——— الأجهزة ———
+328:         Ui.Card dc0 = Ui.card();
+329:         dc0.add(Ui.heading("الأجهزة (" + st.members.size() + ")"));
+330:         if (st.members.isEmpty()) dc0.add(Ui.label("اضغط «مزامنة الآن» لتظهر الأجهزة", 13, Ui.muted, false));
+331:         for (JSONObject m : st.members) {
+332:             String dev = m.optString("dev");
+333:             boolean me = dev.equals(st.device);
+334:             JPanel r = Ui.row(Ui.label("• " + m.optString("name") + (me ? " (هذا الجهاز)" : "") + (dev.equals(st.founderDev) ? " — الرئيسي" : "") + " — " + m.optString("platform")
+335:                     + " • الإصدار " + m.optString("app") + " • آخر ظهور " + Model.date(m.optLong("at")), 13.5f, me ? Ui.green : Ui.ink, me), Box.createHorizontalGlue());
+336:             if (!me && admin) r.add(Ui.ghost("تسمية…", e -> renameOther(m)));   // 10.17: المدير يسمّي أي جهاز
+337:             if (!me && admin && st.founder) r.add(Ui.ghost("اجعله الرئيسي…", e -> transferFounder(m)));
+338:             if (!me && admin && !dev.equals(st.founderDev)) r.add(Ui.ghost("إزالة…", e -> removeDevice(m)));
+339:             dc0.add(r);
+340:             JSONObject pr = st.peers.get(dev);
+341:             String line = me ? "أرسل " + st.mySeq + " حزمة" + (st.unsent > 0 ? " (" + st.unsent + " لم تُرفع بعد)" : " — كلها في المكان") : SyncEngine.peerText(pr, "");
+342:             boolean late = pr != null && pr.optLong("have") < pr.optLong("announced");
+343:             if (!line.isEmpty()) dc0.add(Ui.para("   " + line, 12.5f, late ? Ui.red : Ui.muted, w - 40));
+344:         }
+345:         if (!st.note.isEmpty()) dc0.add(Ui.para(st.note, 12.5f, Ui.goldInk, w - 40));
+346:         add(dc0);
+347:         space(12);
+348: 
+349:         // ——— التكرار والتعارضات ———
+350:         List<SyncEngine.Dup> dups = SyncEngine.duplicates(db);
+351:         if (!dups.isEmpty()) {
+352:             add(Ui.heading("حركات قد تكون مكررة (" + dups.size() + ")"));
+353:             add(Ui.para("حركتان بالمكتب والمبلغ والعملة والاسم نفسها سُجّلتا من جهازين قبل أن يتزامنا. قرّر لكل زوج؛ قرارك يصل إلى كل الأجهزة.", 13, Ui.muted, w));
+354:             java.util.Map<Long, String> names = db.officeNames();
+355:             for (SyncEngine.Dup x : dups) {
+356:                 Ui.Card dc = Ui.card();
+357:                 dc.add(Ui.label(Model.nz(names.get(x.a.officeId)) + " — " + (Model.TYPE_DEBIT.equals(x.a.type) ? "لنا " : "علينا ") + Ui.ltr(Model.fmt(x.a.amount, db.decimals(x.a.currency)) + " " + x.a.currency), 15, Ui.primaryInk, true));
+358:                 dc.add(Ui.para(dupLine("الأولى", x.a) + "\n" + dupLine("الثانية", x.b), 13, Ui.ink, w - 40));
+359:                 dc.add(Ui.flow(Ui.ghost("أبقِ الاثنتين", e -> {
+360:                     SyncEngine.keepBoth(db, x);
+361:                     Ui.toast("أُبقيت الحركتان");
+362:                     refresh();
+363:                 }), Ui.danger("ألغِ الأولى", e -> dropDup(x, x.a)), Ui.danger("ألغِ الثانية", e -> dropDup(x, x.b))));
+364:                 add(dc);
+365:                 space(8);
+366:             }
+367:             space(8);
+368:         }
+369:         List<String[]> cs = SyncEngine.conflicts(db);
+370:         if (!cs.isEmpty()) {
+371:             Ui.Card cc = Ui.card();
+372:             cc.add(Ui.row(Ui.heading("للمراجعة (" + cs.size() + ")"), Box.createHorizontalGlue(), cs.size() > 1 ? Ui.ghost("تمت للكل", e -> {
+373:                 if (!Ui.confirm(this, "تمت للكل", "تُعلَّم كل التنبيهات كمُراجَعة وتختفي من هنا ومن الصفحة الرئيسية.", "تمت")) return;
+374:                 SyncEngine.resolveAll(db);
+375:                 refresh();
+376:             }) : Box.createHorizontalStrut(1)));
+377:             for (String[] x : cs) {
+378:                 cc.add(Ui.row(Ui.label(Ui.cut(kind(x[2]) + ": " + x[5], 170) + " — " + Model.date(Long.parseLong(x[1])), 13.5f, SyncStore.isNotice(x[2]) ? Ui.ink : Ui.red, false), Box.createHorizontalGlue(),
+379:                         Ui.ghost("تمت المراجعة", e -> {
+380:                             SyncEngine.resolveConflict(db, Long.parseLong(x[0]));
+381:                             refresh();
+382:                         })));
+383:             }
+384:             add(cc);
+385:             space(12);
+386:         }
+387: 
+388:         // ——— التلقائي ———
+389:         Ui.Card ac0 = Ui.card();
+390:         ac0.add(Ui.heading("التلقائي على هذا الجهاز"));
+391:         JCheckBox pause = Ui.check("إيقاف المزامنة التلقائية مؤقتًا (يعمل زر «مزامنة الآن» دائمًا)", st.paused);
+392:         pause.addActionListener(e -> {
+393:             db.setSettingQuiet("sync_paused", pause.isSelected() ? "1" : "0");
+394:             refresh();
+395:         });
+396:         ac0.add(Ui.row(pause, Box.createHorizontalGlue()));
+397:         boolean on = "1".equals(db.setting("sync_after_change", "1"));
+398:         JCheckBox ac = Ui.check("مزامنة بعد كل حركة (خلال ثوانٍ من الحفظ)", on);
+399:         ac.addActionListener(e -> db.setSettingQuiet("sync_after_change", ac.isSelected() ? "1" : "0"));
+400:         ac0.add(Ui.row(ac, Box.createHorizontalGlue()));
+401:         int[] secs = {30, 90, 300, 900};
+402:         String[] names = new String[secs.length];
+403:         int sel = 1, every = SyncEngine.everySeconds(db);
+404:         for (int i = 0; i < secs.length; i++) {
+405:             names[i] = everyName(secs[i]);
+406:             if (secs[i] == every) sel = i;
+407:         }
+408:         JComboBox<String> ev = Ui.combo(names);
+409:         ev.setSelectedIndex(sel);
+410:         ev.setMaximumSize(new Dimension(220, 40));
+411:         ev.addActionListener(e -> db.setSettingQuiet("sync_every", "" + secs[ev.getSelectedIndex()]));
+412:         ac0.add(Ui.row(Ui.label("المزامنة التلقائية كل:", 13.5f, Ui.ink, false), ev, Box.createHorizontalGlue()));
+413:         add(ac0);
+414:         space(12);
+415: 
+416:         // ——— مكان المزامنة ———
+417:         Ui.Card pc = Ui.card();
+418:         pc.add(Ui.heading("مكان المزامنة وحجمه"));
+419:         SyncFolder fo = folder(db);
+420:         boolean canClean = fo != null && fo.canDelete();
+421:         pc.add(Ui.para(canClean ? "التنظيف التلقائي: يحذف كل جهاز حزمه القديمة بعد أن تصل إلى كل الأجهزة، ولقطاته القديمة، والصور التي لم يعد يشير إليها شيء. لا يمس بياناتك."
+422:                 : "هذه الطريقة لا تسمح بحذف الملفات.", 13, Ui.muted, w - 40));
+423:         if (!st.lastClean.isEmpty()) pc.add(Ui.label("آخر تنظيف: " + st.lastClean, 12.5f, Ui.ink, false));
+424:         JLabel usage = Ui.label("", 13, Ui.ink, false);
+425:         pc.add(Ui.gap(4));
+426:         JPanel pr = Ui.flow(Ui.ghost("عرض الحجم", e -> Ui.busy(this, "جارٍ قراءة مكان المزامنة…", p -> new SyncEngine(db, folder(db)).usage(), u -> {

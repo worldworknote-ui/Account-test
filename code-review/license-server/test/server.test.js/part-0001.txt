@@ -1,0 +1,73 @@
+1: /* اختبار الخادم المرجعي: node license-server/test/server.test.js */
+2: "use strict";
+3: var fs = require("fs"), path = require("path"), os = require("os"), crypto = require("crypto"), http = require("http");
+4: var dir = fs.mkdtempSync(path.join(os.tmpdir(), "sa8srv-"));
+5: process.env.DATA_DIR = dir;
+6: var S = require("../server.js");
+7: var fails = 0, passes = 0;
+8: function check(c, m) { if (c) passes++; else fails++; console.log((c ? "  PASS " : "  FAIL ") + m); }
+9: function b64url(b) { return Buffer.from(b).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+10: 
+11: function device() {
+12:   var kp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+13:   var spki = kp.publicKey.export({ type: "spki", format: "der" });
+14:   return { priv: kp.privateKey, spki: spki, dk: b64url(crypto.createHash("sha256").update(spki).digest()) };
+15: }
+16: 
+17: /** مطابق لـ License.checkOnline في التطبيق. */
+18: function request(d, lid, at, n) {
+19:   var body = "v=1;t=check;lid=" + lid + ";dk=" + d.dk + ";n=" + (n || b64url(crypto.randomBytes(16))) + ";at=" + (at || Date.now());
+20:   var sig = crypto.sign("sha256", Buffer.from(body), { key: d.priv, dsaEncoding: "der" });
+21:   return { body: body, sig: b64url(sig), pub: d.spki.toString("base64"), ver: "8.0" };
+22: }
+23: 
+24: function post(port, p, obj) {
+25:   return new Promise(function (ok) {
+26:     var data = typeof obj === "string" ? obj : JSON.stringify(obj);
+27:     var r = http.request({ host: "127.0.0.1", port: port, path: p, method: obj === undefined ? "GET" : "POST", agent: false, headers: { "Content-Type": "application/json" } }, function (res) {
+28:       var c = [];
+29:       res.on("data", function (x) { c.push(x); });
+30:       res.on("end", function () { ok({ status: res.statusCode, json: JSON.parse(Buffer.concat(c).toString() || "{}") }); });
+31:     });
+32:     if (obj !== undefined) r.write(data);
+33:     r.end();
+34:   });
+35: }
+36: 
+37: (async function () {
+38:   var a = device(), b = device(), c = device();
+39:   fs.writeFileSync(path.join(dir, "licenses.json"), JSON.stringify({
+40:     v: 1, licenses: { "SA-2026-0001": { dk: a.dk, status: "moved" }, "SA-2026-0001-T1": { dk: b.dk, status: "active" } }, revoked: ["SA-2026-0001"]
+41:   }));
+42:   fs.writeFileSync(path.join(dir, "rates.json"), JSON.stringify({ rates: { USD: 1, SYP: 13100, TRY: 41.2 }, updatedAt: "2026-10-14T08:00:00Z" }));
+43:   var srv = S.makeServer();
+44:   await new Promise(function (ok) { srv.listen(0, "127.0.0.1", ok); });
+45:   var port = srv.address().port;
+46: 
+47:   var r1 = await post(port, "/v1/check", request(b, "SA-2026-0001-T1"));
+48:   check(r1.status === 200 && r1.json.message.indexOf("سليمة") >= 0 && r1.json.revoked.length === 0, "رخصة فعّالة: سليمة، والرد لا يكشف رخص الآخرين الملغاة (10.11)");
+49:   var r2 = await post(port, "/v1/check", request(a, "SA-2026-0001"));
+50:   check(r2.status === 200 && r2.json.message.indexOf("أُلغيت") >= 0 && r2.json.revoked.indexOf("SA-2026-0001") >= 0, "الهاتف القديم بعد النقل: ملغاة، ورخصته في قائمة الرد");
+51:   var r3 = await post(port, "/v1/check", request(c, "SA-2026-0001-T1"));
+52:   check(r3.status === 200 && r3.json.revoked.indexOf("SA-2026-0001-T1") >= 0, "رقم رخصة على هاتف غير مسجّل له: يُضاف لقائمة الإلغاء في الرد");
+53:   var r4 = await post(port, "/v1/check", request(c, "SA-2099-0001"));
+54:   check(r4.status === 200 && r4.json.message.indexOf("غير مسجّلة") >= 0, "رخصة غير مسجّلة بعد: لا يتعطل شيء");
+55:   var bad = request(b, "SA-2026-0001-T1");
+56:   bad.body = bad.body.replace("SA-2026-0001-T1", "SA-2026-0002");
+57:   check((await post(port, "/v1/check", bad)).status === 401, "تعديل الطلب بعد التوقيع يُرفض");
+58:   var other = request(b, "SA-2026-0001-T1");
+59:   other.pub = c.spki.toString("base64");
+60:   check((await post(port, "/v1/check", other)).status === 401, "توقيع بمفتاح غير المرسل يُرفض");
+61:   var rep = request(b, "SA-2026-0001-T1", Date.now(), "fixed-nonce-1");
+62:   check((await post(port, "/v1/check", rep)).status === 200 && (await post(port, "/v1/check", rep)).status === 409, "إعادة إرسال الطلب نفسه تُرفض");
+63:   check((await post(port, "/v1/check", request(b, "SA-2026-0001-T1", Date.now() - 5 * 86400000))).status === 400, "طلب قديم (ساعة بعيدة) يُرفض");
+64:   check((await post(port, "/v1/check", "{not json")).status === 400, "JSON فاسد");
+65:   check((await post(port, "/v1/check", "x".repeat(9000))).status === 413, "طلب كبير يُرفض");
+66:   var rr = await post(port, "/v1/rates");
+67:   check(rr.status === 200 && rr.json.result === "success" && rr.json.rates.SYP === 13100 && rr.json.time_last_update_unix === 1791964800, "أسعار الصرف بصيغة التطبيق");
+68:   check((await post(port, "/v1/health")).json.ok === true, "/v1/health");
+69:   check((await post(port, "/nothing")).status === 404, "مسار مجهول");
+70:   srv.close();
+71:   console.log(fails === 0 ? "ALL " + passes + " PASSED" : fails + " FAILED of " + (passes + fails));
+72:   process.exit(fails ? 1 : 0);
+73: })();

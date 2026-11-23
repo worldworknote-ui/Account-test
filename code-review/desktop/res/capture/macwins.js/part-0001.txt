@@ -1,0 +1,21 @@
+1: // 12.2 المحاسب الذكي — قائمة النوافذ الظاهرة على الماك (من الأمام للخلف) لزر «حدد النافذة» في إطار الالتقاط.
+2: // يقرأ مكان كل نافذة وحجمها واسم برنامجها فقط (CGWindowListCopyWindowInfo)، ولا يحتاج إذن «إمكانية الوصول».
+3: // المخرجات: سطر لكل نافذة: رقم البرنامج، x، y، العرض، الارتفاع، اسم البرنامج بـBase64.
+4: ObjC.import('Foundation');
+5: ObjC.import('CoreGraphics');
+6: function run() {
+7:     // 1 = الظاهرة فقط، 16 = بلا عناصر سطح المكتب
+8:     var raw = $.CGWindowListCopyWindowInfo(1 | 16, 0);
+9:     var list = ObjC.deepUnwrap(ObjC.castRefToObject(raw));
+10:     if (!list) return '';
+11:     var out = [];
+12:     for (var i = 0; i < list.length; i++) {
+13:         var d = list[i];
+14:         if (!d || d.kCGWindowLayer !== 0 || !d.kCGWindowBounds) continue;
+15:         var b = d.kCGWindowBounds;
+16:         var name = String(d.kCGWindowOwnerName || '');
+17:         var b64 = $(name).dataUsingEncoding($.NSUTF8StringEncoding).base64EncodedStringWithOptions(0).js;
+18:         out.push([d.kCGWindowOwnerPID, Math.round(b.X), Math.round(b.Y), Math.round(b.Width), Math.round(b.Height), b64].join('\t'));
+19:     }
+20:     return out.join('\n');
+21: }

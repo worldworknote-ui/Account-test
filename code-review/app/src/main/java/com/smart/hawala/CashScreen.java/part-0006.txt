@@ -1,0 +1,157 @@
+805:         officeBox.setOrientation(LinearLayout.VERTICAL);
+806:         a.body.addView(officeBox);
+807:         final Button officeBtn = a.makeButton("اختر المكتب", a.accent, null);
+808:         officeBox.addView(officeBtn, a.lp(-1, 52, 2));
+809:         final TextView officeHint = a.text("", 12, a.muted, false);
+810:         officeBox.addView(officeHint);
+811:         final LinearLayout clientBox = new LinearLayout(a);
+812:         clientBox.setOrientation(LinearLayout.VERTICAL);
+813:         a.body.addView(clientBox);
+814:         final Button clientBtn = a.makeButton("اختر العميل", a.accent, null);
+815:         clientBox.addView(clientBtn, a.lp(-1, 52, 2));
+816:         final TextView clientHint = a.text("", 12, a.muted, false);
+817:         clientBox.addView(clientHint);
+818:         final LinearLayout catBox = new LinearLayout(a);
+819:         catBox.setOrientation(LinearLayout.VERTICAL);
+820:         a.body.addView(catBox);
+821:         final List<String> cats = in ? cfg.inCats : cfg.outCats;
+822:         catBox.addView(a.label("البند"));
+823:         final Spinner cat = a.spinner(cats.toArray(new String[0]));
+824:         catBox.addView(cat, a.lp(-1, 48, 2));
+825:         catBox.addView(a.smallButton("+ بند جديد", Color.rgb(130, 130, 130), v -> newCategory(kind, () -> formImpl(kind, office[0], client[0]))), a.lp(-2, 38, 2));
+826: 
+827:         a.add(a.label("عملة النقد"));
+828:         final LinearLayout curHolder = new LinearLayout(a);
+829:         a.body.addView(curHolder, new LinearLayout.LayoutParams(-1, -2));
+830:         final Ui.Seg[] cur = {null};
+831:         final Runnable[] refreshRef = new Runnable[1];
+832:         final Runnable drawCurs = () -> {
+833:             String prev = cur[0] == null ? null : cur[0].label();
+834:             List<String> show = new ArrayList<>(cfg.currencies);
+835:             if (link.selected == 0 && office[0] != null) show.retainAll(a.db.officeCurrencies(office[0].id));
+836:             curHolder.removeAllViews();
+837:             if (show.isEmpty()) {
+838:                 curHolder.addView(a.text("لا عملة مشتركة بين الصندوق وهذا المكتب.", 13, a.red, true));
+839:                 cur[0] = null;
+840:                 return;
+841:             }
+842:             cur[0] = a.new Seg(show.toArray(new String[0]), null, show.size() == 1 ? 0 : Math.max(-1, prev == null ? -1 : show.indexOf(prev)), show.size() > 4);
+843:             cur[0].listener = i -> {
+844:                 if (refreshRef[0] != null) refreshRef[0].run();
+845:             };
+846:             curHolder.addView(cur[0].view, new LinearLayout.LayoutParams(-1, -2));
+847:         };
+848: 
+849:         a.add(a.label("المبلغ"));
+850:         final EditText amount = a.amountInput("0");
+851:         amount.setTextSize(22);
+852:         Ui.bold(amount);
+853: 
+854:         // حساب العميل بعملة أخرى (له 100 يورو فيأخذ دولارًا)
+855:         final LinearLayout crossBox = new LinearLayout(a);
+856:         crossBox.setOrientation(LinearLayout.VERTICAL);
+857:         a.body.addView(crossBox);
+858:         crossBox.addView(a.label(in ? "يُضاف إلى حسابه بـ" : "يُخصم من حسابه بـ"));
+859:         final Ui.Seg same = a.new Seg(new String[]{"عملة النقد نفسها", "عملة أخرى"}, null, 0, false);
+860:         crossBox.addView(same.view, a.lp(-1, -2, 2));
+861:         final LinearLayout crossIn = new LinearLayout(a);
+862:         crossIn.setOrientation(LinearLayout.VERTICAL);
+863:         crossBox.addView(crossIn);
+864:         final List<String> allCurs = new ArrayList<>();
+865:         for (Model.Currency c : a.db.currencies(false)) allCurs.add(c.code);
+866:         final Ui.Seg ccur = a.new Seg(allCurs.toArray(new String[0]), null, -1, allCurs.size() > 4);
+867:         crossIn.addView(ccur.view, a.lp(-1, -2, 2));
+868:         final EditText crate = a.field("السعر: 1 من عملة الحساب = كم من عملة النقد");
+869:         Ui.numeric(crate);
+870:         crossIn.addView(crate, a.lp(-1, 50, 2));
+871:         final EditText camt = a.field("المبلغ على حسابه");
+872:         Ui.numeric(camt);
+873:         crossIn.addView(camt, a.lp(-1, 50, 2));
+874:         final TextView cmarket = a.text("", 12, a.muted, false);
+875:         crossIn.addView(cmarket);
+876: 
+877:         final EditText party = a.input(in ? "ممن استلمت؟ (الاسم)" : "لمن سلّمت؟ (المستفيد)");
+878:         final EditText desc = a.input("البيان (اختياري)");
+879: 
+880:         a.add(a.label("الأجور"));
+881:         final Ui.Seg fee = a.seg(new String[]{"بدون أجور", "أجور لنا", "أجور علينا"}, 0, null);
+882:         final LinearLayout feeBox = new LinearLayout(a);
+883:         feeBox.setOrientation(LinearLayout.VERTICAL);
+884:         a.body.addView(feeBox);
+885:         final EditText feeAmt = a.field("مبلغ الأجور (بعملة النقد)");
+886:         Ui.numeric(feeAmt);
+887:         feeBox.addView(feeAmt, a.lp(-1, 50, 2));
+888:         final Ui.Seg feeWhere = a.new Seg(new String[]{"على حساب المكتب", "نقدًا في الصندوق"}, null, 0, false);
+889:         feeBox.addView(feeWhere.view, a.lp(-1, -2, 2));
+890:         dateButton(null);
+891:         final TextView summary = a.add(a.text("", 14, a.primaryInk, true));
+892:         final boolean[] lock = {false};
+893: 
+894:         final Runnable recalcCross = () -> {
+895:             // السعر ← المبلغ على الحساب = المبلغ ÷ السعر
+896:             if (lock[0] || cur[0] == null || ccur.none()) return;
+897:             try {
+898:                 long amt = Db.minor(amount.getText().toString(), dec(dec, cur[0].label()));
+899:                 BigDecimal r = CashBox.rateDecimal(crate.getText().toString());
+900:                 if (r == null || r.signum() <= 0 || amt <= 0) return;
+901:                 int dc = dec(dec, ccur.label());
+902:                 lock[0] = true;
+903:                 camt.setText(BigDecimal.valueOf(amt, dec(dec, cur[0].label())).divide(r, dc, RoundingMode.HALF_EVEN).stripTrailingZeros().toPlainString());
+904:             } catch (Exception ignored) {
+905:                 // ناقص
+906:             } finally {
+907:                 lock[0] = false;
+908:             }
+909:         };
+910: 
+911:         final Runnable refresh = () -> {
+912:             int ls = link.selected;
+913:             boolean withOffice = ls == 0, withClient = ls == 1;
+914:             officeBox.setVisibility(withOffice ? View.VISIBLE : View.GONE);
+915:             clientBox.setVisibility(withClient ? View.VISIBLE : View.GONE);
+916:             crossBox.setVisibility(withClient ? View.VISIBLE : View.GONE);
+917:             crossIn.setVisibility(withClient && same.selected == 1 ? View.VISIBLE : View.GONE);
+918:             catBox.setVisibility(!withOffice && !withClient ? View.VISIBLE : View.GONE);
+919:             party.setVisibility(withClient ? View.GONE : View.VISIBLE);
+920:             feeBox.setVisibility(fee.selected > 0 ? View.VISIBLE : View.GONE);
+921:             feeWhere.view.setVisibility(withOffice ? View.VISIBLE : View.GONE);
+922:             if (office[0] != null) {
+923:                 officeBtn.setText("المكتب: " + office[0].name);
+924:                 officeHint.setText(in ? "يُسجَّل على المكتب «علينا» بالمبلغ نفسه (استلمنا لحسابه)." : "يُسجَّل على المكتب «لنا» بالمبلغ نفسه (سلّمنا لحسابه).");
+925:             }
+926:             if (client[0] != null) {
+927:                 clientBtn.setText("العميل: " + client[0].name);
+928:                 Map<String, Long> cb = ClientBook.balances(a.db.clientMoves(client[0].id));
+929:                 List<String> parts = new ArrayList<>();
+930:                 for (Map.Entry<String, Long> e : cb.entrySet()) parts.add(sideText(e.getValue(), e.getKey()));
+931:                 clientHint.setText("رصيده الآن: " + (parts.isEmpty() ? "صفر" : Model.join(parts, " • ")));
+932:             }
+933:             String c = cur[0] == null ? null : cur[0].label();
+934:             if (c != null && !ccur.none()) {
+935:                 BigDecimal mk = CashBox.crossRate(ccur.label(), c, a.db.usdRates());
+936:                 cmarket.setText(mk == null ? "لا يوجد سعر سوق لهذه العملة" : "سعر السوق: " + iso("1 " + ccur.label() + " = " + mk.toPlainString() + " " + c) + " — اضغط هنا لاستخدامه");
+937:                 cmarket.setOnClickListener(mk == null ? null : v -> {
+938:                     crate.setText(mk.toPlainString());
+939:                     recalcCross.run();
+940:                 });
+941:             }
+942:             long amt = 0;
+943:             try {
+944:                 if (c != null && !amount.getText().toString().trim().isEmpty()) amt = Db.minor(amount.getText().toString(), dec(dec, c));
+945:             } catch (Exception ignored) {
+946:                 // يظهر عند الحفظ
+947:             }
+948:             if (c == null || amt <= 0) {
+949:                 summary.setText("");
+950:                 return;
+951:             }
+952:             int d = dec(dec, c);
+953:             long f = 0;
+954:             try {
+955:                 if (fee.selected > 0 && !feeAmt.getText().toString().trim().isEmpty()) f = Db.minor(feeAmt.getText().toString(), d);
+956:             } catch (Exception ignored) {
+957:                 // يظهر عند الحفظ
+958:             }
+959:             boolean cashFee = !withOffice || feeWhere.selected == 1;
+960:             long cashEffect = (in ? amt : -amt) + (f > 0 && cashFee ? (fee.selected == 1 ? f : -f) : 0);
+961:             StringBuilder sb = new StringBuilder();

@@ -1,0 +1,171 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.math.BigDecimal;
+6: import java.util.*;
+7: import java.util.List;
+8: import javax.swing.*;
+9: import org.json.JSONArray;
+10: import org.json.JSONObject;
+11: 
+12: /**
+13:  * منشئ التقارير: الفترة، المكاتب، العملات، الاتجاه، نوع الحركة (حوالات/أجور/راجع/تبديل)، الحالة، البحث، الخدمة، الوجهة، المستخدم،
+14:  * حدود المبلغ، التجميع (16 طريقة) والجدول المتقاطع والمقارنة بالفترة السابقة والترتيب وأعلى N، والكشف التفصيلي برصيد متراكم.
+15:  * قوالب جاهزة وقوالب يحفظها المستخدم (تنتقل مع النسخة الاحتياطية). الحساب في ReportBuilder المشترك مع الهاتف.
+16:  */
+17: final class BuilderView extends View {
+18:     final Ui.Field title = Ui.field("عنوان التقرير (اختياري)");
+19:     final JComboBox<String> period = Ui.combo(Ui.PERIODS);
+20:     final Ui.DateField from = new Ui.DateField(0), to = new Ui.DateField(0);
+21:     final JComboBox<String> dir = Ui.combo(ReportBuilder.DIR_NAMES), kind = Ui.combo(ReportBuilder.KIND_NAMES), status = Ui.combo(ReportBuilder.STATUS_NAMES);
+22:     final JComboBox<String> group = Ui.combo(ReportBuilder.GROUP_NAMES), group2 = Ui.combo(withNone(ReportBuilder.GROUP_NAMES)), measure = Ui.combo(ReportBuilder.MEASURE_NAMES),
+23:             sort = Ui.combo(ReportBuilder.SORT_NAMES);
+24:     final Ui.Field text = Ui.field("كلمات في المستفيد أو البيان"), service = Ui.field("الخدمة"), dest = Ui.field("الوجهة"), user = Ui.field("المستخدم");
+25:     final Ui.Field min = Ui.numeric("من"), max = Ui.numeric("إلى"), top = Ui.numeric("الكل");
+26:     final JCheckBox compare = Ui.check("قارن بالفترة السابقة", false), details = Ui.check("أضف الكشف التفصيلي", false), running = Ui.check("رصيد متراكم (مكتب واحد)", true);
+27:     final DefaultListModel<Model.Office> officeModel = new DefaultListModel<>();
+28:     final JList<Model.Office> offices = new JList<>(officeModel);
+29:     final JPanel curBox = Ui.flow();
+30:     final Map<String, JCheckBox> curChecks = new LinkedHashMap<>();
+31:     final JComboBox<String> presets = Ui.combo(new String[0]);
+32:     final JPanel out = Ui.column();
+33:     final JPanel customDates;
+34:     Report last;
+35: 
+36:     static String[] withNone(String[] a) {
+37:         String[] r = a.clone();
+38:         r[0] = "بلا جدول متقاطع";
+39:         return r;
+40:     }
+41: 
+42:     BuilderView(App app) {
+43:         super(app, "منشئ التقارير");
+44:         customDates = Ui.row(Ui.label("من", 13, Ui.muted, true), from, Ui.label("إلى", 13, Ui.muted, true), to);
+45:     }
+46: 
+47:     @Override void build() {
+48:         offices.setFont(Ui.font(13.5f, false));
+49:         offices.setComponentOrientation(Ui.RTL);
+50:         offices.setVisibleRowCount(7);
+51:         offices.setCellRenderer(new DefaultListCellRenderer() {
+52:             @Override public Component getListCellRendererComponent(JList<?> l, Object v, int i, boolean s, boolean f) {
+53:                 JLabel c = (JLabel) super.getListCellRendererComponent(l, ((Model.Office) v).name, i, s, f);
+54:                 c.setHorizontalAlignment(SwingConstants.RIGHT);
+55:                 c.setText((s ? "✓  " : "    ") + ((Model.Office) v).name);
+56:                 return c;
+57:             }
+58:         });
+59:         offices.setSelectionModel(new DefaultListSelectionModel() {
+60:             @Override public void setSelectionInterval(int a, int b) {
+61:                 if (isSelectedIndex(a)) super.removeSelectionInterval(a, b);
+62:                 else super.addSelectionInterval(a, b);
+63:             }
+64:         });
+65:         JScrollPane os = new JScrollPane(offices);
+66:         os.setBorder(new Ui.RoundBorder(Ui.line, 10));
+67:         os.setPreferredSize(new Dimension(240, 170));
+68:         os.setComponentOrientation(Ui.RTL);
+69:         period.setSelectedIndex(3);
+70:         group.setSelectedIndex(ReportBuilder.G_OFFICE);
+71:         measure.setSelectedIndex(ReportBuilder.M_NET);
+72: 
+73:         Ui.Card c = Ui.card();
+74:         JPanel p1 = new JPanel(new GridLayout(0, 4, 12, 10));
+75:         p1.setOpaque(false);
+76:         p1.setAlignmentX(Component.RIGHT_ALIGNMENT);
+77:         p1.add(Ui.labeled("القوالب", presets));
+78:         p1.add(Ui.labeled("العنوان", title));
+79:         p1.add(Ui.labeled("الفترة", period));
+80:         p1.add(Ui.labeled("فترة مخصصة", customDates));
+81:         p1.add(Ui.labeled("الاتجاه", dir));
+82:         p1.add(Ui.labeled("نوع الحركة", kind));
+83:         p1.add(Ui.labeled("الحالة", status));
+84:         p1.add(Ui.labeled("بحث", text));
+85:         p1.add(Ui.labeled("الخدمة", service));
+86:         p1.add(Ui.labeled("الوجهة", dest));
+87:         p1.add(Ui.labeled("المستخدم", user));
+88:         JPanel mm = new JPanel(new GridLayout(1, 2, 6, 0));
+89:         mm.setOpaque(false);
+90:         mm.add(min);
+91:         mm.add(max);
+92:         p1.add(Ui.labeled("المبلغ (من — إلى)", mm));
+93:         p1.add(Ui.labeled("جمّع حسب", group));
+94:         p1.add(Ui.labeled("جدول متقاطع: الأعمدة حسب", group2));
+95:         p1.add(Ui.labeled("قيمة الجدول المتقاطع", measure));
+96:         p1.add(Ui.labeled("الترتيب", sort));
+97:         JPanel row2 = new JPanel(new BorderLayout(14, 0));
+98:         row2.setOpaque(false);
+99:         row2.setAlignmentX(Component.RIGHT_ALIGNMENT);
+100:         JPanel offBox = Ui.column();
+101:         offBox.add(Ui.label("المكاتب (بلا تحديد = كلها)", 13, Ui.muted, true));
+102:         offBox.add(os);
+103:         offBox.add(Ui.flow(Ui.ghost("الكل", e -> offices.clearSelection())));
+104:         row2.add(offBox, BorderLayout.LINE_START);
+105:         JPanel rest = Ui.column();
+106:         rest.add(Ui.label("العملات", 13, Ui.muted, true));
+107:         rest.add(curBox);
+108:         rest.add(Ui.gap(6));
+109:         rest.add(Ui.row(Ui.labeled("أعلى (عدد)", top), Ui.flow(compare, details, running)));
+110:         top.setMaximumSize(new Dimension(120, 40));
+111:         rest.add(Ui.gap(10));
+112:         rest.add(Ui.flow(Ui.primary("عرض التقرير", e -> run()), Ui.ghost("تصدير / طباعة…", e -> export()), Ui.ghost("حفظ كقالب…", e -> savePreset()),
+113:                 Ui.ghost("حذف القالب", e -> deletePreset()), Ui.ghost("مسح الخيارات", e -> apply(new ReportBuilder.Spec()))));
+114:         row2.add(rest, BorderLayout.CENTER);
+115:         c.add(p1);
+116:         c.add(Ui.gap(12));
+117:         c.add(row2);
+118:         body.add(c);
+119:         body.add(Ui.gap(14));
+120:         body.add(out);
+121:         scroll = Ui.scroll(body);
+122:         add(scroll, BorderLayout.CENTER);
+123:         period.addActionListener(e -> customDates.setVisible(period.getSelectedIndex() == Ui.PERIODS.length - 1));
+124:         customDates.setVisible(false);
+125:         presets.addActionListener(e -> {
+126:             if (presets.getSelectedIndex() > 0) loadPreset((String) presets.getSelectedItem());
+127:         });
+128:     }
+129: 
+130:     @Override void refresh() {
+131:         actions.removeAll();
+132:         subtitle.setText("اختر ما تريد ثم «عرض التقرير»؛ الناتج يُصدَّر PDF أو Excel أو CSV.");
+133:         List<Long> sel = new ArrayList<>();
+134:         for (Model.Office o : offices.getSelectedValuesList()) sel.add(o.id);
+135:         officeModel.clear();
+136:         for (Model.Office o : db.offices()) officeModel.addElement(o);
+137:         for (int i = 0; i < officeModel.size(); i++) if (sel.contains(officeModel.get(i).id)) offices.addSelectionInterval(i, i);
+138:         Set<String> curSel = new HashSet<>();
+139:         for (Map.Entry<String, JCheckBox> e : curChecks.entrySet()) if (e.getValue().isSelected()) curSel.add(e.getKey());
+140:         curBox.removeAll();
+141:         curChecks.clear();
+142:         for (Model.Currency cur : db.currencies(true)) {
+143:             JCheckBox cb = Ui.check(cur.code, curSel.contains(cur.code));
+144:             curChecks.put(cur.code, cb);
+145:             curBox.add(cb);
+146:         }
+147:         loadPresets();
+148:         if (out.getComponentCount() == 0) out.add(Ui.para("أمثلة: «الراجع لكل مكتب هذا الشهر»، «مقارنة شهرية بالمكتب»، «ساعات الذروة»، «أكبر 20 حوالة» — من قائمة القوالب.", 14, Ui.muted, textWidth()));
+149:         done();
+150:     }
+151: 
+152:     // ===================================================================================
+153:     // المواصفات
+154:     // ===================================================================================
+155: 
+156:     ReportBuilder.Spec spec() {
+157:         ReportBuilder.Spec s = new ReportBuilder.Spec();
+158:         s.title = title.val();
+159:         int p = period.getSelectedIndex();
+160:         if (p == Ui.PERIODS.length - 1) {
+161:             s.from = from.start();
+162:             s.to = to.endExclusive();
+163:         } else {
+164:             long[] r = Ui.period(p);
+165:             s.from = r[0];
+166:             s.to = r[1];
+167:         }
+168:         for (Model.Office o : offices.getSelectedValuesList()) s.offices.add(o.id);
+169:         for (Map.Entry<String, JCheckBox> e : curChecks.entrySet()) if (e.getValue().isSelected()) s.currencies.add(e.getKey());
+170:         s.direction = dir.getSelectedIndex();
+171:         s.kind = kind.getSelectedIndex();

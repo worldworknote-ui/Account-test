@@ -1,0 +1,191 @@
+1: package android.app;
+2: 
+3: import android.content.ClipData;
+4: import android.content.Context;
+5: import android.content.Intent;
+6: import android.net.Uri;
+7: import java.awt.*;
+8: import java.io.File;
+9: import java.util.ArrayList;
+10: import java.util.List;
+11: 
+12: /**
+13:  * ما يفعله الهاتف بتطبيقات أخرى يفعله الكمبيوتر بنوافذ النظام: اختيار ملف أو مجلد، حفظ ملف، المشاركة (حفظ نسخة أو فتحها
+14:  * أو إرسال النص عبر واتساب)، وفتح الروابط.
+15:  */
+16: public final class Platform {
+17:     private Platform() {}
+18: 
+19:     public interface Result { void result(int code, int resultCode, Intent data); }
+20: 
+21:     /** نافذة البرنامج (لنوافذ الملفات). */
+22:     public static Frame frame;
+23:     /** «الرجوع» من الشاشة الرئيسية: تصغير النافذة. */
+24:     public static Runnable onFinish;
+25:     /** بعد إعادة إنشاء الشاشة. */
+26:     public static java.util.function.Consumer<Activity> onRecreate;
+27:     /** آخر مجلد استُعمل. */
+28:     private static File lastDir;
+29:     private static final boolean MAC = System.getProperty("os.name", "").toLowerCase().contains("mac");
+30: 
+31:     public static void handle(Context ctx, Intent i, int code, Result cb) {
+32:         javax.swing.SwingUtilities.invokeLater(() -> {
+33:             try {
+34:                 run(ctx, i, code, cb);
+35:             } catch (Throwable t) {
+36:                 android.widget.Toast.makeText(ctx, "تعذر إكمال العملية: " + t.getMessage(), android.widget.Toast.LENGTH_LONG).show();
+37:                 if (cb != null) cb.result(code, Activity.RESULT_CANCELED, null);
+38:             }
+39:         });
+40:     }
+41: 
+42:     private static void run(Context ctx, Intent i, int code, Result cb) throws Exception {
+43:         String a = i.getAction() == null ? "" : i.getAction();
+44:         if (Intent.ACTION_CHOOSER.equals(a)) {
+45:             Intent inner = i.getParcelableExtra(Intent.EXTRA_INTENT);
+46:             if (inner != null) run(ctx, inner, code, cb);
+47:             return;
+48:         }
+49:         switch (a) {
+50:             case Intent.ACTION_CREATE_DOCUMENT: {
+51:                 String name = i.getStringExtra(Intent.EXTRA_TITLE);
+52:                 File f = saveDialog(name == null ? "file" : name);
+53:                 done(cb, code, f == null ? null : new Intent().setData(Uri.fromFile(f)));
+54:                 return;
+55:             }
+56:             case Intent.ACTION_OPEN_DOCUMENT:
+57:             case Intent.ACTION_GET_CONTENT:
+58:             case Intent.ACTION_PICK: {
+59:                 boolean multi = i.getBooleanExtra(Intent.EXTRA_ALLOW_MULTIPLE, false);
+60:                 String type = i.getType();
+61:                 String[] mimes = i.getStringArrayExtra(Intent.EXTRA_MIME_TYPES);
+62:                 List<File> files = openDialog(multi, type, mimes);
+63:                 if (files.isEmpty()) { done(cb, code, null); return; }
+64:                 Intent r = new Intent().setData(Uri.fromFile(files.get(0)));
+65:                 if (files.size() > 1) {
+66:                     ClipData c = ClipData.newRawUri("files", Uri.fromFile(files.get(0)));
+67:                     for (int k = 1; k < files.size(); k++) c.addItem(new ClipData.Item(Uri.fromFile(files.get(k))));
+68:                     r.setClipData(c);
+69:                 }
+70:                 done(cb, code, r);
+71:                 return;
+72:             }
+73:             case Intent.ACTION_OPEN_DOCUMENT_TREE: {
+74:                 File d = dirDialog();
+75:                 done(cb, code, d == null ? null : new Intent().setData(Uri.fromFile(d)));
+76:                 return;
+77:             }
+78:             case android.provider.MediaStore.ACTION_IMAGE_CAPTURE: {
+79:                 // لا كاميرا: صورة من الملفات تُنسخ إلى المكان المطلوب
+80:                 List<File> f = openDialog(false, "image/*", null);
+81:                 Uri out = i.getParcelableExtra(android.provider.MediaStore.EXTRA_OUTPUT);
+82:                 if (f.isEmpty() || out == null) { done(cb, code, null); return; }
+83:                 java.nio.file.Files.copy(f.get(0).toPath(), out.file().toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+84:                 done(cb, code, new Intent().setData(out));
+85:                 return;
+86:             }
+87:             case Intent.ACTION_SEND:
+88:             case Intent.ACTION_SEND_MULTIPLE: {
+89:                 share(ctx, i);
+90:                 done(cb, code, new Intent());
+91:                 return;
+92:             }
+93:             case Intent.ACTION_VIEW:
+94:             case Intent.ACTION_DIAL:
+95:             case Intent.ACTION_SENDTO: {
+96:                 Uri u = i.getData();
+97:                 if (u != null) view(u);
+98:                 done(cb, code, new Intent());
+99:                 return;
+100:             }
+101:             default:
+102:                 if (cb != null) cb.result(code, Activity.RESULT_CANCELED, null);
+103:         }
+104:     }
+105: 
+106:     private static void done(Result cb, int code, Intent data) {
+107:         if (cb != null) cb.result(code, data == null ? Activity.RESULT_CANCELED : Activity.RESULT_OK, data);
+108:     }
+109: 
+110:     /** فتح رابط أو ملف بالبرنامج المناسب في النظام. */
+111:     public static void view(Uri u) throws Exception {
+112:         if (u.isFile() || u.toString().startsWith("content://")) Desktop.getDesktop().open(u.file());
+113:         else Desktop.getDesktop().browse(new java.net.URI(u.toString()));
+114:     }
+115: 
+116:     // ------------------------------------------------------------------ نوافذ الملفات
+117:     public static File saveDialog(String name) {
+118:         if (MAC || !headless()) {
+119:             FileDialog fd = new FileDialog(frame, "حفظ", FileDialog.SAVE);
+120:             if (lastDir != null) fd.setDirectory(lastDir.getPath());
+121:             fd.setFile(name);
+122:             fd.setVisible(true);
+123:             if (fd.getFile() == null) return null;
+124:             File f = new File(fd.getDirectory(), fd.getFile());
+125:             String ext = name.contains(".") ? name.substring(name.lastIndexOf('.')) : "";
+126:             if (!ext.isEmpty() && !f.getName().toLowerCase().endsWith(ext.toLowerCase())) f = new File(f.getParentFile(), f.getName() + ext);
+127:             lastDir = f.getParentFile();
+128:             return f;
+129:         }
+130:         return null;
+131:     }
+132: 
+133:     public static List<File> openDialog(boolean multi, String type, String[] mimes) {
+134:         List<File> out = new ArrayList<>();
+135:         FileDialog fd = new FileDialog(frame, "اختيار ملف", FileDialog.LOAD);
+136:         fd.setMultipleMode(multi);
+137:         if (lastDir != null) fd.setDirectory(lastDir.getPath());
+138:         final List<String> exts = exts(type, mimes);
+139:         if (!exts.isEmpty()) {
+140:             fd.setFilenameFilter((dir, n) -> { String l = n.toLowerCase(); for (String e : exts) if (l.endsWith(e)) return true; return false; });
+141:             if (!MAC) fd.setFile("*" + String.join(";*", exts));
+142:         }
+143:         fd.setVisible(true);
+144:         for (File f : fd.getFiles()) out.add(f);
+145:         if (!out.isEmpty()) lastDir = out.get(0).getParentFile();
+146:         return out;
+147:     }
+148: 
+149:     private static List<String> exts(String type, String[] mimes) {
+150:         List<String> l = new ArrayList<>();
+151:         List<String> all = new ArrayList<>();
+152:         if (type != null) all.add(type);
+153:         if (mimes != null) for (String m : mimes) all.add(m);
+154:         for (String t : all) {
+155:             if (t == null || t.equals("*/*")) return new ArrayList<>();
+156:             if (t.startsWith("image/")) { l.add(".png"); l.add(".jpg"); l.add(".jpeg"); l.add(".webp"); l.add(".heic"); l.add(".gif"); }
+157:             else if (t.contains("pdf")) l.add(".pdf");
+158:             else if (t.contains("json")) l.add(".json");
+159:             else if (t.contains("csv") || t.equals("text/comma-separated-values")) l.add(".csv");
+160:             else if (t.equals("text/plain")) l.add(".txt");
+161:             else if (t.contains("spreadsheet") || t.contains("excel")) { l.add(".xlsx"); l.add(".xls"); }
+162:             else if (t.contains("zip")) l.add(".zip");
+163:             else if (t.startsWith("text/")) { l.add(".txt"); l.add(".csv"); }
+164:             else return new ArrayList<>();
+165:         }
+166:         return l;
+167:     }
+168: 
+169:     public static File dirDialog() {
+170:         if (MAC) {
+171:             System.setProperty("apple.awt.fileDialogForDirectories", "true");
+172:             try {
+173:                 FileDialog fd = new FileDialog(frame, "اختيار مجلد", FileDialog.LOAD);
+174:                 if (lastDir != null) fd.setDirectory(lastDir.getPath());
+175:                 fd.setVisible(true);
+176:                 if (fd.getFile() == null) return null;
+177:                 File d = new File(fd.getDirectory(), fd.getFile());
+178:                 lastDir = d;
+179:                 return d;
+180:             } finally {
+181:                 System.setProperty("apple.awt.fileDialogForDirectories", "false");
+182:             }
+183:         }
+184:         javax.swing.JFileChooser ch = new javax.swing.JFileChooser(lastDir);
+185:         ch.setFileSelectionMode(javax.swing.JFileChooser.DIRECTORIES_ONLY);
+186:         ch.setDialogTitle("اختيار مجلد");
+187:         if (ch.showOpenDialog(frame) != javax.swing.JFileChooser.APPROVE_OPTION) return null;
+188:         lastDir = ch.getSelectedFile();
+189:         return ch.getSelectedFile();
+190:     }
+191: 

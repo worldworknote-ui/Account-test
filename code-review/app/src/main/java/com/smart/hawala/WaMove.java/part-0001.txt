@@ -1,0 +1,190 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.content.ClipData;
+5: import android.content.ClipboardManager;
+6: import android.content.Context;
+7: import android.graphics.Color;
+8: import android.os.Build;
+9: import android.view.Gravity;
+10: import android.view.View;
+11: import android.widget.Button;
+12: import android.widget.LinearLayout;
+13: import android.widget.ScrollView;
+14: import android.widget.TextView;
+15: import java.util.ArrayList;
+16: import java.util.List;
+17: import java.util.TreeSet;
+18: 
+19: /**
+20:  * 12.1: نقل الرسائل من واتساب (أو أي برنامج) إلى التسجيل بأسهل طريقة على كل جهاز:
+21:  * <ul>
+22:  * <li>الحافظة بكل صيغها (رؤوس واتساب، فقاعات HTML، أسطر الوقت) — {@link WaClip}.</li>
+23:  * <li>«قص هنا» يدوي حين يبقى النص ملزوقًا.</li>
+24:  * <li>«وضع التجميع»: كل نسخ رسالة تصير بندًا مستقلًا، ثم «نقل N رسائل».</li>
+25:  * <li>مراقبة الحافظة على الكمبيوتر: بطاقة «في الحافظة N رسائل من واتساب».</li>
+26:  * <li>«إطار الالتقاط» على ويندوز وماك ({@link Capture}): يرقّم الفقاعات تحت الإطار، فتضغط الرقم فينتقل نصها.</li>
+27:  * <li>«فحص الحافظة»: شكل ما نُسخ دون محتواه، للدعم.</li>
+28:  * </ul>
+29:  * لا يُسجَّل شيء تلقائيًا: كل رسالة تمر بنموذج التسجيل وتأكيد المحاسب، وصلاحية «التسجيل من واتساب» (TX_WA) شرط في كل طريق.
+30:  */
+31: final class WaMove {
+32:     private final MainActivity a;
+33: 
+34:     WaMove(MainActivity a) { this.a = a; }
+35: 
+36:     /** على الكمبيوتر (طبقة التوافق تضع Build.MANUFACTURER = "Desktop"). */
+37:     static boolean desktop() { return "Desktop".equals(Build.MANUFACTURER); }
+38: 
+39:     // ===================================================================================
+40:     // جسر الكمبيوتر: إطار الالتقاط (تضعه نسخة الكمبيوتر عند التشغيل؛ على الهاتف يبقى null فلا يظهر الزر)
+41:     // ===================================================================================
+42: 
+43:     public interface Capture {
+44:         /** فارغ إن كان الإطار متاحًا، وإلا سبب عدم توفره. */
+45:         String unavailable();
+46: 
+47:         /**
+48:          * يفتح الإطار. whole = يلتقط نافذة واتساب كلها تلقائيًا بدل إطار يحرّكه المستخدم.
+49:          * prefs: إعدادات هذا الجهاز (مكان الإطار cap_bounds، القراءة التلقائية cap_auto).
+50:          */
+51:         void open(boolean whole, Picked cb, Prefs prefs);
+52:     }
+53: 
+54:     /** 12.2: إعدادات الجهاز المحلية (لا تُزامَن) لنوافذ الكمبيوتر. */
+55:     public interface Prefs {
+56:         String get(String k, String def);
+57: 
+58:         void put(String k, String v);
+59:     }
+60: 
+61:     /** 12.2: نافذة التجميع الصغيرة على الكمبيوتر (فوق كل النوافذ): 1، 2، 3… مع جزء من كل رسالة وزر «نقل». */
+62:     public interface CollectView {
+63:         void show(List<WaText.Msg> collected, Runnable move, Runnable stop);
+64: 
+65:         void close();
+66:     }
+67: 
+68:     static volatile CollectView collectView;
+69: 
+70:     Prefs prefs() {
+71:         return new Prefs() {
+72:             @Override public String get(String k, String def) { return a.db == null ? def : a.db.setting(k, def); }
+73: 
+74:             @Override public void put(String k, String v) { if (a.db != null) a.db.setSettingQuiet(k, v); }
+75:         };
+76:     }
+77: 
+78:     public interface Picked {
+79:         /** فقاعة أو أكثر اختارها المستخدم بأرقامها، واسم المحادثة إن عُرف. */
+80:         void picked(List<WaText.Msg> msgs, String chat);
+81:     }
+82: 
+83:     static volatile Capture capture;
+84: 
+85:     boolean canCapture() { return capture != null && a.can(Auth.Perm.TX_WA); }
+86: 
+87:     /**
+88:      * 12.6: في المجانية الالتقاط والتجميع والقص ضمن الرسائل اليومية المسموحة (20): بعدها لا تبدأ، ويبقى الإدخال اليدوي.
+89:      * يعيد عدد المتبقي اليوم (Long.MAX_VALUE في الكاملة)، أو 0 مع رسالة.
+90:      */
+91:     long waRemaining(boolean tell) {
+92:         long[] u = a.db.waUsage();
+93:         if (u[1] == Entitlements.UNLIMITED) return Long.MAX_VALUE;
+94:         long left = Math.max(0, u[1] - u[0]);
+95:         if (left == 0 && tell) a.error(new Entitlements.LimitReached(Entitlements.waLimitMessage(u[1])));
+96:         return left;
+97:     }
+98: 
+99:     void openCapture(boolean whole) {
+100:         if (!a.require(Auth.Perm.TX_WA)) return;
+101:         if (waRemaining(true) == 0) return;
+102:         Capture c = capture;
+103:         if (c == null) {
+104:             a.toast("إطار الالتقاط متاح على ويندوز وماك فقط. على الهاتف: حدّد الرسائل في واتساب ← مشاركة ← المحاسب الذكي.");
+105:             return;
+106:         }
+107:         String why = c.unavailable();
+108:         if (why != null && !why.isEmpty()) {
+109:             new AlertDialog.Builder(a).setTitle("إطار الالتقاط غير متاح").setMessage(why).setPositiveButton("حسنًا", null).show();
+110:             return;
+111:         }
+112:         c.open(whole, this::fromCapture, prefs());
+113:     }
+114: 
+115:     /** فقاعات من الإطار: إلى خانة النموذج المفتوح إن وُجد، وإلا إلى نموذج جديد أو دفعة. */
+116:     void fromCapture(List<WaText.Msg> msgs, String chat) {
+117:         if (msgs == null || msgs.isEmpty()) return;
+118:         if (!a.require(Auth.Perm.TX_WA)) return;
+119:         long left = waRemaining(true);   // 12.6: المجانية ضمن المتبقي اليوم
+120:         if (left == 0) return;
+121:         if (msgs.size() > left) {
+122:             msgs = new ArrayList<>(msgs.subList(0, (int) left));
+123:             a.toast("النسخة المجانية: بقي لك اليوم " + left + " رسالة للاستخراج، فنُقل هذا العدد فقط.");
+124:         }
+125:         Model.Office sug = officeFromChat(chat);
+126:         if (msgs.size() == 1 && a.txScreen.formOpen()) {
+127:             a.txScreen.captured(msgs.get(0), sug);
+128:             return;
+129:         }
+130:         a.beforeScreenChange();
+131:         if (msgs.size() == 1) a.txScreen.showCaptured(msgs.get(0), sug);
+132:         else {
+133:             a.waQueue.suggested = sug;
+134:             a.waQueue.suggestedFrom = chat;
+135:             a.waQueue.overview(msgs);
+136:         }
+137:     }
+138: 
+139:     Model.Office officeFromChat(String chat) {
+140:         if (chat == null || chat.trim().isEmpty()) return null;
+141:         List<Model.Office> offices = new ArrayList<>();
+142:         List<String> names = new ArrayList<>();
+143:         for (Model.Office o : a.db.offices()) {
+144:             if (!o.active) continue;
+145:             offices.add(o);
+146:             names.add(o.name);
+147:         }
+148:         int i = Bubbles.matchOffice(chat, names);
+149:         return i < 0 ? null : offices.get(i);
+150:     }
+151: 
+152:     // ===================================================================================
+153:     // من الحافظة إلى التسجيل
+154:     // ===================================================================================
+155: 
+156:     /** يقرأ الحافظة ويوجّه الرسائل. يعيد false إن كانت فارغة. */
+157:     boolean pasteClipboard() {
+158:         WaClip.Read r = WaClip.read(a);
+159:         if (r.empty()) return false;
+160:         route(WaClip.messages(r.text, r.html), r.text);
+161:         return true;
+162:     }
+163: 
+164:     /** رسالة واحدة ← نموذج (مع عرض «القص» إن بدا النص ملزوقًا)، عدة رسائل ← دفعة. */
+165:     void route(List<WaText.Msg> msgs, String raw) {
+166:         if (msgs.isEmpty()) {
+167:             a.txScreen.showNew();
+168:             return;
+169:         }
+170:         if (msgs.size() > 1) {
+171:             if (!a.can(Auth.Perm.TX_WA)) {
+172:                 a.txScreen.showShared(new WaText.Msg("", "", raw.trim()));
+173:                 return;
+174:             }
+175:             a.waQueue.overview(msgs);
+176:             return;
+177:         }
+178:         if (a.can(Auth.Perm.TX_WA) && WaClip.maybeGlued(msgs.get(0).body)) {
+179:             final WaText.Msg one = msgs.get(0);
+180:             new AlertDialog.Builder(a).setTitle("هل هذا النص أكثر من رسالة؟")
+181:                     .setMessage("يبدو أن النص فيه أكثر من رسالة ملزوقة (يحصل عند النسخ من واتساب على ويندوز). اقطعه بنفسك عند حدود الرسائل، أو سجّله كما هو.")
+182:                     .setPositiveButton("✂ قص الرسائل", (d, w) -> cutScreen(one.body))
+183:                     .setNeutralButton("رسالة واحدة", (d, w) -> a.txScreen.showShared(one))
+184:                     .setNegativeButton("إلغاء", null).show();
+185:             return;
+186:         }
+187:         a.txScreen.showShared(msgs.get(0));
+188:     }
+189: 
+190:     // ===================================================================================

@@ -1,0 +1,38 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.job.JobParameters;
+4: import android.app.job.JobService;
+5: 
+6: /** 9.0: مهمة دورية من النظام تفحص تذكيرات المكاتب (مكتب بلا حركات منذ يوم، مطابقة لم تُرسل) وترسل إشعارًا عند الحاجة. */
+7: public class ReminderJob extends JobService {
+8:     @Override
+9:     public boolean onStartJob(final JobParameters params) {
+10:         new Thread(() -> {
+11:             try {
+12:                 Db db = SmartApp.db;
+13:                 if (db == null) {
+14:                     db = new Db(getApplicationContext());
+15:                     SmartApp.db = db;
+16:                 }
+17:                 if (Crypto.healthy(getApplicationContext()) && Db.lockedAside == null) {
+18:                     // 10.0: المزامنة في الخلفية (إن كانت مفعّلة)
+19:                     try {
+20:                         if (License.current == null || !License.current.pro) License.load(getApplicationContext(), db);
+21:                     } catch (Throwable ignored) {
+22:                         // تبقى الرخصة كما هي
+23:                     }
+24:                     SyncScreen.background(getApplicationContext(), db);
+25:                     Notifier.check(getApplicationContext(), db);
+26:                 }
+27:             } catch (Throwable ignored) {
+28:                 // المحاولة التالية بعد ساعات
+29:             } finally {
+30:                 jobFinished(params, false);
+31:             }
+32:         }, "reminders-job").start();
+33:         return true;
+34:     }
+35: 
+36:     @Override
+37:     public boolean onStopJob(JobParameters params) { return true; }
+38: }

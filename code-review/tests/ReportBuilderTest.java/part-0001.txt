@@ -1,0 +1,164 @@
+1: import com.smart.hawala.Model;
+2: import com.smart.hawala.OwnerReports;
+3: import com.smart.hawala.Report;
+4: import com.smart.hawala.ReportBuilder;
+5: import com.smart.hawala.XlsxWriter;
+6: import java.io.ByteArrayOutputStream;
+7: import java.math.BigDecimal;
+8: import java.nio.charset.StandardCharsets;
+9: import java.nio.file.Files;
+10: import java.nio.file.Path;
+11: import java.nio.file.Paths;
+12: import java.util.*;
+13: import org.json.JSONArray;
+14: import org.json.JSONObject;
+15: 
+16: /**
+17:  * 8.1: منشئ التقارير. أرقام اصطناعية محسوبة يدويًا، ثم (اختياريًا) ملف جداول حقيقي:
+18:  * «الأثر على الرصيد» لكل مكتب وعملة = رصيده في دفتر القيود ناقص أرصدته السابقة.
+19:  * وسيط 1 (اختياري): مجلد مخرجات. وسيط 2 (اختياري): ملف \u200e*.tables.json.
+20:  */
+21: public class ReportBuilderTest {
+22:     static int fails, passes;
+23:     static final long DAY = 86400000L;
+24:     static long ids = 1;
+25: 
+26:     static void check(boolean c, String m) {
+27:         if (c) passes++;
+28:         else fails++;
+29:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+30:     }
+31: 
+32:     static Model.Tx tx(long office, boolean us, long amount, String cur, long at, String desc) {
+33:         Model.Tx t = new Model.Tx();
+34:         t.id = ids++;
+35:         t.uuid = "u" + t.id;
+36:         t.officeId = office;
+37:         t.type = us ? Model.TYPE_DEBIT : Model.TYPE_CREDIT;
+38:         t.amount = amount;
+39:         t.currency = cur;
+40:         t.feeType = Model.FEE_NONE;
+41:         t.feeCurrency = cur;
+42:         t.createdAt = at;
+43:         t.status = "ACTIVE";
+44:         t.person = "";
+45:         t.description = desc;
+46:         t.notes = "";
+47:         t.userName = "المدير";
+48:         return t;
+49:     }
+50: 
+51:     public static void main(String[] a) throws Exception {
+52:         TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+53:         long now = 1791936000000L;   // 2026-10-14
+54:         ReportBuilder.Data d = new ReportBuilder.Data();
+55:         d.now = now;
+56:         d.decimals.put("USD", 2);
+57:         d.decimals.put("EUR", 2);
+58:         d.names.put(1L, "النور");
+59:         d.names.put(2L, "الأمل");
+60:         // النور: 3 حوالات لنا بالدولار (واحدة بأجرة 1% لنا)، حوالة علينا، وحركة «راجع» مستقلة
+61:         Model.Tx a1 = tx(1, true, 1000000, "USD", now - 40 * DAY, "حوالة");
+62:         a1.feeType = Model.FEE_US;
+63:         a1.fee = 10000;
+64:         a1.person = "سامر خليل";
+65:         Model.Tx a2 = tx(1, true, 200000, "USD", now - 20 * DAY, "حوالة");
+66:         Model.Tx a3 = tx(1, false, 500000, "USD", now - 10 * DAY, "تسليم");
+67:         a3.service = "اعتماد";
+68:         a3.dest = "حلب";
+69:         Model.Tx a4 = tx(1, true, 38500, "EUR", now - 5 * DAY, "راجع154 الف");
+70:         Model.Tx a5 = tx(2, false, 300000, "EUR", now - 3 * DAY, "حوالة");
+71:         a5.feeType = Model.FEE_THEM;
+72:         a5.fee = 1500;
+73:         a5.feeCurrency = "EUR";
+74:         Model.Tx gone = tx(1, true, 999900, "USD", now - 15 * DAY, "خطأ");
+75:         gone.status = "CANCELLED";
+76:         Model.Tx old = tx(1, true, 70000, "USD", now - 100 * DAY, "قديمة");
+77:         d.txs.addAll(Arrays.asList(old, a1, gone, a2, a3, a4, a5));
+78:         d.openings.add(new OwnerReports.Opening(1, "USD", 50000, now - 200 * DAY));
+79: 
+80:         System.out.println("== الخلاصة والقاعدة المحاسبية");
+81:         ReportBuilder.Spec s = new ReportBuilder.Spec();
+82:         s.from = now - 60 * DAY;
+83:         ReportBuilder.Result r = ReportBuilder.compute(s, d);
+84:         ReportBuilder.Agg u = r.totals.get("USD"), e = r.totals.get("EUR");
+85:         check(r.rows.size() == 5, "5 حركات نشطة في 60 يومًا (الملغاة والقديمة خارجها): " + r.rows.size());
+86:         check(u.us == 1200000 && u.them == 500000 && u.net() == 700000 && u.feeUs == 10000 && u.impact() == 710000,
+87:                 "الدولار: لنا 12,000 علينا 5,000 الصافي 7,000 + أجرة 1% (100) = أثر 7,100");
+88:         check(e.us == 0 && e.feeUs == 38500 && e.them == 300000 && e.feeThem == 1500 && e.impact() == 38500 - 300000 - 1500,
+89:                 "اليورو: «راجع» 385 في الأجور لا في الحوالات، وحوالة علينا 3,000 بأجرة علينا 15");
+90: 
+91:         System.out.println("== التصفية");
+92:         ReportBuilder.Spec f = new ReportBuilder.Spec();
+93:         f.from = s.from;
+94:         f.direction = ReportBuilder.DIR_THEM;
+95:         check(ReportBuilder.compute(f, d).rows.size() == 2, "علينا فقط: حركتان");
+96:         f = new ReportBuilder.Spec();
+97:         f.kind = ReportBuilder.K_RAJE;
+98:         check(ReportBuilder.compute(f, d).rows.size() == 1, "الراجع فقط: حركة واحدة");
+99:         f = new ReportBuilder.Spec();
+100:         f.kind = ReportBuilder.K_WITH_FEE;
+101:         check(ReportBuilder.compute(f, d).rows.size() == 2, "حوالات بأجرة: 2");
+102:         f = new ReportBuilder.Spec();
+103:         f.text = "سامر";
+104:         check(ReportBuilder.compute(f, d).rows.size() == 1, "بحث بالمستفيد «سامر»");
+105:         f = new ReportBuilder.Spec();
+106:         f.minAmount = new BigDecimal("2000");
+107:         f.maxAmount = new BigDecimal("5000");
+108:         check(ReportBuilder.compute(f, d).rows.size() == 3, "المبلغ بين 2,000 و5,000: 3 (2,000 و5,000 و3,000)");
+109:         f = new ReportBuilder.Spec();
+110:         f.status = ReportBuilder.S_CANCELLED;
+111:         check(ReportBuilder.compute(f, d).rows.size() == 1, "الملغاة فقط: 1");
+112:         f = new ReportBuilder.Spec();
+113:         f.offices.add(2L);
+114:         check(ReportBuilder.compute(f, d).rows.size() == 1, "مكتب واحد");
+115:         f = new ReportBuilder.Spec();
+116:         f.service = "اعتماد";
+117:         f.dest = "حلب";
+118:         check(ReportBuilder.compute(f, d).rows.size() == 1, "الخدمة والوجهة");
+119: 
+120:         System.out.println("== التجميع والمقارنة والجدول المتقاطع");
+121:         ReportBuilder.Spec g = new ReportBuilder.Spec();
+122:         g.from = now - 30 * DAY;
+123:         g.to = now;
+124:         g.group = ReportBuilder.G_OFFICE;
+125:         g.compare = true;
+126:         g.group2 = ReportBuilder.G_KIND;
+127:         g.measure = ReportBuilder.M_COUNT;
+128:         ReportBuilder.Result rg = ReportBuilder.compute(g, d);
+129:         check(rg.groups.size() == 2 && rg.groups.get("1").get("USD").count == 2, "بالمكتب: النور 2 حركتان بالدولار في 30 يومًا");
+130:         check(rg.previous.get("1").get("USD").count == 1 && rg.previous.get("1").get("USD").us == 1000000, "الفترة السابقة (30 يومًا قبلها): حوالة 10,000");
+131:         check("+100%".equals(ReportBuilder.change(2, 1)) && "جديد".equals(ReportBuilder.change(3, 0)) && "−50%".equals(ReportBuilder.change(1, 2)), "نسب التغيّر");
+132:         long pivotTotal = 0;
+133:         for (Map<String, Map<String, ReportBuilder.Agg>> row : rg.pivot.values())
+134:             for (Map<String, ReportBuilder.Agg> c : row.values()) for (ReportBuilder.Agg x : c.values()) pivotTotal += x.count;
+135:         check(pivotTotal == rg.rows.size(), "مجموع الجدول المتقاطع = عدد الحركات");
+136:         ReportBuilder.Spec m = new ReportBuilder.Spec();
+137:         m.group = ReportBuilder.G_MONTH;
+138:         ReportBuilder.Result rm = ReportBuilder.compute(m, d);
+139:         List<String> keys = new ArrayList<>(rm.groups.keySet());
+140:         check(keys.size() >= 3 && keys.get(0).compareTo(keys.get(keys.size() - 1)) < 0, "بالشهر: مرتبة زمنيًا " + keys);
+141: 
+142:         System.out.println("== الكشف التفصيلي برصيد متراكم");
+143:         ReportBuilder.Spec k = new ReportBuilder.Spec();
+144:         k.group = ReportBuilder.G_NONE;
+145:         k.offices.add(1L);
+146:         k.currencies.add("USD");
+147:         k.from = now - 60 * DAY;
+148:         Report rep = ReportBuilder.build(k, d, "مكتب الاختبار");
+149:         Report.Section det = rep.sections.get(rep.sections.size() - 1);
+150:         Object last = det.rows.get(det.rows.size() - 1).cells[det.cols.size() - 1];
+151:         // قبل الفترة: رصيد سابق 500 + حوالة قديمة 700 = 1,200؛ ثم +10,000 +100 أجرة +2,000 −5,000 = 8,300
+152:         check(last instanceof Report.Bal && ((Report.Bal) last).v == 830000, "الرصيد المتراكم في آخر سطر 8,300 (" + last + ")");
+153:         check(det.rows.get(0).cells[6].equals("الرصيد قبل الفترة") && ((Report.Bal) det.rows.get(0).cells[det.cols.size() - 1]).v == 120000, "يبدأ برصيد ما قبل الفترة 1,200");
+154: 
+155:         System.out.println("== القوالب والتصدير");
+156:         g.title = "مقارنة شهرية";
+157:         g.text = "حوالة";
+158:         g.minAmount = new BigDecimal("12.5");
+159:         ReportBuilder.Spec back = ReportBuilder.Spec.fromJson(new JSONObject(g.toJson().toString()));
+160:         check(back.toJson().toString().equals(g.toJson().toString()), "القالب يُحفظ ويُقرأ كما هو");
+161:         Report full = ReportBuilder.build(g, d, "");
+162:         ByteArrayOutputStream bo = new ByteArrayOutputStream();
+163:         XlsxWriter.write(full, bo, null, TimeZone.getTimeZone("UTC"));
+164:         check(bo.size() > 3000, "Excel بكل الأقسام (" + full.sections.size() + " أقسام، " + bo.size() + " بايت)");

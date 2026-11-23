@@ -1,0 +1,178 @@
+1: package com.smart.hawala;
+2: 
+3: import java.math.BigDecimal;
+4: import java.text.Normalizer;
+5: import java.util.ArrayList;
+6: import java.util.Calendar;
+7: import java.util.Collections;
+8: import java.util.Comparator;
+9: import java.util.HashMap;
+10: import java.util.HashSet;
+11: import java.util.LinkedHashMap;
+12: import java.util.List;
+13: import java.util.Locale;
+14: import java.util.Map;
+15: import java.util.Set;
+16: import java.util.TreeMap;
+17: 
+18: /**
+19:  * 8.0: تقارير صاحب المكتب (منطق بحت يُختبر على الكمبيوتر) من الحركات نفسها، دون تسجيل شيء جديد:
+20:  * حجم العمل الشهري ونموه، وتركّز العمل، وعمر الأرصدة، والحسابات الخاملة، والمكاتب الصاعدة والمتراجعة والجديدة،
+21:  * والأجور لنا وعلينا وفرق العملة، والمرتجعات والتصحيحات، والخدمات والوجهات، وحجم الحوالة، وجودة التسجيل.
+22:  *
+23:  * <p>القواعد: تُحسب الحركات النشطة فقط (الملغاة والمرفوضة وبانتظار الاعتماد خارج الأرقام). عمر الرصيد بطريقة «الأقدم يُسدَّد أولًا»:
+24:  * الرصيد الحالي يُنسب إلى أحدث الحركات التي صنعته. الأجور من خانة الأجرة، ومن الحركات التي بيانها «أجور» (كما في الملفات المنقولة).
+25:  */
+26: public final class OwnerReports {
+27:     private OwnerReports() {}
+28: 
+29:     public static final long DAY = 86400000L;
+30: 
+31:     public static final class Opening {
+32:         public long office, signed, when;
+33:         public String currency;
+34: 
+35:         public Opening(long office, String currency, long signed, long when) {
+36:             this.office = office;
+37:             this.currency = currency;
+38:             this.signed = signed;
+39:             this.when = when;
+40:         }
+41:     }
+42: 
+43:     public static final class Input {
+44:         public long now;
+45:         public List<Model.Tx> txs = new ArrayList<>();
+46:         public List<Opening> openings = new ArrayList<>();
+47:         public Map<Long, String> names = new HashMap<>();
+48:         public Map<String, Integer> decimals = new HashMap<>();
+49:         /** قيمة وحدة العملة بالدولار (لفرق العملة)؛ اختياري. */
+50:         public Map<String, BigDecimal> usdRates = new HashMap<>();
+51:     }
+52: 
+53:     // ===================================================================================
+54:     // أدوات
+55:     // ===================================================================================
+56: 
+57:     static boolean active(Model.Tx t) { return t.isActive(); }
+58: 
+59:     static int dec(Input in, String c) {
+60:         Integer d = in.decimals.get(c);
+61:         return d == null ? 2 : d;
+62:     }
+63: 
+64:     static String name(Input in, long office) {
+65:         String n = in.names.get(office);
+66:         return n == null || n.isEmpty() ? "مكتب " + office : n;
+67:     }
+68: 
+69:     /** للمقارنة فقط: بلا تشكيل، وتوحيد الألف والتاء المربوطة والياء، ومسافات مفردة. */
+70:     public static String norm(String s) {
+71:         if (s == null) return "";
+72:         String x = Normalizer.normalize(s, Normalizer.Form.NFKC).replaceAll("[\\u064B-\\u065F\\u0670\\u0640]", "");
+73:         x = x.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا').replace('ة', 'ه').replace('ى', 'ي');
+74:         return x.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+75:     }
+76: 
+77:     private static final java.util.regex.Pattern FEE = java.util.regex.Pattern.compile("^(ال)?(اجور|اجره|اجر(?!\\p{L}))|^عمول");
+78: 
+79:     /**
+80:      * حركة أجور مستقلة: يبدأ بيانها بـ«أجور» أو «أجرة» أو «اجر5436» أو «عمولة»، أو يذكر «راجع».
+81:      * حوالة بيانها «عمان مع أجور» ليست أجرة: مبلغها مبلغ الحوالة.
+82:      */
+83:     public static boolean feeRow(Model.Tx t) {
+84:         String d = norm(t.description);
+85:         return FEE.matcher(d).find() || RAJE.matcher(d).find();
+86:     }
+87: 
+88:     /**
+89:      * «راجع» بلغة المكاتب: أجرة على حوالة (يدفعها المكتب لنا حين تكون الحركة «لنا»، وندفعها له حين تكون «علينا»).
+90:      * «راجع154 الف» = الأجرة عن حوالة بـ154 ألفًا، ومبلغ الحركة هو الأجرة نفسها.
+91:      */
+92:     static final java.util.regex.Pattern RAJE = java.util.regex.Pattern.compile("(^|[^\\p{L}])(ال)?راجع(?!\\p{L})");
+93: 
+94:     public static boolean rajeRow(Model.Tx t) { return RAJE.matcher(norm(t.description)).find(); }
+95: 
+96:     private static final java.util.regex.Pattern RAJE_BASE = java.util.regex.Pattern.compile(
+97:             "راجع\\s*(\\d+(?:[.,]\\d+)?)\\s*(الف|الاف|اف|الفين)?((?:\\s*\\+\\s*\\d+(?:[.,]\\d+)?\\s*(?:الف|الاف|اف)?)*)");
+98:     private static final java.util.regex.Pattern PLUS_TERM = java.util.regex.Pattern.compile("\\+\\s*(\\d+(?:[.,]\\d+)?)\\s*(الف|الاف|اف)?");
+99: 
+100:     /**
+101:      * المبلغ المذكور بعد «راجع» (حجم الحوالة التي هذه أجرتها) بوحدات العملة، أو null إن لم يُذكر.
+102:      * «راجع154 الف» = 154,000 · «راجع 5000» = 5,000 · «راجع35 الف+ 50125» = 85,125.
+103:      */
+104:     public static BigDecimal rajeBase(String description) {
+105:         String d = norm(description);
+106:         StringBuilder ascii = new StringBuilder(d.length());
+107:         for (char ch : d.toCharArray()) ascii.append(ch >= '٠' && ch <= '٩' ? (char) ('0' + ch - '٠') : ch);
+108:         java.util.regex.Matcher m = RAJE_BASE.matcher(ascii);
+109:         if (!m.find()) return null;
+110:         BigDecimal v = term(m.group(1), m.group(2));
+111:         java.util.regex.Matcher p = PLUS_TERM.matcher(m.group(3) == null ? "" : m.group(3));
+112:         while (p.find()) v = v.add(term(p.group(1), p.group(2)));
+113:         return v.signum() > 0 ? v : null;
+114:     }
+115: 
+116:     private static BigDecimal term(String num, String unit) {
+117:         BigDecimal v = new BigDecimal(num.replace(',', '.'));
+118:         return unit != null && !unit.isEmpty() ? v.multiply(BigDecimal.valueOf(1000)) : v;
+119:     }
+120: 
+121:     /**
+122:      * نسبة الراجع الفعلية (بالمئة) = الأجرة ÷ المبلغ المذكور. إن جاءت أكبر من 10% دون كلمة «ألف»
+123:      * فالأرجح أن المذكور بالآلاف («راجع33» على أجرة 66) فيُضرب بألف؛ وإن بقيت غير معقولة تُهمل.
+124:      */
+125:     public static BigDecimal rajeRate(Model.Tx t, int decimals) {
+126:         BigDecimal base = rajeBase(t.description);
+127:         if (base == null) return null;
+128:         BigDecimal fee = BigDecimal.valueOf(t.amount, decimals);
+129:         BigDecimal r = fee.multiply(BigDecimal.valueOf(100)).divide(base, 4, java.math.RoundingMode.HALF_UP);
+130:         if (r.compareTo(BigDecimal.TEN) > 0) r = r.divide(BigDecimal.valueOf(1000), 4, java.math.RoundingMode.HALF_UP);
+131:         return r.compareTo(BigDecimal.TEN) > 0 || r.signum() <= 0 ? null : r;
+132:     }
+133: 
+134:     /** حوالة راجعة (أُعيدت): البيان يذكر الإرجاع. «راجع» وحدها أجرة لا إرجاع. */
+135:     public static boolean returnRow(Model.Tx t) {
+136:         String d = norm(t.description);
+137:         return d.contains("مرتجع") || d.contains("راجعه") || d.contains("رجعت") || d.contains("رجوع") || d.contains("ارجاع") || d.contains("مردود");
+138:     }
+139: 
+140:     static int monthKey(long t) {
+141:         Calendar c = Model.cal();
+142:         c.setTimeInMillis(t);
+143:         return c.get(Calendar.YEAR) * 100 + c.get(Calendar.MONTH) + 1;
+144:     }
+145: 
+146:     static String monthLabel(int k) { return (k / 100) + "/" + String.format(Locale.US, "%02d", k % 100); }
+147: 
+148:     static int prevMonth(int k, int n) {
+149:         int y = k / 100, m = k % 100 - n;
+150:         while (m <= 0) {
+151:             m += 12;
+152:             y--;
+153:         }
+154:         return y * 100 + m;
+155:     }
+156: 
+157:     static String pct(long part, long whole) {
+158:         if (whole == 0) return "—";
+159:         return BigDecimal.valueOf(part).multiply(BigDecimal.valueOf(100)).divide(BigDecimal.valueOf(whole), 1, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString() + "%";
+160:     }
+161: 
+162:     static Report.Money money(Input in, String c, long v) { return new Report.Money(v, dec(in, c)); }
+163: 
+164:     /** العدد مع المعدود بالعربية: مكتب واحد، مكتبان، 3 مكاتب، 11 مكتبًا. */
+165:     public static String count(long n, String one, String two, String plural, String acc) {
+166:         if (n == 0) return "لا شيء";
+167:         if (n == 1) return one + " واحد";
+168:         if (n == 2) return two;
+169:         long r = n % 100;
+170:         return n + " " + (r >= 3 && r <= 10 ? plural : acc);
+171:     }
+172: 
+173:     static String offices(long n) { return count(n, "مكتب", "مكتبان", "مكاتب", "مكتبًا"); }
+174: 
+175:     static String fmt(Input in, String c, long v) { return "\u2066" + Model.fmt(v, dec(in, c)) + " " + c + "\u2069"; }
+176: 
+177:     /** أثر الحركة على رصيد المكتب (لنا موجب): الأصل ثم الأجرة. */
+178:     static void effects(Model.Tx t, List<Object[]> out) {

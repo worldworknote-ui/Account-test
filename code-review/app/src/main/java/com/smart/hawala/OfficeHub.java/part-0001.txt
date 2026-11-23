@@ -1,0 +1,198 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.content.Intent;
+5: import android.graphics.Color;
+6: import android.graphics.drawable.GradientDrawable;
+7: import android.net.Uri;
+8: import android.text.TextUtils;
+9: import android.view.Gravity;
+10: import android.view.View;
+11: import android.widget.EditText;
+12: import android.widget.FrameLayout;
+13: import android.widget.LinearLayout;
+14: import android.widget.TextView;
+15: import java.util.ArrayList;
+16: import java.util.HashMap;
+17: import java.util.List;
+18: import java.util.Locale;
+19: import java.util.Map;
+20: 
+21: /**
+22:  * تبويب «المكاتب»: قائمة المكاتب بأرصدتها ومرشحات سريعة، وصفحة لكل مكتب تجمع كل ما يخصه:
+23:  * الرصيد، حركة جديدة، الكشف، مطابقة الرصيد، الحركات، المطابقات، والبيانات.
+24:  * لا تحسب هذه الشاشة أي رصيد بنفسها: كل الأرصدة من دفتر القيود (Db.officeBalances / Db.balances).
+25:  */
+26: final class OfficeHub {
+27:     private final MainActivity a;
+28:     private String query = "";
+29:     private int filter = 0;
+30:     private int innerTab = 0;
+31:     static final String[] FILTERS = {"الكل", "المثبّتة", "لنا", "علينا", "الموقوفة"};
+32: 
+33:     OfficeHub(MainActivity a) { this.a = a; }
+34: 
+35:     // ===================================================================================
+36:     // آخر المكاتب المفتوحة (للصفحة الرئيسية واختيار المكتب)
+37:     // ===================================================================================
+38: 
+39:     static List<Long> recentIds(Db db) {
+40:         List<Long> out = new ArrayList<>();
+41:         for (String s : db.setting("recent_offices", "").split(",")) {
+42:             try {
+43:                 long id = Long.parseLong(s.trim());
+44:                 if (!out.contains(id)) out.add(id);
+45:             } catch (NumberFormatException ignored) {
+46:                 // تجاهل
+47:             }
+48:         }
+49:         return out;
+50:     }
+51: 
+52:     static void touch(Db db, long officeId) {
+53:         try {
+54:             db.touchOffice(officeId);
+55:         } catch (Exception ignored) {
+56:             // ترتيب «آخر ما فتحته» غير حرج
+57:         }
+58:         List<Long> ids = recentIds(db);
+59:         ids.remove(officeId);
+60:         ids.add(0, officeId);
+61:         StringBuilder sb = new StringBuilder();
+62:         for (int i = 0; i < ids.size() && i < 8; i++) {
+63:             if (sb.length() > 0) sb.append(',');
+64:             sb.append(ids.get(i));
+65:         }
+66:         db.setSettingQuiet("recent_offices", sb.toString());
+67:     }
+68: 
+69:     List<Model.Office> recentOffices(int max) {
+70:         List<Model.Office> out = new ArrayList<>();
+71:         for (long id : recentIds(a.db)) {
+72:             Model.Office o = a.db.office(id);
+73:             if (o != null) out.add(o);
+74:             if (out.size() >= max) break;
+75:         }
+76:         return out;
+77:     }
+78: 
+79:     // ===================================================================================
+80:     // قائمة المكاتب
+81:     // ===================================================================================
+82: 
+83:     void showList() {
+84:         if (!a.require(Auth.Perm.VIEW)) return;
+85:         a.here(this::showList);
+86:         a.rootScreen("المكاتب", "offices");
+87:         a.eyeAction(this::showList);
+88:         if (a.can(Auth.Perm.OFFICES)) a.headerAction(R.drawable.ic_plus, "إضافة مكتب", v -> a.officesScreen.form(null));
+89:         final List<Model.Office> all = a.db.offices();
+90:         final Map<Long, Map<String, Long>> balAll = a.db.officeBalances();
+91:         final int sort = OfficeOrder.clamp((int) a.db.settingLong("office_sort", OfficeOrder.ALPHA));
+92:         OfficeOrder.sort(all, sort, a.db.officeOrderInputs(balAll));
+93:         final Map<String, java.math.BigDecimal> usdRates = a.db.usdRates();
+94:         if (all.isEmpty()) {
+95:             LinearLayout c = a.card();
+96:             c.addView(a.text("لا توجد مكاتب بعد", 17, a.ink, true));
+97:             c.addView(a.text("أضف المكاتب التي تتعامل معها، ثم سجّل الحركات عليها. لكل مكتب صفحة فيها رصيده وكشفه ومطابقاته.", 14, a.muted, false));
+98:             if (a.can(Auth.Perm.OFFICES)) c.addView(a.makeButton("إضافة مكتب", a.primary, v -> a.officesScreen.form(null)), a.lp(-1, 50, 6));
+99:             return;
+100:         }
+101:         final Map<Long, Map<String, Long>> bal = balAll;
+102:         final Map<String, Integer> dec = a.db.decimalsMap();
+103: 
+104:         LinearLayout sr = searchBox("ابحث باسم المكتب أو الهاتف");
+105:         final EditText q = (EditText) sr.getTag();
+106:         q.setText(query);
+107:         a.body.addView(sr, a.lp(-1, 50, 4));
+108:         // 9.0: الترتيب: أبجديًا، الأكبر رصيدًا، الأصغر رصيدًا، الأكثر استخدامًا، آخر ما فتحته (المثبّتة أولًا دائمًا)
+109:         LinearLayout so = a.row();
+110:         so.addView(a.icon(R.drawable.ic_sliders, a.muted, 18), new LinearLayout.LayoutParams(a.dp(18), a.dp(18)));
+111:         so.addView(a.text("الترتيب:", 13, a.muted, false));
+112:         TextView pick = a.pill(OfficeOrder.NAMES[sort] + "  ▾", true, v -> new android.app.AlertDialog.Builder(a).setTitle("ترتيب المكاتب")
+113:                 .setSingleChoiceItems(OfficeOrder.NAMES, sort, (d, w) -> {
+114:                     d.dismiss();
+115:                     a.db.setSettingQuiet("office_sort", "" + w);
+116:                     showList();
+117:                 }).setNegativeButton("إلغاء", null).show());
+118:         so.addView(pick, new LinearLayout.LayoutParams(-2, -2));
+119:         if (sort == OfficeOrder.BIGGEST || sort == OfficeOrder.SMALLEST)
+120:             so.addView(a.text("(الميزان بالدولار)", 12, a.muted, false));
+121:         a.body.addView(so, a.lp(-1, -2, 2));
+122: 
+123:         final LinearLayout chips = a.row();
+124:         final LinearLayout list = new LinearLayout(a);
+125:         list.setOrientation(LinearLayout.VERTICAL);
+126:         final Runnable[] fill = new Runnable[1];
+127:         final Runnable drawChips = () -> {
+128:             chips.removeAllViews();
+129:             for (int i = 0; i < FILTERS.length; i++) {
+130:                 final int k = i;
+131:                 chips.addView(a.pill(FILTERS[i], i == filter, v -> {
+132:                     filter = k;
+133:                     fill[0].run();
+134:                 }), a.gap(-2, -2, 3));
+135:             }
+136:         };
+137:         a.body.addView(a.strip(chips), a.lp(-1, -2, 4));
+138:         a.body.addView(list);
+139:         fill[0] = () -> {
+140:             drawChips.run();
+141:             query = q.getText().toString();
+142:             list.removeAllViews();
+143:             String f = query.trim().toLowerCase(Locale.ROOT);
+144:             int shown = 0;
+145:             for (final Model.Office o : all) {
+146:                 String hay = (Model.nz(o.name) + " " + Model.nz(o.shortName) + " " + Model.nz(o.phone) + " " + Model.nz(o.location)).toLowerCase(Locale.ROOT);
+147:                 if (!f.isEmpty() && !hay.contains(f)) continue;
+148:                 Map<String, Long> b = bal.get(o.id);
+149:                 if (b == null) b = new HashMap<>();
+150:                 if (!passes(o, b)) continue;
+151:                 shown++;
+152:                 list.addView(officeCard(o, b, dec, usdRates, this::showList), a.lp(-1, -2, 4));
+153:             }
+154:             if (shown == 0) list.addView(a.text("لا توجد مكاتب مطابقة.", 14, a.muted, false));
+155:         };
+156:         q.addTextChangedListener(Ui.watcher(fill[0]));
+157:         fill[0].run();
+158:         a.hint("ضغطة مطوّلة على أي مكتب: تثبيت، حركة جديدة، مطابقة رصيد، كشف.");
+159:     }
+160: 
+161:     private boolean passes(Model.Office o, Map<String, Long> b) {
+162:         switch (filter) {
+163:             case 1: return o.pinned;
+164:             case 2:
+165:                 for (long v : b.values()) if (v > 0) return true;
+166:                 return false;
+167:             case 3:
+168:                 for (long v : b.values()) if (v < 0) return true;
+169:                 return false;
+170:             case 4: return !o.active;
+171:             default: return true;
+172:         }
+173:     }
+174: 
+175:     /** حقل بحث بأيقونة؛ الحقل نفسه محفوظ في tag. */
+176:     LinearLayout searchBox(String hint) {
+177:         LinearLayout r = a.row();
+178:         r.setPadding(a.dp(12), 0, a.dp(6), 0);
+179:         r.setBackground(a.round(a.surface, a.line, 14));
+180:         r.addView(a.icon(R.drawable.ic_search, a.muted, 20), new LinearLayout.LayoutParams(a.dp(20), a.dp(20)));
+181:         EditText e = new EditText(a);
+182:         e.setHint(hint);
+183:         e.setSingleLine(true);
+184:         e.setTextSize(15);
+185:         e.setTextColor(a.ink);
+186:         e.setHintTextColor(a.muted);
+187:         e.setBackground(null);
+188:         e.setPadding(a.dp(8), 0, a.dp(8), 0);
+189:         e.setTextDirection(View.TEXT_DIRECTION_ANY_RTL);
+190:         r.addView(e, new LinearLayout.LayoutParams(0, -1, 1));
+191:         r.setTag(e);
+192:         return r;
+193:     }
+194: 
+195:     View officeCard(final Model.Office o, Map<String, Long> b, Map<String, Integer> dec, final Runnable refresh) {
+196:         return officeCard(o, b, dec, null, refresh);
+197:     }
+198: 

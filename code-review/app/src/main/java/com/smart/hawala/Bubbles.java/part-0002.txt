@@ -1,0 +1,158 @@
+177:      * 12.3: الأسطر خارج كل الأشكال تُجمَّع بالمسافات (ثم يُحذف ما هو تنبيه من البرنامج). الفقاعة بلا نص (صورة بلا تعليق) لا تُرقَّم.
+178:      */
+179:     static List<Bubble> byShapes(List<Node> shapes, List<Node> lines) {
+180:         List<Node> rest = new ArrayList<>();
+181:         List<List<Node>> in = new ArrayList<>();
+182:         for (int i = 0; i < shapes.size(); i++) in.add(new ArrayList<>());
+183:         for (Node t : lines) {
+184:             int best = -1;
+185:             long area = Long.MAX_VALUE;
+186:             for (int i = 0; i < shapes.size(); i++) {
+187:                 Node s = shapes.get(i);
+188:                 int cx = t.cx(), cy = t.cy();
+189:                 if (cx < s.x || cx > s.x + s.w || cy < s.y || cy > s.y + s.h) continue;
+190:                 long a = (long) s.w * s.h;
+191:                 if (a < area) { area = a; best = i; }
+192:             }
+193:             if (best >= 0) {
+194:                 // 12.5: أسطر داخل فقاعة صورة/ملصق (تعليق الصورة، أزرار التنزيل) لا تُنقل
+195:                 if (shapes.get(best).kind != 'M') in.get(best).add(t);
+196:             } else rest.add(t);
+197:         }
+198:         List<Bubble> out = new ArrayList<>();
+199:         for (int i = 0; i < shapes.size(); i++) {
+200:             List<Node> l = in.get(i);
+201:             if (l.isEmpty()) continue;
+202:             l.sort(Comparator.comparingInt((Node t) -> t.y).thenComparingInt(t -> -t.x));
+203:             // أسطر على الارتفاع نفسه (اسم الملف والوقت مثلًا) تبقى على سطر واحد بترتيبها من اليمين
+204:             StringBuilder sb = new StringBuilder();
+205:             Node prev = null;
+206:             for (Node t : l) {
+207:                 if (prev != null) sb.append(Math.abs(t.cy() - prev.cy()) < Math.max(4, Math.min(t.h, prev.h) / 2) ? " " : "\n");
+208:                 sb.append(t.text.trim());
+209:                 prev = t;
+210:             }
+211:             Node s = shapes.get(i);
+212:             out.add(bubble(s.x, s.y, s.w, s.h, sb.toString()));
+213:         }
+214:         // 12.3: فقاعة لم يُعرف شكلها (لونها قريب جدًا من الخلفية مثلًا) لا تضيع: أسطرها خارج كل الأشكال تُجمَّع كما في 12.1
+215:         if (!rest.isEmpty())
+216:             for (Bubble b : cluster(rest)) if (letters(b.text) >= 3) out.add(b);
+217:         out.sort(Comparator.comparingInt((Bubble b) -> b.y));
+218:         return out;
+219:     }
+220: 
+221:     /** عدد الحروف والأرقام (كسرة قراءة مثل «ف» خارج الفقاعات ليست رسالة). */
+222:     static int letters(String t) {
+223:         int n = 0;
+224:         for (char c : t.toCharArray()) if (Character.isLetterOrDigit(c)) n++;
+225:         return n;
+226:     }
+227: 
+228:     /** أسطر قراءة الصورة إلى فقاعات: فجوة عمودية كبيرة، أو تغيّر الجهة (وارد/صادر)، أو سطر وقت، تبدأ فقاعة جديدة. */
+229:     static List<Bubble> cluster(List<Node> lines) {
+230:         List<Node> l = new ArrayList<>(lines);
+231:         l.sort(Comparator.comparingInt((Node n) -> n.y).thenComparingInt(n -> -n.x));
+232:         List<Bubble> out = new ArrayList<>();
+233:         List<Node> cur = new ArrayList<>();
+234:         int avgH = 0;
+235:         for (Node n : l) avgH += n.h;
+236:         avgH = l.isEmpty() ? 16 : Math.max(8, avgH / l.size());
+237:         for (Node n : l) {
+238:             if (!cur.isEmpty()) {
+239:                 Node last = cur.get(cur.size() - 1);
+240:                 int gap = n.y - (last.y + last.h);
+241:                 int bx = Integer.MAX_VALUE, bx2 = Integer.MIN_VALUE;
+242:                 for (Node c : cur) {
+243:                     bx = Math.min(bx, c.x);
+244:                     bx2 = Math.max(bx2, c.x + c.w);
+245:                 }
+246:                 int overlap = Math.min(bx2, n.x + n.w) - Math.max(bx, n.x);
+247:                 // 12.2: سطر على ارتفاع السطر السابق نفسه (الوقت بجانب النص) لا يبدأ فقاعة جديدة مهما بعُد أفقيًا
+248:                 boolean sameRow = Math.abs(n.cy() - last.cy()) < Math.max(4, Math.min(n.h, last.h) * 0.6);
+249:                 boolean side = !sameRow && overlap < Math.min(n.w, bx2 - bx) * 0.3;
+250:                 if ((!sameRow && gap > avgH * 0.75) || side || (!sameRow && WaCuts.timeLine(last.text))) {
+251:                     out.add(fromLines(cur));
+252:                     cur = new ArrayList<>();
+253:                 }
+254:             }
+255:             cur.add(n);
+256:         }
+257:         if (!cur.isEmpty()) out.add(fromLines(cur));
+258:         return out;
+259:     }
+260: 
+261:     private static Bubble fromLines(List<Node> c) {
+262:         int x = Integer.MAX_VALUE, y = Integer.MAX_VALUE, x2 = Integer.MIN_VALUE, y2 = Integer.MIN_VALUE;
+263:         StringBuilder sb = new StringBuilder();
+264:         for (Node n : c) {
+265:             x = Math.min(x, n.x);
+266:             y = Math.min(y, n.y);
+267:             x2 = Math.max(x2, n.x + n.w);
+268:             y2 = Math.max(y2, n.y + n.h);
+269:             if (sb.length() > 0) sb.append('\n');
+270:             sb.append(n.text.trim());
+271:         }
+272:         return bubble(x, y, x2 - x, y2 - y, sb.toString());
+273:     }
+274: 
+275:     /** اسم المحادثة: عنصر رأس صريح (H)، أو أعلى نص في نافذة البرنامج فوق الإطار وقريب منه أفقيًا. */
+276:     static String chatName(List<Node> nodes, Node win, int[] frame) {
+277:         for (Node n : nodes) if (n.kind == 'H' && !n.text.trim().isEmpty() && !noise(n.text)) return firstLine(n.text);
+278:         if (win == null) return "";
+279:         int top = win.y, band = Math.max(60, win.h / 8);
+280:         Node best = null;
+281:         for (Node n : nodes) {
+282:             if (n.kind != 'T' && n.kind != 'L') continue;
+283:             if (n.y < top || n.y > top + band) continue;
+284:             String t = n.text.trim();
+285:             if (t.length() < 2 || t.length() > 60 || noise(t)) continue;
+286:             if (frame != null && (n.cx() < frame[0] - 40 || n.cx() > frame[0] + frame[2] + 40)) continue;
+287:             if (best == null || n.y < best.y) best = n;
+288:         }
+289:         return best == null ? "" : firstLine(best.text);
+290:     }
+291: 
+292:     private static String firstLine(String s) {
+293:         String t = WaText.stripMarks(s).trim();
+294:         int i = t.indexOf('\n');
+295:         return (i < 0 ? t : t.substring(0, i)).trim();
+296:     }
+297: 
+298:     /** أقرب مكتب لاسم المحادثة: تطابق تام، ثم احتواء، ثم كلمات مشتركة. يعيد الفهرس أو -1. */
+299:     public static int matchOffice(String chat, List<String> names) {
+300:         String c = key(chat);
+301:         if (c.isEmpty()) return -1;
+302:         int best = -1;
+303:         double score = 0;
+304:         for (int i = 0; i < names.size(); i++) {
+305:             String n = key(names.get(i));
+306:             if (n.isEmpty()) continue;
+307:             double s;
+308:             if (n.equals(c)) s = 3;
+309:             else if (c.contains(n) || n.contains(c)) s = 2 + Math.min(n.length(), c.length()) / (double) Math.max(n.length(), c.length());
+310:             else s = words(c, n);
+311:             if (s > score) {
+312:                 score = s;
+313:                 best = i;
+314:             }
+315:         }
+316:         return score >= 0.6 ? best : -1;
+317:     }
+318: 
+319:     private static String key(String s) {
+320:         if (s == null) return "";
+321:         String n = MessageParser.norm(WaText.stripMarks(s)).toLowerCase(Locale.ROOT);
+322:         n = n.replaceAll("(?u)\\b(مكتب|شركه|شركة|صرافه|صرافة|للصرافه|للحوالات|حوالات|office|exchange)\\b", " ");
+323:         StringBuilder b = new StringBuilder();
+324:         for (char ch : n.toCharArray()) b.append(Character.isLetterOrDigit(ch) ? ch : ' ');
+325:         return b.toString().replaceAll("\\s+", " ").trim();
+326:     }
+327: 
+328:     private static double words(String a, String b) {
+329:         String[] x = a.split(" "), y = b.split(" ");
+330:         int common = 0;
+331:         for (String p : x) for (String q : y) if (p.length() > 1 && p.equals(q)) { common++; break; }
+332:         return common / (double) Math.max(1, Math.min(x.length, y.length));
+333:     }
+334: }

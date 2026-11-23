@@ -1,0 +1,112 @@
+1: import com.smart.hawala.DayClose;
+2: import com.smart.hawala.Model;
+3: import com.smart.hawala.Sanity;
+4: import java.util.List;
+5: 
+6: /** 8.0: تنبيهات المعقولية قبل الحفظ (ت2). */
+7: public class SanityTest {
+8:     static int fails = 0, passes = 0;
+9: 
+10:     static void check(boolean c, String m) {
+11:         if (c) passes++;
+12:         else fails++;
+13:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+14:     }
+15: 
+16:     static Model.Tx tx(long amount, String cur, String person, long at, String status) {
+17:         Model.Tx t = new Model.Tx();
+18:         t.amount = amount;
+19:         t.currency = cur;
+20:         t.person = person;
+21:         t.createdAt = at;
+22:         t.status = status;
+23:         return t;
+24:     }
+25: 
+26:     static Sanity.Input in(long amount) {
+27:         Sanity.Input i = new Sanity.Input();
+28:         i.amount = amount;
+29:         i.currency = "USD";
+30:         i.dec = 2;
+31:         i.when = 1_800_000_000_000L;
+32:         i.debit = true;
+33:         return i;
+34:     }
+35: 
+36:     public static void main(String[] a) {
+37:         long now = 1_800_000_000_000L, h = 3600000L;
+38:         Sanity.Input i = in(500000);
+39:         for (int k = 0; k < 6; k++) i.history.add(tx(100000, "USD", "س" + k, now - (k + 1) * h, "ACTIVE"));
+40:         List<String> w = Sanity.check(i);
+41:         check(w.size() == 1 && w.get(0).contains("غير معتاد") && w.get(0).contains("5,000") && w.get(0).contains("(\u20661,000\u2069)"), "5000 مقابل متوسط 1000: تنبيه " + w);
+42:         i.amount = 300000;
+43:         check(Sanity.check(i).isEmpty(), "ثلاثة أضعاف تمامًا: لا تنبيه");
+44:         Sanity.Input few = in(900000);
+45:         for (int k = 0; k < 4; k++) few.history.add(tx(100000, "USD", "", now - (k + 1) * h, "ACTIVE"));
+46:         check(Sanity.check(few).isEmpty(), "أقل من 5 حركات سابقة: لا يُحكم بالمتوسط");
+47:         Sanity.Input mixed = in(500000);
+48:         for (int k = 0; k < 6; k++) mixed.history.add(tx(100000, "EUR", "", now - (k + 1) * h, "ACTIVE"));
+49:         for (int k = 0; k < 6; k++) mixed.history.add(tx(100000, "USD", "", now - (k + 1) * h, "CANCELLED"));
+50:         check(Sanity.check(mixed).isEmpty(), "عملة أخرى وملغاة لا تدخل المتوسط");
+51: 
+52:         System.out.println("== التكرار");
+53:         Sanity.Input d = in(250000);
+54:         d.person = "  أحمد   محمود ";
+55:         d.history.add(tx(250000, "USD", "أحمد محمود", now - 4 * 60000L, "ACTIVE"));
+56:         List<String> dw = Sanity.check(d);
+57:         check(dw.size() == 1 && dw.get(0).contains("تكرار") && dw.get(0).contains("4 دقيقة"), "الشخص والمبلغ نفسه قبل 4 دقائق " + dw);
+58:         d.history.set(0, tx(250000, "USD", "أحمد محمود", now - 11 * 60000L, "ACTIVE"));
+59:         check(Sanity.check(d).isEmpty(), "بعد 11 دقيقة: لا تنبيه");
+60:         d.history.set(0, tx(250000, "USD", "أحمد محمود", now - 2 * 60000L, "CANCELLED"));
+61:         check(Sanity.check(d).isEmpty(), "المكرر ملغى: لا تنبيه");
+62:         d.history.set(0, tx(250000, "USD", "سامر", now - 2 * 60000L, "ACTIVE"));
+63:         check(Sanity.check(d).isEmpty(), "شخص آخر: لا تنبيه");
+64:         d.history.set(0, tx(250001, "USD", "أحمد محمود", now - 2 * 60000L, "ACTIVE"));
+65:         check(Sanity.check(d).isEmpty(), "مبلغ آخر: لا تنبيه");
+66: 
+67:         System.out.println("== حد المكتب");
+68:         Sanity.Input l = in(200000);
+69:         l.balanceBefore = 900000;
+70:         l.receivableLimit = 1000000L;
+71:         List<String> lw = Sanity.check(l);
+72:         check(lw.size() == 1 && lw.get(0).contains("لنا") && lw.get(0).contains("11,000"), "تجاوز حد «لنا» " + lw);
+73:         l.debit = false;
+74:         check(Sanity.check(l).isEmpty(), "الحركة المعاكسة تقرّب من الصفر: لا تنبيه");
+75:         Sanity.Input pl = in(300000);
+76:         pl.debit = false;
+77:         pl.balanceBefore = -100000;
+78:         pl.payableLimit = 350000L;
+79:         List<String> pw = Sanity.check(pl);
+80:         check(pw.size() == 1 && pw.get(0).contains("علينا") && pw.get(0).contains("4,000"), "تجاوز حد «علينا» " + pw);
+81:         pl.balanceBefore = -400000;
+82:         check(Sanity.check(pl).isEmpty(), "كان متجاوزًا قبلها: التنبيه بعد الحفظ يكفي (لا تكرار)");
+83: 
+84:         System.out.println("== بصمة اليوم (ت5)");
+85:         byte[] key = new byte[32], key2 = new byte[32];
+86:         for (int k = 0; k < 32; k++) { key[k] = (byte) k; key2[k] = (byte) (k + 1); }
+87:         java.util.List<Model.Tx> day = new java.util.ArrayList<>();
+88:         for (int k = 1; k <= 3; k++) {
+89:             Model.Tx t = tx(100000L * k, "USD", "", now + k, "ACTIVE");
+90:             t.id = k; t.uuid = "u" + k; t.type = Model.TYPE_DEBIT; t.feeType = Model.FEE_NONE; t.feeCurrency = "USD";
+91:             day.add(t);
+92:         }
+93:         String c1 = DayClose.code(key, DayClose.canonical("2026/10/14", day));
+94:         check(c1.matches("[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}") && !c1.matches(".*[01IO].*"), "رمز من 12 حرفًا بلا حروف ملتبسة: " + c1);
+95:         java.util.List<Model.Tx> rev = new java.util.ArrayList<>(day);
+96:         java.util.Collections.reverse(rev);
+97:         check(c1.equals(DayClose.code(key, DayClose.canonical("2026/10/14", rev))), "ترتيب القراءة لا يغيّر البصمة");
+98:         day.get(1).amount = 200001;
+99:         check(!c1.equals(DayClose.code(key, DayClose.canonical("2026/10/14", day))), "تغيير مبلغ بسنت واحد يغيّر البصمة");
+100:         day.get(1).amount = 200000;
+101:         day.get(2).status = "CANCELLED";
+102:         check(!c1.equals(DayClose.code(key, DayClose.canonical("2026/10/14", day))), "إلغاء حركة لاحقًا يغيّر بصمة يومها");
+103:         day.get(2).status = "ACTIVE";
+104:         check(c1.equals(DayClose.code(key, DayClose.canonical("2026/10/14", day))), "الحالة الأصلية تعيد البصمة نفسها");
+105:         check(!c1.equals(DayClose.code(key2, DayClose.canonical("2026/10/14", day))), "سرّ مكتب آخر = بصمة أخرى (لا تُزوَّر بلا السرّ)");
+106:         check(!c1.equals(DayClose.code(key, DayClose.canonical("2026/10/15", day))), "التاريخ جزء من البصمة");
+107:         check(DayClose.normalize(" " + c1.toLowerCase().replace("-", " ") + " ").equals(c1), "يُقبل الرمز بأحرف صغيرة وبلا شرطات");
+108: 
+109:         System.out.println(fails == 0 ? "ALL " + passes + " PASSED" : fails + " FAILED of " + (passes + fails));
+110:         if (fails > 0) System.exit(1);
+111:     }
+112: }

@@ -1,0 +1,85 @@
+390:         s.items.add(s.items.get(s.index - 1));
+391:         store(s);
+392:         a.toast("أُعيدت الرسالة إلى آخر الدفعة لتسجيلها من جديد.");
+393:     }
+394: 
+395:     void skipCurrent() {
+396:         State s = load();
+397:         if (s == null) return;
+398:         s.skipped++;
+399:         s.index++;
+400:         store(s);
+401:         if (s.done()) finish(s);
+402:         else showCurrent();
+403:     }
+404: 
+405:     void stop() {
+406:         final State s = load();
+407:         if (s == null) {
+408:             a.showHome();
+409:             return;
+410:         }
+411:         int left = s.items.size() - s.index;
+412:         new AlertDialog.Builder(a).setTitle("إنهاء الدفعة")
+413:                 .setMessage("بقيت " + left + " رسالة لم تُسجَّل. ستبقى في واتساب ويمكنك نسخها ولصقها لاحقًا.")
+414:                 .setPositiveButton("إنهاء", (d, w) -> {
+415:                     a.db.deleteSetting(KEY);
+416:                     a.toast("انتهت الدفعة: سُجّلت " + s.saved + "، وتُخطّيت " + (s.skipped + left) + ".");
+417:                     a.showHome();
+418:                 })
+419:                 .setNegativeButton("متابعة الدفعة", null).show();
+420:     }
+421: 
+422:     private void finish(State s) {
+423:         a.db.deleteSetting(KEY);
+424:         a.showHome();
+425:         if (s != null) {
+426:             new AlertDialog.Builder(a).setTitle("انتهت الدفعة")
+427:                     .setMessage("سُجّلت " + s.saved + " حركة" + (s.skipped > 0 ? "، وتُخطّيت " + s.skipped + " رسالة." : "."))
+428:                     .setPositiveButton("حسنًا", null).show();
+429:         }
+430:     }
+431: 
+432:     /** شريط أعلى نموذج التسجيل أثناء الدفعة: الرسالة n من N مع شريط تقدّم. */
+433:     LinearLayout strip(WaText.Msg m, int index, int total) {
+434:         // 10.13: شريط مضغوط: «الرسالة 2 من 5» وزرّا تخطٍّ وإنهاء صغيران في السطر نفسه، وتحتها خط التقدم
+435:         LinearLayout c = new LinearLayout(a);
+436:         c.setOrientation(LinearLayout.VERTICAL);
+437:         c.setPadding(a.dp(12), a.dp(6), a.dp(8), a.dp(6));
+438:         c.setBackground(a.round(a.primarySoft, a.primarySoft, 14));
+439:         c.setLayoutParams(a.lp(-1, -2, 3));
+440:         LinearLayout h = a.row();
+441:         h.setGravity(Gravity.CENTER_VERTICAL);
+442:         h.addView(a.text("دفعة واتساب: " + (index + 1) + " من " + total, 14, a.primaryInk, true), new LinearLayout.LayoutParams(0, -2, 1));
+443:         Button skip = a.smallButton("تخطٍّ", Color.rgb(120, 120, 120), v -> skipCurrent());
+444:         skip.setContentDescription("تخطّي هذه الرسالة");
+445:         h.addView(skip, new LinearLayout.LayoutParams(-2, a.dp(34)));
+446:         Button end = a.smallButton("إنهاء", a.red, v -> stop());
+447:         end.setContentDescription("إنهاء الدفعة");
+448:         LinearLayout.LayoutParams ep = new LinearLayout.LayoutParams(-2, a.dp(34));
+449:         ep.setMargins(a.dp(6), 0, 0, 0);
+450:         h.addView(end, ep);
+451:         c.addView(h);
+452:         android.widget.FrameLayout track = new android.widget.FrameLayout(a);
+453:         track.setBackground(a.round(Ui.mix(a.primarySoft, a.primary, 0.18f), Ui.mix(a.primarySoft, a.primary, 0.18f), 3));
+454:         android.view.View fill = new android.view.View(a);
+455:         fill.setBackground(a.round(a.primary, a.primary, 3));
+456:         track.addView(fill, new android.widget.FrameLayout.LayoutParams(0, -1));
+457:         track.post(() -> {
+458:             android.view.ViewGroup.LayoutParams lp = fill.getLayoutParams();
+459:             lp.width = (int) (track.getWidth() * (index + 1) / (float) Math.max(1, total));
+460:             fill.setLayoutParams(lp);
+461:         });
+462:         LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-1, a.dp(6));
+463:         tp.setMargins(0, a.dp(5), a.dp(4), 0);
+464:         c.addView(track, tp);
+465:         // 10.5 (§5): المكتب المثبّت ظاهر طوال الدفعة، ومكتب المرسل المعروف تنبيه فقط إن اختلف (لا يُغيَّر تلقائيًا)
+466:         Model.Office pin = WaPin.current(a.db);
+467:         if (pin != null) {
+468:             Model.Office known = officeFor(m.sender);
+469:             if (known != null && known.id != pin.id)
+470:                 c.addView(a.text("⚠ رسائله السابقة لـ«" + known.name + "» والمثبّت «" + pin.name + "»", 12, a.red, true));
+471:         }
+472:         return c;
+473:     }
+474: }

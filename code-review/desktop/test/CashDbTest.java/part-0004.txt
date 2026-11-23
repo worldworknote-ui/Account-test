@@ -1,0 +1,119 @@
+412:         check(throwsMsg(() -> db.addClientSwap(kid, "USD", 6000, "EUR", 5000, "", System.currentTimeMillis() - 400), "أكبر من رصيد"), "لا يُبدَّل أكثر من الرصيد");
+413:         db.addClientSwap(kid, "USD", 5000, "EUR", 4600, "اتفاق", System.currentTimeMillis() - 300);
+414:         Map<String, Long> kb = ClientBook.balances(db.clientMoves(kid));
+415:         check(b(kb, "USD") == 0 && b(kb, "EUR") == 4600, "التبديل: دينه 50 USD صار 46 EUR (لنا) " + kb);
+416:         check(throwsMsg(() -> db.setClientActive(kid, false), "ليس صفرًا"), "لا يُؤرشف عميل رصيده ليس صفرًا");
+417:         db.cancelClientMove(cash2.id, "خطأ");
+418:         kb = ClientBook.balances(db.clientMoves(kid));
+419:         check(b(kb, "EUR") == 4600 - 10000 && b(db.cashBalances(1), "USD") == b(c5, "USD") && db.cashMove(coId).cancelled(),
+420:                 "إلغاء التسليم من حساب العميل يلغي حركة الصندوق ويعيد له 100 EUR " + kb);
+421:         db.cashSetup("الصندوق الرئيسي", ue, null, true, true);
+422:         CashBox.Input st = in(CashBox.IN, "USD", 1000);
+423:         st.clientId = kid;
+424:         st.clientCurrency = "USD";
+425:         st.clientAmount = 1000;
+426:         db.addCashMove(st);
+427:         check(b(ClientBook.balances(db.clientMoves(kid)), "USD") == -1000, "الربط الإلزامي يقبل الحركة لحساب عميل");
+428:         db.cashSetup("الصندوق الرئيسي", ue, null, false, true);
+429:         Report kr = ClientBook.statement(db.client(kid), db.clientMoves(kid), 0, 0, db.decimalsMap(), "");
+430:         check(kr.sections.size() == 3, "كشف العميل: الرصيد + كشف لكل عملة (EUR وUSD): " + kr.sections.size());
+431:         Map<String, long[]> tot = ClientBook.totals(db.clientBalances());
+432:         check(tot.get("EUR")[1] == 5400 && tot.get("USD")[1] == 1000, "إجمالي العملاء: علينا 54 EUR و10 USD");
+433:         healthy(db, "بعد حسابات العملاء");
+434: 
+435:         System.out.println("== 10) النسخة الاحتياطية تنقل الصندوق كاملًا");
+436:         File bk = new File(ctx.getFilesDir(), "cash.sba");
+437:         BackupManager.Created created = BackupManager.createLocal(ctx, db, "كلمة-سر-الصندوق".toCharArray(), "9.0", m -> {});
+438:         Files.copy(created.file.toPath(), bk.toPath());
+439:         Map<String, Long> cashA = db.cashBalances();
+440:         int movesA = db.cashMoves().size();
+441:         Object[] dv2 = DeskCoreTest.device("cash2");
+442:         Context ctx2 = (Context) dv2[0];
+443:         Db db2 = (Db) dv2[1];
+444:         DeskCoreTest.restore(ctx2, db2, bk, "كلمة-سر-الصندوق");
+445:         check(db2.cashBalances().equals(cashA) && db2.cashMoves().size() == movesA && db2.cashConfig().strict == db.cashConfig().strict, "على الجهاز الآخر: " + movesA + " حركة صندوق وأرصدته وإعداداته كما هي " + db2.cashBalances());
+446:         boolean names = false;
+447:         for (CashBox.Move x : db2.cashMoves()) if ("أحمد".equals(x.party)) names = true;
+448:         check(names, "الأسماء المشفّرة في الصندوق تُقرأ بمفتاح الجهاز الآخر");
+449:         check(db2.cashBoxes().size() == 2 && db2.cashBalances(1).equals(db.cashBalances(1)) && db2.cashBalances(2).equals(db.cashBalances(2)), "الصناديق وأرصدتها " + db2.cashBoxes().size());
+450:         check(db2.cashCounts(1).size() == db.cashCounts(1).size() && db2.cashCounts(1).get(0).note.equals("جرد الخميس"), "9.0.1: سجل الجرد بملاحظاته");
+451:         check(db2.clientBalances().equals(db.clientBalances()) && db2.client(kid).name.equals("أبو خالد") && db2.clientMoves(kid).size() == db.clientMoves(kid).size(),
+452:                 "9.0.1: حسابات العملاء وأسماؤهم المشفّرة وحركاتهم");
+453:         healthy(db2, "الجهاز الآخر");
+454:         db2.close();
+455: 
+456:         System.out.println("== 11) المجانية: حذف مكتب له حركات يعيد مكانه");
+457:         Object[] dv3 = DeskCoreTest.device("free");
+458:         Context ctx3 = (Context) dv3[0];
+459:         Db db3 = (Db) dv3[1];
+460:         List<Long> ids = new ArrayList<>();
+461:         License.current = Entitlements.of(null, BuildInfo.BUILD_DATE);
+462:         final int F = Entitlements.FREE_OFFICES;   // 12.6: 15 (كانت 9)
+463:         for (int k = 1; k <= F; k++) {
+464:             long id = db3.addOffice("مكتب " + k, "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+465:             ids.add(id);
+466:             Db.TxInput t = new Db.TxInput();
+467:             t.office = id;
+468:             t.type = k % 2 == 0 ? Model.TYPE_DEBIT : Model.TYPE_CREDIT;
+469:             t.amount = 1000L * k;
+470:             t.currency = "USD";
+471:             t.when = System.currentTimeMillis() - 5000;
+472:             db3.addTx(t, null);
+473:         }
+474:         check(throwsMsg(() -> db3.addOffice("العاشر", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>()), String.valueOf(F)), "المكتب بعد الحد يُرفض في المجانية");
+475:         db3.deleteOffice(ids.get(0), true);
+476:         long tenth = db3.addOffice("العاشر", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+477:         check(tenth > 0 && db3.offices().size() == F, "بعد حذف مكتب له حركات يعود مكانه فارغًا ويُضاف مكتب جديد");
+478:         check(Entitlements.free("").maxTxPerOffice() == 1500, "حد الحركات 1500 لكل مكتب (12.6)");
+479: 
+480:         System.out.println("== 12) المجانية: استعادة نسخة فيها 12 مكتبًا باختيار 9");
+481:         Object[] dv4 = DeskCoreTest.device("many");
+482:         Context ctx4 = (Context) dv4[0];
+483:         Db db4 = (Db) dv4[1];
+484:         License.current = Entitlements.of(null, BuildInfo.BUILD_DATE);
+485:         Map<String, Long> wantBal = new TreeMap<>();
+486:         // لبناء 12 مكتبًا نتجاوز الحد بإضافة المكاتب على دفعات بنسخة احتياطية: نبنيها كمرخّص عبر دمج ملفات A–D مرارًا غير ممكن،
+487:         // لذلك نكتب 12 مكتبًا مباشرة في القاعدة (محاكاة نسخة من الكاملة)، ثم نستعيدها في جهاز مجاني.
+488:         net.zetetic.database.sqlcipher.SQLiteDatabase w = db4.getWritableDatabase();
+489:         final int N = F + 3;   // نسخة فيها مكاتب أكثر من حد المجانية
+490:         for (int k = 1; k <= N; k++) {
+491:             w.execSQL("INSERT INTO offices(name,active,pinned) VALUES(?,1,0)", new Object[]{Crypto.enc("ف" + k)});
+492:             long oid = k;
+493:             w.execSQL("INSERT INTO office_currencies(office_id,code) VALUES(?,?)", new Object[]{oid, "USD"});
+494:         }
+495:         for (int k = 1; k <= N; k++) {
+496:             Db.TxInput t = new Db.TxInput();
+497:             t.office = k;
+498:             t.type = Model.TYPE_DEBIT;
+499:             t.amount = 100L * k;
+500:             t.currency = "USD";
+501:             t.when = System.currentTimeMillis() - 5000;
+502:             db4.addTx(t, null);
+503:             wantBal.put("ف" + k, 100L * k);
+504:         }
+505:         CashBox.Input cx = in(CashBox.OUT, "USD", 300);
+506:         db4.cashSetup("", Arrays.asList("USD"), Collections.singletonMap("USD", 100000L), false, true);
+507:         cx.officeId = 3L;
+508:         db4.addCashMove(cx);   // مكتب «ف3» (لن يُختار): يُفك ربط حركة الصندوق ويبقى النقد
+509:         wantBal.put("ف3", 100L * 3 + 300);
+510:         BackupManager.Created c12 = BackupManager.createLocal(ctx4, db4, "اثنا-عشر".toCharArray(), "9.0", m -> {});
+511:         Object[] dv5 = DeskCoreTest.device("pick");
+512:         Context ctx5 = (Context) dv5[0];
+513:         Db db5 = (Db) dv5[1];
+514:         BackupManager.Prepared prep = BackupManager.prepareRestore(ctx5, c12.file, "اثنا-عشر".toCharArray(), m -> {});
+515:         List<BackupFormat.OfficeInfo> infos = BackupFormat.officeSummaries(prep.parsed);
+516:         check(infos.size() == N && infos.get(4).txCount == 1 && infos.get(4).balances.get("USD") == 500, "ملخص مكاتب النسخة قبل الاستعادة: 12 مكتبًا بحركاتها وأرصدتها");
+517:         check(throwsMsg(io(() -> BackupManager.applyRestore(ctx5, db5, prep, m -> {})), "تتسع"), "استعادة الـ12 كلها تُرفض في المجانية");
+518:         BackupManager.Prepared prep2 = BackupManager.prepareRestore(ctx5, c12.file, "اثنا-عشر".toCharArray(), m -> {});
+519:         Set<Long> keep = new TreeSet<>();
+520:         for (long k = 1; keep.size() < F; k++) if (k != 3) keep.add(k);
+521:         prep2.keep = keep;
+522:         BackupManager.applyRestore(ctx5, db5, prep2, m -> {});
+523:         Map<String, Long> got = new TreeMap<>();
+524:         for (Model.Office o : db5.offices()) got.put(o.name, b(db5.balances(o.id), "USD"));
+525:         Map<String, Long> want9 = new TreeMap<>();
+526:         for (long k : keep) want9.put("ف" + k, 100L * k);
+527:         check(got.equals(want9), "استُعيدت المكاتب التسعة المختارة بأرصدتها كما في النسخة " + got);
+528:         check(db5.cashBalances().get("USD") == 100000 - 300, "الصندوق كامل (حركة المكتب غير المختار فُكّ ربطها وبقي نقدها)");
+529:         healthy(db5, "بعد الاستعادة الانتقائية");
+530: 

@@ -1,0 +1,150 @@
+1: package android.graphics.drawable;
+2: 
+3: import java.awt.geom.Path2D;
+4: 
+5: /** قارئ pathData كامل (M L H V C S Q T A Z بالحروف الكبيرة والصغيرة). */
+6: public final class SvgPath {
+7:     private SvgPath() {}
+8: 
+9:     public static Path2D.Float parse(String d) {
+10:         Path2D.Float p = new Path2D.Float();
+11:         if (d == null) return p;
+12:         int[] pos = {0};
+13:         float x = 0, y = 0, sx = 0, sy = 0, cx = 0, cy = 0;
+14:         char cmd = 0, prev = 0;
+15:         int n = d.length();
+16:         while (true) {
+17:             skip(d, pos);
+18:             if (pos[0] >= n) break;
+19:             char ch = d.charAt(pos[0]);
+20:             if (Character.isLetter(ch)) { cmd = ch; pos[0]++; }
+21:             else if (cmd == 0) break;
+22:             boolean rel = Character.isLowerCase(cmd);
+23:             switch (Character.toUpperCase(cmd)) {
+24:                 case 'M': {
+25:                     float a = num(d, pos), b = num(d, pos);
+26:                     if (rel) { a += x; b += y; }
+27:                     p.moveTo(a, b); x = sx = a; y = sy = b;
+28:                     cmd = rel ? 'l' : 'L';
+29:                     break;
+30:                 }
+31:                 case 'L': { float a = num(d, pos), b = num(d, pos); if (rel) { a += x; b += y; } p.lineTo(a, b); x = a; y = b; break; }
+32:                 case 'H': { float a = num(d, pos); if (rel) a += x; p.lineTo(a, y); x = a; break; }
+33:                 case 'V': { float b = num(d, pos); if (rel) b += y; p.lineTo(x, b); y = b; break; }
+34:                 case 'C': {
+35:                     float x1 = num(d, pos), y1 = num(d, pos), x2 = num(d, pos), y2 = num(d, pos), a = num(d, pos), b = num(d, pos);
+36:                     if (rel) { x1 += x; y1 += y; x2 += x; y2 += y; a += x; b += y; }
+37:                     p.curveTo(x1, y1, x2, y2, a, b); cx = x2; cy = y2; x = a; y = b;
+38:                     break;
+39:                 }
+40:                 case 'S': {
+41:                     float x2 = num(d, pos), y2 = num(d, pos), a = num(d, pos), b = num(d, pos);
+42:                     if (rel) { x2 += x; y2 += y; a += x; b += y; }
+43:                     float x1 = x, y1 = y;
+44:                     char pu = Character.toUpperCase(prev);
+45:                     if (pu == 'C' || pu == 'S') { x1 = 2 * x - cx; y1 = 2 * y - cy; }
+46:                     p.curveTo(x1, y1, x2, y2, a, b); cx = x2; cy = y2; x = a; y = b;
+47:                     break;
+48:                 }
+49:                 case 'Q': {
+50:                     float x1 = num(d, pos), y1 = num(d, pos), a = num(d, pos), b = num(d, pos);
+51:                     if (rel) { x1 += x; y1 += y; a += x; b += y; }
+52:                     p.quadTo(x1, y1, a, b); cx = x1; cy = y1; x = a; y = b;
+53:                     break;
+54:                 }
+55:                 case 'T': {
+56:                     float a = num(d, pos), b = num(d, pos);
+57:                     if (rel) { a += x; b += y; }
+58:                     float x1 = x, y1 = y;
+59:                     char pu = Character.toUpperCase(prev);
+60:                     if (pu == 'Q' || pu == 'T') { x1 = 2 * x - cx; y1 = 2 * y - cy; }
+61:                     p.quadTo(x1, y1, a, b); cx = x1; cy = y1; x = a; y = b;
+62:                     break;
+63:                 }
+64:                 case 'A': {
+65:                     float rx = num(d, pos), ry = num(d, pos), rot = num(d, pos);
+66:                     boolean large = flag(d, pos), sweep = flag(d, pos);
+67:                     float a = num(d, pos), b = num(d, pos);
+68:                     if (rel) { a += x; b += y; }
+69:                     arc(p, x, y, a, b, rx, ry, rot, large, sweep);
+70:                     x = a; y = b;
+71:                     break;
+72:                 }
+73:                 case 'Z': p.closePath(); x = sx; y = sy; break;
+74:                 default: pos[0]++; break;
+75:             }
+76:             prev = cmd;
+77:             if (Character.toUpperCase(cmd) == 'Z') { cmd = 0; prev = 'Z'; skip(d, pos); if (pos[0] < n && !Character.isLetter(d.charAt(pos[0]))) cmd = 'L'; }
+78:         }
+79:         return p;
+80:     }
+81: 
+82:     private static void skip(String d, int[] pos) {
+83:         while (pos[0] < d.length()) {
+84:             char c = d.charAt(pos[0]);
+85:             if (c == ' ' || c == ',' || c == '\n' || c == '\t' || c == '\r') pos[0]++;
+86:             else break;
+87:         }
+88:     }
+89: 
+90:     private static boolean flag(String d, int[] pos) {
+91:         skip(d, pos);
+92:         char c = d.charAt(pos[0]);
+93:         pos[0]++;
+94:         return c == '1';
+95:     }
+96: 
+97:     private static float num(String d, int[] pos) {
+98:         skip(d, pos);
+99:         int s = pos[0], i = s, n = d.length();
+100:         if (i < n && (d.charAt(i) == '-' || d.charAt(i) == '+')) i++;
+101:         boolean dot = false, exp = false;
+102:         while (i < n) {
+103:             char c = d.charAt(i);
+104:             if (c >= '0' && c <= '9') i++;
+105:             else if (c == '.' && !dot && !exp) { dot = true; i++; }
+106:             else if ((c == 'e' || c == 'E') && !exp) { exp = true; i++; if (i < n && (d.charAt(i) == '-' || d.charAt(i) == '+')) i++; }
+107:             else break;
+108:         }
+109:         pos[0] = i;
+110:         if (i == s) return 0;
+111:         return Float.parseFloat(d.substring(s, i));
+112:     }
+113: 
+114:     /** قوس SVG إلى منحنيات بيزييه. */
+115:     private static void arc(Path2D.Float p, float x0, float y0, float x, float y, float rx, float ry, float angle, boolean large, boolean sweep) {
+116:         if (rx == 0 || ry == 0) { p.lineTo(x, y); return; }
+117:         double dx2 = (x0 - x) / 2.0, dy2 = (y0 - y) / 2.0;
+118:         double a = Math.toRadians(angle % 360.0);
+119:         double cos = Math.cos(a), sin = Math.sin(a);
+120:         double x1 = cos * dx2 + sin * dy2, y1 = -sin * dx2 + cos * dy2;
+121:         rx = Math.abs(rx); ry = Math.abs(ry);
+122:         double Prx = rx * rx, Pry = ry * ry, Px1 = x1 * x1, Py1 = y1 * y1;
+123:         double check = Px1 / Prx + Py1 / Pry;
+124:         if (check > 1) { rx = (float) (Math.sqrt(check) * rx); ry = (float) (Math.sqrt(check) * ry); Prx = rx * rx; Pry = ry * ry; }
+125:         double sign = (large == sweep) ? -1 : 1;
+126:         double sq = ((Prx * Pry) - (Prx * Py1) - (Pry * Px1)) / ((Prx * Py1) + (Pry * Px1));
+127:         sq = sq < 0 ? 0 : sq;
+128:         double coef = sign * Math.sqrt(sq);
+129:         double cx1 = coef * ((rx * y1) / ry), cy1 = coef * -((ry * x1) / rx);
+130:         double sx2 = (x0 + x) / 2.0, sy2 = (y0 + y) / 2.0;
+131:         double cx = sx2 + (cos * cx1 - sin * cy1), cy = sy2 + (sin * cx1 + cos * cy1);
+132:         double ux = (x1 - cx1) / rx, uy = (y1 - cy1) / ry, vx = (-x1 - cx1) / rx, vy = (-y1 - cy1) / ry;
+133:         double start = Math.atan2(uy, ux);
+134:         double extent = Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy);
+135:         if (!sweep && extent > 0) extent -= 2 * Math.PI;
+136:         else if (sweep && extent < 0) extent += 2 * Math.PI;
+137:         int segs = (int) Math.ceil(Math.abs(extent) / (Math.PI / 2));
+138:         double delta = extent / segs;
+139:         double t = 4.0 / 3.0 * Math.tan(delta / 4);
+140:         double th = start;
+141:         for (int i = 0; i < segs; i++) {
+142:             double c1 = Math.cos(th), s1 = Math.sin(th), th2 = th + delta, c2 = Math.cos(th2), s2 = Math.sin(th2);
+143:             double ex1 = c1 - t * s1, ey1 = s1 + t * c1, ex2 = c2 + t * s2, ey2 = s2 - t * c2;
+144:             p.curveTo((float) (cx + rx * ex1 * cos - ry * ey1 * sin), (float) (cy + rx * ex1 * sin + ry * ey1 * cos),
+145:                     (float) (cx + rx * ex2 * cos - ry * ey2 * sin), (float) (cy + rx * ex2 * sin + ry * ey2 * cos),
+146:                     (float) (cx + rx * c2 * cos - ry * s2 * sin), (float) (cy + rx * c2 * sin + ry * s2 * cos));
+147:             th = th2;
+148:         }
+149:     }
+150: }

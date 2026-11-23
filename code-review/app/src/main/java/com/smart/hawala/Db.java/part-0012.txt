@@ -1,0 +1,132 @@
+1566:      * الحركة لم تدخل الأرصدة بعد، فالتصحيح على الصف نفسه، ويُحفظ ما قبل التصحيح في سجل العمليات. يبقى اسم من اقترحها.
+1567:      */
+1568:     public void approveEdited(long id, TxInput in, List<byte[]> newImages, Set<Long> removedAttachments) throws IOException {
+1569:         require(Auth.Perm.APPROVE);
+1570:         validate(in);
+1571:         List<File> written = writeImages(newImages);
+1572:         SQLiteDatabase d = getWritableDatabase();
+1573:         d.beginTransaction();
+1574:         try {
+1575:             Model.Tx t = txOn(d, id);
+1576:             if (t == null || !t.isPending()) throw new IllegalStateException("الحركة ليست بانتظار الاعتماد");
+1577:             Model.User u = SmartApp.currentUser;
+1578:             if (u != null && usersEnabled() && enteredBy(t, u)) throw new IllegalStateException("لا يعتمد المستخدم حركة اقترحها بنفسه");
+1579:             if (t.isLinked()) throw new IllegalStateException("هذه ساق من عملية مترابطة (" + (t.isTransfer() ? "تحويل بين مكتبين" : "تبديل عملة")
+1580:                     + "): لا تُصحَّح ساق وحدها. ارفض العملية كلها ثم سجّلها من جديد بالقيم الصحيحة، أو اعتمدها كما هي.");
+1581:             checkLock(d, t.createdAt, "تاريخ الحركة الأصلي يقع داخل فترة محاسبية مقفلة");
+1582:             checkLock(d, in.when, "تاريخ الحركة يقع داخل فترة محاسبية مقفلة");
+1583:             boolean hasFee = !FEE_NONE.equals(in.feeType);
+1584:             ContentValues v = new ContentValues();
+1585:             v.put("office_id", in.office);
+1586:             v.put("type", in.type);
+1587:             v.put("person", Crypto.enc(Model.nz(in.person)));
+1588:             v.put("amount_minor", in.amount);
+1589:             v.put("currency", in.currency);
+1590:             v.put("fee_type", in.feeType);
+1591:             v.put("fee_minor", hasFee ? in.fee : 0);
+1592:             v.put("fee_currency", hasFee ? in.feeCurrency : in.currency);
+1593:             v.put("description", Crypto.enc(Model.nz(in.description)));
+1594:             v.put("notes", Crypto.enc(Model.nz(in.notes)));
+1595:             v.put("created_at", in.when);
+1596:             v.put("service", Model.nz(in.service).trim());
+1597:             v.put("dest", Crypto.enc(Model.nz(in.dest).trim()));
+1598:             v.put("status", "ACTIVE");
+1599:             if (u != null && usersEnabled()) v.put("approved_by", u.id);
+1600:             v.put("approved_at", Clock.now());
+1601:             d.update("tx", v, "id=" + id, null);
+1602:             if (keyChanged(t, in)) voidChecks(d, id, "صُحّحت الحركة قبل اعتمادها (" + keyDiff(t, in) + ")");
+1603:             if (removedAttachments != null) for (Long x : removedAttachments) d.delete("attachments", "id=? AND tx_id=?", new String[]{"" + x, "" + id});
+1604:             linkImages(d, id, written, Clock.now());
+1605:             postTx(d, id, in);
+1606:             // 10.5 (AUDIT-017): حركة الصندوق المرتبطة تُصحَّح معها في المعاملة نفسها، فلا يبقى النقد على القيمة القديمة
+1607:             String cash = relinkCash(d, id, id, in);
+1608:             String before = (TYPE_DEBIT.equals(t.type) ? "لنا " : "علينا ") + Model.fmt(t.amount, decimals(t.currency)) + " " + t.currency + " — " + t.person
+1609:                     + " — مكتب " + t.officeId;
+1610:             String after = (TYPE_DEBIT.equals(in.type) ? "لنا " : "علينا ") + Model.fmt(in.amount, decimals(in.currency)) + " " + in.currency + " — " + Model.nz(in.person)
+1611:                     + " — مكتب " + in.office;
+1612:             audit(d, "APPROVE_EDITED", "tx", id, "اقترحها " + t.realUser() + "؛ قبل التصحيح: " + before + "؛ بعده: " + after + (cash == null ? "" : "؛ " + cash));
+1613:             d.setTransactionSuccessful();
+1614:             written.clear();
+1615:         } finally {
+1616:             d.endTransaction();
+1617:             for (File f : written) f.delete();
+1618:         }
+1619:     }
+1620: 
+1621:     /** نص التنبيه عند رفض حركة مسجّلة من الصندوق. */
+1622:     public static final String REJECT_CASH_NOTE = "هذه الحركة مسجّلة من الصندوق: برفضها تُلغى حركة النقد معها ولا تُحسب في الصندوق. "
+1623:             + "إن كان النقد قد دخل أو خرج فعلًا فاختر «تصحيح واعتماد» بدل الرفض، أو سجّله من جديد صحيحًا.";
+1624: 
+1625:     public void rejectTx(long id, String reason) {
+1626:         require(Auth.Perm.APPROVE);
+1627:         SQLiteDatabase d = getWritableDatabase();
+1628:         d.beginTransaction();
+1629:         try {
+1630:             Model.Tx t = txOn(d, id);
+1631:             if (t == null || !t.isPending()) throw new IllegalStateException("الحركة ليست بانتظار الاعتماد");
+1632:             // 10.5: العملية المترابطة تُرفض بساقيها معًا
+1633:             if (t.isLinked()) d.execSQL("UPDATE tx SET status='" + Model.STATUS_REJECTED + "' WHERE status='" + Model.STATUS_PENDING + "' AND pair_uuid=?", new Object[]{t.pairUuid});
+1634:             d.execSQL("UPDATE tx SET status='" + Model.STATUS_REJECTED + "' WHERE id=" + id);
+1635:             // 10.5: حركة الصندوق المسجّلة معها تُلغى صراحة بسبب ظاهر (كانت لا تُحسب أصلًا ما دامت معلّقة)، فلا تبقى معلّقة بلا نهاية
+1636:             ContentValues cc = new ContentValues();
+1637:             cc.put("status", CashBox.CANCELLED);
+1638:             cc.put("cancel_reason", Crypto.enc("رُفضت حركة المكتب: " + Model.nz(reason)));
+1639:             cc.put("cancelled_at", Clock.now());
+1640:             int cashN = d.update("cash_moves", cc, "status='ACTIVE' AND tx_id IN (SELECT id FROM tx WHERE status='" + Model.STATUS_REJECTED + "' AND (id=" + id
+1641:                     + (t.isLinked() ? " OR pair_uuid='" + t.pairUuid.replace("'", "") + "'" : "") + "))", null);
+1642:             audit(d, "REJECT_TRANSACTION", "tx", id, (cashN > 0 ? "حركة الصندوق أُلغيت معها؛ " : "") + (reason == null ? "" : reason) + (t.isLinked() ? " — عملية مترابطة" : ""));
+1643:             d.setTransactionSuccessful();
+1644:         } finally {
+1645:             d.endTransaction();
+1646:         }
+1647:     }
+1648: 
+1649:     private void linkImages(SQLiteDatabase d, long txId, List<File> files, long now) {
+1650:         for (File f : files) {
+1651:             ContentValues a = new ContentValues();
+1652:             a.put("tx_id", txId);
+1653:             a.put("path", f.getAbsolutePath());
+1654:             a.put("mime", "image/jpeg");
+1655:             a.put("created_at", now);
+1656:             ins(d, "attachments", a);
+1657:         }
+1658:     }
+1659: 
+1660:     /** يسجّل حركة كاملة (حركة + قيد الأصل + قيد الأجرة + الصور) في معاملة واحدة. */
+1661:     public long addTx(TxInput in, List<byte[]> images) throws IOException { return addTx(in, images, null); }
+1662: 
+1663:     /**
+1664:      * 12.4: fromHold = أمانة أو مبلغ مجمّد يُحوَّل إلى هذه الحركة العادية: تُسجَّل الحركة وتُفكّ الأمانة مربوطةً بها في المعاملة نفسها،
+1665:      * فلا تبقى الأمانة قائمة مع حركتها ولا تُفكّ بلا حركة.
+1666:      */
+1667:     public long addTx(TxInput in, List<byte[]> images, String fromHold) throws IOException {
+1668:         require(Auth.Perm.TX_ADD);
+1669:         if (special(in)) require(Auth.Perm.SPECIAL);   // 12.4
+1670:         if (fromHold != null) {
+1671:             require(Auth.Perm.HOLDS);
+1672:             if (special(in)) throw new IllegalArgumentException("الأمانة تُحوَّل إلى حركة عادية (لا خاصة)");
+1673:         }
+1674:         if (in.when > 0 && in.when < Model.dayStart(Clock.now())) require(Auth.Perm.BACKDATE);   // 12.0: تاريخ سابق
+1675:         validate(in);
+1676:         Entitlements ent = License.current;
+1677:         List<File> written = writeImages(images);
+1678:         SQLiteDatabase d = getWritableDatabase();
+1679:         d.beginTransaction();
+1680:         try {
+1681:             checkLock(d, in.when, "تاريخ الحركة يقع داخل فترة محاسبية مقفلة");
+1682:             QuotaState q = unlimited(ent) ? null : quota(d, in.office);
+1683:             if (q != null) {
+1684:                 Model.Office off = office(in.office);
+1685:                 String no = q.txRefusal(ent, in.office, off == null ? "" : Model.nz(off.name));
+1686:                 if (no != null) throw new Entitlements.LimitReached(no);
+1687:             }
+1688:             boolean pending = approvalRequired(in);
+1689:             long id = insertTx(d, in, null, pending);
+1690:             if (q != null) {
+1691:                 q.tx.put(in.office, q.txOf(in.office) + 1);
+1692:                 saveQuota(d, q);
+1693:             }
+1694:             linkImages(d, id, written, Clock.now());
+1695:             if (fromHold != null) releaseHoldTo(d, fromHold, id, in);
+1696:             audit(d, pending ? "PROPOSE_TRANSACTION" : "CREATE_TRANSACTION", "tx", id, (written.isEmpty() ? "" : ("images=" + written.size()))
+1697:                     + (special(in) ? " — خاصة: " + in.special.trim() + (in.specialBal ? " (تُحسب في الرصيد)" : " (لا تُحسب في الرصيد)") : ""));

@@ -1,0 +1,56 @@
+178:         StringBuilder b = new StringBuilder();
+179:         for (int i = 0; i < 24; i++) {
+180:             if (i > 0 && i % 4 == 0) b.append('-');
+181:             b.append(abc.charAt(RNG.nextInt(abc.length())));
+182:         }
+183:         return b.toString();
+184:     }
+185: 
+186:     public static String normalizeRecovery(String s) {
+187:         return s == null ? "" : s.toUpperCase(java.util.Locale.ROOT).replaceAll("[^A-Z0-9]", "").replace('O', '0').replace('I', '1');
+188:     }
+189: 
+190:     // ===================================================================================
+191:     // ضغط وحشو
+192:     // ===================================================================================
+193: 
+194:     static byte[] gzip(byte[] b) {
+195:         try {
+196:             ByteArrayOutputStream o = new ByteArrayOutputStream();
+197:             try (GZIPOutputStream z = new GZIPOutputStream(o)) {
+198:                 z.write(b);
+199:             }
+200:             return o.toByteArray();
+201:         } catch (IOException e) {
+202:             throw new IllegalStateException(e);
+203:         }
+204:     }
+205: 
+206:     static byte[] gunzip(byte[] b) throws IOException {
+207:         try (GZIPInputStream z = new GZIPInputStream(new ByteArrayInputStream(b)); ByteArrayOutputStream o = new ByteArrayOutputStream()) {
+208:             byte[] buf = new byte[8192];
+209:             int n;
+210:             while ((n = z.read(buf)) > 0) {
+211:                 o.write(buf, 0, n);
+212:                 if (o.size() > 512L * 1024 * 1024) throw new IOException("ملف مزامنة أكبر من المسموح");
+213:             }
+214:             return o.toByteArray();
+215:         }
+216:     }
+217: 
+218:     /** [طول 4 بايت][المحتوى][أصفار] بحيث يصير الملف المشفّر (+28) مضاعفًا لـ 4KB. */
+219:     static byte[] pad(byte[] b) {
+220:         int need = 4 + b.length + 28;
+221:         int total = ((need + PAD - 1) / PAD) * PAD - 28;
+222:         return ByteBuffer.allocate(total).putInt(b.length).put(b).array();
+223:     }
+224: 
+225:     static byte[] unpad(byte[] b) throws IOException {
+226:         if (b.length < 4) throw new IOException("ملف مزامنة تالف");
+227:         int n = ByteBuffer.wrap(b).getInt();
+228:         if (n < 0 || n > b.length - 4) throw new IOException("ملف مزامنة تالف");
+229:         byte[] out = new byte[n];
+230:         System.arraycopy(b, 4, out, 0, n);
+231:         return out;
+232:     }
+233: }

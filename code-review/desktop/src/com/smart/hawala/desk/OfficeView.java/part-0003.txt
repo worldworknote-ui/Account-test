@@ -1,0 +1,152 @@
+329:         if (can(Auth.Perm.OFFICES)) ic.add(Ui.flow(Ui.ghost("تعديل البيانات…", e -> OfficesView.edit(this, app, o, this::refresh))));
+330:         add(ic);
+331:         space(10);
+332:         // 10.5 (§7): علامة «آخر رسالة واتساب نُقلت» لهذا المكتب
+333:         Ui.Card mk = Ui.card();
+334:         mk.add(Ui.label("آخر رسالة واتساب نُقلت", 14, Ui.primaryInk, true));
+335:         Db.WaMark wm = db.lastWaMark(o.id);
+336:         if (wm == null) mk.add(Ui.label("لم تُحفظ علامة بعد", 13, Ui.muted, false));
+337:         else {
+338:             mk.add(Ui.label("حفظها " + wm.userName + " — " + Model.date(wm.at) + (wm.msgTime.isEmpty() ? "" : " — وقت الرسالة " + wm.msgTime), 12.5f, Ui.goldInk, true));
+339:             mk.add(Ui.para(wm.text, 13.5f, Ui.ink, w - 60));
+340:         }
+341:         mk.add(Ui.para("حفظ العلامة ليس دليلًا على تسجيل أي حركة.", 12, Ui.muted, w - 60));
+342:         List<Component> mbs = new ArrayList<>();
+343:         if (wm != null) mbs.add(Ui.ghost("نسخ النص", e -> {
+344:             Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(wm.text), null);
+345:             Ui.toast("نُسخ نص آخر رسالة");
+346:         }));
+347:         if (can(Auth.Perm.TX_ADD)) mbs.add(Ui.ghost("تحديث العلامة…", e -> MineView.updateMark(this, db, o, this::refresh)));
+348:         mbs.add(Ui.ghost("التاريخ", e -> MineView.history(this, db, o)));
+349:         mk.add(Ui.flow(mbs.toArray(new Component[0])));
+350:         add(mk);
+351:     }
+352: 
+353:     /** 10.18: تغيير حالة مطابقة مؤكَّدة أو مختلَف عليها (كالهاتف): إلى أي حالة أخرى، ومنها الرجوع إلى «بانتظار تأكيد المكتب». */
+354:     void changeStatus(Model.Recon r) {
+355:         List<String> names = new ArrayList<>(), keys = new ArrayList<>();
+356:         for (String[] k : new String[][]{{Model.RECON_SENT, "بانتظار تأكيد المكتب"}, {Model.RECON_CONFIRMED, "أكّد المكتب ✓"}, {Model.RECON_DISPUTED, "غير مطابق ×"}})
+357:             if (!k[0].equals(r.status)) {
+358:                 keys.add(k[0]);
+359:                 names.add(k[1]);
+360:             }
+361:         names.add("إلغاء");
+362:         JOptionPane p = new JOptionPane(Ui.para("الحالة الآن: " + r.statusLabel(), 14, Ui.ink, 380), JOptionPane.QUESTION_MESSAGE, JOptionPane.DEFAULT_OPTION, null, names.toArray(), "إلغاء");
+363:         Ui.show(this, p, "تغيير حالة المطابقة");
+364:         int i = names.indexOf(String.valueOf(p.getValue()));
+365:         if (i < 0 || i >= keys.size()) return;
+366:         try {
+367:             if (Model.RECON_SENT.equals(keys.get(i))) {
+368:                 db.setReconStatus(r.id, Model.RECON_SENT, r.note);
+369:                 refresh();
+370:             } else status(r, keys.get(i));
+371:         } catch (Exception ex) {
+372:             Ui.error(this, ex);
+373:         }
+374:     }
+375: 
+376:     /** 10.18: إعادة إرسال مطابقة محفوظة بأرصدتها وتاريخها كما كانت (لا تُسجَّل مطابقة جديدة). */
+377:     void resend(Model.Office o, Model.Recon r) {
+378:         Reconcile.Template t = Reconcile.Template.from(db.settings(Reconcile.Template.KEYS));
+379:         List<Reconcile.Row> rows = Reconcile.rows(r.balances, db.currencyNames(), db.decimalsMap(), null, t.showZero);
+380:         String txt = Reconcile.text(t, o.name, db.setting("office_name", ""), r.createdAt, rows);
+381:         JTextArea preview = Ui.area(9);
+382:         preview.setEditable(false);
+383:         preview.setText(txt);
+384:         preview.setFont(new Font(Font.DIALOG, Font.PLAIN, 14));
+385:         JScrollPane ps = Ui.areaBox(preview);
+386:         ps.setPreferredSize(new Dimension(420, 240));
+387:         JOptionPane p = new JOptionPane(ps, JOptionPane.PLAIN_MESSAGE, JOptionPane.DEFAULT_OPTION, null, new Object[]{"فتح واتساب", "نسخ النص", "نسخ الصورة", "حفظ الصورة…", "إلغاء"}, "فتح واتساب");
+388:         Ui.show(this, p, "إعادة إرسال مطابقة " + Model.date(r.createdAt));
+389:         Object v = p.getValue();
+390:         try {
+391:             if ("نسخ الصورة".equals(v) || "حفظ الصورة…".equals(v)) {
+392:                 java.awt.image.BufferedImage im = ReconImage.render(t, o.name, db.setting("office_name", ""), r.createdAt, rows, Ui.primary);
+393:                 if ("نسخ الصورة".equals(v)) {
+394:                     ReconImage.copy(im);
+395:                     Ui.toast("نُسخت صورة المطابقة؛ الصقها في واتساب (Ctrl+V).");
+396:                 } else {
+397:                     java.io.File f = Export.save(this, db, "مطابقة " + o.name, ".png");
+398:                     if (f != null) {
+399:                         javax.imageio.ImageIO.write(im, "png", f);
+400:                         Ui.toast("حُفظت الصورة: " + f.getName());
+401:                     }
+402:                 }
+403:             } else if ("فتح واتساب".equals(v) || "نسخ النص".equals(v)) {
+404:                 Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(txt), null);
+405:                 if ("فتح واتساب".equals(v)) openWhatsApp(this, db, o.phone, txt);
+406:                 else Ui.toast("نُسخ النص؛ الصقه في واتساب.");
+407:             }
+408:         } catch (Exception ex) {
+409:             Ui.error(this, ex);
+410:         }
+411:     }
+412: 
+413:     void status(Model.Recon r, String s) {
+414:         String note = Ui.input(this, "ملاحظة (اختيارية)", Model.RECON_DISPUTED.equals(s) ? "ما الفرق الذي ذكره المكتب؟" : "ملاحظة", r.note);
+415:         if (note == null) return;
+416:         db.setReconStatus(r.id, s, note);
+417:         refresh();
+418:     }
+419: 
+420:     // ===================================================================================
+421:     // مطابقة الرصيد (رسالة واتساب)
+422:     // ===================================================================================
+423: 
+424:     void sendRecon(Model.Office o) {
+425:         if (!require(Auth.Perm.EXPORT)) return;
+426:         Reconcile.Template t = Reconcile.Template.from(db.settings(Reconcile.Template.KEYS));
+427:         Map<String, Long> bal = new TreeMap<>();
+428:         for (String c : db.officeCurrencies(o.id)) bal.put(c, 0L);
+429:         bal.putAll(db.balances(o.id));
+430:         Map<String, String> names = db.currencyNames();
+431:         JPanel c = Ui.column();
+432:         c.add(Ui.para("يُرسل الرصيد فقط، بدون تفاصيل الحركات.", 13, Ui.muted, 420));
+433:         Map<String, JCheckBox> checks = new LinkedHashMap<>();
+434:         for (Map.Entry<String, Long> e : bal.entrySet()) {
+435:             int d = db.decimals(e.getKey());
+436:             String nm = names.get(e.getKey());
+437:             JCheckBox ck = Ui.check((nm == null ? e.getKey() : nm) + ":  " + (e.getValue() == 0 ? "صفر" : Model.fmt(Math.abs(e.getValue()), d) + " " + (e.getValue() > 0 ? t.plusWord : t.minusWord)),
+438:                     e.getValue() != 0 || t.showZero);
+439:             checks.put(e.getKey(), ck);
+440:             c.add(ck);
+441:         }
+442:         JCheckBox record = Ui.check("تسجيل كمطابقة بانتظار تأكيد المكتب", can(Auth.Perm.TX_ADD));
+443:         record.setEnabled(can(Auth.Perm.TX_ADD));
+444:         c.add(Ui.gap(6));
+445:         c.add(record);
+446:         JTextArea preview = Ui.area(9);
+447:         preview.setEditable(false);
+448:         Runnable upd = () -> {
+449:             Set<String> only = new LinkedHashSet<>();
+450:             for (Map.Entry<String, JCheckBox> e : checks.entrySet()) if (e.getValue().isSelected()) only.add(e.getKey());
+451:             preview.setText(Reconcile.text(t, o.name, db.setting("office_name", ""), Clock.now(), Reconcile.rows(bal, names, db.decimalsMap(), only, true)));
+452:         };
+453:         for (JCheckBox ck : checks.values()) ck.addActionListener(e -> upd.run());
+454:         upd.run();
+455:         c.add(Ui.gap(6));
+456:         preview.setFont(new Font(Font.DIALOG, Font.PLAIN, 14));
+457:         JScrollPane ps = Ui.areaBox(preview);
+458:         ps.setPreferredSize(new Dimension(420, 220));
+459:         c.add(ps);
+460:         JOptionPane p = new JOptionPane(Ui.rtl(c), JOptionPane.PLAIN_MESSAGE, JOptionPane.DEFAULT_OPTION, null,
+461:                 new Object[]{"فتح واتساب", "نسخ النص", "نسخ الصورة", "حفظ الصورة…", "إلغاء"}, "فتح واتساب");
+462:         Ui.show(this, p, "مطابقة الرصيد مع «" + o.name + "»");
+463:         Object v = p.getValue();
+464:         if (!"فتح واتساب".equals(v) && !"نسخ النص".equals(v) && !"نسخ الصورة".equals(v) && !"حفظ الصورة…".equals(v)) return;
+465:         if (checks.values().stream().noneMatch(AbstractButton::isSelected)) {
+466:             Ui.toast("اختر عملة واحدة على الأقل");
+467:             return;
+468:         }
+469:         if (record.isSelected()) {
+470:             try {
+471:                 db.createRecon(o.id);
+472:             } catch (Exception e) {
+473:                 Ui.error(this, e);
+474:                 return;
+475:             }
+476:         }
+477:         String txt = preview.getText();
+478:         // 10.16: المطابقة صورةً (كالهاتف): تُنسخ للحافظة لتُلصق في واتساب، أو تُحفظ ملف PNG
+479:         if ("نسخ الصورة".equals(v) || "حفظ الصورة…".equals(v)) {
+480:             try {

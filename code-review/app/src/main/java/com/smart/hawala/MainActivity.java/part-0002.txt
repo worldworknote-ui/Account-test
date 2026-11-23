@@ -1,0 +1,203 @@
+198:         // الوضع «تلقائي»: يتبع الوضع الليلي للهاتف عند تغيّره
+199:         if (db != null && unlocked && wantsNight(db, cfg) != night) restyle(null);
+200:     }
+201: 
+202:     static String shortcutOf(Intent i) {
+203:         String act = i == null ? null : i.getAction();
+204:         if (ACTION_NEW_TX.equals(act) || ACTION_PASTE.equals(act) || ACTION_OFFICES.equals(act) || ACTION_SEARCH.equals(act)
+205:                 || ACTION_PENDING.equals(act) || ACTION_DUPS.equals(act) || ACTION_LOG.equals(act) || ACTION_SYNC.equals(act)) return act;
+206:         // 11.5: رمز QR من البائع (smartacc://activate?k=…) مُسح بكاميرا الهاتف: يُفعَّل بعد فتح التطبيق
+207:         if (Intent.ACTION_VIEW.equals(act) && i.getData() != null && "smartacc".equals(i.getData().getScheme())) return "license:" + i.getData().toString();
+208:         return null;
+209:     }
+210: 
+211:     /** ينفّذ اختصار أيقونة التطبيق بعد الدخول. */
+212:     boolean openShortcut() {
+213:         String s = pendingShortcut;
+214:         pendingShortcut = null;
+215:         if (s == null) return false;
+216:         switch (s) {
+217:             case ACTION_NEW_TX: txScreen.showNew(); return true;
+218:             case ACTION_PASTE: homeScreen.pasteFromClipboard(); return true;
+219:             case ACTION_OFFICES: officeHub.showList(); return true;
+220:             case ACTION_SEARCH: logScreen.searchFor(""); return true;
+221:             case ACTION_PENDING: if (can(Auth.Perm.APPROVE)) logScreen.showPending(); else showHome(); return true;
+222:             case ACTION_DUPS: syncScreen.showDuplicates(); return true;
+223:             case ACTION_SYNC: syncScreen.show(); return true;
+224:             case ACTION_LOG: if (can(Auth.Perm.VIEW)) logScreen.show(false); else showHome(); return true;
+225:             default:
+226:                 if (s.startsWith("license:")) {
+227:                     licenseScreen.show();
+228:                     licenseScreen.activateText(s.substring(8));
+229:                     return true;
+230:                 }
+231:                 return false;
+232:         }
+233:     }
+234: 
+235:     @Override
+236:     protected void onNewIntent(Intent i) {
+237:         super.onNewIntent(i);
+238:         setIntent(i);
+239:         String sc = shortcutOf(i);
+240:         if (sc != null && db != null) {
+241:             pendingShortcut = sc;
+242:             if (unlocked && !(db.usersEnabled() && SmartApp.currentUser == null)) {
+243:                 beforeScreenChange();
+244:                 openShortcut();
+245:             }
+246:             return;
+247:         }
+248:         java.util.List<WaText.Msg> shared = waQueue.fromIntent(i);
+249:         if (shared == null || db == null) return;
+250:         waQueue.pending = shared;
+251:         if (unlocked && !(db.usersEnabled() && SmartApp.currentUser == null)) {
+252:             beforeScreenChange();
+253:             waQueue.openPending();
+254:         }
+255:     }
+256: 
+257:     @Override
+258:     public void onWindowFocusChanged(boolean hasFocus) {
+259:         super.onWindowFocusChanged(hasFocus);
+260:         // 12.1: وضع التجميع على الهاتف: ما نُسخ في واتساب يُقرأ عند العودة للتطبيق (أندرويد يسمح بالقراءة والنافذة في المقدمة فقط)
+261:         if (hasFocus && db != null && unlocked && waMove.collecting && !WaMove.desktop()) {
+262:             try {
+263:                 waMove.collectNow();
+264:             } catch (Throwable ignored) {
+265:                 // غير مهم
+266:             }
+267:         }
+268:         // أندرويد يسمح بقراءة وصف الحافظة فقط والنافذة في المقدمة: نحدّث بطاقة «نسخت نصًا قبل قليل»
+269:         if (hasFocus && onHome && db != null && unlocked) {
+270:             try {
+271:                 homeScreen.refreshClipCard();
+272:             } catch (Throwable ignored) {
+273:                 // غير مهم
+274:             }
+275:         }
+276:     }
+277: 
+278:     @Override
+279:     protected void onSaveInstanceState(Bundle out) {
+280:         super.onSaveInstanceState(out);
+281:         if (cameraFile != null) out.putString("cameraFile", cameraFile);
+282:         if (restoreInput != null) out.putString("restoreInput", restoreInput.getAbsolutePath());
+283:     }
+284: 
+285:     @Override
+286:     protected void onPause() {
+287:         super.onPause();
+288:         pausedAt = SystemClock.elapsedRealtime();
+289:         // 11.5: كانت العلامة تبقى إن لم يتوقف التطبيق بعدها (كالمشاركة على الكمبيوتر)، فيُعفى أول ترك حقيقي للتطبيق من القفل
+290:         ownPause = ownActivity && pausedAt - ownAt < 15000;
+291:         ownActivity = false;
+292:         sessionEnd();
+293:         txScreen.saveDraft();
+294:         syncScreen.onPause();
+295:     }
+296: 
+297:     @Override
+298:     protected void onResume() {
+299:         super.onResume();
+300:         if (ownPause) {
+301:             ownPause = false;
+302:             return;
+303:         }
+304:         if (db != null && unlocked) cashScreen.onResume(pausedAt);
+305:         if (db != null && unlocked) syncScreen.onResume();
+306:         if (db == null || !unlocked || pausedAt == 0 || pausedAt <= lastAuthAt) return;
+307:         boolean locks = biometricOn() || db.usersEnabled();
+308:         long timeout = db.settingLong("lock_timeout", -1);
+309:         if (!locks || timeout < 0) return;
+310:         if (SystemClock.elapsedRealtime() - pausedAt >= timeout * 60000L) {
+311:             txScreen.saveDraft();
+312:             relock();
+313:         }
+314:     }
+315: 
+316:     @Override
+317:     protected void onPostResume() {
+318:         super.onPostResume();
+319:         sessionStart();
+320:     }
+321: 
+322:     // ===================================================================================
+323:     // 11.5: سجل الاستخدام: كل جلسة (من الفتح إلى الترك أو القفل) سطر في سجل العمليات باسم صاحبها،
+324:     // ينتقل بالمزامنة فيرى المدير استخدام كل محاسب على كل الأجهزة
+325:     // ===================================================================================
+326: 
+327:     private long sessionAt;
+328:     private String sessionUser;
+329: 
+330:     // 12.7: الخمول (بلا لمس ولا كتابة) يُنهي الجلسة عند آخر نشاط، وتُحفظ الجلسة الجارية كل دقيقة فلا تضيع إن أُغلق التطبيق غصبًا
+331:     static final String OPEN_KEY = "sync_usage_open";
+332:     private volatile long lastInputClock = Clock.now();
+333:     private boolean idle;
+334:     private final android.os.Handler usageHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+335:     private final Runnable usageTick = new Runnable() {
+336:         @Override public void run() {
+337:             usageCheck();
+338:             usageHandler.postDelayed(this, 30_000);
+339:         }
+340:     };
+341: 
+342:     /** دقائق الخمول التي تُنهي الجلسة (يغيّرها المدير؛ 0 = بلا حد). */
+343:     long idleMinutes() { return db == null ? 5 : Math.max(0, db.settingLong("usage_idle_min", 5)); }
+344: 
+345:     @Override public void onUserInteraction() {
+346:         super.onUserInteraction();
+347:         lastInputClock = Clock.now();
+348:         if (idle) {
+349:             idle = false;
+350:             sessionStart();
+351:         }
+352:     }
+353: 
+354:     /** 12.7 (الكمبيوتر): النافذة صارت خلف برامج أخرى: تنتهي الجلسة الآن. */
+355:     public void usageAway() {
+356:         sessionEnd();
+357:         idle = true;
+358:     }
+359: 
+360:     /** 12.7 (الكمبيوتر): عادت النافذة إلى المقدمة. */
+361:     public void usageBack() { onUserInteraction(); }
+362: 
+363:     private void usageCheck() {
+364:         if (sessionAt <= 0 || db == null) return;
+365:         long now = Clock.now(), limit = idleMinutes() * 60_000L;
+366:         if (limit > 0 && now - lastInputClock >= limit) {
+367:             sessionEnd(Math.max(sessionAt, lastInputClock));
+368:             idle = true;
+369:             return;
+370:         }
+371:         // حفظ مؤقت: بداية الجلسة وآخر نشاط واسم صاحبها (إعداد خاص بهذا الجهاز لا يتزامن)
+372:         try {
+373:             db.setSettingQuiet(OPEN_KEY, sessionAt + "|" + Math.min(now, Math.max(sessionAt, lastInputClock)) + "|" + Crypto.enc(Model.nz(sessionUser)));
+374:         } catch (Throwable ignored) {
+375:             // غير حرج
+376:         }
+377:     }
+378: 
+379:     /** 12.7: جلسة بقيت محفوظة من تشغيل أُغلق غصبًا: تُسجَّل حتى آخر نشاط محفوظ. */
+380:     void recoverOpenSession() {
+381:         if (db == null) return;
+382:         try {
+383:             String v = db.setting(OPEN_KEY, "");
+384:             if (v.isEmpty()) return;
+385:             db.setSettingQuiet(OPEN_KEY, "");
+386:             String[] p = v.split("\\|", 3);
+387:             long start = Long.parseLong(p[0]), end = Long.parseLong(p[1]);
+388:             String user = p.length > 2 ? Crypto.dec(p[2]) : "";
+389:             writeSession(user, start, end);
+390:         } catch (Throwable ignored) {
+391:             // سطر تالف: يُترك
+392:         }
+393:     }
+394: 
+395:     private void writeSession(String user, long start, long end) {
+396:         long sec = (end - start) / 1000;
+397:         if (sec < 10) return;
+398:         String keep = Db.currentUserName;
+399:         try {
+400:             Db.currentUserName = user;

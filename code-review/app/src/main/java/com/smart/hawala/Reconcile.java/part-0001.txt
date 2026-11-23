@@ -1,0 +1,167 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.LinkedHashMap;
+5: import java.util.List;
+6: import java.util.Map;
+7: import java.util.Set;
+8: 
+9: /**
+10:  * رسالة «مطابقة رصيد» التي تُرسل للمكتب: الأرصدة فقط، بنص جاهز لواتساب أو كصورة.
+11:  * منطق بحت بلا أندرويد حتى يُختبر على الكمبيوتر. القالب يُحفظ في الإعدادات بمفاتيح rc_* ويُنقل مع النسخة.
+12:  */
+13: public final class Reconcile {
+14:     private Reconcile() {}
+15: 
+16:     public static final String LINE = "━━━━━━━━━━━━━━━━━━";
+17: 
+18:     public static final class Template {
+19:         public String greeting = "السلام عليكم ورحمة الله وبركاته";
+20:         public String title = "مطابقة رصيد";
+21:         public String ornament = "🌹";
+22:         public String salutation = "السادة:";
+23:         public String honorific = "المحترمين";
+24:         public String footer = "يرجى المطابقة على الأرصدة مع المحاسب بشكل دائم 🔍";
+25:         /** كلمة الرصيد الموجب (المكتب مدين لنا) والسالب (نحن مدينون له)، كما يقرؤها المكتب. */
+26:         public String plusWord = "لنا";
+27:         public String minusWord = "لكم";
+28:         public boolean bold = true;
+29:         public boolean showIssuer = true;
+30:         public boolean showCode = false;
+31:         public boolean showZero = false;
+32: 
+33:         // ---- 10.16: حرية أكبر في التصميم ----
+34:         /**
+35:          * شكل سطر كل عملة. يكتبه المستخدم بهذه الخانات: {علامة} {مبلغ} {عملة} {رمز} {كلمة}، وكل ما عداها يبقى كما كُتب
+36:          * (ويجوز سطر جديد داخله). الافتراضي: المبلغ قبل اسم العملة.
+37:          */
+38:         public String lineFormat = LINE_AMOUNT_FIRST;
+39:         /** حذف الأصفار العشرية: 59,450.00 → 59,450 و12.50 → 12.5 (الكسور الحقيقية تبقى). */
+40:         public boolean trimZeros = true;
+41:         /** سطر فارغ بين كل عملة وأخرى. */
+42:         public boolean gap = true;
+43:         public boolean showDate = true, showOffice = true, showSeparator = true;
+44:         /** خط عريض لاسم العملة أيضًا. */
+45:         public boolean boldName = false;
+46:         public String dateLabel = "📅 التاريخ:";
+47:         public String officeMark = "🏢";
+48:         public String separator = LINE;
+49:         public String markPlus = "🟢", markMinus = "🔴", markZero = "⚪";
+50:         public String zeroWord = "صفر";
+51:         public String emptyText = "لا توجد أرصدة قائمة؛ الحساب مسدَّد بالكامل ✅";
+52:         /**
+53:          * لون «لنا» ولون «لكم» (#RRGGBB) في صورة المطابقة وفي المعاينة. واتساب لا يلوّن النص، فاللون فيه هو الدائرة الملوّنة
+54:          * قبل السطر (تتبع اللون المختار). colored=false: بلا تلوين (لون واحد داكن).
+55:          */
+56:         public String colorPlus = COLORS[0][1], colorMinus = COLORS[1][1];
+57:         public boolean colored = true;
+58: 
+59:         /** لون سطر حسب إشارته (ARGB)، أو الداكن المحايد بلا تلوين/للصفر. */
+60:         public int color(int sign) {
+61:             if (!colored || sign == 0) return sign == 0 && colored ? 0xFF787878 : 0xFF282828;
+62:             return rgb(sign > 0 ? colorPlus : colorMinus, sign > 0 ? 0xFF1B7846 : 0xFFAD2E36);
+63:         }
+64: 
+65:         /** هل «لنا/لكم» قبل الرقم في شكل السطر؟ */
+66:         public boolean wordBefore() { return wordPos(lineFormat) == 0; }
+67: 
+68:         private static String s(Map<String, String> m, String k, String def) {
+69:             String v = m.get(k);
+70:             return v == null ? def : v;
+71:         }
+72: 
+73:         private static boolean b(Map<String, String> m, String k, boolean def) {
+74:             String v = m.get(k);
+75:             return v == null || v.isEmpty() ? def : "1".equals(v);
+76:         }
+77: 
+78:         public static Template from(Map<String, String> m) {
+79:             Template t = new Template();
+80:             t.greeting = s(m, "rc_greeting", t.greeting);
+81:             t.title = s(m, "rc_title", t.title);
+82:             if (t.title.trim().isEmpty()) t.title = "مطابقة رصيد";
+83:             t.ornament = s(m, "rc_ornament", t.ornament);
+84:             t.salutation = s(m, "rc_salutation", t.salutation);
+85:             t.honorific = s(m, "rc_honorific", t.honorific);
+86:             t.footer = s(m, "rc_footer", t.footer);
+87:             t.plusWord = s(m, "rc_plus", t.plusWord);
+88:             if (t.plusWord.trim().isEmpty()) t.plusWord = "لنا";
+89:             t.minusWord = s(m, "rc_minus", t.minusWord);
+90:             if (t.minusWord.trim().isEmpty()) t.minusWord = "لكم";
+91:             t.bold = b(m, "rc_bold", true);
+92:             t.showIssuer = b(m, "rc_issuer", true);
+93:             t.showCode = b(m, "rc_code", false);
+94:             t.showZero = b(m, "rc_zero", false);
+95:             t.lineFormat = validLine(s(m, "rc_line", t.lineFormat));
+96:             t.trimZeros = b(m, "rc_trim", true);
+97:             t.gap = b(m, "rc_gap", true);
+98:             t.showDate = b(m, "rc_date", true);
+99:             t.showOffice = b(m, "rc_office", true);
+100:             t.showSeparator = b(m, "rc_sep", true);
+101:             t.boldName = b(m, "rc_bold_name", false);
+102:             t.dateLabel = s(m, "rc_date_label", t.dateLabel);
+103:             t.officeMark = s(m, "rc_office_mark", t.officeMark);
+104:             t.separator = s(m, "rc_sep_text", t.separator);
+105:             t.markPlus = s(m, "rc_mark_plus", t.markPlus);
+106:             t.markMinus = s(m, "rc_mark_minus", t.markMinus);
+107:             t.markZero = s(m, "rc_mark_zero", t.markZero);
+108:             t.zeroWord = s(m, "rc_zero_word", t.zeroWord);
+109:             t.emptyText = s(m, "rc_empty", t.emptyText);
+110:             if (t.emptyText.trim().isEmpty()) t.emptyText = new Template().emptyText;
+111:             t.colorPlus = s(m, "rc_color_plus", t.colorPlus);
+112:             t.colorMinus = s(m, "rc_color_minus", t.colorMinus);
+113:             t.colored = b(m, "rc_colored", true);
+114:             return t;
+115:         }
+116: 
+117:         public Map<String, String> toMap() {
+118:             Map<String, String> m = new LinkedHashMap<>();
+119:             m.put("rc_greeting", greeting);
+120:             m.put("rc_title", title);
+121:             m.put("rc_ornament", ornament);
+122:             m.put("rc_salutation", salutation);
+123:             m.put("rc_honorific", honorific);
+124:             m.put("rc_footer", footer);
+125:             m.put("rc_plus", plusWord);
+126:             m.put("rc_minus", minusWord);
+127:             m.put("rc_bold", bold ? "1" : "0");
+128:             m.put("rc_issuer", showIssuer ? "1" : "0");
+129:             m.put("rc_code", showCode ? "1" : "0");
+130:             m.put("rc_zero", showZero ? "1" : "0");
+131:             m.put("rc_line", validLine(lineFormat));
+132:             m.put("rc_trim", trimZeros ? "1" : "0");
+133:             m.put("rc_gap", gap ? "1" : "0");
+134:             m.put("rc_date", showDate ? "1" : "0");
+135:             m.put("rc_office", showOffice ? "1" : "0");
+136:             m.put("rc_sep", showSeparator ? "1" : "0");
+137:             m.put("rc_bold_name", boldName ? "1" : "0");
+138:             m.put("rc_date_label", dateLabel);
+139:             m.put("rc_office_mark", officeMark);
+140:             m.put("rc_sep_text", separator);
+141:             m.put("rc_mark_plus", markPlus);
+142:             m.put("rc_mark_minus", markMinus);
+143:             m.put("rc_mark_zero", markZero);
+144:             m.put("rc_zero_word", zeroWord);
+145:             m.put("rc_empty", emptyText);
+146:             m.put("rc_color_plus", colorPlus);
+147:             m.put("rc_color_minus", colorMinus);
+148:             m.put("rc_colored", colored ? "1" : "0");
+149:             return m;
+150:         }
+151: 
+152:         public static final String[] KEYS = {"rc_greeting", "rc_title", "rc_ornament", "rc_salutation", "rc_honorific", "rc_footer",
+153:                 "rc_plus", "rc_minus", "rc_bold", "rc_issuer", "rc_code", "rc_zero",
+154:                 "rc_line", "rc_trim", "rc_gap", "rc_date", "rc_office", "rc_sep", "rc_bold_name", "rc_date_label", "rc_office_mark", "rc_sep_text",
+155:                 "rc_mark_plus", "rc_mark_minus", "rc_mark_zero", "rc_zero_word", "rc_empty", "rc_color_plus", "rc_color_minus", "rc_colored"};
+156: 
+157:         /** المبلغ كما يظهر في الرسالة والصورة (بحذف الأصفار العشرية إن اختير). */
+158:         public String amount(Row r) { return trimZeros ? trimZeros(r.amount()) : r.amount(); }
+159:     }
+160: 
+161:     // ---- 10.16: أشكال جاهزة لسطر العملة (يختار المستخدم أحدها أو يكتب شكله) ----
+162:     public static final String LINE_AMOUNT_FIRST = "{علامة} {مبلغ} {عملة} {كلمة}";
+163:     public static final String LINE_NAME_FIRST = "{علامة} {عملة}: {مبلغ} {كلمة}";
+164:     public static final String LINE_WORD_FIRST = "{علامة} {كلمة} {مبلغ} {عملة}";
+165:     public static final String LINE_TWO_LINES = "{علامة} {عملة}\n{مبلغ} {كلمة}";
+166:     public static final String LINE_COMPACT = "{مبلغ} {رمز} {كلمة}";
+167:     /** {الاسم للواجهة، الشكل}. */

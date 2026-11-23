@@ -1,0 +1,96 @@
+352:     @Override protected void onLayout(boolean changed, int l, int t, int r, int b) {
+353:         if (orientation == VERTICAL) layoutVertical(l, t, r, b); else layoutHorizontal(l, t, r, b);
+354:     }
+355: 
+356:     private void layoutVertical(int l, int t, int r, int b) {
+357:         int pl = getPaddingLeft();
+358:         int width = r - l, childRight = width - getPaddingRight(), space = childRight - pl;
+359:         int count = getChildCount();
+360:         int major = gravity & Gravity.VERTICAL_GRAVITY_MASK, minor = gravity & Gravity.RELATIVE_HORIZONTAL_GRAVITY_MASK;
+361:         int top;
+362:         switch (major) {
+363:             case Gravity.BOTTOM: top = getPaddingTop() + b - t - totalLength; break;
+364:             case Gravity.CENTER_VERTICAL: top = getPaddingTop() + (b - t - totalLength) / 2; break;
+365:             default: top = getPaddingTop(); break;
+366:         }
+367:         for (int i = 0; i < count; i++) {
+368:             View c = getChildAt(i);
+369:             if (c.getVisibility() == GONE) continue;
+370:             int cw = c.getMeasuredWidth(), ch = c.getMeasuredHeight();
+371:             LayoutParams p = lp(c);
+372:             int g = p.gravity < 0 ? minor : p.gravity;
+373:             int abs = Gravity.getAbsoluteGravity(g, getLayoutDirection());
+374:             int x;
+375:             switch (abs & Gravity.HORIZONTAL_GRAVITY_MASK) {
+376:                 case Gravity.CENTER_HORIZONTAL: x = pl + (space - cw) / 2 + p.leftMargin - p.rightMargin; break;
+377:                 case Gravity.RIGHT: x = childRight - cw - p.rightMargin; break;
+378:                 default: x = pl + p.leftMargin; break;
+379:             }
+380:             if (hasDividerBefore(i)) top += divH();
+381:             top += p.topMargin;
+382:             c.layout(x, top, x + cw, top + ch);
+383:             top += ch + p.bottomMargin;
+384:         }
+385:     }
+386: 
+387:     private void layoutHorizontal(int l, int t, int r, int b) {
+388:         boolean rtl = isRtl();
+389:         int pt = getPaddingTop();
+390:         int height = b - t, childBottom = height - getPaddingBottom(), space = childBottom - pt;
+391:         int count = getChildCount();
+392:         int major = Gravity.getAbsoluteGravity(gravity & Gravity.RELATIVE_HORIZONTAL_GRAVITY_MASK, getLayoutDirection()) & Gravity.HORIZONTAL_GRAVITY_MASK;
+393:         int minor = gravity & Gravity.VERTICAL_GRAVITY_MASK;
+394:         int left;
+395:         switch (major) {
+396:             case Gravity.RIGHT: left = getPaddingLeft() + r - l - totalLength; break;
+397:             case Gravity.CENTER_HORIZONTAL: left = getPaddingLeft() + (r - l - totalLength) / 2; break;
+398:             default: left = getPaddingLeft(); break;
+399:         }
+400:         int start = 0, dir = 1;
+401:         if (rtl) { start = count - 1; dir = -1; }
+402:         for (int k = 0; k < count; k++) {
+403:             int i = start + dir * k;
+404:             View c = getChildAt(i);
+405:             if (c.getVisibility() == GONE) continue;
+406:             int cw = c.getMeasuredWidth(), ch = c.getMeasuredHeight();
+407:             LayoutParams p = lp(c);
+408:             int bl = -1;
+409:             if (baselineAligned && p.height != LayoutParams.MATCH_PARENT) bl = c.getBaseline();
+410:             int g = p.gravity < 0 ? minor : p.gravity;
+411:             int y;
+412:             switch (g & Gravity.VERTICAL_GRAVITY_MASK) {
+413:                 case Gravity.CENTER_VERTICAL: y = pt + (space - ch) / 2 + p.topMargin - p.bottomMargin; break;
+414:                 case Gravity.BOTTOM:
+415:                     y = childBottom - ch - p.bottomMargin;
+416:                     if (bl != -1 && maxDescent > 0) y -= maxDescent - (ch - bl);
+417:                     break;
+418:                 default:
+419:                     y = pt + p.topMargin;
+420:                     if (bl != -1 && maxAscent > 0) y += maxAscent - bl;
+421:                     break;
+422:             }
+423:             if (hasDividerBefore(i)) left += divW();
+424:             left += p.leftMargin;
+425:             c.layout(left, y, left + cw, y + ch);
+426:             left += cw + p.rightMargin;
+427:         }
+428:     }
+429: 
+430:     @Override protected void dispatchDraw(Canvas c) {
+431:         super.dispatchDraw(c);
+432:         if (divider == null || showDividers == 0) return;
+433:         for (int i = 0; i <= getChildCount(); i++) {
+434:             if (!hasDividerBefore(i)) continue;
+435:             View ch = i < getChildCount() ? getChildAt(i) : null;
+436:             if (ch != null && ch.getVisibility() == GONE) continue;
+437:             if (orientation == VERTICAL) {
+438:                 int top = ch != null ? ch.getTop() - lp(ch).topMargin - divH() : getHeight() - getPaddingBottom() - divH();
+439:                 divider.setBounds(getPaddingLeft() + dividerPadding, top, getWidth() - getPaddingRight() - dividerPadding, top + divH());
+440:             } else {
+441:                 int left = ch != null ? (isRtl() ? ch.getRight() + lp(ch).rightMargin : ch.getLeft() - lp(ch).leftMargin - divW()) : getPaddingLeft();
+442:                 divider.setBounds(left, getPaddingTop() + dividerPadding, left + divW(), getHeight() - getPaddingBottom() - dividerPadding);
+443:             }
+444:             divider.draw(c);
+445:         }
+446:     }
+447: }

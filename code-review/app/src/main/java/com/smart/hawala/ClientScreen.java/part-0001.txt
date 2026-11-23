@@ -1,0 +1,181 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.graphics.Color;
+5: import android.graphics.drawable.GradientDrawable;
+6: import android.text.TextUtils;
+7: import android.view.Gravity;
+8: import android.view.View;
+9: import android.widget.EditText;
+10: import android.widget.LinearLayout;
+11: import android.widget.ScrollView;
+12: import android.widget.TextView;
+13: import java.math.BigDecimal;
+14: import java.math.RoundingMode;
+15: import java.util.ArrayList;
+16: import java.util.Collections;
+17: import java.util.HashMap;
+18: import java.util.List;
+19: import java.util.Locale;
+20: import java.util.Map;
+21: import java.util.function.Consumer;
+22: 
+23: /**
+24:  * 9.0.1: «حسابات العملاء» تحت تبويب الصندوق: لكل عميل رصيد بكل عملة («لنا» / «علينا») مستقل عن حسابات المكاتب.
+25:  * الاستلام منه والتسليم له يمرّان بالصندوق (حركة نقد + حركة على حسابه في المعاملة نفسها)، ويمكن أن يُقيَّد على حسابه
+26:  * بعملة غير عملة النقد (له 100 يورو فيأخذ دولارًا). وقيد بلا نقد، وتبديل عملة الرصيد، وكشف بالرصيد المتراكم يُصدَّر.
+27:  */
+28: final class ClientScreen {
+29:     private final CashScreen c;
+30:     private final MainActivity a;
+31:     private int filter = 0;
+32:     private String query = "";
+33:     static final String[] FILTERS = {"الكل", "لنا عليهم", "علينا لهم", "رصيد صفر", "المؤرشفون"};
+34: 
+35:     ClientScreen(CashScreen c) {
+36:         this.c = c;
+37:         this.a = c.a;
+38:     }
+39: 
+40:     private String bal(long v, String cur) { return a.m(c.sideText(v, cur)); }
+41: 
+42:     // ===================================================================================
+43:     // في الصفحة الرئيسية للصندوق
+44:     // ===================================================================================
+45: 
+46:     /** 12.0: «حسابات العملاء» صلاحية مستقلة. */
+47:     boolean allowed() { return a.can(Auth.Perm.CLIENTS); }
+48: 
+49:     void homeSummary() {
+50:         if (!allowed()) return;
+51:         List<ClientBook.Client> all = a.db.clients();
+52:         a.section("حسابات العملاء", all.isEmpty() ? null : "الكل (" + all.size() + ")", all.isEmpty() ? null : v -> list());
+53:         LinearLayout card = a.card();
+54:         if (all.isEmpty()) {
+55:             card.addView(a.text("للعملاء الذين يستلمون منك أو يسلّمونك مباشرة ولهم حساب لديك (غير المكاتب). سجّل لكل عميل ما له وما عليه بكل عملة.", 13, a.muted, false));
+56:             if (a.can(Auth.Perm.CASH)) card.addView(a.makeButton("+ إضافة عميل", a.primary, v -> edit(null, k -> page(k.id))), a.lp(-1, 46, 4));
+57:             return;
+58:         }
+59:         Map<String, long[]> t = ClientBook.totals(a.db.clientBalances());
+60:         if (t.isEmpty()) card.addView(a.text("كل حسابات العملاء مسدّدة (صفر).", 13, a.muted, false));
+61:         for (Map.Entry<String, long[]> e : t.entrySet()) {
+62:             long[] v = e.getValue();
+63:             int d = a.db.decimals(e.getKey());
+64:             LinearLayout r = a.row();
+65:             r.addView(a.text(e.getKey(), 14, a.ink, true), new LinearLayout.LayoutParams(a.dp(52), -2));
+66:             r.addView(a.text(v[0] == 0 ? "" : "لنا " + a.m(CashScreen.iso(Model.fmt(v[0], d))) + " (" + v[2] + ")", 13, a.green, true), new LinearLayout.LayoutParams(0, -2, 1));
+67:             r.addView(a.text(v[1] == 0 ? "" : "علينا " + a.m(CashScreen.iso(Model.fmt(v[1], d))) + " (" + v[3] + ")", 13, a.red, true), new LinearLayout.LayoutParams(0, -2, 1));
+68:             card.addView(r);
+69:         }
+70:         card.setBackground(a.ripple(a.round(a.surface, a.line, 16), 16));
+71:         card.setOnClickListener(v -> list());
+72:     }
+73: 
+74:     // ===================================================================================
+75:     // قائمة العملاء
+76:     // ===================================================================================
+77: 
+78:     void list() {
+79:         if (!a.require(Auth.Perm.CLIENTS)) return;
+80:         c.guard(this::listImpl);
+81:     }
+82: 
+83:     private void listImpl() {
+84:         c.tabbed("حسابات العملاء", c::home);
+85:         a.eyeAction(this::listImpl);
+86:         if (a.can(Auth.Perm.CASH)) a.headerAction(R.drawable.ic_plus, "عميل جديد", v -> edit(null, k -> page(k.id)));
+87:         final List<ClientBook.Client> all = a.db.clients();
+88:         final Map<Long, Map<String, Long>> bals = a.db.clientBalances();
+89:         if (all.isEmpty()) {
+90:             LinearLayout k = a.card();
+91:             k.addView(a.text("لا يوجد عملاء بعد", 17, a.ink, true));
+92:             k.addView(a.text("أضف العميل مرة واحدة، ثم سجّل ما تستلمه منه وما تسلّمه له من الصندوق، فيبقى حسابه بكل عملة مضبوطًا مع كشف مفصّل.", 14, a.muted, false));
+93:             if (a.can(Auth.Perm.CASH)) k.addView(a.makeButton("+ إضافة عميل", a.primary, v -> edit(null, x -> page(x.id))), a.lp(-1, 50, 6));
+94:             return;
+95:         }
+96:         // الإجمالي
+97:         Map<String, long[]> t = ClientBook.totals(bals);
+98:         if (!t.isEmpty()) {
+99:             LinearLayout card = a.card();
+100:             card.addView(a.text("الإجمالي", 14, a.primaryInk, true));
+101:             for (Map.Entry<String, long[]> e : t.entrySet()) {
+102:                 long[] v = e.getValue();
+103:                 int d = a.db.decimals(e.getKey());
+104:                 card.addView(a.text(CashScreen.iso(e.getKey()) + "   لنا عليهم " + a.m(CashScreen.iso(Model.fmt(v[0], d))) + "   •   علينا لهم " + a.m(CashScreen.iso(Model.fmt(v[1], d))), 13, a.dark, false));
+105:             }
+106:         }
+107:         LinearLayout sr = a.officeHub.searchBox("ابحث باسم العميل أو هاتفه");
+108:         final EditText q = (EditText) sr.getTag();
+109:         q.setText(query);
+110:         a.body.addView(sr, a.lp(-1, 50, 4));
+111:         final LinearLayout chips = a.row();
+112:         final LinearLayout box = new LinearLayout(a);
+113:         box.setOrientation(LinearLayout.VERTICAL);
+114:         a.body.addView(a.strip(chips), a.lp(-1, -2, 2));
+115:         a.body.addView(box);
+116:         final Runnable[] fill = new Runnable[1];
+117:         fill[0] = () -> {
+118:             chips.removeAllViews();
+119:             for (int i = 0; i < FILTERS.length; i++) {
+120:                 final int k = i;
+121:                 chips.addView(a.pill(FILTERS[i], i == filter, v -> {
+122:                     filter = k;
+123:                     fill[0].run();
+124:                 }), a.gap(-2, -2, 3));
+125:             }
+126:             query = q.getText().toString();
+127:             String f = query.trim().toLowerCase(Locale.ROOT);
+128:             box.removeAllViews();
+129:             int n = 0;
+130:             for (ClientBook.Client k : all) {
+131:                 if (!f.isEmpty() && !(k.name + " " + k.phone).toLowerCase(Locale.ROOT).contains(f)) continue;
+132:                 Map<String, Long> b = bals.containsKey(k.id) ? bals.get(k.id) : new HashMap<>();
+133:                 if (!passes(k, b)) continue;
+134:                 box.addView(card(k, b), a.lp(-1, -2, 3));
+135:                 n++;
+136:             }
+137:             if (n == 0) box.addView(a.text("لا يوجد عملاء مطابقون.", 14, a.muted, false));
+138:         };
+139:         q.addTextChangedListener(Ui.watcher(fill[0]));
+140:         fill[0].run();
+141:     }
+142: 
+143:     private boolean passes(ClientBook.Client k, Map<String, Long> b) {
+144:         switch (filter) {
+145:             case 1:
+146:                 if (!k.active) return false;
+147:                 for (long v : b.values()) if (v > 0) return true;
+148:                 return false;
+149:             case 2:
+150:                 if (!k.active) return false;
+151:                 for (long v : b.values()) if (v < 0) return true;
+152:                 return false;
+153:             case 3: return k.active && b.isEmpty();
+154:             case 4: return !k.active;
+155:             default: return k.active;
+156:         }
+157:     }
+158: 
+159:     private View card(final ClientBook.Client k, Map<String, Long> b) {
+160:         LinearLayout r = new LinearLayout(a);
+161:         r.setOrientation(LinearLayout.HORIZONTAL);
+162:         r.setPadding(a.dp(12), a.dp(12), a.dp(12), a.dp(12));
+163:         r.setBackground(a.ripple(a.round(a.surface, a.line, 16), 16));
+164:         TextView av = a.text(k.name.isEmpty() ? "؟" : k.name.substring(0, k.name.offsetByCodePoints(0, 1)), 17, a.primaryInk, true);
+165:         av.setGravity(Gravity.CENTER);
+166:         av.setPadding(0, 0, 0, 0);
+167:         GradientDrawable g = new GradientDrawable();
+168:         g.setShape(GradientDrawable.OVAL);
+169:         g.setColor(a.primarySoft);
+170:         av.setBackground(g);
+171:         r.addView(av, new LinearLayout.LayoutParams(a.dp(42), a.dp(42)));
+172:         LinearLayout col = new LinearLayout(a);
+173:         col.setOrientation(LinearLayout.VERTICAL);
+174:         col.setPadding(a.dp(10), 0, 0, 0);
+175:         TextView nm = a.text(k.name + (k.phone.isEmpty() ? "" : "   " + CashScreen.iso(k.phone)), 16, k.active ? a.ink : a.muted, true);
+176:         nm.setSingleLine(true);
+177:         nm.setEllipsize(TextUtils.TruncateAt.END);
+178:         col.addView(nm);
+179:         Ui.Flow f = a.flow();
+180:         for (Map.Entry<String, Long> e : b.entrySet()) {
+181:             long v = e.getValue();

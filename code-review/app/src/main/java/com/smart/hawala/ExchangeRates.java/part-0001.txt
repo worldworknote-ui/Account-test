@@ -1,0 +1,63 @@
+1: package com.smart.hawala;
+2: 
+3: import java.io.ByteArrayOutputStream;
+4: import java.io.IOException;
+5: import java.io.InputStream;
+6: import java.math.BigDecimal;
+7: import java.math.RoundingMode;
+8: import java.net.HttpURLConnection;
+9: import java.net.URL;
+10: import java.nio.charset.StandardCharsets;
+11: import java.util.HashMap;
+12: import java.util.Iterator;
+13: import java.util.Map;
+14: import org.json.JSONObject;
+15: 
+16: /** جلب أسعار الصرف العالمية (لا تُرسل أي بيانات من التطبيق). الأسعار اليدوية لا تُستبدل. */
+17: public final class ExchangeRates {
+18:     private ExchangeRates() {}
+19: 
+20:     public static final String DEFAULT_URL = "https://open.er-api.com/v6/latest/USD";
+21: 
+22:     /**
+23:      * 8.0: المصدر قابل للتغيير (مثلًا خادمك بأسعار السوق المحلية) بالصيغة نفسها: {"rates": {"SYP": 13000, ...}}
+24:      * = عدد وحدات العملة لكل دولار، و time_last_update_unix اختياري.
+25:      */
+26:     public static String source(Db db) {
+27:         String u = db.setting("rates_url", "").trim();
+28:         return u.startsWith("https://") ? u : DEFAULT_URL;
+29:     }
+30: 
+31:     public static int refresh(Db db) throws Exception {
+32:         HttpURLConnection h = (HttpURLConnection) new URL(source(db)).openConnection();
+33:         try {
+34:             h.setConnectTimeout(12000);
+35:             h.setReadTimeout(12000);
+36:             h.setRequestProperty("Accept", "application/json");
+37:             if (h.getResponseCode() != 200) throw new IOException("خادم الأسعار لم يستجب (HTTP " + h.getResponseCode() + ")");
+38:             String s;
+39:             try (InputStream i = h.getInputStream(); ByteArrayOutputStream o = new ByteArrayOutputStream()) {
+40:                 byte[] b = new byte[4096];
+41:                 int n;
+42:                 while ((n = i.read(b)) > 0) o.write(b, 0, n);
+43:                 s = new String(o.toByteArray(), StandardCharsets.UTF_8);
+44:             }
+45:             JSONObject root = new JSONObject(s);
+46:             if (!"success".equalsIgnoreCase(root.optString("result", "success"))) throw new IOException("خادم الأسعار أرجع خطأ");
+47:             JSONObject rates = root.getJSONObject("rates");
+48:             Map<String, BigDecimal> out = new HashMap<>();
+49:             Iterator<String> it = rates.keys();
+50:             while (it.hasNext()) {
+51:                 String code = it.next();
+52:                 BigDecimal units = new BigDecimal(rates.get(code).toString());
+53:                 if (units.signum() <= 0) continue;
+54:                 out.put(code, BigDecimal.ONE.divide(units, 16, RoundingMode.HALF_EVEN));
+55:             }
+56:             long at = root.optLong("time_last_update_unix", 0) * 1000L;
+57:             db.saveOnlineRates(out, at > 0 ? at : Clock.now());
+58:             return out.size();
+59:         } finally {
+60:             h.disconnect();
+61:         }
+62:     }
+63: }

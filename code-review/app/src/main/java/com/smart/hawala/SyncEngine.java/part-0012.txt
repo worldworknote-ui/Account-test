@@ -1,0 +1,145 @@
+1741:                     if (plain == null) continue;   // حُذفت الصورة هنا قبل رفعها: المستلم يطبّق الحركة دونها بعد مهلة
+1742:                     folder.write(ref, keys.sealFile("a", ref, plain));
+1743:                     present.add(ref);
+1744:                 }
+1745:             }
+1746:             byte[] there = present.contains(name) ? folder.read(name) : null;
+1747:             if (there != null && !Arrays.equals(there, data)) {
+1748:                 throw new IllegalStateException("في المجلد حزمة بالرقم نفسه من هذا الجهاز بمحتوى مختلف: يبدو أن بيانات هذا الجهاز استُعيدت من نسخة قديمة. "
+1749:                         + "أوقف المزامنة على هذا الجهاز ثم انضم من جديد.");
+1750:             }
+1751:             if (there == null) folder.write(name, data);
+1752:             present.add(name);
+1753:             d.execSQL("UPDATE sync_outbox SET uploaded=1 WHERE seq=" + r[0]);
+1754:             n++;
+1755:         }
+1756:         // تبقى آخر 50 حزمة مرفوعة محليًا فقط
+1757:         d.execSQL("DELETE FROM sync_outbox WHERE uploaded=1 AND seq<(SELECT MAX(seq)-50 FROM sync_outbox)");
+1758:         return n;
+1759:     }
+1760: 
+1761:     /** 10.4: محتوى صورة محلية مكشوفًا، أو null إن لم تعد موجودة. */
+1762:     byte[] attachmentBytes(long attId) {
+1763:         try (Cursor c = db.getReadableDatabase().rawQuery("SELECT path FROM attachments WHERE id=?", new String[]{"" + attId})) {
+1764:             if (!c.moveToFirst() || c.getString(0) == null) return null;
+1765:             File f = db.attachmentFile(c.getString(0));
+1766:             if (!f.isFile()) return null;
+1767:             return Crypto.decBytes(java.nio.file.Files.readAllBytes(f.toPath()));
+1768:         } catch (Exception e) {
+1769:             return null;
+1770:         }
+1771:     }
+1772: 
+1773:     /**
+1774:      * 10.4: يجهّز صور الحزمة قبل تطبيقها: كل مرجع صورة غير موجودة هنا يُنزَّل ويُتحقق من بصمته ويُضمَّن في العملية.
+1775:      * يرجع false إن لم تصل صورة بعد (تنتظر الحزمة الجولة التالية). صورة غابت أكثر من 3 أيام تُطبَّق الحركة دونها مع تنبيه.
+1776:      */
+1777:     boolean prepareBlobs(SyncCrypto.Keys keys, JSONObject p, String fromDev, Result res) throws Exception {
+1778:         JSONArray ops = p.getJSONArray("ops");
+1779:         SQLiteDatabase d = db.getReadableDatabase();
+1780:         for (int i = 0; i < ops.length(); i++) {
+1781:             JSONObject op = ops.getJSONObject(i);
+1782:             JSONObject r = op.optJSONObject("r");
+1783:             if (!"attachments".equals(op.optString("t")) || !"U".equals(op.optString("o")) || r == null || !r.has("_ref") || r.has("_file")) continue;
+1784:             boolean have = false;
+1785:             try (Cursor c = d.rawQuery("SELECT path FROM attachments WHERE id=?", new String[]{"" + r.optLong("id")})) {
+1786:                 if (c.moveToFirst() && c.getString(0) != null && db.attachmentFile(c.getString(0)).isFile()) have = true;
+1787:             }
+1788:             if (have) continue;
+1789:             String ref = r.getString("_ref");
+1790:             byte[] sealed = folder.read(ref);
+1791:             if (sealed == null) {
+1792:                 if (Clock.now() - p.optLong("at") < BLOB_WAIT_MS) return false;
+1793:                 SyncStore.conflict(db.getWritableDatabase(), "IMAGE_MISSING", "attachments", "" + r.optLong("id"),
+1794:                         "صورة الحركة " + r.optLong("tx_id") + " لم تصل من الجهاز الآخر؛ سُجّلت الحركة دونها", fromDev);
+1795:                 res.errors.add("صورة الحركة " + r.optLong("tx_id") + " لم تصل؛ سُجّلت الحركة دونها.");
+1796:                 continue;
+1797:             }
+1798:             byte[] plain = keys.openFile("a", ref, sealed);
+1799:             if (!r.optString("_sha").equals(SyncCrypto.hex(SyncCrypto.sha256(plain)))) throw new IOException("صورة تالفة في الخزنة للحركة " + r.optLong("tx_id"));
+1800:             r.put("_file", Base64.getEncoder().encodeToString(plain));
+1801:         }
+1802:         return true;
+1803:     }
+1804: 
+1805:     // ===================================================================================
+1806:     // الاستلام
+1807:     // ===================================================================================
+1808: 
+1809:     /** نتيجة جولة مزامنة. */
+1810:     public static final class Result {
+1811:         public int sent, received, rows, duplicates, conflicts, waiting, dupTx;
+1812:         /** 10.16: تنبيهات للمراجعة (تعديل لم يُطبَّق، تغيّر صلاحيات)، وأخبار الأجهزة (دخل/خرج) نصوصًا جاهزة للإشعار. */
+1813:         public int notices;
+1814:         public final List<String> news = new ArrayList<>();
+1815:         public final List<String> errors = new ArrayList<>();
+1816:         public String digestAlert = "";
+1817:         public JSONArray peers = new JSONArray();
+1818:         /** 10.2: أرقام الحركات الجديدة التي وصلت في هذه الجولة. */
+1819:         public final List<Long> newTx = new ArrayList<>();
+1820:         public String note = "";
+1821:         /** 10.4: ما حذفه التنظيف في هذه الجولة (أو سبب تعذره)، أو فارغ. */
+1822:         public String cleaned = "";
+1823:         /** 11.5: لكل جهاز: كم حزمة وصلت منه في هذه الجولة، وأول خطأ معه؛ واسم الجهاز صاحب أول خطأ. */
+1824:         public final Map<String, Integer> gotFrom = new LinkedHashMap<>();
+1825:         public final Map<String, String> errFrom = new LinkedHashMap<>();
+1826:         public String firstErrWith = "";
+1827: 
+1828:         public String summary() {
+1829:             StringBuilder b = new StringBuilder();
+1830:             b.append("أُرسلت ").append(sent).append(" حزمة، ووصلت ").append(received);
+1831:             if (rows > 0) b.append(" (").append(rows).append(" تغييرًا)");
+1832:             if (duplicates > 0) b.append("، وتُجوهل ").append(duplicates).append(" إلغاءً مكررًا");
+1833:             if (dupTx > 0) b.append("، و").append(dupTx).append(" حركة قد تكون مكررة (راجعها)");
+1834:             if (conflicts - dupTx > 0) b.append("، و").append(conflicts - dupTx).append(" تعارضًا للمراجعة");
+1835:             if (notices > 0) b.append("، و").append(notices).append(" تنبيهًا للمراجعة");
+1836:             if (waiting > 0) b.append("، و").append(waiting).append(" حزمة تنتظر حزمًا من جهاز آخر");
+1837:             for (String n : news) b.append("\n• ").append(n);
+1838:             return b.toString();
+1839:         }
+1840: 
+1841:         /** 10.16: هل في الجولة ما يستحق إشعارًا (وصل شيء، أو تنبيه، أو خبر عن جهاز)؟ */
+1842:         public boolean notable() { return received > 0 || notices > 0 || !news.isEmpty(); }
+1843: 
+1844:         /** تعارضات وتنبيهات للمراجعة غير الحركات المكررة. */
+1845:         public int review() { return Math.max(0, conflicts - dupTx) + notices; }
+1846:     }
+1847: 
+1848:     int pull(Result res) throws Exception {
+1849:         SyncCrypto.Keys keys = keys();
+1850:         SQLiteDatabase d = db.getWritableDatabase();
+1851:         String me = SyncStore.meta(d, "device");
+1852:         long myPrefix = db.syncPrefix;
+1853:         Map<String, JSONObject> members = readMembers(keys);
+1854:         // 10.4: جهاز خرج بإعادة التعيين: تُستلم حزمه حتى آخرها (upTo) ثم يتوقف
+1855:         // 10.5 (AUDIT-001): وكذلك الجهاز الذي أزاله المدير، ولو حُذفت بطاقته؛ ولا يُقبل منه شيء بعد upTo
+1856:         Map<String, JSONObject> raw = null;
+1857:         // إن كان هذا الجهاز قد استلم من المُزال أبعد مما رآه من أزاله (تأخر وصول الملفات إلى ذلك الجهاز) يرفع upTo إلى ما استلمه،
+1858:         // فيصل الجميع إلى الحزم نفسها (السجلات تُدمج بالأبعد)
+1859:         Map<String, JSONObject> remNow = removedMap();
+1860:         boolean raised = false;
+1861:         Map<String, Long> curNow = SyncStore.cursors(d);
+1862:         for (JSONObject x : remNow.values()) {
+1863:             Long have = curNow.get(x.optString("dev"));
+1864:             if (x.has("upTo") && have != null && have > x.optLong("upTo")) {
+1865:                 x.put("upTo", have);
+1866:                 raised = true;
+1867:             }
+1868:         }
+1869:         if (raised) saveRemoved(remNow);
+1870:         Map<String, Long> caps = removedCaps();
+1871:         for (JSONObject x : removedMap().values()) {
+1872:             long upTo = x.optLong("upTo", 0);
+1873:             if (upTo <= 0) continue;
+1874:             Long have = SyncStore.cursors(d).get(x.optString("dev"));
+1875:             if ((have == null ? 0 : have) >= upTo) continue;
+1876:             if (raw == null) raw = readMembersRaw(keys);
+1877:             JSONObject m = raw.get(x.optString("dev"));
+1878:             if (m == null) {
+1879:                 m = new JSONObject();
+1880:                 m.put("dev", x.optString("dev"));
+1881:                 m.put("name", x.optString("name"));
+1882:                 m.put("seq", upTo);
+1883:             }
+1884:             members.put(x.optString("dev"), m);
+1885:         }

@@ -1,0 +1,114 @@
+1: import com.smart.hawala.BackupFormat;
+2: import com.smart.hawala.SecureStreams;
+3: import java.io.ByteArrayOutputStream;
+4: import java.io.FileInputStream;
+5: import java.io.FileOutputStream;
+6: import java.io.InputStream;
+7: import java.nio.charset.StandardCharsets;
+8: import java.nio.file.Files;
+9: import java.nio.file.Paths;
+10: import java.util.HashMap;
+11: import java.util.Map;
+12: import org.json.JSONArray;
+13: import org.json.JSONObject;
+14: 
+15: /**
+16:  * يتحقق أن ملفات أداة النقل (المكتوبة بـ JavaScript في المتصفح) تُفك وتُقرأ وتُفحص بالكود نفسه الذي يستخدمه التطبيق
+17:  * عند الاستعادة، وأن الأرصدة المحسوبة من أسطر القيود تطابق القيم المتوقعة المحسوبة يدويًا.
+18:  * الاستخدام: java MigrationTest <مجلد الملفات>
+19:  */
+20: public class MigrationTest {
+21:     static int fails = 0;
+22: 
+23:     static void check(String name, boolean ok, Object extra) {
+24:         if (ok) System.out.println("  PASS " + name);
+25:         else {
+26:             fails++;
+27:             System.out.println("  FAIL " + name + (extra == null ? "" : " — " + extra));
+28:         }
+29:     }
+30: 
+31:     public static void main(String[] args) throws Exception {
+32:         String dir = args[0];
+33:         JSONObject expect = new JSONObject(new String(Files.readAllBytes(Paths.get(dir, "expect.json")), StandardCharsets.UTF_8));
+34:         for (String name : new java.util.TreeSet<>(expect.keySet())) {
+35:             System.out.println("== " + name + ".sba");
+36:             JSONObject e = expect.getJSONObject(name);
+37:             // كلمة مرور خاطئة يجب أن تُرفض برسالة كلمة المرور
+38:             try (InputStream in = new FileInputStream(dir + "/" + name + ".sba")) {
+39:                 new SecureStreams.DecryptingInputStream(in, "wrong-password".toCharArray());
+40:                 check("wrong password rejected", false, null);
+41:             } catch (SecureStreams.WrongPasswordException ok) {
+42:                 check("wrong password rejected", true, null);
+43:             }
+44:             BackupFormat.Parsed p;
+45:             try (InputStream in = new FileInputStream(dir + "/" + name + ".sba")) {
+46:                 SecureStreams.DecryptingInputStream dec = new SecureStreams.DecryptingInputStream(in, e.getString("password").toCharArray());
+47:                 p = BackupFormat.readV5(dec, new BackupFormat.AttachmentStore() {
+48:                     @Override public Object store(long id, InputStream data) throws Exception {
+49:                         ByteArrayOutputStream o = new ByteArrayOutputStream();
+50:                         byte[] b = new byte[8192];
+51:                         int n;
+52:                         while ((n = data.read(b)) > 0) o.write(b, 0, n);
+53:                         return o.toByteArray();
+54:                     }
+55: 
+56:                     @Override public void discard(Object handle) {}
+57:                 });
+58:                 check("stream fully verified (last chunk signed)", dec.isComplete() || readRest(dec), null);
+59:             }
+60:             BackupFormat.Report r = BackupFormat.validate(p);
+61:             check("validate ok", r.ok(), r.errors);
+62:             check("offices " + e.getInt("offices"), r.offices == e.getInt("offices"), r.offices);
+63:             check("active tx " + e.getInt("tx"), r.txActive == e.getInt("tx") && r.txCancelled == 0, r.txActive);
+64:             check("entries " + e.getInt("entries"), r.entries == e.getInt("entries"), r.entries);
+65:             check("schema 6", p.schema() == 6, p.schema());
+66:             check("no users table (keeps device users)", !p.tables.containsKey("users"), null);
+67:             // الأرصدة كما يحسبها التطبيق: SUM(debit-credit) لحساب OFFICE حسب المكتب والعملة
+68:             Map<Long, String> names = new HashMap<>();
+69:             for (JSONObject o : p.table("offices")) names.put(o.getLong("id"), o.getString("name"));
+70:             Map<String, Long> bal = new HashMap<>();
+71:             for (JSONObject l : p.table("journal_lines")) {
+72:                 if (!"OFFICE".equals(l.getString("account"))) continue;
+73:                 String k = names.get(l.getLong("office_id")) + "|" + l.getString("currency");
+74:                 bal.merge(k, l.getLong("debit_minor") - l.getLong("credit_minor"), Long::sum);
+75:             }
+76:             JSONArray exp = e.getJSONArray("balances");
+77:             for (int i = 0; i < exp.length(); i++) {
+78:                 JSONArray x = exp.getJSONArray(i);
+79:                 String k = x.getString(0) + "|" + x.getString(1);
+80:                 Long got = bal.get(k);
+81:                 check("balance " + k + " = " + x.getLong(2), got != null && got == x.getLong(2), got);
+82:             }
+83:             // كل حركة لها قيد أصل، والأجرة قيد مستقل، وكل قيد سطران
+84:             Map<Long, Integer> perEntry = new HashMap<>();
+85:             for (JSONObject l : p.table("journal_lines")) perEntry.merge(l.getLong("entry_id"), 1, Integer::sum);
+86:             boolean two = true;
+87:             for (int n : perEntry.values()) if (n != 2) two = false;
+88:             check("every entry has exactly 2 lines", two, perEntry);
+89:             for (JSONObject t : p.table("tx")) {
+90:                 int principal = 0;
+91:                 for (JSONObject en : p.table("journal_entries")) {
+92:                     if (!en.isNull("tx_id") && en.getLong("tx_id") == t.getLong("id") && "PRINCIPAL".equals(en.getString("kind"))) principal++;
+93:                 }
+94:                 if (principal != 1) {
+95:                     check("tx " + t.getLong("id") + " has one PRINCIPAL entry", false, principal);
+96:                 }
+97:             }
+98:             // تفريغ الجداول لاختبار SQLite
+99:             JSONObject dump = new JSONObject();
+100:             for (Map.Entry<String, java.util.List<JSONObject>> en : p.tables.entrySet()) dump.put(en.getKey(), new JSONArray(en.getValue()));
+101:             try (FileOutputStream f = new FileOutputStream(dir + "/" + name + ".tables.json")) {
+102:                 f.write(dump.toString().getBytes(StandardCharsets.UTF_8));
+103:             }
+104:         }
+105:         System.out.println(fails == 0 ? "ALL MIGRATION FILE TESTS PASSED" : fails + " FAILED");
+106:         System.exit(fails == 0 ? 0 : 1);
+107:     }
+108: 
+109:     static boolean readRest(InputStream in) throws Exception {
+110:         byte[] b = new byte[4096];
+111:         while (in.read(b) > 0) { /* حتى النهاية */ }
+112:         return ((SecureStreams.DecryptingInputStream) in).isComplete();
+113:     }
+114: }

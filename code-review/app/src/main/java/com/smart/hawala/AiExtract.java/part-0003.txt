@@ -1,0 +1,26 @@
+315:             h.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+316:             h.setRequestProperty("Accept", "application/json");
+317:             if (c.claude()) {
+318:                 h.setRequestProperty("x-api-key", c.key.trim());
+319:                 h.setRequestProperty("anthropic-version", "2023-06-01");
+320:             } else {
+321:                 h.setRequestProperty("Authorization", "Bearer " + c.key.trim());
+322:             }
+323:             byte[] out = body.toString().getBytes(StandardCharsets.UTF_8);
+324:             try (OutputStream o = h.getOutputStream()) {
+325:                 o.write(out);
+326:             }
+327:             int code = h.getResponseCode();
+328:             String resp = read(code >= 400 ? h.getErrorStream() : h.getInputStream());
+329:             return new String[]{String.valueOf(code), resp};
+330:         } catch (UnknownHostException e) {
+331:             throw new Exception("لا يوجد اتصال بالإنترنت، أو عنوان الخدمة غير صحيح.");
+332:         } catch (SocketTimeoutException e) {
+333:             throw new Exception("انتهت مهلة الاتصال بخدمة الذكاء الاصطناعي. أعد المحاولة.");
+334:         } catch (IOException e) {
+335:             throw new Exception("تعذر الاتصال بخدمة الذكاء الاصطناعي: " + e.getMessage());
+336:         } finally {
+337:             h.disconnect();
+338:         }
+339:     }
+340: }

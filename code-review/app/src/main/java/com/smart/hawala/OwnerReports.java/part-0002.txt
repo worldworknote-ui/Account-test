@@ -1,0 +1,155 @@
+179:         out.add(new Object[]{t.currency, Model.TYPE_DEBIT.equals(t.type) ? t.amount : -t.amount});
+180:         if (t.hasFee()) out.add(new Object[]{t.feeCurrency, Model.FEE_US.equals(t.feeType) ? t.fee : -t.fee});
+181:     }
+182: 
+183:     /** المكتب ← العملة ← الرصيد، من الحركات النشطة والأرصدة السابقة. */
+184:     public static Map<Long, Map<String, Long>> balances(Input in) {
+185:         Map<Long, Map<String, Long>> b = new TreeMap<>();
+186:         List<Object[]> fx = new ArrayList<>();
+187:         for (Model.Tx t : in.txs) {
+188:             if (!active(t)) continue;
+189:             fx.clear();
+190:             effects(t, fx);
+191:             for (Object[] e : fx) b.computeIfAbsent(t.officeId, k -> new TreeMap<>()).merge((String) e[0], (Long) e[1], Long::sum);
+192:         }
+193:         for (Opening o : in.openings) b.computeIfAbsent(o.office, k -> new TreeMap<>()).merge(o.currency, o.signed, Long::sum);
+194:         return b;
+195:     }
+196: 
+197:     static List<String> currenciesByVolume(Input in, long from) {
+198:         Map<String, Long> v = new HashMap<>();
+199:         for (Model.Tx t : in.txs) if (active(t) && t.createdAt >= from) v.merge(t.currency, 1L, Long::sum);
+200:         List<String> l = new ArrayList<>(v.keySet());
+201:         Collections.sort(l, (a, b) -> Long.compare(v.get(b), v.get(a)));
+202:         return l;
+203:     }
+204: 
+205:     // ===================================================================================
+206:     // 1) حجم العمل الشهري والنمو
+207:     // ===================================================================================
+208: 
+209:     /**
+210:      * النمو بأشهر كاملة: آخر 12 شهرًا كاملًا (حتى الشهر الماضي) مقابل الـ12 قبلها، ومتوسط العمليات الشهري لكل منهما،
+211:      * ومجموع المبالغ لكل عملة (دون حركات الأجور المستقلة). الشهر الجاري غير مكتمل فلا يدخل.
+212:      */
+213:     public static final class Growth {
+214:         public int lastMonth, firstMonth, prevFirst;
+215:         public long opsLastMonth, opsYearAgo, ops12, opsPrev12;
+216:         public final Map<String, long[]> volume12 = new TreeMap<>();   // العملة ← {آخر 12 شهرًا، الـ12 قبلها}
+217: 
+218:         /**
+219:          * 10.16: عدد الأشهر الكاملة التي فيها بيانات فعلًا داخل نافذة الـ12 (من أول حركة في الدفتر). مكتب بدأ قبل 3 أشهر
+220:          * يُقسم على 3 لا على 12، وإلا ظهر متوسطه ربع الحقيقة.
+221:          */
+222:         public int months12 = 12, monthsPrev = 12;
+223:         /** هل في السنة السابقة بيانات تصلح للمقارنة؟ */
+224:         public boolean comparable;
+225: 
+226:         public long avg12() { return Math.round(ops12 / (double) Math.max(1, months12)); }
+227: 
+228:         public long avgPrev12() { return Math.round(opsPrev12 / (double) Math.max(1, monthsPrev)); }
+229: 
+230:         /** «آخر 12 شهرًا» أو «آخر 3 أشهر» حسب عمر البيانات. */
+231:         public String span() { return months12 >= 12 ? "آخر 12 شهرًا" : months12 == 1 ? "الشهر الماضي" : months12 == 2 ? "آخر شهرين" : "آخر " + months12 + " أشهر"; }
+232:     }
+233: 
+234:     static int monthsBetween(int from, int to) {
+235:         return (to / 100 - from / 100) * 12 + (to % 100 - from % 100);
+236:     }
+237: 
+238:     public static Growth growth(Input in) {
+239:         Growth g = new Growth();
+240:         g.lastMonth = prevMonth(monthKey(in.now), 1);
+241:         g.firstMonth = prevMonth(g.lastMonth, 11);
+242:         g.prevFirst = prevMonth(g.lastMonth, 23);
+243:         int yearAgo = prevMonth(g.lastMonth, 12);
+244:         for (Model.Tx t : in.txs) {
+245:             if (!active(t)) continue;
+246:             int m = monthKey(t.createdAt);
+247:             if (m == g.lastMonth) g.opsLastMonth++;
+248:             if (m == yearAgo) g.opsYearAgo++;
+249:             if (m > g.lastMonth || m < g.prevFirst) continue;
+250:             long[] v = g.volume12.computeIfAbsent(t.currency, k -> new long[2]);
+251:             boolean recent = m >= g.firstMonth;
+252:             if (recent) g.ops12++;
+253:             else g.opsPrev12++;
+254:             if (!feeRow(t)) v[recent ? 0 : 1] += t.amount;
+255:         }
+256:         int firstData = Integer.MAX_VALUE;
+257:         for (Model.Tx t : in.txs) if (active(t)) firstData = Math.min(firstData, monthKey(t.createdAt));
+258:         if (firstData != Integer.MAX_VALUE) {
+259:             if (firstData > g.firstMonth) g.months12 = Math.max(1, Math.min(12, monthsBetween(firstData, g.lastMonth) + 1));
+260:             int prevLast = prevMonth(g.firstMonth, 1);
+261:             if (firstData > g.prevFirst) g.monthsPrev = Math.max(1, Math.min(12, monthsBetween(firstData, prevLast) + 1));
+262:             // المقارنة بالسنة السابقة صادقة حين تغطي بياناتها ستة أشهر على الأقل
+263:             g.comparable = g.opsPrev12 > 0 && firstData <= prevMonth(prevLast, 5);
+264:         }
+265:         return g;
+266:     }
+267: 
+268:     static String ratio(long now, long before) {
+269:         if (before == 0) return now == 0 ? "—" : "جديد";
+270:         return "×" + BigDecimal.valueOf(now).divide(BigDecimal.valueOf(before), 1, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
+271:     }
+272: 
+273:     static void monthly(Report r, Input in, int months) {
+274:         int last = monthKey(in.now);
+275:         List<String> curs = currenciesByVolume(in, in.now - 365 * DAY);
+276:         if (curs.size() > 4) curs = curs.subList(0, 4);
+277:         Map<Integer, long[]> ops = new TreeMap<>();
+278:         Map<Integer, Map<String, Long>> vol = new TreeMap<>();
+279:         int first = prevMonth(last, months - 1);
+280:         for (Model.Tx t : in.txs) {
+281:             if (!active(t)) continue;
+282:             int m = monthKey(t.createdAt);
+283:             if (m < first || m > last) continue;
+284:             ops.computeIfAbsent(m, k -> new long[1])[0]++;
+285:             if (!feeRow(t)) vol.computeIfAbsent(m, k -> new HashMap<>()).merge(t.currency, t.amount, Long::sum);
+286:         }
+287:         Growth g = growth(in);
+288:         Report.Section s = r.section("حجم العمل الشهري", "شهري");
+289:         // 10.16: المتوسط على الأشهر التي فيها بيانات، والمقارنة بالسنة السابقة حين توجد فقط (بلا «مقابل 0 (جديد)»)
+290:         s.kv("متوسط العمليات شهريًا", g.avg12() + " في " + g.span() + (g.comparable ? "، مقابل " + g.avgPrev12() + " في السنة قبلها (" + ratio(g.avg12(), g.avgPrev12()) + ")"
+291:                 : " (لا بيانات كافية عن السنة السابقة للمقارنة)"), false);
+292:         s.kv("آخر شهر كامل (" + monthLabel(g.lastMonth) + ")", g.opsLastMonth + " عملية" + (g.opsYearAgo > 0 ? "، مقابل " + g.opsYearAgo + " في الشهر نفسه قبل سنة" : ""), false);
+293:         for (String c : curs) {
+294:             long[] v = g.volume12.get(c);
+295:             if (v != null && (v[0] > 0 || v[1] > 0)) s.kv("المبالغ بـ" + c, fmt(in, c, v[0]) + " في " + g.span()
+296:                     + (g.comparable && v[1] > 0 ? "، مقابل " + fmt(in, c, v[1]) + " في السنة قبلها (" + ratio(v[0], v[1]) + ")" : ""), false);
+297:         }
+298:         s.col("الشهر", 1f, Report.TEXT).col("العمليات", 0.8f, Report.INT);
+299:         for (String c : curs) s.col("المبالغ " + c, 1.3f, Report.MONEY);
+300:         // 10.16: الأشهر السابقة لأول حركة في الدفتر لا تُعرض (كانت صفوف أصفار طويلة)
+301:         int firstShown = first;
+302:         if (!ops.isEmpty()) firstShown = Math.max(first, ((TreeMap<Integer, long[]>) ops).firstKey());
+303:         else firstShown = last;
+304:         for (int m = last; m >= firstShown; m = prevMonth(m, 1)) {
+305:             long[] o = ops.get(m);
+306:             Object[] cells = new Object[2 + curs.size()];
+307:             cells[0] = monthLabel(m);
+308:             cells[1] = o == null ? 0L : o[0];
+309:             Map<String, Long> v = vol.get(m);
+310:             for (int i = 0; i < curs.size(); i++) {
+311:                 Long x = v == null ? null : v.get(curs.get(i));
+312:                 cells[2 + i] = money(in, curs.get(i), x == null ? 0 : x);
+313:             }
+314:             s.row(m == last ? Report.MUTED : Report.NORMAL, cells);
+315:         }
+316:         s.note = "الشهر الحالي غير مكتمل (بلون باهت). المبالغ دون حركات الأجور المستقلة.";
+317:     }
+318: 
+319:     // ===================================================================================
+320:     // 2) ترتيب المكاتب وتركّز العمل
+321:     // ===================================================================================
+322: 
+323:     public static final class Concentration {
+324:         public long total;
+325:         public List<long[]> ranked = new ArrayList<>();   // {office, ops}
+326:         public long top10;
+327:         public final Map<String, Object[]> payTop = new TreeMap<>(), recTop = new TreeMap<>(); // العملة ← {office, amount, total}
+328:     }
+329: 
+330:     public static Concentration concentration(Input in, long from) {
+331:         Concentration c = new Concentration();
+332:         Map<Long, Long> ops = new HashMap<>();
+333:         for (Model.Tx t : in.txs) if (active(t) && t.createdAt >= from) ops.merge(t.officeId, 1L, Long::sum);

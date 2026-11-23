@@ -1,0 +1,61 @@
+75:     t("30) WhatsApp bold stars", "*يرجى تسليم*\n*حمدي احمد محمد*\n*500 دولار*", "حمدي احمد محمد", "500", "USD");
+76:     // ---- 6.1: كلمات المستخدم للعملات، USDT، الكلمة المجهولة
+77:     List<MessageParser.Cur> withT = Arrays.asList(new MessageParser.Cur("USD", "دولار امريكي"), new MessageParser.Cur("USDT", "دولار تيثر"), new MessageParser.Cur("EUR", "يورو"));
+78:     MessageParser.Result u = t("31) unknown slang word is reported", "يرجى تسليم\nحمدي احمد محمد\n500 يوز", "حمدي احمد محمد", "500", null, withT, null, null);
+79:     check(u.unknownWord.equals("يوز"), "   unknownWord = يوز (got [" + u.unknownWord + "])");
+80:     Map<String, List<String>> al = MessageParser.aliasesFrom("USDT=يوز|يوزات");
+81:     MessageParser.Result u2 = MessageParser.parse("يرجى تسليم\nحمدي احمد محمد\n500 يوز", withT, al);
+82:     check("USDT".equals(u2.currency) && u2.unknownWord.isEmpty(), "   with alias يوز -> USDT (got " + u2.currency + ")");
+83:     check("USD".equals(MessageParser.parse("تسليم 500 دولار\nسامر علي", withT, al).currency), "   «دولار» stays USD even when USDT is named «دولار تيثر»");
+84:     check("USDT".equals(MessageParser.parse("تسليم 500 usdt\nسامر علي", withT, al).currency), "   usdt built-in");
+85:     check("USDT".equals(MessageParser.parse("تسليم 1000 تيثر\nسامر علي", withT, null).currency), "   تيثر built-in");
+86:     MessageParser.Result u3 = MessageParser.parse("تسليم 500 يوز\nسامر علي", CURS, al);
+87:     check(u3.currency == null && u3.currencyWord.equals("يوز"), "   alias of a currency not enabled for the office -> warn with the word");
+88:     check(MessageParser.parse("تسليم 500 دولار\nسامر علي", CURS).unknownWord.isEmpty(), "   no unknownWord when currency known");
+89:     check(MessageParser.parse("يرجى تسليم 2500 صافي\nسامر علي", CURS).unknownWord.isEmpty(), "   «صافي» is not an unknown currency");
+90:     check(MessageParser.parse("تسليم 25 الف يوز\nسامر علي", withT, null).unknownWord.equals("يوز"), "   unknown word after «الف»");
+91:     check(MessageParser.aliasesTo(al).equals("USDT=يوز|يوزات"), "   aliases round-trip");
+92:     List<MessageParser.Cur> allc = new ArrayList<>(withT);
+93:     check(MessageParser.aliasProblem("يوز", "USDT", new LinkedHashMap<String, List<String>>(), allc) == null, "   «يوز» accepted for USDT");
+94:     check(MessageParser.aliasProblem("يوز", "EUR", al, allc) != null, "   «يوز» refused for EUR (already USDT)");
+95:     check(MessageParser.aliasProblem("دولار", "USDT", al, allc) != null, "   «دولار» refused (built-in USD)");
+96:     check(MessageParser.aliasProblem("من", "USDT", al, allc) != null, "   «من» refused (too common)");
+97:     check(MessageParser.aliasProblem("12", "USDT", al, allc) != null, "   digits refused");
+98:     check(MessageParser.aliasProblem("يورو", "USDT", al, allc) != null, "   another currency's name refused");
+99:     // ---- 6.1: البيان المختصر
+100:     String c1 = MessageParser.compact("السلام عليكم ورحمة الله وبركاته \nيرجى تسليم \nحمدي احمد محمد \nحماة \n+963 933 974 \n500 دولار صافي \nزكاتكم", "حمدي احمد محمد");
+101:     check(c1.equals("حماة • +963 933 974 • 500 دولار صافي"), "   compact multi-line -> [" + c1 + "]");
+102:     String c2 = MessageParser.compact("السلام عليكم ورحمة الله وبركاته يرجى تسليم حمدي احمد محمد حماة +963 933 974 500 دولار صافي زكاتكم", "حمدي احمد محمد");
+103:     check(c2.equals("حماة +963 933 974 500 دولار صافي"), "   compact one line -> [" + c2 + "]");
+104:     String c3 = MessageParser.compact("السلام عليكم\nيرجى تسليم\nحمدي احمد محمد\n500 دولار", null);
+105:     check(c3.equals("حمدي احمد محمد • 500 دولار"), "   name kept when not shown elsewhere -> [" + c3 + "]");
+106:     check(MessageParser.compact("تسليم نقدي باليد", "سامر").equals("تسليم نقدي باليد"), "   short manual text unchanged");
+107:     String c4 = MessageParser.compact("الاسم: سامر خليل\nالمبلغ: 2,000.50 يورو\nالهاتف: 0933 111 222\nعاجل 🌹🌹", "سامر خليل");
+108:     check(c4.equals("المبلغ: 2,000.50 يورو • الهاتف: 0933 111 222 • عاجل"), "   labels, decimals and «عاجل» kept, emoji dropped -> [" + c4 + "]");
+109:     check(MessageParser.compact("السلام عليكم\nشكرا", "x").isEmpty(), "   only pleasantries -> empty");
+110:     StringBuilder longMsg = new StringBuilder("يرجى تسليم\n");
+111:     for (int i = 0; i < 40; i++) longMsg.append("كلمة").append(i).append(" ");
+112:     String c5 = MessageParser.compact(longMsg.toString(), null);
+113:     check(c5.length() <= MessageParser.COMPACT_MAX + 1 && c5.endsWith("…"), "   long text cut with … (" + c5.length() + ")");
+114:     t("22) empty message", "", "", "", null);
+115:     t("23) only greeting", "السلام عليكم ورحمة الله", "", "", null);
+116:     // «راجع» بلغة المكاتب = أجرة يدفعها المكتب لنا
+117:     MessageParser.Result k1 = t("R1) راجع 1%", "حوالة 10000 دولار\nسامر خليل\nراجع 1%", "سامر خليل", "10000", "USD");
+118:     check(k1.raje && "1".equals(k1.rajeRate) && k1.rajePer == 100, "   راجع 1 بالمئة لنا");
+119:     MessageParser.Result k2 = t("R2) راجع ١ بالميه في نفس السطر", "تسليم 5000 يورو راجع ١ بالميه\nخالد عمر", "خالد عمر", "5000", "EUR");
+120:     check("1".equals(k2.rajeRate) && k2.rajePer == 100, "   ١ بالميه = 1%");
+121:     MessageParser.Result k3 = t("R3) راجع نص بالمية", "5000 يورو راجع نص بالمية\nمحمد علي", "محمد علي", "5000", "EUR");
+122:     check("0.5".equals(k3.rajeRate), "   نص بالمية = 0.5%");
+123:     MessageParser.Result k4 = t("R4) راجع 5 بالالف", "20 الف دولار\nراجع 5 بالالف\nياسر حسن", "ياسر حسن", "20000", "USD");
+124:     check("5".equals(k4.rajeRate) && k4.rajePer == 1000, "   5 بالألف");
+125:     MessageParser.Result k5 = t("R5) راجع مبلغ محدد", "2000 دولار\nراجع 20 دولار\nعلي محمود", "علي محمود", "2000", "USD");
+126:     check("20".equals(k5.rajeAmount) && k5.rajeRate.isEmpty(), "   راجع 20 دولار = أجرة 20");
+127:     MessageParser.Result k6 = t("R6) رقم بلا وحدة لا يُخمَّن ولا يصير المبلغ", "1500$\nراجع 2\nسعيد ناصر", "سعيد ناصر", "1500", "USD");
+128:     check(k6.raje && k6.rajeRate.isEmpty() && k6.rajeAmount.isEmpty() && "2".equals(k6.rajeHint), "   راجع 2: يُعرض للمحاسب ليحدده");
+129:     MessageParser.Result k7 = t("R7) «راجعني» ليست راجع", "حوالة 3000 يورو\nراجعني بكرة\nخالد عمر", null, "3000", "EUR");
+130:     check(!k7.raje, "   راجعني ≠ راجع");
+131:     System.out.println(fails == 0 ? "ALL PASS (" + n + " messages)" : fails + " FAILED of " + n);
+132:     System.exit(fails == 0 ? 0 : 1);
+133:   }
+134:   static void check(boolean c, String m) { System.out.println((c ? "  PASS" : "  FAIL") + m); if (!c) fails++; }
+135: }

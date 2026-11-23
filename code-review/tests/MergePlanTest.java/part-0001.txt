@@ -1,0 +1,141 @@
+1: import com.smart.hawala.*;
+2: import java.nio.charset.StandardCharsets;
+3: import java.nio.file.*;
+4: import java.util.*;
+5: import org.json.*;
+6: /**
+7:  * 7.2: إضافة ملف النقل إلى البيانات الحالية (بدل الاستبدال). يقرأ جداول D (كشوفات حساب) التي يكتبها MigrationTest،
+8:  * ويكتب خطة سيناريو «مكتب موجود» إلى ملف JSON يطبّقه اختبار SQLite بالاستعلامات نفسها في Db.mergeMigration.
+9:  */
+10: public class MergePlanTest {
+11:   static int fails = 0;
+12:   static void check(boolean c, String m) { System.out.println((c ? "  PASS " : "  FAIL ") + m); if (!c) fails++; }
+13:   static Map<String, List<JSONObject>> tables(JSONObject dump) {
+14:     Map<String, List<JSONObject>> t = new LinkedHashMap<>();
+15:     for (String k : dump.keySet()) {
+16:       List<JSONObject> l = new ArrayList<>();
+17:       JSONArray a = dump.getJSONArray(k);
+18:       for (int i = 0; i < a.length(); i++) l.add(a.getJSONObject(i));
+19:       t.put(k, l);
+20:     }
+21:     return t;
+22:   }
+23:   static Map<String, List<JSONObject>> copy(Map<String, List<JSONObject>> t) {
+24:     Map<String, List<JSONObject>> c = new LinkedHashMap<>();
+25:     for (Map.Entry<String, List<JSONObject>> e : t.entrySet()) {
+26:       List<JSONObject> l = new ArrayList<>();
+27:       for (JSONObject o : e.getValue()) l.add(new JSONObject(o.toString()));
+28:       c.put(e.getKey(), l);
+29:     }
+30:     return c;
+31:   }
+32:   static MergePlan.Row row(MergePlan p, String office, String code) {
+33:     for (MergePlan.Row r : p.rows) if (r.office.equals(office) && r.code.equals(code)) return r;
+34:     return null;
+35:   }
+36:   static MergePlan.Existing base() {
+37:     MergePlan.Existing ex = new MergePlan.Existing();
+38:     ex.decimals.put("USD", 2); ex.decimals.put("EUR", 2); ex.decimals.put("TRY", 2); ex.decimals.put("SYP", 0);
+39:     return ex;
+40:   }
+41:   public static void main(String[] a) throws Exception {
+42:     String dir = a[0];
+43:     JSONObject dump = new JSONObject(new String(Files.readAllBytes(Paths.get(dir, "D.tables.json")), StandardCharsets.UTF_8));
+44:     Map<String, List<JSONObject>> T = tables(dump);
+45:     JSONObject man = new JSONObject().put("source", "migration").put("createdAt", 1760000000000L)
+46:         .put("counts", new JSONObject().put("offices", 3).put("tx", 8));
+47: 
+48:     System.out.println("== empty app: everything new");
+49:     MergePlan p0 = MergePlan.build(T, man, base());
+50:     check(p0.ok(), "plan ok " + p0.errors);
+51:     check(p0.newOffices == 3 && p0.matchedOffices == 0, "3 new offices");
+52:     check(p0.txs.size() == 8 && p0.openings.size() == 2, "8 tx + 2 openings");
+53:     check(row(p0, "الخال", "USD").after == 49500 && row(p0, "الخال", "EUR").after == -10000 && row(p0, "الأمل", "TRY").after == -101000
+54:         && row(p0, "النور", "USD").after == 35000, "after = file balances");
+55: 
+56:     System.out.println("== existing «الخال» with لنا 100.00 USD, «الامل» spelled differently, and another office");
+57:     MergePlan.Existing ex = base();
+58:     ex.offices.put(7L, "الخال"); ex.offices.put(9L, "الامل"); ex.offices.put(11L, "مكتب آخر");
+59:     ex.balances.put("7|USD", 10000L); ex.balances.put("9|TRY", 500L); ex.balances.put("11|USD", -77700L);
+60:     ex.uuids.add("aaaa-bbbb");
+61:     MergePlan p1 = MergePlan.build(T, man, ex);
+62:     check(p1.ok(), "plan ok " + p1.errors);
+63:     check(p1.matchedOffices == 2 && p1.newOffices == 1, "2 matched, 1 new (النور)");
+64:     MergePlan.Row khal = row(p1, "الخال", "USD");
+65:     check(khal != null && !khal.isNew && khal.current == 10000 && khal.added == 49500 && khal.after == 59500, "الخال USD: 100 + 495 = لنا 595");
+66:     check(row(p1, "الخال", "EUR").current == 0 && row(p1, "الخال", "EUR").after == -10000, "الخال EUR added from zero");
+67:     MergePlan.Row amal = row(p1, "الامل", "TRY");
+68:     check(amal != null && amal.approximate && amal.after == 500 - 101000, "الأمل → existing «الامل» (approximate), 5.00 − 1,010.00");
+69:     check(row(p1, "النور", "USD").isNew, "النور is new");
+70:     check(p1.rows.stream().noneMatch(r -> r.office.equals("مكتب آخر")), "untouched office not in preview");
+71:     Files.write(Paths.get(dir, "merge-plan.json"), planJson(p1, ex).toString(1).getBytes(StandardCharsets.UTF_8));
+72: 
+73:     System.out.println("== refusals");
+74:     MergePlan.Existing dupName = base();
+75:     dupName.offices.put(1L, "النور"); dupName.offices.put(2L, "النور");
+76:     check(!MergePlan.build(T, man, dupName).ok(), "two existing offices with the same name → refused");
+77:     MergePlan.Existing again = base();
+78:     again.mergedFiles.add(p0.fingerprint);
+79:     check(!MergePlan.build(T, man, again).ok(), "same file merged before → refused");
+80:     MergePlan.Existing hasTx = base();
+81:     hasTx.uuids.add(T.get("tx").get(0).getString("uuid"));
+82:     check(!MergePlan.build(T, man, hasTx).ok(), "a tx uuid already present → refused");
+83:     MergePlan.Existing locked = base();
+84:     locked.lockBefore = 1893456000000L;
+85:     check(!MergePlan.build(T, man, locked).ok(), "dates before accounting lock → refused");
+86:     check(!MergePlan.build(T, new JSONObject().put("app", "x"), base()).ok(), "normal backup (no source=migration) → no merge");
+87:     Map<String, List<JSONObject>> bad = copy(T);
+88:     bad.get("opening_balances").get(0).put("amount_minor", bad.get("opening_balances").get(0).getLong("amount_minor") + 1);
+89:     MergePlan pb = MergePlan.build(bad, man, base());
+90:     check(!pb.ok() && pb.errors.get(0).contains("غير متسق"), "opening not matching its journal → refused");
+91:     Map<String, List<JSONObject>> cancelled = copy(T);
+92:     cancelled.get("tx").get(0).put("status", "CANCELLED");
+93:     check(!MergePlan.build(cancelled, man, base()).ok(), "cancelled tx in file → refused");
+94: 
+95:     System.out.println("== decimals");
+96:     MergePlan.Existing d3 = base();
+97:     d3.decimals.put("USD", 3);
+98:     MergePlan p3 = MergePlan.build(T, man, d3);
+99:     check(p3.ok() && row(p3, "الخال", "USD").after == 495000 && !p3.warnings.isEmpty(), "USD with 3 decimals in app: ×10 exactly");
+100:     MergePlan.Existing d0 = base();
+101:     d0.decimals.put("TRY", 0);
+102:     MergePlan p4 = MergePlan.build(T, man, d0);
+103:     check(!p4.ok(), "TRY 1,000.50 into 0 decimals → refused (no rounding)");
+104:     MergePlan.Existing nocur = base();
+105:     nocur.decimals.remove("TRY");
+106:     MergePlan p5 = MergePlan.build(T, man, nocur);
+107:     check(p5.ok() && p5.newCurrencies.size() == 1 && p5.newCurrencies.get(0).code.equals("TRY"), "missing currency added");
+108:     System.out.println(fails == 0 ? "ALL MERGE PLAN TESTS PASSED" : fails + " FAILED");
+109:     System.exit(fails == 0 ? 0 : 1);
+110:   }
+111: 
+112:   /** الخطة كما ستطبّقها Db.mergeMigration، لاختبار SQLite. */
+113:   static JSONObject planJson(MergePlan p, MergePlan.Existing ex) {
+114:     JSONObject o = new JSONObject();
+115:     JSONArray offs = new JSONArray();
+116:     for (MergePlan.Office of : p.offices.values()) offs.put(new JSONObject().put("fileId", of.fileId).put("name", of.name).put("target", of.targetId == null ? JSONObject.NULL : of.targetId)
+117:         .put("codes", new JSONArray(of.codes)));
+118:     o.put("offices", offs);
+119:     JSONArray ops = new JSONArray();
+120:     for (MergePlan.Opening op : p.openings) ops.put(new JSONObject().put("office", op.fileOffice).put("code", op.code).put("signed", op.signed).put("when", op.when));
+121:     o.put("openings", ops);
+122:     JSONArray txs = new JSONArray();
+123:     for (MergePlan.Tx x : p.txs) txs.put(new JSONObject().put("uuid", x.uuid).put("office", x.fileOffice).put("type", x.type).put("amount", x.amount).put("currency", x.currency)
+124:         .put("feeType", x.feeType).put("fee", x.fee).put("feeCurrency", x.feeCurrency).put("when", x.when));
+125:     o.put("txs", txs);
+126:     JSONObject exp = new JSONObject();
+127:     for (Map.Entry<String, Long> e : p.expected.entrySet()) exp.put(e.getKey(), e.getValue());
+128:     o.put("expected", exp);
+129:     JSONArray rows = new JSONArray();
+130:     for (MergePlan.Row r : p.rows) rows.put(new JSONObject().put("office", r.office).put("code", r.code).put("after", r.after).put("isNew", r.isNew));
+131:     o.put("rows", rows);
+132:     JSONObject exo = new JSONObject();
+133:     for (Map.Entry<Long, String> e : ex.offices.entrySet()) exo.put(String.valueOf(e.getKey()), e.getValue());
+134:     o.put("existingOffices", exo);
+135:     JSONObject exb = new JSONObject();
+136:     for (Map.Entry<String, Long> e : ex.balances.entrySet()) exb.put(e.getKey(), e.getValue());
+137:     o.put("existingBalances", exb);
+138:     o.put("fingerprint", p.fingerprint);
+139:     return o;
+140:   }
+141: }

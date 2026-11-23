@@ -1,0 +1,147 @@
+188:         try { txt = "نص المطابقة".equals(String.valueOf(cb.getData(java.awt.datatransfer.DataFlavor.stringFlavor))); } catch (Exception ex) { /* لا نص */ }
+189:         expect(txt, "text copied");
+190: 
+191:         // 11.3: نوافذ المظهر الجديدة (حفظ نمط، ومنتقي اللون بخانة الرمز) تُفتح دون خطأ «already has a parent»
+192:         SwingUtilities.invokeAndWait(() -> com.smart.hawala.desk.PhoneWindow.activityForTests().designScreen.show());
+193:         wait(1200);
+194:         int before = fails;
+195:         clickText("حفظ الشكل الحالي كنمط…");
+196:         wait(800);
+197:         expect(findQuiet("حفظ الشكل الحالي") && fails == before, "save style dialog opens");
+198:         clickText("حفظ");
+199:         wait(1000);
+200:         expect(findQuiet("نمطي 1"), "style saved and listed");
+201:         final int fb = fails;
+202:         SwingUtilities.invokeAndWait(() -> com.smart.hawala.desk.PhoneWindow.activityForTests().designScreen
+203:                 .paletteDialog("اللون الأساسي", DesignScreen.PALETTE, false, "#0B6B53", h -> { }));
+204:         wait(900);
+205:         expect(fails == fb, "color picker: no layout error");
+206:         expect(findQuiet("اختيار هذا اللون"), "color picker opens with hex field");
+207:         key(KeyEvent.VK_ESCAPE, false);
+208:         wait(500);
+209:         key(KeyEvent.VK_H, true);
+210:         wait(800);
+211: 
+212:         // 11.3: نسخ عدة رسائل من واتساب ديسكتوب: Ctrl+V في الرئيسية، ولصقها في خانة الرسالة
+213:         String two = "[14/11, 18:14] ابو النور: استلمنا 500 دولار من سامر\n[14/11, 18:15] ابو النور: سلمنا 300 يورو لأحمد\n";
+214:         clickTab(0, 6);
+215:         wait(800);
+216:         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new java.awt.datatransfer.StringSelection(two), null);
+217:         robot.mouseMove(20, 500);
+218:         key(KeyEvent.VK_V, true);
+219:         wait(1000);
+220:         shot("paste-two-home");
+221:         expect(findQuiet("رسائل من واتساب"), "Ctrl+V on home splits two messages");
+222:         key(KeyEvent.VK_N, true);
+223:         wait(1000);
+224:         clickHint("الصق رسالة");
+225:         wait(300);
+226:         paste(two);
+227:         wait(900);
+228:         shot("paste-two-field");
+229:         expect(findQuiet("تسجيل كل رسالة وحدها"), "pasting two messages into the field offers splitting");
+230:         clickText("تسجيل كل رسالة وحدها");
+231:         wait(900);
+232:         expect(findQuiet("رسائل من واتساب"), "split list opened from field paste");
+233:         key(KeyEvent.VK_H, true);
+234:         wait(800);
+235: 
+236:         // 12.1: نقل الرسائل من واتساب ويندوز والمتصفح (HTML الحافظة)، والقص اليدوي، ووضع التجميع، وإطار الالتقاط، وفحص الحافظة
+237:         waMove12_1(db);
+238: 
+239:         // 11.2: انتظار الدخول إلى Google يُلغى ولا يعلّق البرنامج (دخول وهمي، بلا اتصال)
+240:         final boolean[] called = {false};
+241:         SwingUtilities.invokeAndWait(() -> DriveAuth.waitLogin(com.smart.hawala.desk.PhoneWindow.activityForTests(), () -> {
+242:             Thread.sleep(20000);
+243:             return "x@example.com";
+244:         }, r -> called[0] = true, e -> called[0] = true));
+245:         wait(900);
+246:         shot("google-wait");
+247:         expect(findQuiet("الدخول إلى Google"), "google wait dialog shown with cancel");
+248:         clickText("إلغاء");
+249:         wait(700);
+250:         expect(!findQuiet("الدخول إلى Google"), "google wait cancelled at once");
+251:         key(KeyEvent.VK_H, true);
+252:         wait(800);
+253:         expect(findQuiet("صافي الأرصدة") || findQuiet("ابحث"), "app responsive after cancel");
+254: 
+255:         // 11.5: أكثر من 6 عناصر في الشريط السفلي على الكمبيوتر
+256:         final int[] mx = {0};
+257:         SwingUtilities.invokeAndWait(() -> mx[0] = com.smart.hawala.desk.PhoneWindow.activityForTests().maxTabs());
+258:         db.setSettingQuiet("tabs", "home,offices,tx,log,reports,balances,daily,more");
+259:         SwingUtilities.invokeAndWait(() -> com.smart.hawala.desk.PhoneWindow.activityForTests().showHome());
+260:         wait(1200);
+261:         shot("tabs-eight");
+262:         final int[] nt = {0};
+263:         SwingUtilities.invokeAndWait(() -> nt[0] = com.smart.hawala.desk.PhoneWindow.activityForTests().tabKeys().size());
+264:         expect(mx[0] > 6 && nt[0] == Math.min(8, mx[0]), "bottom bar allows more than 6 on desktop (max " + mx[0] + ", shown " + nt[0] + ")");
+265:         db.setSettingQuiet("tabs", "");
+266:         SwingUtilities.invokeAndWait(() -> com.smart.hawala.desk.PhoneWindow.activityForTests().showHome());
+267:         wait(800);
+268: 
+269:         // 11.5: نافذة اختيار المكتب: البحث يعمل، والقسمان يُطويان ويُحفظ وضعهما
+270:         SwingUtilities.invokeAndWait(() -> com.smart.hawala.desk.PhoneWindow.activityForTests().officePicker(o -> { }));
+271:         wait(900);
+272:         shot("picker-new");
+273:         expect(findQuiet("كل المكاتب ("), "picker shows all-offices header");
+274:         clickHint("ابحث باسم المكتب");
+275:         paste("امل");
+276:         wait(700);
+277:         shot("picker-search");
+278:         expect(findQuiet("نتائج البحث: 1") && findQuiet("الأمل"), "picker search finds office ignoring hamza");
+279:         key(KeyEvent.VK_ESCAPE, false);
+280:         wait(500);
+281: 
+282:         // 11.5: البحث المتقدم من مركز التقارير: اختيار المكتب من القائمة ثم «تطبيق الفلاتر» يصفّي فعلًا
+283:         SwingUtilities.invokeAndWait(() -> com.smart.hawala.desk.PhoneWindow.activityForTests().logScreen.show(true));
+284:         wait(1500);
+285:         final Point[] sp = {null};
+286:         SwingUtilities.invokeAndWait(() -> { for (ViewRootImpl r : WindowStack.roots()) { View v = findClass(r.getView(), "Spinner"); if (v != null && sp[0] == null) sp[0] = phys(v, v.getWidth() / 2f, v.getHeight() / 2f); } });
+287:         press(sp[0]);
+288:         wait(800);
+289:         shot("filter-office-list");
+290:         click("الأمل", true);
+291:         wait(600);
+292:         clickText("تطبيق الفلاتر");
+293:         wait(1800);
+294:         shot("filter-office-applied");
+295:         expect(findQuiet("المكتب: الأمل"), "office filter applied in advanced search");
+296:         key(KeyEvent.VK_H, true);
+297:         wait(800);
+298: 
+299:         // 11.6: قراءة رمز QR الترخيص من صورة PNG (ZXing) على الكمبيوتر
+300:         {
+301:             String link = "smartacc://activate?k=" + "dj0xO2tpZD1rMTtsaWQ9U0EtMjAyNi0wMDAx".repeat(4) + ".MEUCIQDx9dAyiOI8tq8eBaEbS0g9n1bBkOVv7lj8C2dOq6Js4QIgUqFzVBwV1gO8jWQ4Tt3fYIxm2";
+302:             com.google.zxing.common.BitMatrix bmx = new com.google.zxing.qrcode.QRCodeWriter().encode(link, com.google.zxing.BarcodeFormat.QR_CODE, 600, 600);
+303:             java.awt.image.BufferedImage qi = new java.awt.image.BufferedImage(600, 600, java.awt.image.BufferedImage.TYPE_INT_RGB);
+304:             for (int y = 0; y < 600; y++) for (int x = 0; x < 600; x++) qi.setRGB(x, y, bmx.get(x, y) ? 0 : 0xFFFFFF);
+305:             java.io.ByteArrayOutputStream qo = new java.io.ByteArrayOutputStream();
+306:             javax.imageio.ImageIO.write(qi, "png", qo);
+307:             android.graphics.Bitmap qb = android.graphics.BitmapFactory.decodeStream(new java.io.ByteArrayInputStream(qo.toByteArray()));
+308:             String got = QrRead.decode(qb);
+309:             expect(link.equals(got), "QR image decodes on desktop");
+310:             expect(LicenseToken.extract(got).indexOf('.') > 0 && !LicenseToken.extract(got).contains("smartacc"), "token extracted from QR link");
+311:         }
+312:         // 11.6: سطر الميزان في المطابقة المرسلة
+313:         {
+314:             final String[] sl = {null};
+315:             java.util.Map<String, Long> bm = new java.util.LinkedHashMap<>();
+316:             bm.put("USD", 150000L);
+317:             bm.put("EUR", 0L);
+318:             SwingUtilities.invokeAndWait(() -> sl[0] = com.smart.hawala.desk.PhoneWindow.activityForTests().reconScreen.scaleLine(bm, null));
+319:             expect(sl[0] != null && sl[0].contains("الميزان") && sl[0].contains("1,500"), "recon scale line: " + sl[0]);
+320:         }
+321: 
+322:         // 11.6: نافذة عريضة: الصفحة تملأ النافذة، والزر لا يتمدد بعرضها كله ولا يكبر فوق الحجم الطبيعي
+323:         {
+324:             final java.awt.Dimension keep = com.smart.hawala.desk.PhoneWindow.frame().getSize();
+325:             SwingUtilities.invokeAndWait(() -> com.smart.hawala.desk.PhoneWindow.frame().setSize(1400, 850));
+326:             wait(900);
+327:             SwingUtilities.invokeAndWait(() -> com.smart.hawala.desk.PhoneWindow.activityForTests().licenseScreen.show());
+328:             wait(1200);
+329:             shot("wide-window");
+330:             final int[] wv = {0, 0, 0};
+331:             SwingUtilities.invokeAndWait(() -> {
+332:                 for (ViewRootImpl r : WindowStack.roots()) {
+333:                     List<View> hits = new ArrayList<>();
+334:                     collect(r.getView(), "التفعيل من ملف المفتاح (.sakey)", false, hits);

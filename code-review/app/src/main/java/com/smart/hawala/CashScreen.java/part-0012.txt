@@ -1,0 +1,158 @@
+1706:                 s.set(LOCK_BIO.equals(mode) ? 1 : LOCK_PIN.equals(mode) ? 2 : 0, false);
+1707:             }
+1708:         };
+1709:         a.hint("«البصمة» تقبل أيضًا قفل الشاشة (الرمز أو النمط). يُطلب القفل عند فتح الصندوق من أي مكان، وبعد الخروج من التطبيق أكثر من 30 ثانية. القفل خاص بهذا الهاتف.");
+1710:     }
+1711: 
+1712:     private void boxesSection() {
+1713:         a.title("الصناديق");
+1714:         LinearLayout g = a.group();
+1715:         long cur = a.db.currentBox();
+1716:         Map<String, Integer> dec = a.db.decimalsMap();
+1717:         Map<String, BigDecimal> rates = a.db.usdRates();
+1718:         for (final CashBox.Config b : a.db.cashBoxes()) {
+1719:             Ledger.Valuation v = Ledger.valueOffice(a.db.cashBalances(b.id), rates, dec);
+1720:             String sub = Model.join(b.currencies, " • ") + (b.strict ? " — مربوط بالمكاتب" : " — حر") + (b.active ? "" : " — معطّل");
+1721:             a.groupRow(g, R.drawable.ic_cash, b.active ? a.primaryInk : a.muted, b.name + (b.id == cur ? "  (المفتوح)" : ""), sub,
+1722:                     a.m("≈ " + Model.fmt(v.netUsd().setScale(0, RoundingMode.HALF_EVEN).longValue(), 0) + " $"), x -> boxMenu(b));
+1723:         }
+1724:         a.body.addView(a.smallButton("+ صندوق جديد", Color.rgb(130, 130, 130), v -> boxForm(null)), a.lp(-2, 38, 2));
+1725:     }
+1726: 
+1727:     /** 10.0: ربط هذا الصندوق بالمكاتب (لكل صندوق ربطه). يرجع مفتاحي الربط والسماح. */
+1728:     private Switch[] linkSection(boolean strictNow, boolean internalNow) {
+1729:         a.title("ربط هذا الصندوق بالمكاتب");
+1730:         final Switch strict = new Switch(a);
+1731:         strict.setText("مربوط: لا يدخل هذا الصندوق ولا يخرج منه إلا لحساب مكتب أو عميل");
+1732:         strict.setChecked(strictNow);
+1733:         a.body.addView(strict, a.lp(-1, -2, 4));
+1734:         final Switch internal = new Switch(a);
+1735:         internal.setText("مع الربط: السماح بالمصاريف والبيع والشراء داخل الصندوق");
+1736:         internal.setChecked(internalNow);
+1737:         a.body.addView(internal, a.lp(-1, -2, 4));
+1738:         internal.setVisibility(strictNow ? View.VISIBLE : View.GONE);
+1739:         strict.setOnCheckedChangeListener((x, on) -> internal.setVisibility(on ? View.VISIBLE : View.GONE));
+1740:         a.hint("حر (غير مربوط): تسجّل فيه الاستلام والتسليم لحساب مكتب أو عميل أو بدون حساب (مثل إيداع من صاحب المكتب أو سحب له). "
+1741:                 + "الجرد مسموح دائمًا. لكل صندوق ربطه: مثلًا صندوق المحل مربوط بالمكاتب، وخزنة البيت حرة.");
+1742:         return new Switch[]{strict, internal};
+1743:     }
+1744: 
+1745:     private void boxMenu(final CashBox.Config b) {
+1746:         final List<String> acts = new ArrayList<>();
+1747:         if (b.active) acts.add("فتحه");
+1748:         if (b.active) acts.add("إعداداته (الاسم والعملات والربط)");
+1749:         acts.add(b.active ? "تعطيله (رصيده صفر)" : "تفعيله");
+1750:         acts.add("حذفه نهائيًا");
+1751:         new AlertDialog.Builder(a).setTitle(b.name).setItems(acts.toArray(new String[0]), (d, w) -> {
+1752:             String s = acts.get(w);
+1753:             try {
+1754:                 if (s.startsWith("فتح")) {
+1755:                     a.db.setCurrentBox(b.id);
+1756:                     home();
+1757:                 } else if (s.startsWith("إعداد")) {
+1758:                     a.db.setCurrentBox(b.id);
+1759:                     setup(false);
+1760:                 } else if (s.startsWith("تعطيل")) {
+1761:                     a.db.setCashBoxActive(b.id, false);
+1762:                     a.toast("عُطّل «" + b.name + "» — يبقى تاريخه في التقارير");
+1763:                     setup(false);
+1764:                 } else if (s.startsWith("حذف")) {
+1765:                     String why = a.db.cashBoxDeleteBlock(b.id);
+1766:                     if (why != null) {
+1767:                         new AlertDialog.Builder(a).setTitle("لا يمكن حذف «" + b.name + "»").setMessage(why).setPositiveButton("حسنًا", null).show();
+1768:                         return;
+1769:                     }
+1770:                     a.confirm("حذف «" + b.name + "» نهائيًا", "يُحذف الصندوق بكل حركاته وسجل جرده، ولا يمكن التراجع (إلا من نسخة احتياطية). رصيده صفر ولا ترتبط حركاته بمكاتب أو عملاء.",
+1771:                             "حذف نهائيًا", () -> {
+1772:                                 try {
+1773:                                     a.db.deleteCashBox(b.id);
+1774:                                     a.toast("حُذف «" + b.name + "»");
+1775:                                     setup(false);
+1776:                                 } catch (Exception e) {
+1777:                                     a.error(e);
+1778:                                 }
+1779:                             });
+1780:                 } else {
+1781:                     a.db.setCashBoxActive(b.id, true);
+1782:                     setup(false);
+1783:                 }
+1784:             } catch (Exception e) {
+1785:                 a.error(e);
+1786:             }
+1787:         }).show();
+1788:     }
+1789: 
+1790:     /** صندوق جديد: الاسم والعملات والرصيد الموجود فيه الآن. */
+1791:     void boxForm(final Runnable unused) {
+1792:         if (!a.require(Auth.Perm.SETTINGS)) return;
+1793:         screen("صندوق جديد", () -> {
+1794:             draftChecks = null;
+1795:             home();
+1796:         });
+1797:         a.hint("صندوق آخر لك بنقده المستقل (مثل: صندوق الفرع، خزنة البيت). تنقل النقد بينه وبين الصناديق الأخرى بـ«تحويل».");
+1798:         a.title("اسم الصندوق");
+1799:         final EditText name = a.input("مثل: خزنة البيت");
+1800:         if (draftName != null) name.setText(draftName);
+1801:         final Map<String, CheckBox> checks = new LinkedHashMap<>();
+1802:         final Map<String, EditText> opens = new LinkedHashMap<>();
+1803:         currencyPicker(null, new HashMap<>(), checks, opens, true, () -> {
+1804:             draftName = name.getText().toString();
+1805:             boxForm(null);
+1806:         });
+1807:         final Switch[] link = linkSection(false, true);
+1808:         a.footer(a.makeButton("إنشاء الصندوق", a.primary, v -> {
+1809:             try {
+1810:                 List<String> codes = new ArrayList<>();
+1811:                 Map<String, Long> openings = openingsOf(checks, opens, codes);
+1812:                 if (codes.isEmpty()) throw new Exception("اختر عملة واحدة على الأقل");
+1813:                 long id = a.db.addCashBox(name.getText().toString(), codes, openings, link[0].isChecked(), link[1].isChecked());
+1814:                 a.db.setCurrentBox(id);
+1815:                 draftChecks = null;
+1816:                 draftOpen = null;
+1817:                 draftName = null;
+1818:                 a.toast("أُنشئ الصندوق ✓");
+1819:                 home();
+1820:             } catch (Exception e) {
+1821:                 a.error(e);
+1822:             }
+1823:         }));
+1824:     }
+1825: 
+1826:     // ===================================================================================
+1827:     // التقرير
+1828:     // ===================================================================================
+1829: 
+1830:     void reportFor(final long from, final long to, final Runnable back) {
+1831:         guard(() -> {
+1832:             final CashBox.ReportSpec sp = new CashBox.ReportSpec();
+1833:             sp.from = from;
+1834:             sp.to = to;
+1835:             a.busy("جارٍ بناء تقرير الصندوق…", p -> build(sp), res -> {
+1836:                 final Report r = (Report) res;
+1837:                 screen(r.title, back);
+1838:                 a.reportsScreen.periodCard(() -> reportFor(a.reportsScreen.range()[0], a.reportsScreen.range()[1], back));
+1839:                 LinearLayout bar = a.row();
+1840:                 bar.addView(a.smallButton("تصدير PDF / Excel", a.primary, v -> a.exportUi.reportDialog(r.title, () -> reportFor(from, to, back),
+1841:                         (images, st) -> Collections.singletonList(build(sp)))), a.weight(44, 1, 2));
+1842:                 a.body.addView(bar, a.lp(-1, -2, 4));
+1843:                 ReportRender.render(a, r);
+1844:             });
+1845:         });
+1846:     }
+1847: 
+1848:     Report build(CashBox.ReportSpec sp) {
+1849:         CashBox.Config cfg = a.db.cashConfig();
+1850:         Report r = CashBox.report(a.db.cashMoves(cfg.id), sp, a.db.decimalsMap(), a.db.officeNames(), cfg.name, a.db.setting("office_name", ""));
+1851:         Entitlements e = License.current;
+1852:         r.stamp(e.watermark(), e.lid);
+1853:         return r;
+1854:     }
+1855: 
+1856:     // ===================================================================================
+1857:     // بطاقة الصفحة الرئيسية
+1858:     // ===================================================================================
+1859: 
+1860:     void homeCard() {
+1861:         CashBox.Config cfg = a.db.cashConfig();
+1862:         if (!cfg.on || !a.can(Auth.Perm.CASH)) return;
+1863:         boolean locked = !LOCK_OFF.equals(lockMode());

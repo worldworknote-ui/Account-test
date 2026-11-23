@@ -1,0 +1,176 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.graphics.Color;
+5: import android.widget.EditText;
+6: import android.widget.LinearLayout;
+7: import java.io.File;
+8: import java.util.ArrayList;
+9: import java.util.Arrays;
+10: import java.util.List;
+11: 
+12: /**
+13:  * 8.0 (ت14): لوحة «اعتمادية التطبيق» بضوء أخضر/أصفر/أحمر: تحوّل الأعطال الصامتة إلى تنبيه ظاهر.
+14:  * ومعها الفحص التلقائي (ت1) وتمرين الاستعادة (ت6).
+15:  */
+16: final class Reliability {
+17:     private Reliability() {}
+18: 
+19:     static final int GREEN = 0, YELLOW = 1, RED = 2;
+20:     static final long DAY = 86400000L;
+21: 
+22:     static final class Item {
+23:         int level;
+24:         String title, detail;
+25:         int icon;
+26:         String action;
+27:         Runnable run;
+28: 
+29:         Item(int level, int icon, String title, String detail) {
+30:             this.level = level;
+31:             this.icon = icon;
+32:             this.title = title;
+33:             this.detail = detail;
+34:         }
+35: 
+36:         Item act(String label, Runnable r) {
+37:             action = label;
+38:             run = r;
+39:             return this;
+40:         }
+41:     }
+42: 
+43:     // ===================================================================================
+44:     // الفحص التلقائي (ت1)
+45:     // ===================================================================================
+46: 
+47:     /** أول فتح في اليوم: فحص سريع في الخلفية. */
+48:     /** 12.7: بعد الانضمام أو الاستعادة يؤجَّل الفحص التلقائي ربع ساعة (لا فحص فوق التحميل). */
+49:     static volatile long deferUntil;
+50: 
+51:     static void defer(long ms) { deferUntil = android.os.SystemClock.elapsedRealtime() + ms; }
+52: 
+53:     static void healthIfDue(final Db db) {
+54:         if (android.os.SystemClock.elapsedRealtime() < deferUntil) return;
+55:         long last = db.settingLong("health_last", 0);
+56:         if (Model.day(last).equals(Model.day(Clock.now()))) return;
+57:         healthAsync(db);
+58:     }
+59: 
+60:     private static volatile boolean searchStarted;
+61: 
+62:     /** 12.7: يكمل نص البحث المحلي في الخلفية (دفعات قصيرة) فيكون البحث سريعًا من أول مرة. */
+63:     static void searchIndexAsync(final Db db) {
+64:         if (searchStarted) return;
+65:         searchStarted = true;
+66:         Thread t = new Thread(() -> {
+67:             try {
+68:                 Thread.sleep(8000);
+69:                 db.fillSearchIndex();
+70:             } catch (Throwable ignored) {
+71:                 // يُكمَل عند أول بحث
+72:             } finally {
+73:                 searchStarted = false;
+74:             }
+75:         }, "search-index");
+76:         t.setPriority(Thread.MIN_PRIORITY);
+77:         t.start();
+78:     }
+79: 
+80:     /** بعد كل نسخة، وبعد الاستعادة. */
+81:     static void healthAsync(final Db db) {
+82:         Thread t = new Thread(() -> {
+83:             try {
+84:                 db.runHealthAuto();
+85:             } catch (Throwable ignored) {
+86:                 // تُعاد في المرة التالية
+87:             }
+88:         }, "health");
+89:         t.setPriority(Thread.MIN_PRIORITY);
+90:         t.start();
+91:     }
+92: 
+93:     // ===================================================================================
+94:     // البنود
+95:     // ===================================================================================
+96: 
+97:     static List<Item> items(final MainActivity a) {
+98:         Db db = a.db;
+99:         long now = Clock.now();
+100:         List<Item> l = new ArrayList<>();
+101: 
+102:         long last = db.settingLong("last_backup", 0);
+103:         boolean verified = "verified".equals(db.setting("last_backup_status", ""));
+104:         int lb = last == 0 ? RED : now - last > 10 * DAY ? RED : now - last > 3 * DAY || !verified ? YELLOW : GREEN;
+105:         l.add(new Item(lb, R.drawable.ic_shield, "آخر نسخة احتياطية" + (verified ? " متحقَّق منها" : ""),
+106:                 last == 0 ? "لا توجد نسخة بعد. الهاتف وحده لا يكفي." : MainActivity.ago(last) + (verified ? "" : " — لم تُعَد قراءتها من مكان الحفظ"))
+107:                 .act("نسخة الآن", () -> a.backupScreen.backupDialog()));
+108: 
+109:         String autoErr = db.setting("auto_backup_error", "") + db.setting("drive_backup_error", "");
+110:         long lastAuto = db.settingLong("last_auto_backup", 0);
+111:         if (!AutoBackup.enabled(db)) {
+112:             l.add(new Item(YELLOW, R.drawable.ic_clock, "النسخ التلقائي متوقف", "فعّله إلى مجلد أو Google Drive حتى لا تعتمد على التذكّر.")
+113:                     .act("الإعداد", () -> a.backupScreen.show()));
+114:         } else {
+115:             l.add(new Item(autoErr.isEmpty() ? GREEN : RED, R.drawable.ic_clock, autoErr.isEmpty() ? "النسخ التلقائي يعمل" : "فشل النسخ التلقائي الأخير",
+116:                     autoErr.isEmpty() ? "كل " + AutoBackup.intervalHours(db) + " ساعة" + (AutoBackup.everyTx(db) > 0 ? " أو بعد " + AutoBackup.everyTx(db) + " حركة" : "")
+117:                             + (lastAuto > 0 ? " — آخرها " + MainActivity.ago(lastAuto) : "") : autoErr.trim())
+118:                     .act("التفاصيل", () -> a.backupScreen.show()));
+119:         }
+120: 
+121:         String hs = db.setting("health_status", "");
+122:         long hl = db.settingLong("health_last", 0);
+123:         if (hs.isEmpty()) {
+124:             l.add(new Item(YELLOW, R.drawable.ic_health, "فحص سلامة البيانات", "لم يُفحص بعد.").act("افحص الآن", () -> runHealthNow(a)));
+125:         } else if ("ok".equals(hs)) {
+126:             l.add(new Item(now - hl > 3 * DAY ? YELLOW : GREEN, R.drawable.ic_health, "البيانات سليمة",
+127:                     "القيود متوازنة، الأرصدة تطابق الحركات، الملف والصور والسجل سليمة — " + MainActivity.ago(hl)).act("افحص الآن", () -> runHealthNow(a)));
+128:         } else {
+129:             int bar = hs.indexOf('|');
+130:             l.add(new Item(RED, R.drawable.ic_health, "فحص البيانات وجد " + (bar > 0 ? hs.substring(0, bar) : "") + " ملاحظة",
+131:                     bar > 0 ? hs.substring(bar + 1) : hs).act("التفاصيل", () -> a.settingsScreen.showHealth()));
+132:         }
+133: 
+134:         boolean key = Crypto.healthy(a);
+135:         l.add(new Item(key ? GREEN : RED, R.drawable.ic_key, key ? "مفتاح التشفير سليم" : "مفتاح التشفير غير متاح",
+136:                 key ? "الحقول المشفّرة تُقرأ على هذا الهاتف." : "لا تُنشأ نسخ جديدة حتى لا تحل محل السليمة. استعد آخر نسخة."));
+137: 
+138:         boolean locked = a.biometricOn() || db.usersEnabled();
+139:         boolean secure = !"0".equals(db.setting("secure_screen", "1"));
+140:         // 10.2: السماح بلقطات الشاشة اختيار المدير الصريح: يُذكر في الوصف ولا يُعدّ تحذيرًا دائمًا
+141:         l.add(new Item(locked ? GREEN : YELLOW, R.drawable.ic_lock, locked ? "التطبيق مقفل" : "التطبيق بلا قفل",
+142:                 (locked ? "يُطلب القفل عند الفتح" : "أي شخص يفتح الهاتف يرى الحسابات") + (secure ? "، ولقطات الشاشة ممنوعة." : "، ولقطات الشاشة مسموحة."))
+143:                 .act("الإعداد", () -> a.settingsScreen.showSecurity()));
+144: 
+145:         long free = a.getFilesDir().getUsableSpace();
+146:         l.add(new Item(free > 500L * 1024 * 1024 ? GREEN : free > 100L * 1024 * 1024 ? YELLOW : RED, R.drawable.ic_db, "المساحة الحرة في الهاتف",
+147:                 (free / (1024 * 1024)) + " ميغابايت" + (free > 100L * 1024 * 1024 ? "" : " — قليلة: قد تفشل النسخ والصور.")));
+148: 
+149:         String ds = db.setting("restore_drill_status", "");
+150:         long da = db.settingLong("restore_drill_at", 0);
+151:         int dl = ds.startsWith("fail") ? RED : ds.startsWith("ok") && now - da <= 31 * DAY ? GREEN : YELLOW;
+152:         l.add(new Item(dl, R.drawable.ic_undo, "تمرين الاستعادة",
+153:                 ds.isEmpty() ? "لم تُجرَّب استعادة أي نسخة بعد. النسخة التي لم تُجرَّب لا تُعدّ نسخة." :
+154:                         ds.substring(ds.indexOf('|') + 1) + " — " + MainActivity.ago(da) + (dl == YELLOW ? " (يُعاد شهريًا)" : ""))
+155:                 .act("جرّب الآن", () -> drill(a)));
+156:         return l;
+157:     }
+158: 
+159:     static int overall(List<Item> items) {
+160:         int w = GREEN;
+161:         for (Item i : items) w = Math.max(w, i.level);
+162:         return w;
+163:     }
+164: 
+165:     static int color(MainActivity a, int level) {
+166:         return level == GREEN ? a.green : level == YELLOW ? Color.rgb(214, 150, 20) : a.red;
+167:     }
+168: 
+169:     static String word(int level) {
+170:         return level == GREEN ? "جيدة" : level == YELLOW ? "تحتاج انتباهًا" : "في خطر";
+171:     }
+172: 
+173:     // ===================================================================================
+174:     // الشاشة
+175:     // ===================================================================================
+176: 

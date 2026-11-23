@@ -1,0 +1,92 @@
+364:         if (!force && "0".equals(a.db.setting("clip_watch", "1"))) return;
+365:         try {
+366:             ClipboardManager cm = (ClipboardManager) a.getSystemService(Context.CLIPBOARD_SERVICE);
+367:             if (cm == null) return;
+368:             watcher = this::clipChanged;
+369:             cm.addPrimaryClipChangedListener(watcher);
+370:         } catch (Exception ignored) {
+371:             watcher = null;
+372:         }
+373:     }
+374: 
+375:     private void closeCollectView() {
+376:         CollectView cv = collectView;
+377:         if (cv != null) cv.close();
+378:         // مراقبة فُتحت للتجميع فقط تُغلق معه
+379:         if (a.db != null && "0".equals(a.db.setting("clip_watch", "1"))) stopWatch();
+380:     }
+381: 
+382:     void stopWatch() {
+383:         if (watcher == null) return;
+384:         try {
+385:             ClipboardManager cm = (ClipboardManager) a.getSystemService(Context.CLIPBOARD_SERVICE);
+386:             if (cm != null) cm.removePrimaryClipChangedListener(watcher);
+387:         } catch (Exception ignored) {
+388:             // لا شيء
+389:         }
+390:         watcher = null;
+391:     }
+392: 
+393:     private void clipChanged() {
+394:         if (a.db == null || !a.unlocked || !a.can(Auth.Perm.TX_WA)) return;
+395:         if (collectNow()) return;
+396:         if (a.onHome) a.homeScreen.refreshClipCard();
+397:     }
+398: 
+399:     /** على الكمبيوتر: عدد رسائل واتساب في الحافظة الآن (0 إن لم تكن رسائل). */
+400:     int clipCount() {
+401:         WaClip.Read r = WaClip.read(a);
+402:         if (r.text.trim().isEmpty()) return 0;
+403:         List<WaText.Msg> l = WaClip.messages(r.text, r.html);
+404:         if (l.size() > 1) return l.size();
+405:         if (l.size() == 1) {
+406:             List<MessageParser.Cur> curs = new ArrayList<>();
+407:             for (Model.Currency c : a.db.currencies(false)) curs.add(new MessageParser.Cur(c.code, c.name, c.decimals));
+408:             if (!MessageParser.parse(l.get(0).body, curs, CurrencyWords.load(a.db)).amount.isEmpty()) return 1;
+409:         }
+410:         return 0;
+411:     }
+412: 
+413:     // ===================================================================================
+414:     // فحص الحافظة
+415:     // ===================================================================================
+416: 
+417:     void inspect() {
+418:         WaClip.Read r = WaClip.read(a);
+419:         StringBuilder rep = new StringBuilder();
+420:         rep.append("فحص الحافظة — المحاسب الذكي ").append(BuildInfo.VERSION).append('\n');
+421:         rep.append("الجهاز: ").append(Build.MODEL).append('\n');
+422:         rep.append("الصيغ: ").append(r.mimes.isEmpty() ? "—" : String.join("، ", r.mimes)).append('\n');
+423:         List<WaText.Msg> plain = WaText.split(r.text);
+424:         List<WaText.Msg> html = WaHtml.messages(r.html);
+425:         List<WaText.Msg> best = WaClip.messages(r.text, r.html);
+426:         rep.append("رسائل بالرؤوس: ").append(plain.size()).append(" • من HTML: ").append(html == null ? "لا يوجد" : String.valueOf(html.size()))
+427:                 .append(" • أسطر الوقت: ").append(WaCuts.auto(r.text).size()).append(" • النتيجة: ").append(best.size()).append('\n');
+428:         rep.append("\n— النص العادي (").append(r.text.length()).append(" حرفًا، المحتوى مخفي) —\n").append(ClipMask.text(r.text)).append('\n');
+429:         rep.append("\n— HTML (").append(r.html == null ? "غير موجود" : r.html.length() + " حرفًا، المحتوى مخفي").append(") —\n");
+430:         if (r.html != null) rep.append(ClipMask.html(r.html)).append('\n');
+431:         final String report = rep.toString();
+432:         LinearLayout l = new LinearLayout(a);
+433:         l.setOrientation(LinearLayout.VERTICAL);
+434:         l.setPadding(a.dp(16), a.dp(6), a.dp(16), a.dp(6));
+435:         TextView top = a.text("الحروف العربية صارت «ع»، واللاتينية «x»، والأرقام «#». يبقى شكل النسخ فقط، فيمكن إرساله للدعم بأمان.", 12, a.muted, false);
+436:         l.addView(top);
+437:         TextView body = a.text(report, 12, a.dark, false);
+438:         body.setTextIsSelectable(true);
+439:         body.setTextDirection(View.TEXT_DIRECTION_LOCALE);
+440:         ScrollView sv = new ScrollView(a);
+441:         sv.addView(body);
+442:         l.addView(sv, new LinearLayout.LayoutParams(-1, a.dp(360)));
+443:         new AlertDialog.Builder(a).setTitle("فحص الحافظة").setView(l)
+444:                 .setPositiveButton("نسخ التقرير", (d, w) -> {
+445:                     try {
+446:                         ClipboardManager cm = (ClipboardManager) a.getSystemService(Context.CLIPBOARD_SERVICE);
+447:                         if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("فحص الحافظة", report));
+448:                         a.toast("نُسخ التقرير (بلا محتوى الرسائل). الصقه في رسالة للدعم.");
+449:                     } catch (Exception e) {
+450:                         a.toast("تعذّر النسخ");
+451:                     }
+452:                 })
+453:                 .setNegativeButton("إغلاق", null).show();
+454:     }
+455: }

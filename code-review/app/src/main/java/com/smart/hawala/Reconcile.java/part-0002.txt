@@ -1,0 +1,164 @@
+168:     public static final String[][] LINE_PRESETS = {
+169:             {"المبلغ ثم العملة", LINE_AMOUNT_FIRST}, {"العملة ثم المبلغ", LINE_NAME_FIRST}, {"لنا/لكم أولًا", LINE_WORD_FIRST},
+170:             {"سطران لكل عملة", LINE_TWO_LINES}, {"مختصر بالرمز", LINE_COMPACT}};
+171:     public static final String LINE_HELP = "الخانات: {علامة} الدائرة الملوّنة، {مبلغ} الرقم، {عملة} اسم العملة، {رمز} رمزها (USD)، {كلمة} لنا/لكم. "
+172:             + "رتّبها كما تشاء وأضف بينها أي نص أو رمز؛ واكتب \\n لسطر جديد.";
+173: 
+174:     /** ألوان جاهزة لـ«لنا» و«لكم»: {الاسم، اللون، الدائرة المطابقة له في نص واتساب}. */
+175:     public static final String[][] COLORS = {
+176:             {"أخضر", "#1B7846", "🟢"}, {"أحمر", "#AD2E36", "🔴"}, {"أزرق", "#1F5FBF", "🔵"}, {"برتقالي", "#D9730D", "🟠"},
+177:             {"بنفسجي", "#7B3FB5", "🟣"}, {"بني", "#7A4B2A", "🟤"}, {"ذهبي", "#B8860B", "🟡"}, {"أسود", "#222222", "⚫"}};
+178: 
+179:     public static int colorIndex(String hex) {
+180:         for (int i = 0; i < COLORS.length; i++) if (COLORS[i][1].equalsIgnoreCase(hex)) return i;
+181:         return -1;
+182:     }
+183: 
+184:     /** #RRGGBB ← ARGB معتم؛ نص غير صالح = الافتراضي. */
+185:     public static int rgb(String hex, int def) {
+186:         try {
+187:             String h = hex == null ? "" : hex.trim();
+188:             if (h.startsWith("#")) h = h.substring(1);
+189:             if (h.length() != 6) return def;
+190:             return 0xFF000000 | Integer.parseInt(h, 16);
+191:         } catch (Exception e) {
+192:             return def;
+193:         }
+194:     }
+195: 
+196:     public static final String[] WORD_POS = {"قبل الرقم", "بعد الرقم", "آخر السطر"};
+197: 
+198:     /** موضع «لنا/لكم» في شكل السطر: 0 قبل الرقم، 1 بعده مباشرة، 2 في آخر السطر (أو موضع حر آخر). */
+199:     public static int wordPos(String format) {
+200:         String f = validLine(format);
+201:         int w = f.indexOf("{كلمة}"), a = f.indexOf("{مبلغ}");
+202:         if (w < 0) return 2;
+203:         if (w < a) return 0;
+204:         return f.substring(a + "{مبلغ}".length(), w).trim().isEmpty() ? 1 : 2;
+205:     }
+206: 
+207:     /** ينقل خانة «لنا/لكم» إلى الموضع المطلوب ويترك باقي الشكل كما كتبه المستخدم. */
+208:     public static String withWordPos(String format, int pos) {
+209:         String f = validLine(format).replace("{كلمة}", "").replaceAll(" {2,}", " ").trim();
+210:         if (pos == 0) return f.replace("{مبلغ}", "{كلمة} {مبلغ}");
+211:         if (pos == 1) return f.replace("{مبلغ}", "{مبلغ} {كلمة}");
+212:         return f + " {كلمة}";
+213:     }
+214: 
+215:     /** شكل بلا خانة المبلغ ليس رسالة مطابقة: يعود للافتراضي (لا تُرسل رسالة بلا أرقام). */
+216:     public static String validLine(String f) {
+217:         return f == null || !f.contains("{مبلغ}") ? LINE_AMOUNT_FIRST : f;
+218:     }
+219: 
+220:     /** 59,450.00 → 59,450 و12.50 → 12.5 و0.00 → 0؛ ما بلا كسور يبقى كما هو. */
+221:     public static String trimZeros(String a) {
+222:         if (a == null || a.indexOf('.') < 0) return a;
+223:         int e = a.length();
+224:         while (e > 0 && a.charAt(e - 1) == '0') e--;
+225:         if (e > 0 && a.charAt(e - 1) == '.') e--;
+226:         return a.substring(0, e);
+227:     }
+228: 
+229:     /** سطر عملة واحدة حسب شكل القالب (قد يكون أكثر من سطر). */
+230:     public static String line(Template t, Row r) {
+231:         String mark = r.sign() > 0 ? t.markPlus : r.sign() < 0 ? t.markMinus : t.markZero;
+232:         String name = r.label(t.showCode);
+233:         String out = validLine(t.lineFormat).replace("\\n", "\n")
+234:                 .replace("{علامة}", Model.nz(mark).trim())
+235:                 .replace("{مبلغ}", b(t, t.amount(r)))
+236:                 .replace("{عملة}", t.boldName ? b(t, name) : name)
+237:                 .replace("{رمز}", r.code)
+238:                 .replace("{كلمة}", word(t, r));
+239:         // خانة فارغة (علامة محذوفة مثلًا) لا تترك فراغين ولا فراغًا أول السطر
+240:         StringBuilder sb = new StringBuilder();
+241:         for (String ln : out.split("\n", -1)) {
+242:             String x = ln.replaceAll(" {2,}", " ").trim();
+243:             if (x.isEmpty()) continue;
+244:             if (sb.length() > 0) sb.append("\n");
+245:             sb.append(x);
+246:         }
+247:         return sb.toString();
+248:     }
+249: 
+250: 
+251: 
+252:     /** سطر عملة في الرسالة. */
+253:     public static final class Row {
+254:         public final String code, name;
+255:         public final long minor;
+256:         public final int decimals;
+257: 
+258:         public Row(String code, String name, long minor, int decimals) {
+259:             this.code = code;
+260:             this.name = name;
+261:             this.minor = minor;
+262:             this.decimals = decimals;
+263:         }
+264: 
+265:         /** 1 لنا، -1 لكم، 0 صفر. */
+266:         public int sign() { return Long.signum(minor); }
+267: 
+268:         public String amount() { return Model.fmtFixed(Math.abs(minor), decimals); }
+269: 
+270:         public String label(boolean showCode) {
+271:             String n = name == null || name.trim().isEmpty() ? code : name.trim();
+272:             return showCode && !n.equals(code) ? n + " (" + code + ")" : n;
+273:         }
+274:     }
+275: 
+276:     /** يحوّل الأرصدة إلى أسطر بترتيب العملات، مع تصفية العملات المختارة والأصفار. */
+277:     public static List<Row> rows(Map<String, Long> balances, Map<String, String> names, Map<String, Integer> decimals,
+278:                                  Set<String> only, boolean showZero) {
+279:         List<Row> out = new ArrayList<>();
+280:         for (Map.Entry<String, Long> e : balances.entrySet()) {
+281:             String code = e.getKey();
+282:             if (only != null && !only.contains(code)) continue;
+283:             long v = e.getValue() == null ? 0 : e.getValue();
+284:             if (v == 0 && !showZero) continue;
+285:             Integer d = decimals.get(code);
+286:             out.add(new Row(code, names.get(code), v, d == null ? 2 : d));
+287:         }
+288:         return out;
+289:     }
+290: 
+291:     public static String word(Template t, Row r) {
+292:         return r.sign() > 0 ? t.plusWord : r.sign() < 0 ? t.minusWord : (t.zeroWord.trim().isEmpty() ? "صفر" : t.zeroWord.trim());
+293:     }
+294: 
+295:     private static String b(Template t, String s) {
+296:         return t.bold && !s.trim().isEmpty() ? "*" + s.trim() + "*" : s;
+297:     }
+298: 
+299:     /** نص الرسالة الجاهز للصق في واتساب (النجوم = خط عريض في واتساب). */
+300:     public static String text(Template t, String officeName, String issuer, long at, List<Row> rows) {
+301:         StringBuilder sb = new StringBuilder();
+302:         if (!t.greeting.trim().isEmpty()) sb.append(t.greeting.trim()).append("\n\n");
+303:         String orn = t.ornament == null ? "" : t.ornament.trim();
+304:         sb.append(orn.isEmpty() ? "" : orn + " ").append(b(t, t.title)).append(orn.isEmpty() ? "" : " " + orn).append("\n\n");
+305:         if (t.showDate) sb.append(t.dateLabel.trim().isEmpty() ? "" : t.dateLabel.trim() + " ").append(Model.date(at)).append("\n");
+306:         if (t.showOffice) sb.append(t.officeMark.trim().isEmpty() ? "" : t.officeMark.trim() + " ").append(t.salutation.trim().isEmpty() ? "" : t.salutation.trim() + " ")
+307:                 .append(b(t, Model.nz(officeName))).append(t.honorific.trim().isEmpty() ? "" : " " + t.honorific.trim()).append("\n");
+308:         String sep = t.showSeparator ? (t.separator.trim().isEmpty() ? LINE : t.separator.trim()) : "";
+309:         sb.append(sep).append("\n");
+310:         if (rows.isEmpty()) sb.append(t.emptyText.trim()).append("\n");
+311:         boolean first = true;
+312:         for (Row r : rows) {
+313:             if (!first && t.gap) sb.append("\n");
+314:             first = false;
+315:             sb.append(line(t, r)).append("\n");
+316:         }
+317:         sb.append(sep).append("\n");
+318:         if (!t.footer.trim().isEmpty()) sb.append(t.footer.trim()).append("\n");
+319:         if (t.showIssuer && issuer != null && !issuer.trim().isEmpty()) sb.append("\n").append(issuer.trim());
+320:         return sb.toString().trim();
+321:     }
+322: 
+323:     /** أمثلة للمعاينة في شاشة القالب. */
+324:     public static List<Row> sampleRows() {
+325:         List<Row> l = new ArrayList<>();
+326:         l.add(new Row("SYP", "ليرة سورية (جديد)", 5945000L, 2));
+327:         l.add(new Row("USD", "دولار أمريكي", -781900L, 2));
+328:         l.add(new Row("EUR", "يورو أوروبي", 875000L, 2));
+329:         return l;
+330:     }
+331: }

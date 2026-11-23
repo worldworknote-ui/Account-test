@@ -1,0 +1,52 @@
+170:         } catch (Exception e) {
+171:             return "{}";
+172:         }
+173:     }
+174: 
+175:     private static int color(JSONObject o, String k, int def) {
+176:         if (!o.has(k)) return def;
+177:         int c = o.optInt(k, def);
+178:         return c == AUTO ? AUTO : c | 0xFF000000;
+179:     }
+180: 
+181:     /** يقرأ الإعدادات؛ أي قيمة ناقصة أو تالفة تعود لافتراضيها (والترتيب يُصلَح: كل زر مرة واحدة). */
+182:     public static NavPrefs from(String json) {
+183:         NavPrefs p = new NavPrefs();
+184:         if (json == null || json.trim().isEmpty()) return p;
+185:         try {
+186:             JSONObject o = new JSONObject(json);
+187:             JSONArray f = o.optJSONArray("fan");
+188:             if (f != null) {
+189:                 List<String> l = new ArrayList<>();
+190:                 for (int i = 0; i < f.length() && l.size() < MAX_FAN; i++) {
+191:                     String k = f.optString(i);
+192:                     if (ITEMS.containsKey(k) && !l.contains(k)) l.add(k);
+193:                 }
+194:                 if (l.size() >= MIN_FAN) p.fan = l;
+195:             }
+196:             JSONObject ic = o.optJSONObject("itemColors");
+197:             if (ic != null) {
+198:                 java.util.Iterator<String> it = ic.keys();
+199:                 while (it.hasNext()) {
+200:                     String k = it.next();
+201:                     if (ITEMS.containsKey(k)) p.itemColors.put(k, ic.optInt(k) | 0xFF000000);
+202:                 }
+203:             }
+204:             p.barColor = color(o, "barColor", p.barColor);
+205:             p.barAlpha = clamp(o.optInt("barAlpha", p.barAlpha), 0, ALPHA.length - 1);
+206:             p.circleColor = color(o, "circleColor", p.circleColor);
+207:             p.iconColor = color(o, "iconColor", p.iconColor);
+208:             p.fanStyle = clamp(o.optInt("fanStyle", p.fanStyle), 0, FAN_STYLES.length - 1);
+209:             p.fanSize = clamp(o.optInt("fanSize", p.fanSize), 0, SIZES.length - 1);
+210:             p.barSize = clamp(o.optInt("barSize", p.barSize), 0, SIZES.length - 1);
+211:             p.barFloat = o.optBoolean("barFloat", p.barFloat);
+212:             p.labels = o.optBoolean("labels", p.labels);
+213:             p.plusMenu = o.optBoolean("plusMenu", p.plusMenu);
+214:         } catch (Exception e) {
+215:             return new NavPrefs();
+216:         }
+217:         return p;
+218:     }
+219: 
+220:     static int clamp(int v, int lo, int hi) { return Math.max(lo, Math.min(hi, v)); }
+221: }

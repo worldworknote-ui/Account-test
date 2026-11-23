@@ -1,0 +1,165 @@
+6471:         if (!c.active) throw new IllegalStateException("حساب العميل مؤرشف");
+6472:         if (decimalsMap().get(to) == null) throw new IllegalArgumentException("العملة غير معرّفة");
+6473:         Map<String, Long> bal = ClientBook.balances(clientMoves(clientId));
+6474:         String err = ClientBook.validateSwap(bal, from, amount, to, toAmount);
+6475:         if (err != null) throw new IllegalArgumentException(err);
+6476:         if (when <= 0 || when > Clock.now() + 10 * 60000L) throw new IllegalArgumentException("تاريخ غير صالح");
+6477:         int sideNow = bal.get(from) > 0 ? 1 : -1;
+6478:         String rate = ClientBook.rateOf(amount, decimals(from), toAmount, decimals(to));
+6479:         String auto = "تبديل " + Model.fmt(amount, decimals(from)) + " " + from + " إلى " + Model.fmt(toAmount, decimals(to)) + " " + to + " (1 " + from + " = " + rate + " " + to + ")";
+6480:         String desc = Model.nz(description).trim().isEmpty() ? auto : auto + " — " + description.trim();
+6481:         SQLiteDatabase d = getWritableDatabase();
+6482:         d.beginTransaction();
+6483:         try {
+6484:             checkLock(d, when, "تاريخ الحركة يقع داخل فترة محاسبية مقفلة");
+6485:             String pair = UUID.randomUUID().toString();
+6486:             ClientBook.Move a = new ClientBook.Move();
+6487:             a.clientId = clientId;
+6488:             a.kind = ClientBook.SWAP;
+6489:             a.currency = from;
+6490:             a.amount = amount;
+6491:             a.dir = -sideNow;
+6492:             a.pairUuid = pair;
+6493:             a.rate = rate;
+6494:             a.description = desc;
+6495:             a.createdAt = when;
+6496:             insertClientMove(d, a);
+6497:             ClientBook.Move b = new ClientBook.Move();
+6498:             b.clientId = clientId;
+6499:             b.kind = ClientBook.SWAP;
+6500:             b.currency = to;
+6501:             b.amount = toAmount;
+6502:             b.dir = sideNow;
+6503:             b.pairUuid = pair;
+6504:             b.rate = rate;
+6505:             b.description = desc;
+6506:             b.createdAt = when;
+6507:             insertClientMove(d, b);
+6508:             audit(d, "CLIENT_SWAP", "client", clientId, c.name + " — " + auto);
+6509:             d.setTransactionSuccessful();
+6510:         } finally {
+6511:             d.endTransaction();
+6512:         }
+6513:     }
+6514: 
+6515:     /** إلغاء حركة على حساب عميل: النقدية تُلغى مع حركة الصندوق، والتبديل بساقيه. */
+6516:     public void cancelClientMove(long id, String reason) {
+6517:         require(Auth.Perm.TX_CANCEL);
+6518:         ClientBook.Move m = null;
+6519:         for (ClientBook.Move x : readClientMoves(" WHERE m.id=" + id)) m = x;
+6520:         if (m == null) throw new IllegalArgumentException("الحركة غير موجودة");
+6521:         if (m.cancelled()) throw new IllegalStateException("هذه الحركة ملغاة أصلًا");
+6522:         if (m.cashUuid != null) {
+6523:             try (Cursor c = getReadableDatabase().rawQuery("SELECT id FROM cash_moves WHERE uuid=?", new String[]{m.cashUuid})) {
+6524:                 if (!c.moveToFirst()) throw new IllegalStateException("حركة الصندوق المرتبطة غير موجودة");
+6525:                 cancelCashMove(c.getLong(0), reason);
+6526:                 return;
+6527:             }
+6528:         }
+6529:         SQLiteDatabase d = getWritableDatabase();
+6530:         d.beginTransaction();
+6531:         try {
+6532:             checkLock(d, m.createdAt, "الحركة ضمن فترة محاسبية مقفلة");
+6533:             ContentValues v = new ContentValues();
+6534:             v.put("status", CashBox.CANCELLED);
+6535:             v.put("cancel_reason", Crypto.enc(Model.nz(reason)));
+6536:             v.put("cancelled_at", Clock.now());
+6537:             if (m.pairUuid != null && !m.pairUuid.isEmpty()) d.update("client_moves", v, "pair_uuid=? AND status='ACTIVE'", new String[]{m.pairUuid});
+6538:             else d.update("client_moves", v, "id=" + id + " AND status='ACTIVE'", null);
+6539:             audit(d, "CLIENT_CANCEL", "client", m.clientId, Model.nz(reason));
+6540:             d.setTransactionSuccessful();
+6541:         } finally {
+6542:             d.endTransaction();
+6543:         }
+6544:     }
+6545: 
+6546:     private static final String CASH_COLS = "m.id,m.uuid,m.kind,m.currency,m.amount_minor,m.dir,m.fee_minor,m.fee_side,m.fee_cash,m.category,m.party,m.description,"
+6547:             + "m.office_id,m.tx_id,t.status,m.pair_uuid,m.rate,m.status,m.created_at,m.user_name,m.cancel_reason,m.box_id,m.client_id";
+6548: 
+6549:     private CashBox.Move readCash(Cursor c) {
+6550:         CashBox.Move m = new CashBox.Move();
+6551:         m.id = c.getLong(0);
+6552:         m.uuid = c.getString(1);
+6553:         m.kind = c.getString(2);
+6554:         m.currency = c.getString(3);
+6555:         m.amount = c.getLong(4);
+6556:         m.dir = c.getInt(5);
+6557:         m.fee = c.getLong(6);
+6558:         m.feeSide = Model.nz(c.getString(7));
+6559:         m.feeInCash = c.getInt(8) == 1;
+6560:         m.category = Model.nz(c.getString(9));
+6561:         m.party = Model.nz(Crypto.dec(c.getString(10)));
+6562:         m.description = Model.nz(Crypto.dec(c.getString(11)));
+6563:         m.officeId = c.isNull(12) ? null : c.getLong(12);
+6564:         m.txId = c.isNull(13) ? null : c.getLong(13);
+6565:         m.txStatus = c.isNull(14) ? (m.txId == null ? null : "CANCELLED") : c.getString(14);
+6566:         m.pairUuid = c.isNull(15) ? null : c.getString(15);
+6567:         m.rate = c.isNull(16) ? null : c.getString(16);
+6568:         m.status = c.getString(17);
+6569:         m.createdAt = c.getLong(18);
+6570:         m.userName = shown(Model.nz(Crypto.dec(c.getString(19))));
+6571:         m.cancelReason = Model.nz(Crypto.dec(c.getString(20)));
+6572:         m.boxId = c.isNull(21) ? 1 : c.getLong(21);
+6573:         m.clientId = c.isNull(22) ? null : c.getLong(22);
+6574:         return m;
+6575:     }
+6576: 
+6577:     /** حركات الصندوق المفتوح بترتيب زمني (مع حالة حركة المكتب المرتبطة). */
+6578:     public List<CashBox.Move> cashMoves() { return cashMoves(currentBox()); }
+6579: 
+6580:     /** حركات صندوق برقمه. */
+6581:     public List<CashBox.Move> cashMoves(long boxId) {
+6582:         List<CashBox.Move> out = new ArrayList<>();
+6583:         try (Cursor c = getReadableDatabase().rawQuery("SELECT " + CASH_COLS + " FROM cash_moves m LEFT JOIN tx t ON t.id=m.tx_id WHERE m.box_id=" + boxId
+6584:                 + " ORDER BY m.created_at,m.id", null)) {
+6585:             while (c.moveToNext()) out.add(readCash(c));
+6586:         }
+6587:         return out;
+6588:     }
+6589: 
+6590:     public CashBox.Move cashMove(long id) {
+6591:         try (Cursor c = getReadableDatabase().rawQuery("SELECT " + CASH_COLS + " FROM cash_moves m LEFT JOIN tx t ON t.id=m.tx_id WHERE m.id=" + id, null)) {
+6592:             return c.moveToFirst() ? readCash(c) : null;
+6593:         }
+6594:     }
+6595: 
+6596:     /** رصيد الصندوق لكل عملة (بالحساب نفسه في CashBox، مع عملات الصندوق بصفر). */
+6597:     public Map<String, Long> cashBalances() { return cashBalances(currentBox()); }
+6598: 
+6599:     public Map<String, Long> cashBalances(long boxId) {
+6600:         CashBox.Config c = CashBox.Config.find(cashBoxes(), boxId);
+6601:         return CashBox.balances(cashMoves(boxId), c == null ? null : c.currencies);
+6602:     }
+6603: 
+6604:     /** 10.5: نقد حركات المكاتب المعلّقة في الصندوق لكل عملة (موجود فعلًا، غير محسوب حتى الاعتماد). */
+6605:     public Map<String, Long> cashPending(long boxId) { return CashBox.pendingCash(cashMoves(boxId)); }
+6606: 
+6607:     /** 10.5: ما يجب أن يكون في الصندوق فعلًا الآن: الرصيد المحسوب + النقد المعلّق (أساس الجرد). */
+6608:     public Map<String, Long> cashExpected(long boxId) {
+6609:         Map<String, Long> m = new TreeMap<>(cashBalances(boxId));
+6610:         for (Map.Entry<String, Long> e : cashPending(boxId).entrySet()) m.merge(e.getKey(), e.getValue(), Long::sum);
+6611:         return m;
+6612:     }
+6613: 
+6614:     /** هل الحركة مسجّلة من الصندوق (لمنع تعديلها من جهة المكتب)؟ */
+6615:     public boolean cashLinked(long txId) {
+6616:         try (Cursor c = getReadableDatabase().rawQuery("SELECT 1 FROM cash_moves WHERE tx_id=" + txId + " AND status='ACTIVE' LIMIT 1", null)) {
+6617:             return c.moveToFirst();
+6618:         }
+6619:     }
+6620: 
+6621:     /** أرقام حركات المكاتب المسجّلة من الصندوق (لإظهار علامة «من الصندوق» في السجل والكشف). */
+6622:     public Set<Long> cashLinkedTxIds() {
+6623:         Set<Long> s = new HashSet<>();
+6624:         try (Cursor c = getReadableDatabase().rawQuery("SELECT tx_id FROM cash_moves WHERE tx_id IS NOT NULL AND status='ACTIVE'", null)) {
+6625:             while (c.moveToNext()) s.add(c.getLong(0));
+6626:         }
+6627:         return s;
+6628:     }
+6629: 
+6630:     // ===================================================================================
+6631:     // 9.0: الإشعارات: مكاتب بلا حركات منذ يوم كامل، ومكاتب لم تُرسل لها مطابقة
+6632:     // ===================================================================================
+6633: 
+6634:     /** المكاتب النشطة التي سُجّل عليها في آخر 30 يومًا ولم يُسجّل عليها شيء منذ أكثر من يوم. */
+6635:     public List<Model.Office> idleOffices(long now) {

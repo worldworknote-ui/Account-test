@@ -1,0 +1,144 @@
+855:           // سطر نصي بلا مبالغ (عنوان حساب لكشف تالٍ، أو ملاحظة): لا أثر له على الرصيد
+856:           since.push(row);
+857:           cur.skipped.push({ src: src, reason: "سطر بلا مبالغ" });
+858:           return;
+859:         }
+860:         since = [];
+861:         cur.rows.push(item);
+862:       });
+863:     });
+864:     return blocks;
+865:   }
+866: 
+867:   /** يحوّل مبلغًا مقروءًا إلى وحدة صغرى بإشارته، أو يرمي سببًا مفهومًا. */
+868:   function signedMinor(p, dec, what) {
+869:     if (p.empty) return 0n;
+870:     if (!p.ok) throw new Error(what + " غير مفهوم (" + p.reason + ")");
+871:     var m = toMinor(p, dec);
+872:     if (m === null) throw new Error(what + " فيه منازل عشرية أكثر من المسموح للعملة (" + dec + ")");
+873:     return p.neg ? -m : m;
+874:   }
+875: 
+876:   /**
+877:    * يتحقق من كشف واحد ويحوّله إلى رصيد سابق وحركات. الإشارة الداخلية: موجب = «علينا» (دائن − مدين)،
+878:    * ثم تُقلب عند الإخراج لأن التطبيق يحسب «لنا» موجبًا (مدين − دائن).
+879:    * يُجرَّب تفسيرا عمود الرصيد (موجبه علينا أو لنا)، ويُقبل فقط التفسير الذي يطابق كل الصفوف والإجمالي.
+880:    */
+881:   function checkStatement(st, dec, fallbackPositive) {
+882:     var rows = st.rows.map(function (x) {
+883:       var d = signedMinor(x.d, dec, "مبلغ «مدين/لنا»"), c = signedMinor(x.c, dec, "مبلغ «دائن/علينا»");
+884:       if (d < 0n || c < 0n) throw new Error("قيمة سالبة في عمود مدين أو دائن (صف " + x.src.row + ")");
+885:       return { x: x, d: d, c: c, b: x.b.empty ? null : signedMinor(x.b, dec, "الرصيد") };
+886:     });
+887:     var preB = st.pre ? signedMinor(st.pre.b, dec, "الرصيد السابق") : 0n;
+888:     var cum = null;
+889:     if (st.pre && !st.pre.d.empty && !st.pre.c.empty) {
+890:       var pd = signedMinor(st.pre.d, dec, "مجموع مدين السابق"), pc = signedMinor(st.pre.c, dec, "مجموع دائن السابق");
+891:       if (pd !== 0n || pc !== 0n) cum = pc - pd;
+892:     }
+893:     var foot = null;
+894:     if (st.footer) foot = { m: signedMinor(st.footer.p, dec, "اجمالي الرصيد"), side: st.footer.side };
+895:     function attempt(mode) {
+896:       var s = mode === "C" ? preB : -preB;
+897:       var res = { mode: mode, s0: s, bad: null, checked: 0 };
+898:       if (cum !== null && cum !== s) { res.bad = { src: st.pre.src, shown: preB, want: cum, what: "الرصيد السابق لا يساوي (دائن − مدين) في سطره" }; return res; }
+899:       for (var i = 0; i < rows.length; i++) {
+900:         s += rows[i].c - rows[i].d;
+901:         if (rows[i].b !== null) {
+902:           var want = mode === "C" ? s : -s;
+903:           if (rows[i].b !== want) { res.bad = { src: rows[i].x.src, shown: rows[i].b, want: want, what: "الرصيد المكتوب لا يساوي الرصيد المحسوب" }; return res; }
+904:           res.checked++;
+905:         }
+906:       }
+907:       if (foot) {
+908:         var abs = foot.m < 0n ? -foot.m : foot.m;
+909:         var sAbs = s < 0n ? -s : s;
+910:         var sideOk = foot.side === null || foot.side === "0" ? true : (foot.side === "C" ? s >= 0n : s <= 0n);
+911:         var signedFoot = foot.m < 0n && foot.side === null ? (mode === "C" ? foot.m : -foot.m) : null;
+912:         var okFoot = signedFoot !== null ? signedFoot === s : (abs === sAbs && (s === 0n || sideOk));
+913:         if (!okFoot) { res.bad = { src: st.footer.src, shown: foot.m, want: s, what: "اجمالي الرصيد في آخر الكشف لا يساوي الرصيد المحسوب" }; return res; }
+914:       }
+915:       res.final = s;
+916:       return res;
+917:     }
+918:     var A = attempt("C"), B = attempt("D");
+919:     var pick = null, ambiguous = false;
+920:     if (!A.bad && !B.bad) {
+921:       // التفسيران متطابقان: لا حركات تغيّر الرصيد ولا مجاميع ولا نوع رصيد في الإجمالي
+922:       if (A.final === B.final) pick = A;
+923:       else { pick = fallbackPositive === "D" ? B : A; ambiguous = true; }
+924:     } else if (!A.bad) pick = A;
+925:     else if (!B.bad) pick = B;
+926:     if (!pick) {
+927:       var first = A.bad && B.bad ? ((A.bad.src.row || 0) >= (B.bad.src.row || 0) ? A.bad : B.bad) : (A.bad || B.bad);
+928:       return { ok: false, bad: first, rows: rows };
+929:     }
+930:     return { ok: true, mode: pick.mode, s0: pick.s0, final: pick.final, checked: pick.checked, ambiguous: ambiguous, rows: rows, footer: !!foot };
+931:   }
+932: 
+933:   /**
+934:    * يبني النموذج (مكاتب، أرصدة سابقة، حركات) من كشوفات مقروءة.
+935:    * cfg.statements: { balancesOnly, mergeCom, positiveIs ("C" افتراضيًا: الرصيد الموجب في الكشف يعني «علينا») }.
+936:    */
+937:   function buildStatements(cfg, statements, serialToDate) {
+938:     var model = newModel();
+939:     var opt = cfg.statements || {};
+940:     model.files = [];
+941:     var seen = {};
+942:     statements.forEach(function (st) {
+943:       var info = { file: st.file, src: st.src, account: st.account, curText: st.curText, code: null, rows: st.rows.length, status: "", ok: false };
+944:       model.files.push(info);
+945:       var label = st.file + (st.account && st.account.name ? " — " + (st.account.code ? st.account.code + " " : "") + st.account.name : "");
+946:       if (!st.account || !st.account.name) { info.status = "لم يُعرف اسم الحساب أعلى الكشف"; err(model, st.src, info.status); return; }
+947:       var code = st.curText ? (cfg.currencyMap && cfg.currencyMap[officeKey(st.curText)]) || guessCurrency(st.curText) : (opt.fixedCurrency || null);
+948:       if (code === "__skip") { info.status = "عملة مستبعدة"; skip(model, st.src, "كشف بعملة مستبعدة: " + st.curText); return; }
+949:       if (!code) { info.status = "العملة «" + (st.curText || "غير مكتوبة") + "» غير مطابَقة"; err(model, st.src, label + ": " + info.status); return; }
+950:       info.code = code;
+951:       var def = curDef(cfg, code);
+952:       if (!def) { info.status = "العملة " + code + " غير معرّفة"; err(model, st.src, info.status); return; }
+953:       var accKey = st.account.code ? "#" + st.account.code : keyOf(cfg, st.account.name);
+954:       var dupKey = accKey + "|" + code;
+955:       if (seen[dupKey]) {
+956:         info.status = "مكرر: الحساب والعملة نفسيهما في «" + seen[dupKey] + "»";
+957:         err(model, st.src, label + ": كشف مكرر للحساب والعملة نفسيهما (الأول في «" + seen[dupKey] + "»). احذف أحدهما، أو صدّر كشفًا واحدًا يغطي الفترة كلها.");
+958:         return;
+959:       }
+960:       var chk;
+961:       try { chk = checkStatement(st, def.dec, opt.positiveIs || "C"); } catch (e) { info.status = e.message; err(model, st.src, label + ": " + e.message); return; }
+962:       if (!chk.ok) {
+963:         var b = chk.bad;
+964:         info.status = b.what + " (صف " + b.src.row + ")";
+965:         err(model, b.src, label + ": " + b.what + " — في الملف " + fmtMinor(b.shown, def.dec) + " والمحسوب " + fmtMinor(b.want < 0n ? -b.want : b.want, def.dec) +
+966:           ". لم يُنقل هذا الكشف؛ تأكد أنه كامل ولم يُعدَّل يدويًا.");
+967:         return;
+968:       }
+969:       // التواريخ قبل أي إضافة: كشف فيه تاريخ غير مفهوم أو في المستقبل يُرفض كاملًا
+970:       var order = guessDateOrder(chk.rows.map(function (r) { return r.x.date; }).concat(st.pre ? [st.pre.date] : []).filter(Boolean));
+971:       var rowsAt = chk.rows.map(function (r) { return parseDate(r.x.date, order, serialToDate); });
+972:       var badDate = null, future = null;
+973:       chk.rows.forEach(function (r, k) {
+974:         if (r.x.carry) return;
+975:         if (!rowsAt[k]) { if (!badDate) badDate = r.x; return; }
+976:         if (!future && epoch(rowsAt[k], 12) > cfg.now + 10 * 60000) future = r.x;
+977:       });
+978:       if (badDate || future) {
+979:         var bx = badDate || future;
+980:         info.status = (badDate ? "تاريخ غير مفهوم" : "تاريخ في المستقبل") + " (صف " + bx.src.row + ")";
+981:         err(model, bx.src, label + ": " + (badDate ? "تاريخ غير مفهوم «" + text(bx.date) + "»" : "تاريخ في المستقبل «" + text(bx.date) + "»") + "؛ لم يُنقل هذا الكشف.");
+982:         return;
+983:       }
+984:       seen[dupKey] = st.file;
+985:       info.ok = true;
+986:       info.checked = chk.checked;
+987:       info.footer = chk.footer;
+988:       info.opening = -chk.s0;
+989:       info.final = -chk.final;
+990:       info.status = "✓";
+991:       if (chk.ambiguous) model.warnings.push(label + ": لا حركات ولا مجاميع تبيّن اتجاه الرصيد؛ اعتُبر الرصيد الموجب «" + (opt.positiveIs === "D" ? "لنا" : "علينا") + "». راجعه.");
+992:       // المكتب: الرمز يجمع عملات الحساب نفسه من كل الملفات
+993:       var name = st.account.name;
+994:       var i = model.officeIndex[accKey];
+995:       if (i === undefined) {
+996:         i = model.offices.length;
+997:         model.officeIndex[accKey] = i;
+998:         model.offices.push({ name: displayName(cfg, name), key: accKey, phone: "", variants: {}, tx: 0, openings: 0,

@@ -1,0 +1,163 @@
+5821:             m.kind = CashBox.OPENING;
+5822:             m.boxId = boxId;
+5823:             m.currency = e.getKey();
+5824:             m.amount = e.getValue();
+5825:             m.dir = 1;
+5826:             m.category = CashBox.CAT_OPENING;
+5827:             m.createdAt = now;
+5828:             insertCash(d, m);
+5829:         }
+5830:     }
+5831: 
+5832:     public long addCashBox(String name, List<String> currencies, Map<String, Long> openings) {
+5833:         return addCashBox(name, currencies, openings, false, true);
+5834:     }
+5835: 
+5836:     /** صندوق جديد (مثل: صندوق الفرع، خزنة البيت) بربطه الخاص بالمكاتب. يرجع رقمه. */
+5837:     public long addCashBox(String name, List<String> currencies, Map<String, Long> openings, boolean strict, boolean allowInternal) {
+5838:         require(Auth.Perm.SETTINGS);
+5839:         List<CashBox.Config> boxes = cashBoxes();
+5840:         if (!boxes.get(0).on) throw new IllegalStateException("اضبط الصندوق الأول أولًا");
+5841:         checkBoxCurrencies(currencies);
+5842:         String nm = name == null ? "" : name.trim();
+5843:         if (nm.isEmpty()) throw new IllegalArgumentException("اكتب اسم الصندوق");
+5844:         for (CashBox.Config o : boxes) if (o.name.equals(nm)) throw new IllegalArgumentException("يوجد صندوق بالاسم نفسه");
+5845:         checkBoxSlot(boxes, -1);   // 12.6
+5846:         SQLiteDatabase d = getWritableDatabase();
+5847:         long now = Clock.now();
+5848:         d.beginTransaction();
+5849:         try {
+5850:             ContentValues v = new ContentValues();
+5851:             v.put("uuid", UUID.randomUUID().toString());
+5852:             v.put("name", nm);
+5853:             v.put("currencies", CashBox.Config.join(currencies));
+5854:             v.put("strict", strict ? 1 : 0);
+5855:             v.put("allow_internal", allowInternal ? 1 : 0);
+5856:             v.put("active", 1);
+5857:             v.put("sort", boxes.size());
+5858:             v.put("created_at", now);
+5859:             long id = ins(d, "cash_boxes", v);
+5860:             insertOpenings(d, id, currencies, openings, now);
+5861:             audit(d, "CASH_BOX_ADD", "cash", id, nm + " — " + CashBox.Config.join(currencies));
+5862:             d.setTransactionSuccessful();
+5863:             return id;
+5864:         } finally {
+5865:             d.endTransaction();
+5866:         }
+5867:     }
+5868: 
+5869:     /** تعطيل صندوق (كل أرصدته صفر، ويبقى صندوق مفعّل غيره) أو إعادته. يبقى تاريخه في التقارير. */
+5870:     /** 12.6: سقف الصناديق المفعّلة (المجاني واحد). الموجودة لا تُعطَّل أبدًا؛ يتوقف إنشاء صندوق أو إعادة تفعيله فقط. */
+5871:     private static void checkBoxSlot(List<CashBox.Config> boxes, long except) {
+5872:         long max = License.current.maxCashBoxes();
+5873:         if (max == Entitlements.UNLIMITED) return;
+5874:         int n = 0;
+5875:         for (CashBox.Config o : boxes) if (o.on && o.active && o.id != except) n++;
+5876:         if (n >= max) throw new Entitlements.LimitReached(Entitlements.boxLimitMessage(max));
+5877:     }
+5878: 
+5879:     /** 12.6: سقف العملاء النشطين (المجاني 25). الأرشفة تعيد المكان. */
+5880:     private void checkClientSlot() {
+5881:         long max = License.current.maxClients();
+5882:         if (max == Entitlements.UNLIMITED) return;
+5883:         int n = 0;
+5884:         for (ClientBook.Client o : clients()) if (o.active) n++;
+5885:         if (n >= max) throw new Entitlements.LimitReached(Entitlements.clientLimitMessage(max));
+5886:     }
+5887: 
+5888:     public void setCashBoxActive(long id, boolean active) {
+5889:         require(Auth.Perm.SETTINGS);
+5890:         List<CashBox.Config> boxes = cashBoxes();
+5891:         CashBox.Config b = CashBox.Config.find(boxes, id);
+5892:         if (b == null || !b.on) throw new IllegalArgumentException("الصندوق غير موجود");
+5893:         if (active && !b.active) checkBoxSlot(boxes, id);   // 12.6
+5894:         if (!active) {
+5895:             int others = 0;
+5896:             for (CashBox.Config o : boxes) if (o.active && o.id != id) others++;
+5897:             if (others == 0) throw new IllegalStateException("هذا آخر صندوق مفعّل. أضف صندوقًا آخر قبل تعطيله.");
+5898:             for (Map.Entry<String, Long> e : cashBalances(id).entrySet())
+5899:                 if (e.getValue() != 0) throw new IllegalStateException("في الصندوق رصيد " + e.getKey() + ". حوّله إلى صندوق آخر أو سلّمه قبل التعطيل.");
+5900:         }
+5901:         SQLiteDatabase d = getWritableDatabase();
+5902:         d.beginTransaction();
+5903:         try {
+5904:             d.execSQL("UPDATE cash_boxes SET active=" + (active ? 1 : 0) + " WHERE id=" + id);
+5905:             audit(d, active ? "CASH_BOX_RESTORE" : "CASH_BOX_ARCHIVE", "cash", id, b.name);
+5906:             d.setTransactionSuccessful();
+5907:         } finally {
+5908:             d.endTransaction();
+5909:         }
+5910:         if (!active && settingLong("cash_current", 1) == id) setCurrentBox(currentBox());
+5911:     }
+5912: 
+5913:     /**
+5914:      * سبب منع حذف الصندوق، أو null إن جاز. يُحذف الصندوق بكل حركاته فقط إن كان رصيده صفرًا وليس فيه ما يرتبط بغيره:
+5915:      * حركة لحساب مكتب أو عميل أو تحويل مع صندوق آخر (بأي حالة) — حذفها يكسر حسابًا آخر، فالتعطيل هو الحل حينها.
+5916:      */
+5917:     public String cashBoxDeleteBlock(long id) {
+5918:         List<CashBox.Config> boxes = cashBoxes();
+5919:         CashBox.Config b = CashBox.Config.find(boxes, id);
+5920:         if (b == null || !b.on) return "الصندوق غير موجود";
+5921:         int others = 0;
+5922:         for (CashBox.Config o : boxes) if (o.active && o.id != id) others++;
+5923:         if (others == 0) return "هذا آخر صندوق مفعّل. أضف صندوقًا آخر قبل حذفه.";
+5924:         for (Map.Entry<String, Long> e : cashBalances(id).entrySet())
+5925:             if (e.getValue() != 0) return "في الصندوق رصيد " + e.getKey() + ". حوّله إلى صندوق آخر أو سلّمه أولًا.";
+5926:         try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM cash_moves WHERE box_id=" + id
+5927:                 + " AND (office_id IS NOT NULL OR tx_id IS NOT NULL OR client_id IS NOT NULL OR kind='TRANSFER')", null)) {
+5928:             if (c.moveToFirst() && c.getLong(0) > 0)
+5929:                 return "في الصندوق حركات مرتبطة بمكاتب أو عملاء أو بصناديق أخرى (" + c.getLong(0) + "). حذفها يغيّر حسابات أخرى؛ عطّل الصندوق بدل حذفه.";
+5930:         }
+5931:         return null;
+5932:     }
+5933: 
+5934:     /** حذف صندوق نهائيًا بحركاته وسجل جرده (بشروط cashBoxDeleteBlock). */
+5935:     public void deleteCashBox(long id) {
+5936:         require(Auth.Perm.SETTINGS);
+5937:         String why = cashBoxDeleteBlock(id);
+5938:         if (why != null) throw new IllegalStateException(why);
+5939:         CashBox.Config b = cashBox(id);
+5940:         SQLiteDatabase d = getWritableDatabase();
+5941:         d.beginTransaction();
+5942:         try {
+5943:             int n = d.delete("cash_moves", "box_id=" + id, null);
+5944:             d.delete("cash_counts", "box_id=" + id, null);
+5945:             d.delete("cash_boxes", "id=" + id, null);
+5946:             audit(d, "CASH_BOX_DELETE", "cash", id, b.name + " — " + n + " حركة");
+5947:             d.setTransactionSuccessful();
+5948:         } finally {
+5949:             d.endTransaction();
+5950:         }
+5951:         if (settingLong("cash_current", 1) == id) setCurrentBox(currentBox());
+5952:     }
+5953: 
+5954:     /** بند جديد يضيفه المستخدم لقائمة المصاريف أو الاستلام أو التسليم. */
+5955:     public void addCashCategory(String kind, String name) {
+5956:         String n = name == null ? "" : name.trim().replace(",", "،");
+5957:         if (n.isEmpty()) return;
+5958:         String key = CashBox.EXPENSE.equals(kind) ? "cash_cats_exp" : CashBox.IN.equals(kind) ? "cash_cats_in" : "cash_cats_out";
+5959:         List<String> l = CashBox.Config.list(setting(key, ""));
+5960:         if (!l.contains(n)) l.add(n);
+5961:         setSetting(key, CashBox.Config.join(l));
+5962:     }
+5963: 
+5964:     private long insertCash(SQLiteDatabase d, CashBox.Move m) {
+5965:         ContentValues v = new ContentValues();
+5966:         v.put("uuid", m.uuid == null || m.uuid.isEmpty() ? UUID.randomUUID().toString() : m.uuid);
+5967:         v.put("box_id", m.boxId <= 0 ? 1 : m.boxId);
+5968:         v.put("kind", m.kind);
+5969:         v.put("currency", m.currency);
+5970:         v.put("amount_minor", m.amount);
+5971:         v.put("dir", m.dir);
+5972:         v.put("fee_minor", m.fee);
+5973:         v.put("fee_side", Model.nz(m.feeSide));
+5974:         v.put("fee_cash", m.feeInCash ? 1 : 0);
+5975:         v.put("category", Model.nz(m.category));
+5976:         v.put("party", Crypto.enc(Model.nz(m.party)));
+5977:         v.put("description", Crypto.enc(Model.nz(m.description)));
+5978:         if (m.officeId != null) v.put("office_id", m.officeId);
+5979:         if (m.txId != null) v.put("tx_id", m.txId);
+5980:         if (m.clientId != null) v.put("client_id", m.clientId);
+5981:         if (m.pairUuid != null) v.put("pair_uuid", m.pairUuid);
+5982:         if (m.rate != null) v.put("rate", m.rate);
+5983:         v.put("status", CashBox.ACTIVE);

@@ -1,0 +1,62 @@
+371:             Ui.toast("حُفظ القالب «" + name.trim() + "»");
+372:         } catch (Exception e) {
+373:             Ui.error(this, e);
+374:         }
+375:     }
+376: 
+377:     void deletePreset() {
+378:         String n = (String) presets.getSelectedItem();
+379:         if (n == null || presets.getSelectedIndex() == 0 || n.startsWith(READY)) {
+380:             Ui.toast("اختر قالبًا محفوظًا (القوالب الجاهزة لا تُحذف)");
+381:             return;
+382:         }
+383:         if (!Ui.confirm(this, "حذف القالب", "حذف القالب «" + n + "»؟", "حذف")) return;
+384:         JSONObject st = stored();
+385:         st.remove(n);
+386:         db.setSetting(KEY, st.toString());
+387:         loadPresets();
+388:     }
+389: 
+390:     // ===================================================================================
+391:     // التشغيل
+392:     // ===================================================================================
+393: 
+394:     Report build(ReportBuilder.Spec s) {
+395:         return ReportBuilder.build(s, db.builderData(), db.setting("office_name", ""));
+396:     }
+397: 
+398:     void run() {
+399:         final ReportBuilder.Spec s;
+400:         try {
+401:             s = spec();
+402:         } catch (Exception e) {
+403:             Ui.error(this, e);
+404:             return;
+405:         }
+406:         Ui.busy(this, "جارٍ بناء التقرير…", p -> build(s), r -> {
+407:             last = r;
+408:             out.removeAll();
+409:             out.add(Ui.label(r.title, 19, Ui.primaryInk, true));
+410:             out.add(Ui.gap(6));
+411:             out.add(ReportPanel.render(r, textWidth()));
+412:             Ui.rtl(out);
+413:             out.revalidate();
+414:             out.repaint();
+415:             SwingUtilities.invokeLater(() -> {
+416:                 Rectangle b = out.getBounds();
+417:                 body.scrollRectToVisible(new Rectangle(b.x, b.y, 10, 10));
+418:             });
+419:         });
+420:     }
+421: 
+422:     void export() {
+423:         final ReportBuilder.Spec s;
+424:         try {
+425:             s = spec();
+426:         } catch (Exception e) {
+427:             Ui.error(this, e);
+428:             return;
+429:         }
+430:         Export.dialog(this, app, s.title.isEmpty() ? "تقرير مخصص" : s.title, () -> build(s));
+431:     }
+432: }

@@ -1,0 +1,90 @@
+382:             "CREATE TABLE IF NOT EXISTS user_offices(user_id INTEGER NOT NULL,office_id INTEGER NOT NULL,PRIMARY KEY(user_id,office_id))",
+383:             // 10.5 (§7): «تم التحقق» — بلا قيد. المفتاح نصي ثابت (الحركة + المستخدم + بصمة قيمها): تحقق المستخدم نفسه من جهازين صف واحد،
+384:             // وتحقق مستخدمين مختلفين صفان؛ تعديل القيم يُبطل القديم ويبقيه في التاريخ
+385:             "CREATE TABLE IF NOT EXISTS tx_checks(uuid TEXT PRIMARY KEY,tx_id INTEGER NOT NULL,user_id INTEGER NOT NULL,user_name TEXT,created_at INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'VALID',void_reason TEXT,void_at INTEGER)",
+386:             // 10.5 (§7): «آخر رسالة واتساب نُقلت» لكل مكتب، مع تاريخ تحديثها (كل تحديث صف)
+387:             "CREATE TABLE IF NOT EXISTS wa_marks(uuid TEXT PRIMARY KEY,office_id INTEGER NOT NULL,text TEXT,msg_time TEXT,user_id INTEGER,user_name TEXT,created_at INTEGER NOT NULL)",
+388:             // 10.13: حالة عمل المكتب اليوم كما وضعها محاسب (تلقائيًا تُحسب من حركات اليوم ومطابقاته، وهذا الصف يغيّرها يدويًا).
+389:             // جدول مستقل لا عمود في offices: المزامنة «الأحدث يفوز للصف كله»، فتغيير الحالة لا يمسّ اسم المكتب أو بياناته
+390:             "CREATE TABLE IF NOT EXISTS office_work(office_id INTEGER NOT NULL,day TEXT NOT NULL,status TEXT NOT NULL,user_id INTEGER,user_name TEXT,at INTEGER NOT NULL,PRIMARY KEY(office_id,day))",
+391:             // 10.16: سجل العمليات المشترك: كل جهاز منضم للمزامنة يكتب فيه نسخة من أسطر سجله (إضافة فقط، بمفتاح uuid)،
+392:             // فيرى المدير ما جرى على كل الأجهزة. سلسلة البصمات تبقى في audit_logs لكل جهاز وحده.
+393:             // 10.18: أمانات ومبالغ مجمّدة لكل مكتب (لا تدخل في القيود)، وسجل الإشعارات على هذا الجهاز
+394:             "CREATE TABLE IF NOT EXISTS office_holds(uuid TEXT PRIMARY KEY,office_id INTEGER NOT NULL,currency TEXT NOT NULL,amount_minor INTEGER NOT NULL,kind TEXT NOT NULL,side TEXT NOT NULL,"
+395:                     + "note TEXT,created_at INTEGER NOT NULL,user_name TEXT,released_at INTEGER,released_by TEXT)",
+396:             "CREATE TABLE IF NOT EXISTS notif_log(id INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,title TEXT,body TEXT)",
+397:             // 10.17: رسائل المدير إلى المحاسبين (تنتقل بالمزامنة)، وحالة قراءتها على هذا الجهاز (محلية)
+398:             "CREATE TABLE IF NOT EXISTS admin_msgs(uuid TEXT PRIMARY KEY,created_at INTEGER NOT NULL,from_user INTEGER,from_name TEXT,to_user INTEGER,body TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0)",
+399:             "CREATE TABLE IF NOT EXISTS admin_msg_state(uuid TEXT NOT NULL,user_id INTEGER NOT NULL,notified INTEGER NOT NULL DEFAULT 0,read_at INTEGER,PRIMARY KEY(uuid,user_id))",
+400:             "CREATE TABLE IF NOT EXISTS audit_feed(uuid TEXT PRIMARY KEY,created_at INTEGER NOT NULL,action TEXT,entity TEXT,entity_id INTEGER,user_name TEXT,reason TEXT,dev TEXT,dev_name TEXT)"
+401:     };
+402: 
+403:     private static final String[][] COLS = {
+404:             {"currencies", "name", "TEXT"}, {"currencies", "decimals", "INTEGER DEFAULT 2"}, {"currencies", "active", "INTEGER DEFAULT 1"},
+405:             {"offices", "name", "TEXT"}, {"offices", "short_name", "TEXT"}, {"offices", "phone", "TEXT"}, {"offices", "location", "TEXT"},
+406:             {"offices", "contact", "TEXT"}, {"offices", "notes", "TEXT"}, {"offices", "active", "INTEGER DEFAULT 1"},
+407:             {"offices", "usd_limit_minor", "INTEGER"}, {"offices", "usd_owe_limit_minor", "INTEGER"}, {"offices", "pinned", "INTEGER DEFAULT 0"},
+408:             {"office_currencies", "limit_minor", "INTEGER"}, {"office_currencies", "limit_owe_minor", "INTEGER"},
+409:             {"tx", "uuid", "TEXT"}, {"tx", "office_id", "INTEGER"}, {"tx", "type", "TEXT"}, {"tx", "person", "TEXT"},
+410:             {"tx", "amount_minor", "INTEGER DEFAULT 0"}, {"tx", "currency", "TEXT"}, {"tx", "fee_type", "TEXT DEFAULT 'بدون أجرة'"},
+411:             {"tx", "fee_minor", "INTEGER DEFAULT 0"}, {"tx", "fee_currency", "TEXT"}, {"tx", "description", "TEXT"}, {"tx", "notes", "TEXT"},
+412:             {"tx", "created_at", "INTEGER DEFAULT 0"}, {"tx", "user_name", "TEXT"}, {"tx", "status", "TEXT DEFAULT 'ACTIVE'"}, {"tx", "replaces_id", "INTEGER"},
+413:             {"tx", "service", "TEXT"}, {"tx", "dest", "TEXT"}, {"tx", "pair_uuid", "TEXT"}, {"tx", "fx_rate", "TEXT"},
+414:             // 10.5 (§7): من أدخل الحركة ومن اعتمدها بأرقام المستخدمين الثابتة (القديمة تبقى بالاسم وحده)
+415:             {"tx", "user_id", "INTEGER"}, {"tx", "approved_by", "INTEGER"}, {"tx", "approved_at", "INTEGER"},
+416:             {"attachments", "mime", "TEXT"}, {"attachments", "created_at", "INTEGER"},
+417:             {"journal_entries", "kind", "TEXT"}, {"journal_entries", "created_at", "INTEGER"}, {"journal_entries", "reverses_id", "INTEGER"},
+418:             {"journal_entries", "status", "TEXT DEFAULT 'POSTED'"},
+419:             {"journal_lines", "office_id", "INTEGER"},
+420:             {"opening_balances", "office_id", "INTEGER"}, {"opening_balances", "currency", "TEXT"}, {"opening_balances", "type", "TEXT"},
+421:             {"opening_balances", "amount_minor", "INTEGER"}, {"opening_balances", "entry_id", "INTEGER"},
+422:             {"exchange_rates", "manual_rate", "TEXT"}, {"exchange_rates", "manual_at", "INTEGER"},
+423:             {"backup_history", "created_at", "INTEGER"}, {"backup_history", "status", "TEXT"}, {"backup_history", "path", "TEXT"},
+424:             {"backup_history", "details", "TEXT"}, {"backup_history", "size_bytes", "INTEGER"}, {"backup_history", "n_offices", "INTEGER"},
+425:             {"backup_history", "n_tx", "INTEGER"}, {"backup_history", "n_att", "INTEGER"}, {"backup_history", "verified", "INTEGER"},
+426:             {"backup_history", "kind", "TEXT"},
+427:             {"audit_logs", "action", "TEXT"}, {"audit_logs", "entity", "TEXT"}, {"audit_logs", "entity_id", "INTEGER"},
+428:             {"audit_logs", "user_name", "TEXT"}, {"audit_logs", "reason", "TEXT"}, {"audit_logs", "created_at", "INTEGER"},
+429:             {"audit_logs", "prev_hash", "TEXT"}, {"audit_logs", "row_hash", "TEXT"},
+430:             {"cash_moves", "client_id", "INTEGER"}, {"reconciliations", "cutoff_marks", "TEXT"},
+431:             {"users", "pin_hash", "TEXT"}, {"users", "pin_salt", "TEXT"}, {"users", "active", "INTEGER DEFAULT 1"}, {"users", "created_at", "INTEGER"}, {"users", "perms", "TEXT"},
+432:             // 10.8: حذف حساب محاسب دون المساس بما سجّله (يبقى اسمه في التاريخ)، ودور المحاسب في المكتب (يسجّل / يتحقق)،
+433:             // ومن أنشأ المطابقة ومن تحقق منها. أعمدة جديدة فقط: الأجهزة الأقدم تتجاهلها في المزامنة ولا يتغير شيء قديم
+434:             {"users", "deleted_at", "INTEGER"},
+435:             {"users", "nick", "TEXT"},
+436:             {"user_offices", "role", "TEXT DEFAULT 'OWN'"},
+437:             {"reconciliations", "user_id", "INTEGER"}, {"reconciliations", "checked_by", "INTEGER"}, {"reconciliations", "checked_at", "INTEGER"},
+438:             // 12.4: الحركات الخاصة (أعمدة جديدة فقط: الأجهزة الأقدم تتجاهلها، والخاصة غير المحسوبة عندها ليست ACTIVE فلا تدخل أرصدتها)
+439:             {"tx", "special", "TEXT"}, {"tx", "special_bal", "INTEGER"}, {"office_holds", "to_tx", "TEXT"},
+440:             // 12.5: المعادن الثمينة (أعمدة جديدة فقط؛ الجهاز الأقدم يراها عملة بمنازلها فتبقى أرصدته صحيحة)
+441:             {"currencies", "kind", "TEXT"}, {"currencies", "metal", "TEXT"}, {"currencies", "unit", "TEXT"},
+442:             {"currencies", "fineness", "INTEGER"}, {"currencies", "valued", "INTEGER"}
+443:     };
+444: 
+445:     static Set<String> columnsOf(SQLiteDatabase d, String table) {
+446:         Set<String> out = new HashSet<>();
+447:         try (Cursor c = d.rawQuery("PRAGMA table_info(" + table + ")", null)) {
+448:             while (c.moveToNext()) out.add(c.getString(1).toLowerCase(Locale.US));
+449:         }
+450:         return out;
+451:     }
+452: 
+453:     private void ensureSchema(SQLiteDatabase d) {
+454:         for (String sql : DDL) d.execSQL(sql);
+455:         Map<String, Set<String>> have = new HashMap<>();
+456:         for (String[] col : COLS) {
+457:             Set<String> cols = have.get(col[0]);
+458:             if (cols == null) {
+459:                 cols = columnsOf(d, col[0]);
+460:                 have.put(col[0], cols);
+461:             }
+462:             if (!cols.contains(col[1])) {
+463:                 d.execSQL("ALTER TABLE " + col[0] + " ADD COLUMN " + col[1] + " " + col[2]);
+464:                 cols.add(col[1]);
+465:                 if (col[0].equals("tx") && col[1].equals("uuid")) {
+466:                     d.execSQL("UPDATE tx SET uuid=lower(hex(randomblob(16))) WHERE uuid IS NULL OR uuid=''");
+467:                 }
+468:             }
+469:         }
+470:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_tx_office_date ON tx(office_id,created_at)");
+471:         d.execSQL("CREATE INDEX IF NOT EXISTS idx_tx_date ON tx(created_at)");

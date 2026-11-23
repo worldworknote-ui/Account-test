@@ -1,0 +1,164 @@
+1: package com.smart.hawala;
+2: 
+3: import java.math.BigDecimal;
+4: import java.math.RoundingMode;
+5: import java.util.ArrayList;
+6: import java.util.Arrays;
+7: import java.util.Calendar;
+8: import java.util.Collections;
+9: import java.util.Comparator;
+10: import java.util.HashMap;
+11: import java.util.LinkedHashMap;
+12: import java.util.List;
+13: import java.util.Map;
+14: import java.util.Set;
+15: import java.util.TreeMap;
+16: import java.util.TreeSet;
+17: 
+18: /**
+19:  * 9.0: «صندوق المكتب» — منطق بحت مشترك بين الهاتف والماك (والمنصات القادمة).
+20:  *
+21:  * <p>الصندوق يضبط النقد الموجود فعلًا لدى صاحب المكتب بكل عملة، مستقلًا عن أرصدة المكاتب: حساباته في جدول خاص
+22:  * (cash_moves) ولا تدخل دفتر قيود المكاتب. الربط الوحيد بالمكاتب حركة «استلام» أو «تسليم» لحساب مكتب:
+23:  * تُسجَّل حركة عادية على المكتب (بقيودها) في المعاملة نفسها، ويُحفظ رقمها مع حركة الصندوق، فتتبع حالتها
+24:  * (بانتظار الاعتماد أو مرفوضة = لا تُحسب في الصندوق، وإلغاؤها يلغي الأخرى).
+25:  *
+26:  * <p>القاعدة المحاسبية: رصيد الصندوق بعملة = مجموع «أثر» حركاته النشطة، والأثر = اتجاه × المبلغ + أجور نقدية
+27:  * (لنا تدخل، علينا تخرج). أجور الحركة المرتبطة بمكتب تُقيَّد افتراضيًا على حساب المكتب (لا تمس النقد)
+28:  * إلا إذا قُبضت أو دُفعت نقدًا. خلاصة أي فترة تحقق: آخر الفترة = أولها + الداخل − الخارج (يتحقق منه الاختبار).
+29:  */
+30: public final class CashBox {
+31:     private CashBox() {}
+32: 
+33:     // أنواع الحركات
+34:     public static final String OPENING = "OPENING", IN = "IN", OUT = "OUT", EXPENSE = "EXPENSE", EXCHANGE = "EXCHANGE", ADJUST = "ADJUST", TRANSFER = "TRANSFER";
+35:     /** 9.0.1: بيع عملة (تخرج من الصندوق ويدخل مقابلها) أو شراؤها (تدخل ويخرج مقابلها). */
+36:     public static final String SELL = "SELL", BUY = "BUY";
+37:     public static final String ACTIVE = "ACTIVE", CANCELLED = "CANCELLED";
+38:     /** جهة الأجرة: لنا (نقبضها) أو علينا (ندفعها). */
+39:     public static final String FEE_US = "US", FEE_THEM = "THEM";
+40: 
+41:     public static final String DEFAULT_NAME = "صندوق المكتب";
+42: 
+43:     public static final String[] EXPENSE_CATS = {"رواتب وأجور العمال", "إيجار المحل", "كهرباء وماء", "إنترنت واتصالات", "ضيافة ونثريات", "مواصلات",
+44:             "صيانة ومستلزمات", "رسوم وضرائب", "قرطاسية وطباعة", "أخرى"};
+45:     public static final String[] IN_CATS = {"استلام من شخص", "إيداع من صاحب المكتب", "أجور وعمولات نقدية", "سحب من البنك", "أخرى"};
+46:     public static final String[] OUT_CATS = {"تسليم لشخص", "سحب لصاحب المكتب", "إيداع في البنك", "سلفة", "أخرى"};
+47:     public static final String CAT_OFFICE_IN = "استلام لحساب مكتب", CAT_OFFICE_OUT = "تسليم لحساب مكتب", CAT_COUNT = "فرق جرد", CAT_OPENING = "رصيد افتتاحي",
+48:             CAT_EXCHANGE = "صرف عملة", CAT_SELL = "بيع عملة", CAT_BUY = "شراء عملة", CAT_TRANSFER = "تحويل بين الصناديق",
+49:             CAT_CLIENT_IN = "استلام من عميل", CAT_CLIENT_OUT = "تسليم لعميل";
+50: 
+51:     public static String kindName(String kind) {
+52:         switch (kind == null ? "" : kind) {
+53:             case OPENING: return "رصيد افتتاحي";
+54:             case IN: return "استلام";
+55:             case OUT: return "تسليم";
+56:             case EXPENSE: return "مصروف";
+57:             case EXCHANGE: return "بيع وشراء عملة";
+58:             case TRANSFER: return "تحويل بين الصناديق";
+59:             case ADJUST: return "تسوية جرد";
+60:             default: return kind;
+61:         }
+62:     }
+63: 
+64:     // ===================================================================================
+65:     // النموذج
+66:     // ===================================================================================
+67: 
+68:     /** حركة صندوق كما تُقرأ من القاعدة (txStatus: حالة حركة المكتب المرتبطة، أو null). */
+69:     public static final class Move {
+70:         public long id;
+71:         public String uuid = "", kind = IN, currency = "";
+72:         public long amount;
+73:         /** +1 داخل الصندوق، −1 خارج منه. */
+74:         public int dir = 1;
+75:         public long fee;
+76:         public String feeSide = "";
+77:         public boolean feeInCash;
+78:         public String category = "", party = "", description = "", userName = "", cancelReason = "";
+79:         public Long officeId, txId;
+80:         public String txStatus;
+81:         public String pairUuid, rate;
+82:         public String status = ACTIVE;
+83:         public long createdAt;
+84:         /** 9.0.1: الصندوق الذي تخصه الحركة. */
+85:         public long boxId = 1;
+86:         /** 9.0.1: حساب العميل المرتبط (أو null). */
+87:         public Long clientId;
+88: 
+89:         /** ساق البيع/الشراء الرئيسية (العملة المتداولة، وفيها السعر). */
+90:         public boolean mainLeg() { return CAT_SELL.equals(category) ? dir < 0 : CAT_BUY.equals(category) && dir > 0; }
+91: 
+92:         public boolean linked() { return txId != null; }
+93: 
+94:         public boolean cancelled() { return CANCELLED.equals(status); }
+95: 
+96:         /** تُحسب في الصندوق: نشطة، وحركة المكتب المرتبطة (إن وُجدت) معتمدة نشطة. */
+97:         public boolean counts() { return ACTIVE.equals(status) && (txId == null || Model.STATUS_ACTIVE.equals(txStatus)); }
+98: 
+99:         public boolean pending() { return ACTIVE.equals(status) && txId != null && Model.STATUS_PENDING.equals(txStatus); }
+100: 
+101:         /** الأجرة النقدية بإشارتها (لنا +، علينا −)، وصفر إن كانت على حساب المكتب. */
+102:         public long feeCash() {
+103:             if (!feeInCash || fee <= 0) return 0;
+104:             return FEE_US.equals(feeSide) ? fee : FEE_THEM.equals(feeSide) ? -fee : 0;
+105:         }
+106: 
+107:         /** أثر الحركة على نقد الصندوق بعملتها. */
+108:         public long effect() { return counts() ? dir * amount + feeCash() : 0; }
+109: 
+110:         public String stateText() {
+111:             if (cancelled()) return "ملغاة";
+112:             if (txId != null && Model.STATUS_PENDING.equals(txStatus)) return "بانتظار الاعتماد";
+113:             if (txId != null && Model.STATUS_REJECTED.equals(txStatus)) return "مرفوضة";
+114:             if (txId != null && "CANCELLED".equals(txStatus)) return "ملغاة";
+115:             return "";
+116:         }
+117:     }
+118: 
+119:     /** إعدادات الصندوق. */
+120:     public static final class Config {
+121:         /** 9.0.1: رقم الصندوق (عدة صناديق). */
+122:         public long id = 1;
+123:         public boolean active = true;
+124:         public boolean on;
+125:         public String name = DEFAULT_NAME;
+126:         public final List<String> currencies = new ArrayList<>();
+127:         /** الربط الإلزامي: الاستلام والتسليم لحساب مكتب فقط. */
+128:         public boolean strict;
+129:         /** مع الربط الإلزامي: هل تُسمح المصاريف وصرف العملات (لا تخص مكتبًا)؟ */
+130:         public boolean allowInternal = true;
+131:         public final List<String> expenseCats = new ArrayList<>(Arrays.asList(EXPENSE_CATS));
+132:         public final List<String> inCats = new ArrayList<>(Arrays.asList(IN_CATS));
+133:         public final List<String> outCats = new ArrayList<>(Arrays.asList(OUT_CATS));
+134: 
+135:         public static List<String> list(String s) {
+136:             List<String> out = new ArrayList<>();
+137:             if (s == null) return out;
+138:             for (String p : s.split(",")) if (!p.trim().isEmpty() && !out.contains(p.trim())) out.add(p.trim());
+139:             return out;
+140:         }
+141: 
+142:         public static String join(List<String> l) {
+143:             StringBuilder b = new StringBuilder();
+144:             for (String x : l) {
+145:                 if (b.length() > 0) b.append(',');
+146:                 b.append(x.replace(",", "،").trim());
+147:             }
+148:             return b.toString();
+149:         }
+150: 
+151:         /** البنود الإضافية التي يكتبها المستخدم تُضاف قبل «أخرى». */
+152:         static void addExtra(List<String> base, String extra) {
+153:             for (String x : list(extra)) {
+154:                 if (base.contains(x)) continue;
+155:                 int at = base.indexOf("أخرى");
+156:                 if (at < 0) base.add(x);
+157:                 else base.add(at, x);
+158:             }
+159:         }
+160: 
+161:         public static Config from(Map<String, String> settings) {
+162:             Config c = new Config();
+163:             c.on = "1".equals(settings.get("cash_on"));
+164:             String n = settings.get("cash_name");

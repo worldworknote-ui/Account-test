@@ -1,0 +1,179 @@
+1: package android.widget;
+2: 
+3: import android.graphics.*;
+4: import android.text.*;
+5: import android.text.style.*;
+6: import java.awt.Font;
+7: import java.awt.font.*;
+8: import java.text.AttributedCharacterIterator;
+9: import java.text.AttributedString;
+10: import java.util.ArrayList;
+11: import java.util.List;
+12: 
+13: /**
+14:  * تخطيط النص كما في StaticLayout في أندرويد: فقرات وأسطر ملفوفة بعرض محدد، اتجاه كل فقرة من أول حرف قوي، خط بديل
+15:  * للرموز، الألوان والعريض والحجم من التنسيقات، وقطع بـ«…» عند تجاوز عدد الأسطر.
+16:  */
+17: public final class TextLines {
+18:     static final FontRenderContext FRC = new FontRenderContext(null, true, true);
+19:     /** طريقة تحديد الاتجاه: 0 أول حرف قوي، 1 أي حرف عربي، 2 يسار دائمًا، 3 يمين دائمًا. */
+20:     public static final int DIR_FIRST = 0, DIR_ANY_RTL = 1, DIR_LTR = 2, DIR_RTL = 3;
+21: 
+22:     static final class Line {
+23:         TextLayout tl;
+24:         int start, end;
+25:         boolean rtl, ellipsized;
+26:         float adv, vis, ascent, descent, top, height;
+27:     }
+28: 
+29:     final List<Line> lines = new ArrayList<>();
+30:     float height, maxWidth;
+31:     float lineAscent, lineDescent;
+32: 
+33:     public int count() { return lines.size(); }
+34:     public float height() { return height; }
+35:     public float maxWidth() { return maxWidth; }
+36:     public float lineWidth(int i) { return lines.get(i).vis; }
+37:     public float lineTop(int i) { return lines.get(i).top; }
+38:     public float lineHeight(int i) { return lines.get(i).height; }
+39:     public float lineAscent(int i) { return lines.get(i).ascent; }
+40:     public int lineStart(int i) { return lines.get(i).start; }
+41:     public int lineEnd(int i) { return lines.get(i).end; }
+42:     public boolean lineRtl(int i) { return lines.get(i).rtl; }
+43:     public boolean ellipsized(int i) { return lines.get(i).ellipsized; }
+44:     /** أول خط أساس (لمحاذاة الأسطر في الصف). */
+45:     public float firstBaseline() { return lines.isEmpty() ? lineAscent : lines.get(0).top + lines.get(0).ascent; }
+46: 
+47:     public static TextLines build(CharSequence text, Paint p, int width, float mult, float add, boolean rtlDefault, int maxLines, TextUtils.TruncateAt ell) {
+48:         Spec s = new Spec();
+49:         s.paint = p; s.width = width; s.mult = mult; s.add = add; s.dirMode = rtlDefault ? DIR_FIRST : DIR_FIRST; s.rtlFallback = rtlDefault;
+50:         s.maxLines = maxLines; s.ell = ell; s.includePad = true;
+51:         return build(text, s);
+52:     }
+53: 
+54:     public static final class Spec {
+55:         public Paint paint;
+56:         public int width = -1;
+57:         public float mult = 1f, add = 0f;
+58:         public int dirMode = DIR_FIRST;
+59:         public boolean rtlFallback = true;
+60:         public int maxLines = Integer.MAX_VALUE;
+61:         public TextUtils.TruncateAt ell;
+62:         public boolean singleLine, includePad = true, allCaps;
+63:         public float density = 1f;
+64:     }
+65: 
+66:     public static TextLines build(CharSequence text, Spec sp) {
+67:         TextLines r = new TextLines();
+68:         Paint p = sp.paint;
+69:         Typeface tf = p.getTypeface() == null ? Typeface.DEFAULT : p.getTypeface();
+70:         boolean bold = tf.isBold() || (p.getFlags() & Paint.FAKE_BOLD_TEXT_FLAG) != 0;
+71:         Font base = Typeface.base(tf.familyName(), bold), baseBold = Typeface.base(tf.familyName(), true), baseReg = Typeface.base(tf.familyName(), false);
+72:         float size = p.getTextSize();
+73:         Font sized = base.deriveFont(size);
+74:         LineMetrics lm = sized.getLineMetrics("أAg", FRC);
+75:         float asc = lm.getAscent(), desc = lm.getDescent();
+76:         java.awt.geom.Rectangle2D mb = sized.getMaxCharBounds(FRC);
+77:         float top = Math.max(asc, (float) -mb.getY()), bottom = Math.max(desc, (float) mb.getMaxY());
+78:         // حدود معقولة: بعض الخطوط ترجع حدودًا مبالغًا فيها
+79:         top = Math.min(top, asc * 1.35f);
+80:         bottom = Math.min(bottom, desc * 1.6f + size * 0.05f);
+81:         r.lineAscent = asc;
+82:         r.lineDescent = desc;
+83:         String all = text == null ? "" : text.toString();
+84:         if (sp.allCaps) all = all.toUpperCase();
+85:         all = all.replace('\t', ' ');
+86:         if (sp.singleLine) all = all.replace('\n', ' ');
+87:         Spanned spans = text instanceof Spanned ? (Spanned) text : null;
+88:         int maxLines = sp.maxLines <= 0 ? Integer.MAX_VALUE : sp.maxLines;
+89:         float width = sp.width > 0 ? sp.width : Float.MAX_VALUE;
+90:         boolean wrap = sp.width > 0 && !sp.singleLine;
+91:         float y = 0;
+92:         int pos = 0;
+93:         boolean stop = false;
+94:         String[] paras = all.split("\n", -1);
+95:         for (int pi = 0; pi < paras.length && !stop; pi++) {
+96:             String para = paras[pi];
+97:             int pStart = pos;
+98:             pos += para.length() + 1;
+99:             boolean rtl = dir(para, sp);
+100:             if (para.isEmpty()) {
+101:                 Line l = new Line();
+102:                 l.start = pStart; l.end = pStart; l.rtl = rtl; l.ascent = asc; l.descent = desc;
+103:                 r.lines.add(l);
+104:                 if (r.lines.size() >= maxLines && pi < paras.length - 1) { stop = true; }
+105:                 continue;
+106:             }
+107:             AttributedString as = attributed(para, pStart, spans, p, base, baseBold, baseReg, size, bold, rtl, sp.density);
+108:             if (!wrap) {
+109:                 TextLayout t = new TextLayout(as.getIterator(), FRC);
+110:                 Line l = line(t, pStart, pStart + para.length(), rtl, asc, desc);
+111:                 if (l.vis > width + 1.5f && sp.ell != null && sp.ell != TextUtils.TruncateAt.MARQUEE) {
+112:                     l = ellipsize(para, pStart, 0, spans, p, base, baseBold, baseReg, size, bold, rtl, width, asc, desc, sp.density);
+113:                 }
+114:                 r.lines.add(l);
+115:                 if (r.lines.size() >= maxLines && pi < paras.length - 1) { mark(r, para, pStart, spans, p, base, baseBold, baseReg, size, bold, rtl, width, asc, desc, sp, true); stop = true; }
+116:                 continue;
+117:             }
+118:             AttributedCharacterIterator it = as.getIterator();
+119:             LineBreakMeasurer m = new LineBreakMeasurer(it, FRC);
+120:             int end = it.getEndIndex();
+121:             while (m.getPosition() < end) {
+122:                 int st = m.getPosition();
+123:                 TextLayout t = m.nextLayout(width + 1.5f);
+124:                 if (t == null) break;
+125:                 int en = m.getPosition();
+126:                 if (r.lines.size() + 1 >= maxLines && (en < end || pi < paras.length - 1)) {
+127:                     // آخر سطر مسموح والنص لم ينته: «…» إن طُلب، وإلا يُقطع
+128:                     Line l;
+129:                     if (sp.ell != null && sp.ell != TextUtils.TruncateAt.MARQUEE) l = ellipsize(para, pStart, st, spans, p, base, baseBold, baseReg, size, bold, rtl, width, asc, desc, sp.density);
+130:                     else l = line(t, pStart + st, pStart + en, rtl, asc, desc);
+131:                     r.lines.add(l);
+132:                     stop = true;
+133:                     break;
+134:                 }
+135:                 r.lines.add(line(t, pStart + st, pStart + en, rtl, asc, desc));
+136:             }
+137:         }
+138:         // الارتفاعات
+139:         int n = r.lines.size();
+140:         for (int i = 0; i < n; i++) {
+141:             Line l = r.lines.get(i);
+142:             float a = l.ascent, d = l.descent;
+143:             if (sp.includePad && i == 0) a = Math.max(a, top * (l.ascent / asc));
+144:             if (sp.includePad && i == n - 1) d = Math.max(d, bottom * (l.descent / desc));
+145:             float h = a + d;
+146:             if (i < n - 1) h = h * sp.mult + sp.add;
+147:             l.top = y;
+148:             l.ascent = a;
+149:             l.height = h;
+150:             y += h;
+151:             r.maxWidth = Math.max(r.maxWidth, l.vis);
+152:         }
+153:         r.height = y;
+154:         return r;
+155:     }
+156: 
+157:     private static void mark(TextLines r, String para, int pStart, Spanned spans, Paint p, Font base, Font bb, Font br, float size, boolean bold, boolean rtl, float width, float asc, float desc, Spec sp, boolean more) {
+158:         if (sp.ell == null || sp.ell == TextUtils.TruncateAt.MARQUEE) return;
+159:         r.lines.set(r.lines.size() - 1, ellipsize(para + " ", pStart, 0, spans, p, base, bb, br, size, bold, rtl, Math.min(width, r.lines.get(r.lines.size() - 1).adv), asc, desc, sp.density));
+160:     }
+161: 
+162:     private static boolean dir(String s, Spec sp) {
+163:         switch (sp.dirMode) {
+164:             case DIR_LTR: return false;
+165:             case DIR_RTL: return true;
+166:             case DIR_ANY_RTL:
+167:                 for (int i = 0; i < s.length(); i++) { byte d = Character.getDirectionality(s.charAt(i)); if (d == 1 || d == 2) return true; }
+168:                 return sp.rtlFallback && !hasStrongLtr(s) ? sp.rtlFallback : false;
+169:             default:
+170:                 for (int i = 0; i < s.length(); i++) {
+171:                     byte d = Character.getDirectionality(s.charAt(i));
+172:                     if (d == 1 || d == 2) return true;
+173:                     if (d == 0) return false;
+174:                 }
+175:                 return sp.rtlFallback;
+176:         }
+177:     }
+178:     private static boolean hasStrongLtr(String s) { for (int i = 0; i < s.length(); i++) if (Character.getDirectionality(s.charAt(i)) == 0) return true; return false; }
+179: 

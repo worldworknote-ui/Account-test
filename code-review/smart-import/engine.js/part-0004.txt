@@ -1,0 +1,178 @@
+526:       return true;
+527:     });
+528:     return out;
+529:   }
+530: 
+531:   function classify(t) {
+532:     var r = t.roles;
+533:     var hasMoney = r.amount !== undefined || (r.debit !== undefined && r.credit !== undefined) || !!r.wide;
+534:     var dataRows = t.last - t.first + 1;
+535:     t.kind = "other";
+536:     if (r.wide && r.date === undefined && r.account !== undefined) t.kind = "balances";
+537:     else if (r.wide) t.kind = "other";
+538:     else if (hasMoney && (r.direction !== undefined || r.debit !== undefined) && r.date !== undefined) t.kind = "journal";
+539:     else if (hasMoney && r.date !== undefined) t.kind = "journal";
+540:     else if (hasMoney && r.date === undefined && r.account !== undefined) t.kind = "balances";
+541:     else if (dataRows > 0 && dataRows <= 40 && t.cols.some(function (x) { return x.p.ratio(x.p.cur) >= 0.6 || x.p.ratio(x.p.dir) >= 0.6; })) t.kind = "lookup";
+542:     // حساب من اسم الورقة (دفتر بورقة لكل مكتب) أو من اسم الملف (ملف لكل مكتب)؛ عملة مكتوبة في الاسم تُفصل عنه
+543:     t.fromSheet = splitCur(clean(t.sheet));
+544:     t.fromFile = splitCur(baseName(t.bookName));
+545:     t.accountFrom = r.account !== undefined ? "column" : null;
+546:     t.sheetAccount = "";
+547:     t.sheetCurrency = null;
+548:     if (t.kind === "journal" && r.account === undefined) {
+549:       var src = !GENERIC_SHEET.test(clean(t.sheet)) ? "sheet" : (t.multiBook && !GENERIC_SHEET.test(baseName(t.bookName)) ? "file" : null);
+550:       if (src) {
+551:         var nm = src === "sheet" ? t.fromSheet : t.fromFile;
+552:         t.accountFrom = src;
+553:         t.sheetAccount = nm.name;
+554:         if (r.currency === undefined) t.sheetCurrency = nm.code;
+555:       }
+556:     }
+557:     t.accountFromSheet = t.accountFrom === "sheet" || t.accountFrom === "file";
+558:     if (t.kind === "journal" && !t.accountFrom) t.kind = "journal-noaccount";
+559:     // الاتجاه بلا عمود: مبلغ موجب/سالب
+560:     t.signed = (t.kind === "journal" || t.kind === "balances" || t.kind === "journal-noaccount") && r.direction === undefined && r.debit === undefined && !r.wide;
+561:     t.use = t.kind === "journal" || t.kind === "balances";
+562:     // سجل بلا اتجاه ومبالغه كلها موجبة: لا يُعرف أهي لنا أم علينا، فلا يُنقل تلقائيًا
+563:     t.unsure = null;
+564:     if (t.signed && t.kind === "journal") {
+565:       var am = t.cols.filter(function (x) { return x.c === r.amount; })[0];
+566:       if (am && am.p.neg === 0) { t.unsure = "allPositive"; t.use = false; }
+567:     }
+568:   }
+569: 
+570:   /** نسبة خلايا المبالغ المحسوبة بمعادلة في جدول. */
+571:   function formulaShare(ws, t) {
+572:     var r = t.roles, cols = [r.amount, r.debit, r.credit].filter(function (x) { return x !== undefined; });
+573:     (r.wide || []).forEach(function (w) { cols.push(w.c); });
+574:     var n = 0, f = 0;
+575:     for (var row = t.first; row <= t.last; row++) {
+576:       cols.forEach(function (c) {
+577:         var cell = ws[colName(c) + (row + 1)];
+578:         if (!cell || cell.v === undefined || cell.v === "") return;
+579:         n++;
+580:         if (cell.f) f++;
+581:       });
+582:     }
+583:     return n ? f / n : 0;
+584:   }
+585: 
+586:   /** بعد تعديل المستخدم لأدوار الأعمدة: تُعاد ملاحظات الأعمدة والتصنيف، وتبقى النسخة المشتقة مشتقة والملخص ملخصًا. */
+587:   function reclassify(t) {
+588:     var derived = t.kind === "derived", summary = t.kind === "summary";
+589:     var used = {};
+590:     Object.keys(t.roles).forEach(function (k) {
+591:       if (k === "notes") return;
+592:       if (k === "wide") (t.roles.wide || []).forEach(function (w) { used[w.c] = true; });
+593:       else if (t.roles[k] !== undefined) used[t.roles[k]] = true;
+594:     });
+595:     t.roles.notes = [];
+596:     for (var c = t.c0; c <= t.c1; c++) if (!used[c]) t.roles.notes.push(c);
+597:     classify(t);
+598:     if (derived) { t.kind = "derived"; t.use = false; }
+599:     if (summary && t.kind === "balances") { t.kind = "summary"; t.use = false; }
+600:   }
+601: 
+602:   function describeList(l) {
+603:     var vals = [];
+604:     for (var r = l.first; r <= l.last; r++) {
+605:       var t = text((l.rows[r] || [])[l.c]);
+606:       if (t) vals.push(t);
+607:     }
+608:     // أول قيمة غالبًا عنوان («names of accounts»)
+609:     if (vals.length && /name|اسماء|أسماء|الحسابات|accounts|المكاتب/i.test(vals[0])) vals.shift();
+610:     l.values = vals;
+611:     l.use = true;
+612:   }
+613: 
+614:   /** بصمة صف حركة: تاريخ + عملة + مبلغ + اتجاه + حساب. */
+615:   function rowPrint(t, row) {
+616:     var r = t.roles;
+617:     function v(c) { if (c === undefined) return ""; var x = row[c]; if (!x) return ""; if (x.n !== undefined) return String(x.n); if (x.date) return JSON.stringify(x.date); return key(text(x)); }
+618:     return [v(r.date), v(r.currency), v(r.amount), v(r.direction), v(r.debit), v(r.credit), v(r.account)].join("¦");
+619:   }
+620: 
+621:   /** جدول أغلب صفوفه موجودة في جدول أكبر = نسخة مفلترة منه: لا يُنقل حتى لا تتكرر الحركات، ويُستخدم للتحقق. */
+622:   function markDerived(tables) {
+623:     var journals = tables.filter(function (t) { return t.kind === "journal"; });
+624:     journals.forEach(function (t) {
+625:       t.prints = {};
+626:       t.count = 0;
+627:       for (var r = t.first; r <= t.last; r++) {
+628:         var row = t.rows[r];
+629:         if (!rowSig(row).any) continue;
+630:         var p = rowPrint(t, row);
+631:         t.prints[p] = (t.prints[p] || 0) + 1;
+632:         t.count++;
+633:       }
+634:     });
+635:     journals.forEach(function (a) {
+636:       journals.forEach(function (b) {
+637:         if (a === b || a.count === 0 || a.count >= b.count || a.derivedFrom) return;
+638:         if (signatureRoles(a) !== signatureRoles(b)) return;
+639:         var hit = 0;
+640:         Object.keys(a.prints).forEach(function (p) { if (b.prints[p]) hit += Math.min(a.prints[p], b.prints[p]); });
+641:         if (hit >= a.count * 0.9) {
+642:           a.derivedFrom = b.id;
+643:           a.derivedHits = hit;
+644:           a.kind = "derived";
+645:           a.use = false;
+646:         }
+647:       });
+648:     });
+649:   }
+650: 
+651:   function signatureRoles(t) {
+652:     return ["date", "currency", "amount", "direction", "debit", "credit", "account"].map(function (k) { return t.roles[k] !== undefined ? "1" : "0"; }).join("");
+653:   }
+654: 
+655:   /** القيم التي تحتاج مطابقة: اتجاهات وعملات (مع عددها) من الجداول المستخدمة. */
+656:   function collectValues(a) {
+657:     var dirs = {}, curs = {};
+658:     a.tables.forEach(function (t) {
+659:       if (!t.use) return;
+660:       (t.roles.wide || []).forEach(function (w) { add(curs, w.h, guessCur); });
+661:       for (var r = t.first; r <= t.last; r++) {
+662:         var row = t.rows[r] || [];
+663:         if (isHeaderRepeat(t, row)) continue;
+664:         if (t.roles.direction !== undefined) add(dirs, text(row[t.roles.direction]), guessDir);
+665:         if (t.roles.currency !== undefined) add(curs, text(row[t.roles.currency]), guessCur);
+666:       }
+667:     });
+668:     // قيم من قوائم الإدخال (عملات معرّفة لم تُستخدم بعد)
+669:     a.tables.forEach(function (t) {
+670:       if (t.kind !== "lookup") return;
+671:       t.cols.forEach(function (x) { if (x.p.ratio(x.p.cur) >= 0.6) topValues(x.p, 40).forEach(function (k) { if (!curs[k]) curs[k] = { text: k, n: 0, guess: guessCur(k), listed: true }; }); });
+672:     });
+673:     function add(m, v, g) {
+674:       if (!v) return;
+675:       var k = key(v);
+676:       if (!m[k]) m[k] = { text: clean(v), n: 0, guess: g(v) };
+677:       m[k].n++;
+678:     }
+679:     return { dirs: dirs, curs: curs };
+680:   }
+681: 
+682:   // ===================================================================================
+683:   // البناء: صفوف ← مكاتب وحركات (بالقاعدة نفسها التي تحسب بها معادلات الملف)
+684:   // ===================================================================================
+685: 
+686:   function newModel() {
+687:     return { offices: [], officeIndex: {}, openings: [], txs: [], errors: [], warnings: [], skipped: [], checks: [], used: {}, rowsRead: 0, both: 0,
+688:       issues: {}, direct: {}, filledDates: 0, emptyRows: 0, perTable: {}, keyTables: {}, balanceLogs: [], balanceChecks: [], impliedOpenings: [],
+689:       lastBalance: {}, midOpenings: [], totalsSkipped: 0 };
+690:   }
+691: 
+692:   var REASONS = {
+693:     noAccount: "بلا اسم حساب", noCurrency: "بلا عملة", badCurrency: "عملة غير مطابَقة", noAmount: "بلا مبلغ", badAmount: "مبلغ غير مفهوم",
+694:     zero: "مبلغ صفر", noDir: "بلا اتجاه (لنا/علينا)", badDir: "اتجاه غير مطابَق", excludedCur: "عملة مستبعدة", excludedDir: "اتجاه مستبعد",
+695:     future: "تاريخ في المستقبل", decimals: "منازل عشرية أكثر من المسموح للعملة", filledDate: "بلا تاريخ صالح — أُخذ تاريخ الصف السابق",
+696:     badFee: "أجرة غير مفهومة"
+697:   };
+698:   function flip(d) { return d === "D" ? "C" : "D"; }
+699: 
+700:   /** «رصيد سابق» و«رصيد منقول» وما يشبهها: رصيد يسبق الحركات. */
+701:   var OPEN_RE = new RegExp(C.OPENING_RE.source + "|^(رصيد|الرصيد)\\s*(ال)?(منقول|مرحل|مدور)", "i");
+702: 
+703:   function issue(model, code, t, r, row, counted) {

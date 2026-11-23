@@ -1,0 +1,35 @@
+1: package android.animation;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.List;
+5: 
+6: /** ساعة الحركات: إطار كل 16ms على خيط الواجهة ما دامت هناك حركة جارية. */
+7: public final class Choreo {
+8:     private Choreo() {}
+9:     private static final List<ValueAnimator> active = new ArrayList<>();
+10:     private static javax.swing.Timer timer;
+11:     /** يُستدعى بعد كل إطار (لإعادة رسم النوافذ). */
+12:     public static Runnable afterFrame;
+13:     /** لتجارب اللقطات: تنهي الحركات فورًا. */
+14:     public static volatile boolean instant = Boolean.getBoolean("sa.noanim");
+15: 
+16:     static void add(ValueAnimator a) {
+17:         if (!active.contains(a)) active.add(a);
+18:         if (timer == null) {
+19:             timer = new javax.swing.Timer(15, e -> frame());
+20:             timer.setCoalesce(true);
+21:         }
+22:         if (!timer.isRunning()) timer.start();
+23:     }
+24:     static void remove(ValueAnimator a) { active.remove(a); }
+25:     public static boolean busy() { return !active.isEmpty(); }
+26: 
+27:     static void frame() {
+28:         long now = System.nanoTime();
+29:         for (ValueAnimator a : new ArrayList<>(active)) {
+30:             try { a.tick(now); } catch (Throwable t) { active.remove(a); Thread.getDefaultUncaughtExceptionHandler().uncaughtException(Thread.currentThread(), t); }
+31:         }
+32:         if (afterFrame != null) afterFrame.run();
+33:         if (active.isEmpty() && timer != null) timer.stop();
+34:     }
+35: }

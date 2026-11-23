@@ -1,0 +1,174 @@
+617:     // ===================================================================================
+618: 
+619:     /**
+620:      * 10.12: تفضيلات المظهر لكل مستخدم وحده (الشريط السفلي، الألوان، الوضع الليلي، الخط، ترتيب الرئيسية، الاهتزاز…).
+621:      * تُحفظ باسم «u<رقم المستخدم>.<المفتاح>»، فما يغيّره مستخدم لا يمسّ غيره. مستخدم لم يخصّص شيئًا يرى القيمة العامة السابقة
+622:      * (فلا يتغيّر مظهر أحد بعد التحديث، ولا ترحيل للبيانات). بلا حسابات (مستخدم واحد) تبقى القيمة العامة كما كانت.
+623:      */
+624:     public static final Set<String> PERSONAL = new HashSet<>(Arrays.asList(
+625:             "tabs", "theme_mode", "app_font", "primary_color", "accent_color", "header_color", "bg_color",
+626:             "home_order", "home_hidden", "btn_colors", "home_layout", "btn_size", "home_style", "home_widgets",
+627:             "desk_theme", "haptics", "hide_amounts", "office_sort",
+628:             // 10.13: خيارات المظهر والسلوك الجديدة، وترتيب «مكاتبي» وصفحتها
+629:             "btn_frames", "page_motion", "hold_confirm", "tab_style", "mine_order", "mine_sort", "mine_page",
+630:             // 10.15: إعدادات الشريط الزجاجي وقائمة «+»
+631:             "nav_prefs",
+632:             // 11.3: خلفية الوضع الليلي، ولون الزر المختار في الشريط السفلي، وأنماطي المحفوظة
+633:             "night_bg", "tab_tint", "design_styles",
+634:             // 11.5: فتح أو طي «آخر المكاتب» و«مكاتبي» في نافذة اختيار المكتب
+635:             "picker_open_recent", "picker_open_mine"));
+636:     /** قيمة «محذوفة» لمستخدم: تعني الافتراضي، لا الرجوع إلى القيمة العامة. */
+637:     static final String UNSET = "::default::";
+638: 
+639:     public static boolean personal(String k) {
+640:         return k != null && (PERSONAL.contains(k) || k.startsWith("hw_"));
+641:     }
+642: 
+643:     /** مفتاح التفضيل للمستخدم الحالي، أو null إن لم يكن تفضيلًا شخصيًا أو لا مستخدم داخل. */
+644:     static String userKey(String k) {
+645:         Model.User u = SmartApp.currentUser;
+646:         return u == null || !personal(k) ? null : "u" + u.id + "." + k;
+647:     }
+648: 
+649:     /** المفتاح الأصلي لمفتاح شخصي («u12.tabs» ← «tabs»)، وإلا المفتاح نفسه. */
+650:     public static String baseKey(String k) {
+651:         if (k == null || k.length() < 3 || k.charAt(0) != 'u' || !Character.isDigit(k.charAt(1))) return k;
+652:         int dot = k.indexOf('.');
+653:         if (dot < 0) return k;
+654:         for (int i = 1; i < dot; i++) if (!Character.isDigit(k.charAt(i))) return k;
+655:         return k.substring(dot + 1);
+656:     }
+657: 
+658:     public String setting(String k, String def) {
+659:         String uk = userKey(k);
+660:         if (uk != null) {
+661:             String v = rawSetting(uk);
+662:             if (v != null) return UNSET.equals(v) ? def : v;
+663:         }
+664:         String v = rawSetting(k);
+665:         return v == null ? def : v;
+666:     }
+667: 
+668:     private String rawSetting(String k) {
+669:         try (Cursor c = getReadableDatabase().rawQuery("SELECT v FROM settings WHERE k=?", new String[]{k})) {
+670:             if (!c.moveToFirst()) return null;
+671:             return c.getString(0);
+672:         }
+673:     }
+674: 
+675:     /** القيمة العامة (لا الشخصية) — للاختبارات والترحيل. */
+676:     public String globalSetting(String k, String def) {
+677:         String v = rawSetting(k);
+678:         return v == null ? def : v;
+679:     }
+680: 
+681:     public long settingLong(String k, long def) {
+682:         try {
+683:             return Long.parseLong(setting(k, "" + def).trim());
+684:         } catch (Exception e) {
+685:             return def;
+686:         }
+687:     }
+688: 
+689:     public Map<String, String> settings(String[] keys) {
+690:         Map<String, String> m = new HashMap<>();
+691:         for (String k : keys) {
+692:             String v = setting(k, null);
+693:             if (v != null) m.put(k, v);
+694:         }
+695:         return m;
+696:     }
+697: 
+698:     public void setSetting(String k, String v) {
+699:         setSettingQuiet(k, v);
+700:         audit("SETTING", "settings", 0, k);
+701:     }
+702: 
+703:     /**
+704:      * 10.18: يحمّل «توقيت المكتب» (إعداد عام يتزامن: office_tz) وفرق تصحيح الساعة المحفوظ على هذا الجهاز (clock_offset_ms)،
+705:      * ويربط حفظ الفرق عند تعلّمه. يُستدعى عند فتح القاعدة وبعد المزامنة والاستعادة وتغيير الإعداد.
+706:      */
+707:     void loadClock(SQLiteDatabase d) {
+708:         try (Cursor c = d.rawQuery("SELECT k,v FROM settings WHERE k IN ('office_tz','clock_offset_ms')", null)) {
+709:             String tz = "";
+710:             long off = 0;
+711:             while (c.moveToNext()) {
+712:                 if ("office_tz".equals(c.getString(0))) tz = Model.nz(c.getString(1));
+713:                 else try {
+714:                     off = Long.parseLong(c.getString(1));
+715:                 } catch (Exception ignored) {
+716:                     // قيمة تالفة = بلا تصحيح
+717:                 }
+718:             }
+719:             Model.setZone(tz);
+720:             if (Clock.learnedAt() == 0) Clock.load(off);
+721:         } catch (Exception ignored) {
+722:             // قاعدة قيد الإنشاء
+723:         }
+724:         Clock.saver = o -> {
+725:             try {
+726:                 getWritableDatabase().execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('clock_offset_ms',?)", new Object[]{"" + o});
+727:             } catch (Throwable ignored) {
+728:                 // يُحفظ في المرة التالية
+729:             }
+730:         };
+731:     }
+732: 
+733:     public void reloadClock() { loadClock(getReadableDatabase()); }
+734: 
+735:     /** يحدد المدير توقيت المكتب الموحّد ("" = توقيت كل جهاز كما كان). */
+736:     /**
+737:      * 10.18: حالة الساعة الموحّدة للعرض في الإعدادات: وقت المكتب الآن ومنطقته، وفرق ساعة هذا الجهاز عن الوقت الصحيح ومتى قيس.
+738:      */
+739:     public List<String> clockLines() {
+740:         List<String> l = new ArrayList<>();
+741:         l.add("وقت المكتب الآن: " + Model.date(Clock.now()) + " — " + Model.zoneLabel(Model.zoneId()));
+742:         long off = Clock.offset();
+743:         if (Clock.learnedAt() <= 0 && off == 0) l.add("ساعة هذا الجهاز: لم تُقَس بعد (تُقاس تلقائيًا عند أول مزامنة عبر Google Drive).");
+744:         else if (off == 0) l.add("ساعة هذا الجهاز: مضبوطة ✓");
+745:         else {
+746:             long sec = Math.abs(off) / 1000;
+747:             String d = sec >= 3600 ? (sec / 3600) + " ساعة و" + (sec % 3600 / 60) + " دقيقة" : sec >= 60 ? (sec / 60) + " دقيقة" : sec + " ثانية";
+748:             l.add("ساعة هذا الجهاز " + (off > 0 ? "متأخرة" : "متقدمة") + " " + d + " عن الوقت الصحيح: يصحّحها البرنامج تلقائيًا في كل ما يسجّله ويعرضه.");
+749:         }
+750:         return l;
+751:     }
+752: 
+753:     /** فرق ساعة الجهاز كبير (أكثر من دقيقتين): يُنبَّه المستخدم ليضبط ساعة جهازه، مع أن البرنامج يصحّح. */
+754:     public static boolean clockOff() { return Math.abs(Clock.offset()) > 120_000L; }
+755: 
+756:     public void setOfficeZone(String id) {
+757:         require(Auth.Perm.SETTINGS);
+758:         String v = id == null ? "" : id.trim();
+759:         if (!v.isEmpty()) {
+760:             boolean ok = false;
+761:             for (String x : java.util.TimeZone.getAvailableIDs()) if (x.equals(v)) ok = true;
+762:             if (!ok) throw new IllegalArgumentException("منطقة زمنية غير معروفة: " + v);
+763:         }
+764:         if (v.isEmpty()) deleteSetting("office_tz");
+765:         else setSetting("office_tz", v);
+766:         reloadClock();
+767:     }
+768: 
+769:     /** 10.16: إعدادات عامة حساسة لا تُكتب إلا بصلاحيتها حتى لو نسيت شاشة الفحص (الباقي كما كان). */
+770:     static final Map<String, Auth.Perm> PROTECTED_SETTINGS = new HashMap<>();
+771:     static {
+772:         PROTECTED_SETTINGS.put("lock_before", Auth.Perm.SETTINGS);
+773:         PROTECTED_SETTINGS.put("approval_on", Auth.Perm.SETTINGS);
+774:         PROTECTED_SETTINGS.put("approval_usd", Auth.Perm.SETTINGS);
+775:         PROTECTED_SETTINGS.put("office_tz", Auth.Perm.SETTINGS);
+776:     }
+777: 
+778:     public void setSettingQuiet(String k, String v) {
+779:         Auth.Perm need = PROTECTED_SETTINGS.get(k);
+780:         if (need != null) require(need);
+781:         String uk = userKey(k);
+782:         if (uk != null) k = uk;
+783:         ContentValues x = new ContentValues();
+784:         x.put("k", k);
+785:         x.put("v", v);
+786:         getWritableDatabase().insertWithOnConflict("settings", null, x, SQLiteDatabase.CONFLICT_REPLACE);
+787:     }
+788: 
+789:     /** الإقفال المحاسبي: لا تُسجَّل ولا تُعدَّل حركات قبل هذا التاريخ. للمدير وحده. */
+790:     public void setLockBefore(long until) {

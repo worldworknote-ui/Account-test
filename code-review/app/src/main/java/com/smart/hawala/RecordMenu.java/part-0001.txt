@@ -1,0 +1,59 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.List;
+5: 
+6: /**
+7:  * 10.6: أنواع الحركة في صفحة «تسجيل حركة» (مشتركة بين الهاتف والماك والويندوز): عادية، قص عملات، بين مكتبين.
+8:  * 10.7: تُختار بأزرار أعلى الصفحة فوق المكتب (أُلغيت القائمة نصف الدائرية).
+9:  * ما لا يملك المستخدم صلاحيته لا يظهر له؛ والقواعد نفسها تُفرض مرة أخرى في طبقة البيانات عند الحفظ.
+10:  */
+11: public final class RecordMenu {
+12:     private RecordMenu() {}
+13: 
+14:     public static final String TX = "tx", FX = "fx", XFER = "xfer";
+15: 
+16:     public static final class Item {
+17:         public final String key, title, label, hint;
+18: 
+19:         Item(String key, String title, String label, String hint) {
+20:             this.key = key;
+21:             this.title = title;
+22:             this.label = label;
+23:             this.hint = hint;
+24:         }
+25:     }
+26: 
+27:     /** بالترتيب من اليمين: [المفتاح، عنوان الشاشة، الاسم في القائمة، سطر توضيحي]. */
+28:     public static final Item[] ITEMS = {
+29:             new Item(TX, "تسجيل حركة جديدة", "حركة عادية", "لنا أو علينا مع مكتب"),
+30:             new Item(FX, "تسجيل حركة قص عملات", "قص عملات", "نبيع عملة ونشتري أخرى"),
+31:             new Item(XFER, "تسجيل حركة بين مكتبين", "بين مكتبين", "طالب الحركة ومنفّذها")};
+32: 
+33:     public static Item item(String key) {
+34:         for (Item i : ITEMS) if (i.key.equals(key)) return i;
+35:         return null;
+36:     }
+37: 
+38:     /** الصلاحيات اللازمة لكل خيار (القص يسجّل ساقين مرتبطتين بسعر، فيحتاج صلاحية التعديل أيضًا كما في Db.addFx). */
+39:     public static Auth.Perm[] perms(String key) {
+40:         // 12.0: صلاحيتان مستقلتان يختارهما المدير
+41:         if (FX.equals(key)) return new Auth.Perm[]{Auth.Perm.TX_ADD, Auth.Perm.FX};
+42:         if (XFER.equals(key)) return new Auth.Perm[]{Auth.Perm.TX_ADD, Auth.Perm.XFER};
+43:         return new Auth.Perm[]{Auth.Perm.TX_ADD};
+44:     }
+45: 
+46:     public interface Can { boolean can(Auth.Perm p); }
+47: 
+48:     /** الخيارات المتاحة لهذا المستخدم. */
+49:     public static List<Item> allowed(Can c) {
+50:         List<Item> out = new ArrayList<>();
+51:         for (Item i : ITEMS) {
+52:             boolean ok = true;
+53:             for (Auth.Perm p : perms(i.key)) ok &= c.can(p);
+54:             if (ok) out.add(i);
+55:         }
+56:         return out;
+57:     }
+58: 
+59: }

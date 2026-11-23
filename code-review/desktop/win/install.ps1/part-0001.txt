@@ -1,0 +1,59 @@
+1: # تثبيت «المحاسب الذكي» لمستخدم ويندوز الحالي (بلا صلاحيات مدير):
+2: # ينسخ البرنامج إلى %LOCALAPPDATA%\Programs\SmartAccountant وينشئ اختصارًا على سطح المكتب وفي قائمة ابدأ.
+3: # البيانات لا تُمس أبدًا: هي في %APPDATA%\SmartAccountant، فالتحديث بالطريقة نفسها آمن.
+4: $ErrorActionPreference = 'Stop'
+5: $src = Split-Path -Parent $MyInvocation.MyCommand.Path
+6: $dst = Join-Path $env:LOCALAPPDATA 'Programs\SmartAccountant'
+7: $name = 'المحاسب الذكي'
+8: try {
+9:     $running = Get-Process -Name 'SmartAccountant' -ErrorAction SilentlyContinue
+10:     if ($running) {
+11:         Write-Host 'Smart Accountant is running. Close it, then press Enter...'
+12:         [void](Read-Host)
+13:         Get-Process -Name 'SmartAccountant' -ErrorAction SilentlyContinue | ForEach-Object { $_.CloseMainWindow() | Out-Null }
+14:         Start-Sleep -Seconds 2
+15:     }
+16:     New-Item -ItemType Directory -Force -Path $dst | Out-Null
+17:     foreach ($d in 'app', 'runtime') {
+18:         $t = Join-Path $dst $d
+19:         if (Test-Path $t) { Remove-Item -Recurse -Force $t }
+20:         Copy-Item -Recurse -Force (Join-Path $src $d) $t
+21:     }
+22:     foreach ($f in 'SmartAccountant.exe', 'SmartAccountant.ico', 'uninstall.ps1', 'إلغاء-التثبيت.cmd') {
+23:         Copy-Item -Force (Join-Path $src $f) (Join-Path $dst $f)
+24:     }
+25:     $exe = Join-Path $dst 'SmartAccountant.exe'
+26:     $ico = Join-Path $dst 'SmartAccountant.ico'
+27:     $sh = New-Object -ComObject WScript.Shell
+28:     $menu = Join-Path ([Environment]::GetFolderPath('Programs')) ($name + '.lnk')
+29:     $desk = Join-Path ([Environment]::GetFolderPath('Desktop')) ($name + '.lnk')
+30:     # 11.0: WScript.Shell لا يحفظ اختصارًا اسمه عربي (يصير «?????» فيفشل الحفظ):
+31:     # يُحفظ باسم لاتيني مؤقت ثم يُنقل إلى الاسم العربي (النقل يدعم العربية)، وفشل اختصار لا يوقف التثبيت.
+32:     $made = 0
+33:     foreach ($p in $menu, $desk) {
+34:         try {
+35:             $tmp = Join-Path $env:TEMP ('SmartAccountant-' + [guid]::NewGuid().ToString('N') + '.lnk')
+36:             $l = $sh.CreateShortcut($tmp)
+37:             $l.TargetPath = $exe
+38:             $l.WorkingDirectory = $dst
+39:             $l.IconLocation = $ico + ',0'
+40:             $l.Description = 'Smart Accountant'
+41:             $l.Save()
+42:             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $p) | Out-Null
+43:             Move-Item -Force -LiteralPath $tmp -Destination $p
+44:             $made++
+45:         } catch {
+46:             Write-Host ('Shortcut skipped: ' + $_.Exception.Message)
+47:         }
+48:     }
+49:     Write-Host ''
+50:     Write-Host ('Installed: ' + $dst)
+51:     if ($made -gt 0) { Write-Host 'Shortcut created on the Desktop and in the Start menu.' }
+52:     else { Write-Host ('No shortcut. Run: ' + $exe) }
+53:     Start-Process -FilePath $exe -WorkingDirectory $dst
+54: } catch {
+55:     Write-Host ('Install failed: ' + $_.Exception.Message)
+56:     Write-Host 'You can run SmartAccountant.exe directly from this folder.'
+57:     [void](Read-Host 'Press Enter to close')
+58:     exit 1
+59: }

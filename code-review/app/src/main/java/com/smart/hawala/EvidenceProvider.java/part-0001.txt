@@ -1,0 +1,92 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.ContentProvider;
+4: import android.content.ContentValues;
+5: import android.database.Cursor;
+6: import android.database.MatrixCursor;
+7: import android.net.Uri;
+8: import android.os.ParcelFileDescriptor;
+9: import android.provider.OpenableColumns;
+10: import java.io.File;
+11: import java.io.FileNotFoundException;
+12: import java.io.IOException;
+13: import java.util.ArrayList;
+14: import java.util.List;
+15: import java.util.Locale;
+16: 
+17: /**
+18:  * يشارك ملفات مؤقتة (كشوفات PDF/PNG/CSV، نسخ احتياطية، وصور الكاميرا) من مجلد cache/shared فقط.
+19:  * يحترم وضع الفتح المطلوب: القراءة لا تفرّغ الملف أبدًا (الإصدار السابق كان يفتح مع MODE_TRUNCATE دائمًا للكتابة،
+20:  * والآن يُستخدم الوضع كما طلبه التطبيق الآخر بالضبط).
+21:  */
+22: public class EvidenceProvider extends ContentProvider {
+23: 
+24:     public static String authority(android.content.Context c) { return c.getPackageName() + ".files"; }
+25: 
+26:     public static Uri uriFor(android.content.Context c, File f) {
+27:         return Uri.parse("content://" + authority(c) + "/" + Uri.encode(f.getName()));
+28:     }
+29: 
+30:     @Override public boolean onCreate() { return true; }
+31: 
+32:     @Override public String getType(Uri u) {
+33:         String n = u.getLastPathSegment() == null ? "" : u.getLastPathSegment().toLowerCase(Locale.US);
+34:         if (n.endsWith(".pdf")) return "application/pdf";
+35:         if (n.endsWith(".png")) return "image/png";
+36:         if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
+37:         if (n.endsWith(".csv")) return "text/csv";
+38:         return "application/octet-stream";
+39:     }
+40: 
+41:     @Override public int delete(Uri u, String s, String[] a) { return 0; }
+42: 
+43:     @Override public int update(Uri u, ContentValues v, String s, String[] a) { return 0; }
+44: 
+45:     @Override public Uri insert(Uri u, ContentValues v) { return null; }
+46: 
+47:     private File fileFor(Uri u) throws FileNotFoundException {
+48:         String name = u.getLastPathSegment();
+49:         if (name == null || name.isEmpty()) throw new FileNotFoundException("اسم ملف غير صالح");
+50:         File dir = new File(getContext().getCacheDir(), "shared");
+51:         File f = new File(dir, name);
+52:         try {
+53:             if (!f.getCanonicalPath().startsWith(dir.getCanonicalPath() + File.separator)) {
+54:                 throw new FileNotFoundException("مسار غير مسموح");
+55:             }
+56:         } catch (IOException e) {
+57:             throw new FileNotFoundException("مسار غير صالح");
+58:         }
+59:         return f;
+60:     }
+61: 
+62:     @Override
+63:     public Cursor query(Uri u, String[] projection, String s, String[] a, String so) {
+64:         String[] cols = projection == null ? new String[]{OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE} : projection;
+65:         List<String> keep = new ArrayList<>();
+66:         for (String c : cols) if (OpenableColumns.DISPLAY_NAME.equals(c) || OpenableColumns.SIZE.equals(c)) keep.add(c);
+67:         MatrixCursor c = new MatrixCursor(keep.toArray(new String[0]));
+68:         try {
+69:             File f = fileFor(u);
+70:             Object[] row = new Object[keep.size()];
+71:             for (int i = 0; i < keep.size(); i++) row[i] = OpenableColumns.DISPLAY_NAME.equals(keep.get(i)) ? f.getName() : f.length();
+72:             c.addRow(row);
+73:         } catch (FileNotFoundException ignored) {
+74:             // مؤشر فارغ
+75:         }
+76:         return c;
+77:     }
+78: 
+79:     @Override
+80:     public ParcelFileDescriptor openFile(Uri u, String mode) throws FileNotFoundException {
+81:         File f = fileFor(u);
+82:         int m = ParcelFileDescriptor.parseMode(mode);
+83:         boolean writes = (m & ParcelFileDescriptor.MODE_WRITE_ONLY) != 0 || (m & ParcelFileDescriptor.MODE_READ_WRITE) == ParcelFileDescriptor.MODE_READ_WRITE;
+84:         if (writes) {
+85:             File parent = f.getParentFile();
+86:             if (parent != null) parent.mkdirs();
+87:         } else if (!f.exists()) {
+88:             throw new FileNotFoundException("الملف غير موجود");
+89:         }
+90:         return ParcelFileDescriptor.open(f, m);
+91:     }
+92: }

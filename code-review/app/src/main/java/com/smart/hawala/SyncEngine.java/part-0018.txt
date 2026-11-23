@@ -1,0 +1,166 @@
+2634:             for (int i = 0; a != null && i < a.length(); i++) out.add(a.getJSONObject(i));
+2635:         } catch (Exception ignored) {
+2636:             // فارغ
+2637:         }
+2638:         return out;
+2639:     }
+2640: 
+2641:     /** 11.5: مسح سجل جهاز واحد (أو كل السجلات بما فيها «آخر الجولات» إن كان dev فارغًا) على هذا الجهاز فقط. */
+2642:     public static void clearDevLog(Db db, String dev) {
+2643:         SQLiteDatabase d = db.getWritableDatabase();
+2644:         try {
+2645:             if (dev == null || dev.isEmpty()) {
+2646:                 SyncStore.setMeta(d, "devlog", null);
+2647:                 SyncStore.setMeta(d, "log", null);
+2648:                 return;
+2649:             }
+2650:             String s = SyncStore.meta(d, "devlog");
+2651:             JSONObject all = new JSONObject(s == null ? "{}" : s);
+2652:             all.remove(dev);
+2653:             SyncStore.setMeta(d, "devlog", all.toString());
+2654:         } catch (Exception ignored) {
+2655:             // للعرض فقط
+2656:         }
+2657:     }
+2658: 
+2659:     static void log(SQLiteDatabase d, String text, String err) {
+2660:         try {
+2661:             String old = SyncStore.meta(d, "log");
+2662:             JSONArray a = new JSONArray(old == null ? "[]" : old), out = new JSONArray();
+2663:             JSONObject x = new JSONObject();
+2664:             x.put("at", Clock.now());
+2665:             x.put("t", text);
+2666:             if (err != null && !err.isEmpty()) x.put("e", err);
+2667:             out.put(x);
+2668:             for (int i = 0; i < a.length() && out.length() < 15; i++) out.put(a.get(i));
+2669:             SyncStore.setMeta(d, "log", out.toString());
+2670:         } catch (Exception ignored) {
+2671:             // السجل للعرض فقط
+2672:         }
+2673:     }
+2674: 
+2675:     public static List<JSONObject> history(Db db) {
+2676:         List<JSONObject> out = new ArrayList<>();
+2677:         try {
+2678:             String s = SyncStore.meta(db.getReadableDatabase(), "log");
+2679:             JSONArray a = new JSONArray(s == null ? "[]" : s);
+2680:             for (int i = 0; i < a.length(); i++) out.add(a.getJSONObject(i));
+2681:         } catch (Exception ignored) {
+2682:             // فارغ
+2683:         }
+2684:         return out;
+2685:     }
+2686: 
+2687:     /** 10.16: ساعة جهاز تسبق ساعتنا بأكثر من هذا = تحذير (ترتيب «الأحدث يفوز» يعتمد على الساعات). */
+2688:     static final long CLOCK_SKEW_MS = 10L * 60 * 1000;
+2689: 
+2690:     /**
+2691:      * يحفظ قائمة الأعضاء للواجهة. 10.16: ويقارنها بالقائمة السابقة: جهاز جديد دخل، أو جهاز خرج/أُزيل = تنبيه يُحفظ للمراجعة
+2692:      * (يظهر في الرئيسية وشاشة المزامنة) ونص يرجع للإشعار. أول قائمة بعد الانضمام لا تُعد أخبارًا.
+2693:      */
+2694:     List<String> cacheMembers() throws Exception {
+2695:         List<String> news = new ArrayList<>();
+2696:         SQLiteDatabase d = db.getWritableDatabase();
+2697:         String me = nz(SyncStore.meta(d, "device")), prevJson = SyncStore.meta(d, "members_cache");
+2698:         Map<String, String> prev = new TreeMap<>();
+2699:         try {
+2700:             JSONArray pa = new JSONArray(prevJson == null ? "[]" : prevJson);
+2701:             for (int i = 0; i < pa.length(); i++) prev.put(pa.getJSONObject(i).optString("dev"), pa.getJSONObject(i).optString("name"));
+2702:         } catch (Exception ignored) {
+2703:             // قائمة تالفة = بلا مقارنة
+2704:         }
+2705:         JSONArray a = new JSONArray();
+2706:         Map<String, String> cur = new TreeMap<>();
+2707:         long now = Clock.now();
+2708:         String ahead = "";
+2709:         Map<String, JSONObject> live = readMembers(keys());
+2710:         // 10.18: الجهاز لا يخرج من المزامنة إلا بإزالة مسجَّلة (المدير أزاله أو أعاد تعيين برنامجه). بطاقة غابت عن هذه الجولة
+2711:         // (تُستبدل الآن، أو تأخر وصولها) لا تعني خروجه: يبقى في القائمة كما كان ولا يُنبَّه أحد بخروجه
+2712:         Map<String, JSONObject> gone = removedMap();
+2713:         try {
+2714:             JSONArray pa = new JSONArray(prevJson == null ? "[]" : prevJson);
+2715:             for (int i = 0; i < pa.length(); i++) {
+2716:                 JSONObject x = pa.getJSONObject(i);
+2717:                 String dv = x.optString("dev");
+2718:                 if (dv.isEmpty() || dv.equals(me) || live.containsKey(dv) || gone.containsKey(dv)) continue;
+2719:                 a.put(x);
+2720:                 cur.put(dv, x.optString("name"));
+2721:             }
+2722:         } catch (Exception ignored) {
+2723:             // قائمة تالفة = بلا ترحيل
+2724:         }
+2725:         for (JSONObject m : live.values()) {
+2726:             JSONObject x = new JSONObject();
+2727:             x.put("dev", m.optString("dev"));
+2728:             x.put("name", m.optString("name"));
+2729:             x.put("platform", m.optString("platform"));
+2730:             x.put("app", m.optString("app"));
+2731:             x.put("seq", m.optLong("seq"));
+2732:             x.put("at", m.optLong("at"));
+2733:             x.put("prefix", m.optLong("prefix"));
+2734:             a.put(x);
+2735:             cur.put(m.optString("dev"), m.optString("name"));
+2736:             if (!m.optString("dev").equals(me) && m.optLong("at") - now > CLOCK_SKEW_MS) ahead = m.optString("name");
+2737:         }
+2738:         SyncStore.setMeta(d, "members_cache", a.toString());
+2739:         // ساعة جهاز آخر تسبق ساعتنا كثيرًا: إحدى الساعتين خطأ، والتعديل «الأحدث» قد يُحسم خطأ
+2740:         String warn = ahead.isEmpty() ? null : "ساعة الجهاز «" + ahead + "» تسبق ساعة هذا الجهاز بأكثر من 10 دقائق. اضبط الوقت والتاريخ على الجهازين "
+2741:                 + "(تلقائي من الشبكة)؛ ترتيب التعديلات بين الأجهزة يعتمد على الساعة.";
+2742:         if (warn != null && !warn.equals(SyncStore.meta(d, "clock_warn"))) {
+2743:             SyncStore.conflict(d, "CLOCK", "sync", ahead + "@" + (now / 86_400_000L), warn, "");
+2744:             news.add(warn);
+2745:         }
+2746:         SyncStore.setMeta(d, "clock_warn", warn);
+2747:         if (prevJson == null || prev.isEmpty()) return news;
+2748:         Map<String, JSONObject> removed = removedMap();
+2749:         for (Map.Entry<String, String> e : cur.entrySet()) {
+2750:             if (prev.containsKey(e.getKey()) || e.getKey().equals(me)) continue;
+2751:             String t = "دخل الجهاز «" + e.getValue() + "» إلى المزامنة. إن لم تكن تعرفه فأزله من «المزامنة ← الأجهزة» وغيّر كلمة سر المزامنة.";
+2752:             SyncStore.conflict(d, "DEVICE_JOINED", "sync", e.getKey() + "@" + now, t, e.getKey());
+2753:             news.add(t);
+2754:         }
+2755:         for (Map.Entry<String, String> e : prev.entrySet()) {
+2756:             if (cur.containsKey(e.getKey()) || e.getKey().equals(me)) continue;
+2757:             JSONObject x = removed.get(e.getKey());
+2758:             String by = x == null ? "" : x.optString("by");
+2759:             String t = "خرج الجهاز «" + e.getValue() + "» من المزامنة" + (by.isEmpty() ? "." : " (" + (by.startsWith("إعادة") ? by : "أزاله: " + by) + ").");
+2760:             SyncStore.conflict(d, "DEVICE_GONE", "sync", e.getKey() + "@" + now, t, e.getKey());
+2761:             news.add(t);
+2762:         }
+2763:         return news;
+2764:     }
+2765: 
+2766:     /**
+2767:      * الأجهزة التي استلمت الحزم نفسها تمامًا يجب أن تتطابق بصمة دفترها؛ إن اختلفت فشيء غير متوقع حدث: تنبيه ظاهر
+2768:      * (لا تُخفى المشكلة). يرجع نص التنبيه أو فارغًا.
+2769:      */
+2770:     String compareDigests() throws Exception {
+2771:         SQLiteDatabase d = db.getReadableDatabase();
+2772:         String me = SyncStore.meta(d, "device");
+2773:         Map<String, Long> mine = SyncStore.cursors(d);
+2774:         mine.put(me, lng(SyncStore.meta(d, "my_seq")));
+2775:         String myDigest = SyncStore.digest(d);
+2776:         for (JSONObject m : readMembers(keys()).values()) {
+2777:             String dev = m.optString("dev");
+2778:             if (dev.equals(me)) continue;
+2779:             Map<String, Long> theirs = new TreeMap<>();
+2780:             JSONObject c = m.optJSONObject("cursors");
+2781:             if (c != null) {
+2782:                 Iterator<String> it = c.keys();
+2783:                 while (it.hasNext()) {
+2784:                     String x = it.next();
+2785:                     theirs.put(x, c.optLong(x));
+2786:                 }
+2787:             }
+2788:             theirs.put(dev, m.optLong("seq"));
+2789:             if (!same(mine, theirs)) continue;
+2790:             if (!myDigest.equals(m.optString("digest")))
+2791:                 return "دفتر هذا الجهاز لا يطابق دفتر «" + m.optString("name") + "» رغم استلامهما الحزم نفسها. لا تسجّل حركات كبيرة قبل مراجعة «فحص الصحة» على الجهازين.";
+2792:         }
+2793:         return "";
+2794:     }
+2795: 
+2796:     static boolean same(Map<String, Long> a, Map<String, Long> b) {
+2797:         Set<String> keys = new HashSet<>(a.keySet());
+2798:         keys.addAll(b.keySet());
+2799:         for (String k : keys) {

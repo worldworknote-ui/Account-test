@@ -1,0 +1,154 @@
+4400:     public void releaseHold(String uuid) {
+4401:         require(Auth.Perm.HOLDS);   // 12.0
+4402:         SQLiteDatabase d = getWritableDatabase();
+4403:         d.beginTransaction();
+4404:         try {
+4405:             long office = 0;
+4406:             try (Cursor c = d.rawQuery("SELECT office_id,released_at FROM office_holds WHERE uuid=?", new String[]{uuid})) {
+4407:                 if (!c.moveToFirst()) throw new IllegalArgumentException("غير موجود");
+4408:                 if (!c.isNull(1)) throw new IllegalStateException("فُكّ من قبل");
+4409:                 office = c.getLong(0);
+4410:             }
+4411:             ContentValues v = new ContentValues();
+4412:             v.put("released_at", Clock.now());
+4413:             v.put("released_by", Crypto.enc(currentUserName));
+4414:             d.update("office_holds", v, "uuid=?", new String[]{uuid});
+4415:             audit(d, "HOLD_RELEASE", "office", office, "");
+4416:             d.setTransactionSuccessful();
+4417:         } finally {
+4418:             d.endTransaction();
+4419:         }
+4420:     }
+4421: 
+4422:     /** أمانات ومجمّدات مكتب (officeId = null لكل المكاتب)، الأحدث أولًا. */
+4423:     public List<Hold> holds(Long officeId, boolean openOnly) {
+4424:         List<Hold> out = new ArrayList<>();
+4425:         try (Cursor c = getReadableDatabase().rawQuery("SELECT uuid,office_id,currency,amount_minor,kind,side,note,created_at,user_name,released_at,released_by,to_tx FROM office_holds WHERE 1=1"
+4426:                 + (officeId == null ? "" : " AND office_id=" + officeId.longValue()) + (openOnly ? " AND released_at IS NULL" : "") + " ORDER BY created_at DESC", null)) {
+4427:             while (c.moveToNext()) out.add(readHold(c));
+4428:         }
+4429:         return out;
+4430:     }
+4431: 
+4432:     /** 10.18: يضيف إلى تقرير الأرصدة قسم «الأمانات والمبالغ المجمّدة القائمة» لكل المكاتب (إن وُجدت)، فيظهر على الشاشة وفي التصدير. */
+4433:     public Report withHolds(Report r) {
+4434:         List<Hold> open = holds(null, true);
+4435:         if (open.isEmpty()) return r;
+4436:         Map<Long, String> names = new HashMap<>();
+4437:         for (Model.Office o : offices()) names.put(o.id, o.name);
+4438:         Report.Section s = r.section("الأمانات والمبالغ المجمّدة القائمة", "الأمانات");
+4439:         s.note = "الأمانة المنفصلة خارج الرصيد. المجمّد جزء من الرصيد معلَّم فلا يُحسب متاحًا.";
+4440:         s.col("المكتب", 2f, Report.TEXT).col("النوع", 1.6f, Report.TEXT).col("المبلغ", 1.3f, Report.MONEY).col("العملة", 0.8f, Report.TEXT).col("منذ", 1.2f, Report.TEXT)
+4441:                 .col("أضافه", 1f, Report.TEXT).col("ملاحظة", 1.8f, Report.TEXT);
+4442:         for (Hold h : open)
+4443:             s.row(Report.NORMAL, Model.nz(names.get(h.officeId)), h.label(), new Report.Money(h.amount, decimals(h.currency)), h.currency, Model.day(h.at), h.by, h.note);
+4444:         return r;
+4445:     }
+4446: 
+4447:     /** لكل عملة: {أمانة لنا عندهم، أمانة لهم عندنا، مجمّد من لنا، مجمّد من علينا} للمفتوح فقط. */
+4448:     public Map<String, long[]> holdTotals(long officeId) {
+4449:         Map<String, long[]> m = new TreeMap<>();
+4450:         for (Hold h : holds(officeId, true)) {
+4451:             long[] x = m.get(h.currency);
+4452:             if (x == null) m.put(h.currency, x = new long[4]);
+4453:             x[(HOLD_TRUST.equals(h.kind) ? 0 : 2) + (SIDE_OURS.equals(h.side) ? 0 : 1)] += h.amount;
+4454:         }
+4455:         return m;
+4456:     }
+4457: 
+4458:     /** أسطر جاهزة للعرض تحت رصيد المكتب وفي رسالة المطابقة: «USD: منه مجمّد 500 • المتاح 1,500» و«أمانة للمكتب عندنا: 200 USD». */
+4459:     public List<String> holdLines(long officeId) {
+4460:         List<String> out = new ArrayList<>();
+4461:         Map<String, Long> bal = balances(officeId);
+4462:         for (Map.Entry<String, long[]> e : holdTotals(officeId).entrySet()) {
+4463:             int dc = decimals(e.getKey());
+4464:             long[] x = e.getValue();
+4465:             long b = bal.get(e.getKey()) == null ? 0 : bal.get(e.getKey());
+4466:             if (x[2] > 0) out.add(e.getKey() + ": من «لنا» مجمّد " + Model.fmt(x[2], dc) + " • المتاح " + Model.fmt(Math.max(0, b) - x[2], dc));
+4467:             if (x[3] > 0) out.add(e.getKey() + ": من «علينا» مجمّد " + Model.fmt(x[3], dc) + " • المتاح " + Model.fmt(Math.max(0, -b) - x[3], dc));
+4468:             if (x[0] > 0) out.add("أمانة لنا عند المكتب: " + Model.fmt(x[0], dc) + " " + e.getKey());
+4469:             if (x[1] > 0) out.add("أمانة للمكتب عندنا: " + Model.fmt(x[1], dc) + " " + e.getKey());
+4470:         }
+4471:         return out;
+4472:     }
+4473: 
+4474:     // ===================================================================================
+4475:     // 10.18: سجل الإشعارات (على هذا الجهاز): كل إشعار يُحفظ هنا فلا يضيع بالضغط عليه
+4476:     // ===================================================================================
+4477: 
+4478:     public void logNotif(String title, String body) {
+4479:         try {
+4480:             SQLiteDatabase d = getWritableDatabase();
+4481:             d.execSQL("INSERT INTO notif_log(at,title,body) VALUES(?,?,?)", new Object[]{Clock.now(), Model.nz(title), Crypto.enc(Model.nz(body))});
+4482:             d.execSQL("DELETE FROM notif_log WHERE id NOT IN (SELECT id FROM notif_log ORDER BY id DESC LIMIT 1000)");
+4483:         } catch (Throwable ignored) {
+4484:             // السجل للمراجعة فقط
+4485:         }
+4486:     }
+4487: 
+4488:     /** {الوقت، العنوان، النص}، الأحدث أولًا. */
+4489:     public List<String[]> notifLog(int limit) {
+4490:         require(Auth.Perm.NOTIFS);   // 11.6: تنبيهات حساسة
+4491:         List<String[]> out = new ArrayList<>();
+4492:         try (Cursor c = getReadableDatabase().rawQuery("SELECT at,title,body FROM notif_log ORDER BY id DESC LIMIT " + limit, null)) {
+4493:             while (c.moveToNext()) out.add(new String[]{Model.date(c.getLong(0)), Model.nz(c.getString(1)), Model.nz(Crypto.dec(c.getString(2)))});
+4494:         } catch (Exception ignored) {
+4495:             // قاعدة قبل الترحيل
+4496:         }
+4497:         return out;
+4498:     }
+4499: 
+4500:     public void clearNotifLog() { getWritableDatabase().execSQL("DELETE FROM notif_log"); }
+4501: 
+4502:     /** المستخدم بحالته الآن، أو null. */
+4503:     public Model.User user(long id) {
+4504:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id,name,role,active,perms,deleted_at,nick FROM users WHERE id=" + id, null)) {
+4505:             return c.moveToFirst() ? readUser(c) : null;
+4506:         }
+4507:     }
+4508: 
+4509:     /** 10.2: الدخول بكتابة الاسم (لا تُعرض قائمة الأسماء): المستخدم النشط بهذا الاسم، أو null. */
+4510:     public Model.User userByName(String name) {
+4511:         String n = Sanity.norm(name);
+4512:         if (n.isEmpty()) return null;
+4513:         for (Model.User u : users(true)) if (Sanity.norm(u.name).equals(n)) return u;
+4514:         return null;
+4515:     }
+4516: 
+4517:     /** بصمة رمز المستخدم الحالي: تتغير إن غُيّر رمزه (فيُلغى «تذكرني» على كل جهاز). */
+4518:     private String userPrint(long id) {
+4519:         try (Cursor c = getReadableDatabase().rawQuery("SELECT pin_salt,pin_hash FROM users WHERE id=" + id, null)) {
+4520:             if (!c.moveToFirst()) return "";
+4521:             return SyncCrypto.hex(SyncCrypto.sha256((Model.nz(c.getString(0)) + "|" + Model.nz(c.getString(1))).getBytes(java.nio.charset.StandardCharsets.UTF_8))).substring(0, 24);
+4522:         }
+4523:     }
+4524: 
+4525:     /** 10.2: «تذكرني على هذا الجهاز»: يُفتح التطبيق بهذا الحساب مباشرة دون كتابة الرمز. */
+4526:     public void rememberUser(long id) { setSettingQuiet("remember_user", id + "|" + userPrint(id)); }
+4527: 
+4528:     public void forgetUser() { deleteSetting("remember_user"); }
+4529: 
+4530:     /** الحساب المحفوظ على هذا الجهاز إن بقي نشطًا وبرمزه نفسه، وإلا null (ويُنسى). */
+4531:     public Model.User rememberedUser() {
+4532:         String r = setting("remember_user", "");
+4533:         int i = r.indexOf('|');
+4534:         if (i <= 0) return null;
+4535:         try {
+4536:             long id = Long.parseLong(r.substring(0, i));
+4537:             Model.User u = user(id);
+4538:             if (u != null && u.active && r.substring(i + 1).equals(userPrint(id))) return u;
+4539:         } catch (Exception ignored) {
+4540:             // يُنسى
+4541:         }
+4542:         forgetUser();
+4543:         return null;
+4544:     }
+4545: 
+4546:     /**
+4547:      * 10.1: مع المزامنة، نظام المستخدمين يُفعَّل ويُوقف من الجهاز الرئيسي وحده؛ وتصل الحسابات إلى بقية الأجهزة،
+4548:      * فلا يُنشئ كل جهاز مديرًا لنفسه.
+4549:      */
+4550:     public boolean syncFounder() { return SyncStore.founder(getReadableDatabase()); }
+4551: 
+4552:     public String founderBlock() {
+4553:         if (syncFounder()) return null;

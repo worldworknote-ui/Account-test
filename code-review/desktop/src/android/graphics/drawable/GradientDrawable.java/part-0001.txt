@@ -1,0 +1,166 @@
+1: package android.graphics.drawable;
+2: 
+3: import android.content.res.ColorStateList;
+4: import android.graphics.*;
+5: import java.awt.Shape;
+6: import java.awt.geom.*;
+7: 
+8: /** الشكل الأساسي لكل الخلفيات: مستطيل/بيضاوي بزوايا مستديرة، تعبئة أو تدرج، وحدّ (متقطع أحيانًا). */
+9: public class GradientDrawable extends Drawable {
+10:     public static final int RECTANGLE = 0, OVAL = 1, LINE = 2, RING = 3;
+11:     public static final int LINEAR_GRADIENT = 0, RADIAL_GRADIENT = 1, SWEEP_GRADIENT = 2;
+12: 
+13:     public enum Orientation { TOP_BOTTOM, TR_BL, RIGHT_LEFT, BR_TL, BOTTOM_TOP, BL_TR, LEFT_RIGHT, TL_BR }
+14: 
+15:     private int shape = RECTANGLE;
+16:     private int gradientType = LINEAR_GRADIENT;
+17:     private Orientation orientation = Orientation.TOP_BOTTOM;
+18:     private int[] colors;
+19:     private float[] offsets;
+20:     private ColorStateList solid;
+21:     private float radius;
+22:     private float[] radii;
+23:     private int strokeWidth = 0;
+24:     private ColorStateList strokeColor;
+25:     private float dashW, dashGap;
+26:     private int alpha = 255;
+27:     private int w = -1, h = -1;
+28:     private float gradRadius = 0.5f, cx = 0.5f, cy = 0.5f;
+29:     private boolean useLevel;
+30: 
+31:     public GradientDrawable() {}
+32:     public GradientDrawable(Orientation o, int[] colors) { orientation = o; this.colors = colors; }
+33: 
+34:     public void setShape(int s) { shape = s; invalidateSelf(); }
+35:     public int getShape() { return shape; }
+36:     public void setGradientType(int t) { gradientType = t; invalidateSelf(); }
+37:     public int getGradientType() { return gradientType; }
+38:     public void setOrientation(Orientation o) { orientation = o; invalidateSelf(); }
+39:     public Orientation getOrientation() { return orientation; }
+40:     public void setColors(int[] c) { colors = c; solid = null; invalidateSelf(); }
+41:     public void setColors(int[] c, float[] off) { colors = c; offsets = off; solid = null; invalidateSelf(); }
+42:     public int[] getColors() { return colors; }
+43:     public void setColor(int c) { solid = ColorStateList.valueOf(c); colors = null; invalidateSelf(); }
+44:     public void setColor(ColorStateList c) { solid = c; colors = null; invalidateSelf(); }
+45:     public ColorStateList getColor() { return solid; }
+46:     public void setCornerRadius(float r) { radius = r; radii = null; invalidateSelf(); }
+47:     public float getCornerRadius() { return radius; }
+48:     public void setCornerRadii(float[] r) { radii = r; invalidateSelf(); }
+49:     public float[] getCornerRadii() { return radii; }
+50:     public void setStroke(int width, int color) { setStroke(width, ColorStateList.valueOf(color), 0, 0); }
+51:     public void setStroke(int width, ColorStateList color) { setStroke(width, color, 0, 0); }
+52:     public void setStroke(int width, int color, float dw, float dg) { setStroke(width, ColorStateList.valueOf(color), dw, dg); }
+53:     public void setStroke(int width, ColorStateList color, float dw, float dg) {
+54:         strokeWidth = width; strokeColor = color; dashW = dw; dashGap = dg; invalidateSelf();
+55:     }
+56:     public void setSize(int w, int h) { this.w = w; this.h = h; }
+57:     public void setGradientRadius(float r) { gradRadius = r; gradientType = RADIAL_GRADIENT; }
+58:     public float getGradientRadius() { return gradRadius; }
+59:     public void setGradientCenter(float x, float y) { cx = x; cy = y; }
+60:     public void setUseLevel(boolean u) { useLevel = u; }
+61:     public void setDither(boolean d) {}
+62:     @Override public void setAlpha(int a) { alpha = a; invalidateSelf(); }
+63:     @Override public int getAlpha() { return alpha; }
+64:     @Override public int getIntrinsicWidth() { return w; }
+65:     @Override public int getIntrinsicHeight() { return h; }
+66:     @Override public boolean isStateful() { return (solid != null && solid.isStateful()) || (strokeColor != null && strokeColor.isStateful()); }
+67:     @Override protected boolean onStateChange(int[] s) { return isStateful(); }
+68:     @Override public Drawable mutate() { return this; }
+69:     @Override public ConstantState getConstantState() {
+70:         final GradientDrawable src = this;
+71:         return new ConstantState() {
+72:             @Override public Drawable newDrawable() {
+73:                 GradientDrawable g = new GradientDrawable(src.orientation, src.colors == null ? null : src.colors.clone());
+74:                 g.shape = src.shape; g.gradientType = src.gradientType; g.offsets = src.offsets; g.solid = src.solid; g.radius = src.radius;
+75:                 g.radii = src.radii == null ? null : src.radii.clone(); g.strokeWidth = src.strokeWidth; g.strokeColor = src.strokeColor;
+76:                 g.dashW = src.dashW; g.dashGap = src.dashGap; g.alpha = src.alpha; g.w = src.w; g.h = src.h; g.gradRadius = src.gradRadius;
+77:                 g.cx = src.cx; g.cy = src.cy;
+78:                 return g;
+79:             }
+80:         };
+81:     }
+82: 
+83:     /** شكل الرسم داخل المستطيل r. */
+84:     private Shape shapeIn(float l, float t, float r, float b) {
+85:         float ww = r - l, hh = b - t;
+86:         if (shape == OVAL) return new Ellipse2D.Float(l, t, ww, hh);
+87:         if (shape == LINE) return new Line2D.Float(l, t + hh / 2, r, t + hh / 2);
+88:         if (radii != null) return Path.roundRect(l, t, r, b, radii);
+89:         if (radius > 0) {
+90:             float rr = Math.min(radius, Math.min(ww, hh) / 2f);
+91:             return new RoundRectangle2D.Float(l, t, ww, hh, 2 * rr, 2 * rr);
+92:         }
+93:         return new Rectangle2D.Float(l, t, ww, hh);
+94:     }
+95: 
+96:     @Override public Shape outline() {
+97:         Rect b = getBounds();
+98:         return shapeIn(b.left, b.top, b.right, b.bottom);
+99:     }
+100: 
+101:     @Override public void draw(Canvas c) {
+102:         Rect bb = getBounds();
+103:         if (bb.isEmpty()) return;
+104:         float half = strokeWidth / 2f;
+105:         java.awt.Graphics2D g = c.graphics();
+106:         float a = c.alpha * alpha / 255f;
+107:         int[] st = getState();
+108:         if (shape != LINE) {
+109:             // التعبئة داخل نصف عرض الحد (كما في أندرويد)
+110:             Shape fill = shapeIn(bb.left + half, bb.top + half, bb.right - half, bb.bottom - half);
+111:             java.awt.Paint p = null;
+112:             if (colors != null && colors.length > 0) {
+113:                 p = gradient(bb, a);
+114:             } else if (solid != null) {
+115:                 int col = solid.getColorForState(st, solid.getDefaultColor());
+116:                 if (hasTint()) col = tintColor();
+117:                 int al = Math.round(Color.alpha(col) * a);
+118:                 if (al > 0) p = new java.awt.Color(Color.red(col), Color.green(col), Color.blue(col), al);
+119:             } else if (hasTint()) {
+120:                 int col = tintColor();
+121:                 p = new java.awt.Color(Color.red(col), Color.green(col), Color.blue(col), Math.round(Color.alpha(col) * a));
+122:             }
+123:             if (p != null) {
+124:                 g.setPaint(p);
+125:                 g.fill(fill);
+126:             }
+127:         }
+128:         if (strokeWidth > 0 && strokeColor != null) {
+129:             int col = strokeColor.getColorForState(st, strokeColor.getDefaultColor());
+130:             int al = Math.round(Color.alpha(col) * a);
+131:             if (al > 0) {
+132:                 Shape s = shapeIn(bb.left + half, bb.top + half, bb.right - half, bb.bottom - half);
+133:                 java.awt.BasicStroke bs = dashW > 0
+134:                         ? new java.awt.BasicStroke(strokeWidth, java.awt.BasicStroke.CAP_BUTT, java.awt.BasicStroke.JOIN_ROUND, 4f, new float[]{dashW, Math.max(0.01f, dashGap)}, 0)
+135:                         : new java.awt.BasicStroke(strokeWidth, java.awt.BasicStroke.CAP_BUTT, java.awt.BasicStroke.JOIN_ROUND);
+136:                 g.setPaint(new java.awt.Color(Color.red(col), Color.green(col), Color.blue(col), al));
+137:                 g.fill(bs.createStrokedShape(s));
+138:             }
+139:         }
+140:     }
+141: 
+142:     private java.awt.Paint gradient(Rect b, float a) {
+143:         int al = Math.round(255 * a);
+144:         if (colors.length == 1) {
+145:             int c0 = colors[0];
+146:             return new java.awt.Color(Color.red(c0), Color.green(c0), Color.blue(c0), Color.alpha(c0) * al / 255);
+147:         }
+148:         if (gradientType == RADIAL_GRADIENT) {
+149:             float rr = gradRadius <= 1f ? gradRadius * Math.min(b.width(), b.height()) : gradRadius;
+150:             return new RadialGradient(b.left + cx * b.width(), b.top + cy * b.height(), Math.max(1, rr), colors, offsets, Shader.TileMode.CLAMP).awt(al);
+151:         }
+152:         float x0, y0, x1, y1;
+153:         float l = b.left, t = b.top, r = b.right, bo = b.bottom;
+154:         switch (orientation) {
+155:             case TOP_BOTTOM: x0 = l; y0 = t; x1 = l; y1 = bo; break;
+156:             case TR_BL: x0 = r; y0 = t; x1 = l; y1 = bo; break;
+157:             case RIGHT_LEFT: x0 = r; y0 = t; x1 = l; y1 = t; break;
+158:             case BR_TL: x0 = r; y0 = bo; x1 = l; y1 = t; break;
+159:             case BOTTOM_TOP: x0 = l; y0 = bo; x1 = l; y1 = t; break;
+160:             case BL_TR: x0 = l; y0 = bo; x1 = r; y1 = t; break;
+161:             case LEFT_RIGHT: x0 = l; y0 = t; x1 = r; y1 = t; break;
+162:             default: x0 = l; y0 = t; x1 = r; y1 = bo; break;
+163:         }
+164:         return new LinearGradient(x0, y0, x1, y1, colors, offsets, Shader.TileMode.CLAMP).awt(al);
+165:     }
+166: }

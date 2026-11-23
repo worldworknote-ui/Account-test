@@ -1,0 +1,113 @@
+698:         check(cursorOf(Z, yDev) == upTo && cursorOf(X, yDev) == upTo, "المؤشرات عند " + upTo + " على الجهازين بالضبط");
+699:         check(bal(X).equals(bal(Z)), "الأرصدة متطابقة بعد اللحاق: " + bal(X));
+700:         check(SyncEngine.status(X).digestAlert.isEmpty() && SyncEngine.status(Z).digestAlert.isEmpty(), "لا تنبيه بصمات بعد الإزالة");
+701: 
+702:         // د) مقارنة البصمات ما زالت تعمل بعد الإزالة: عبث مقصود على Z يُكشف ثم يزول بإصلاحه
+703:         String jl = "(SELECT MIN(rowid) FROM journal_lines WHERE account='OFFICE' AND debit_minor>0)";
+704:         Z.getWritableDatabase().execSQL("UPDATE sync_flag SET cap=0 WHERE id=1");
+705:         Z.getWritableDatabase().execSQL("UPDATE journal_lines SET debit_minor=debit_minor+1 WHERE rowid=" + jl);
+706:         Z.getWritableDatabase().execSQL("UPDATE sync_flag SET cap=1 WHERE id=1");
+707:         eZ.sync();
+708:         SyncEngine.Result rx = eX.sync();
+709:         check(!rx.digestAlert.isEmpty(), "اختلاف الدفتر يُكشف بعد إزالة جهاز (مقارنة البصمات لم تتعطل): " + rx.digestAlert);
+710:         Z.getWritableDatabase().execSQL("UPDATE sync_flag SET cap=0 WHERE id=1");
+711:         Z.getWritableDatabase().execSQL("UPDATE journal_lines SET debit_minor=debit_minor-1 WHERE rowid=" + jl);
+712:         Z.getWritableDatabase().execSQL("UPDATE sync_flag SET cap=1 WHERE id=1");
+713:         eZ.sync();
+714:         check(eX.sync().digestAlert.isEmpty(), "بعد إصلاحه يزول التنبيه");
+715: 
+716:         // هـ) المُزال يعود إلى المكان الصحيح: يخرج ويُذكر له ما لم يصل
+717:         String yErr = errOf(eY::sync);
+718:         check(yErr.contains("أزال المدير") && yErr.contains("لم يصل") && !SyncEngine.enabled(Y) && Y.tx(late) != null,
+719:                 "المُزال يخرج من المزامنة ويُذكر له ما لم يصل، وتبقى حركته عليه");
+720: 
+721:         // و) التنظيف: الرئيسي يحذف ملفات المُزال بعد أن تصل للجميع، ثم ينضم جهاز جديد بالأرصدة نفسها
+722:         int mBefore = kinds(f).get('m');
+723:         syncAll(eX, eZ);
+724:         eX.clean(true);
+725:         check(kinds(f).get('m') == mBefore - 1, "الرئيسي حذف بطاقة المُزال وحزمه بعد وصولها للجميع (" + mBefore + " ← " + kinds(f).get('m') + ")");
+726:         Db W = dev("16W");
+727:         SyncEngine eW = new SyncEngine(W, new FileSyncFolder(f));
+728:         eW.join(pw.toCharArray(), false, "جديد بعد التنظيف");
+729:         syncAll(eW, eX, eZ);
+730:         check(bal(W).equals(bal(X)) && W.tx(yTx.get(4)) != null, "منضم جديد بعد التنظيف معه حركات المُزال والأرصدة نفسها");
+731:         healthy(W, "المنضم بعد حذف ملفات المُزال");
+732: 
+733:         // ز) انقطاع واستئناف مع تغييرات متزامنة من الأجهزة الثلاثة
+734:         File gone = new File(f.getParentFile(), "sa-sync-16-missing-" + System.nanoTime());
+735:         long zt1 = Z.addTx(tx(off, false, 2500, "EUR", "Z بلا اتصال 1"), null);
+736:         long zt2 = Z.addTx(tx(off, true, 3500, "USD", "Z بلا اتصال 2"), null);
+737:         check(!errOf(() -> new SyncEngine(Z, new FileSyncFolder(gone)).sync()).isEmpty(), "الجولة بلا مكان مزامنة تفشل دون أن يضيع شيء");
+738:         long xt = X.addTx(tx(off, true, 4500, "USD", "X في الوقت نفسه"), null);
+739:         long wt = W.addTx(tx(off, false, 5500, "USD", "W في الوقت نفسه"), null);
+740:         X.cancelTx(yTx.get(0), "إلغاء من X");
+741:         syncAll(eZ, eX, eW);
+742:         check(X.tx(zt1) != null && X.tx(zt2) != null && Z.tx(xt) != null && Z.tx(wt) != null, "بعد الاستئناف وصلت تغييرات الانقطاع والتغييرات المتزامنة للجميع");
+743:         check(bal(X).equals(bal(Z)) && bal(X).equals(bal(W)), "الأجهزة الثلاثة بالأرصدة نفسها: " + bal(X));
+744:         check(!Z.tx(yTx.get(0)).isActive() && !W.tx(yTx.get(0)).isActive(), "إلغاء حركة المُزال من X وصل للجميع");
+745:         healthy(X, "X");
+746:         healthy(Z, "Z");
+747: 
+748:         // ح) نقل دور الجهاز الرئيسي (AUDIT-002)
+749:         X.addTx(tx(off, true, 100, "USD", "قبل النقل"), null);
+750:         eX.sync();
+751:         check(errOf(() -> eX.transferFounder(zDev)).contains("لم يستلم"), "لا يُنقل الدور إلى جهاز لم يستلم كل ما أرسله الرئيسي");
+752:         syncAll(eZ, eX);
+753:         eX.transferFounder(zDev);
+754:         check(!X.syncFounder(), "الرئيسي السابق أصبح عاديًا فورًا");
+755:         eZ.sync();
+756:         eW.sync();
+757:         check(Z.syncFounder() && !W.syncFounder() && !X.syncFounder(), "جهاز رئيسي واحد بعد النقل (Z)");
+758:         check(errOf(() -> eX.removeDevice(zDev)).contains("الجهاز الرئيسي"), "لا يُزال الرئيسي الجديد");
+759: 
+760:         // ط) استلام الدور عند ضياع الرئيسي: رمز الاسترداد وحده، وبعد غيابه أو خروجه
+761:         check(errOf(() -> eW.claimFounder(pw.toCharArray())).contains("رمز الاسترداد غير صحيح"), "كلمة سر المزامنة (التي يعرفها كل منضم) لا تكفي لأخذ الدور");
+762:         check(errOf(() -> eW.claimFounder(rc.toCharArray())).contains("زامن في"), "لا يؤخذ الدور والرئيسي حاضر (حماية من رئيسيين)");
+763:         eZ.retire();   // الرئيسي خرج (أُعيد تعيينه)
+764:         eW.claimFounder(rc.toCharArray());
+765:         check(W.syncFounder(), "استلم W الدور برمز الاسترداد بعد خروج الرئيسي");
+766:         eX.sync();
+767:         check(!X.syncFounder() && W.syncFounder(), "X عرف الرئيسي الجديد: جهاز رئيسي واحد");
+768:         eW.sync();
+769:         int mZ = kinds(f).get('m');
+770:         syncAll(eX, eW);
+771:         eW.clean(true);
+772:         check(kinds(f).get('m') == mZ - 1, "الرئيسي الجديد حذف ملفات الجهاز الخارج بعد وصول حزمه (" + mZ + " ← " + kinds(f).get('m') + ")");
+773:         check(bal(X).equals(bal(W)), "الأرصدة متطابقة بعد تغيير الرئيسي مرتين: " + bal(X));
+774: 
+775:         // ي) التراجع إلى نسخة أمان على جهاز في المزامنة (AUDIT-030)
+776:         File homeV = Files.createTempDirectory("sa-sync-16-V").toFile();
+777:         Context cv = new Context(homeV);
+778:         Db V = new Db(cv);
+779:         new SyncEngine(V, new FileSyncFolder(f)).join(pw.toCharArray(), false, "سيتراجع");
+780:         Snapshot.take(cv, V, "اختبار");
+781:         Db V1 = Snapshot.revert(cv, V, 0);
+782:         check(SyncEngine.enabled(V1) && Snapshot.lastSyncNote.isEmpty(), "تراجع بلا مزامنة منذ نسخة الأمان: يبقى الجهاز في المزامنة");
+783:         Snapshot.take(cv, V1, "اختبار 2");
+784:         long vt = V1.addTx(tx(off, true, 9900, "USD", "سُجّلت ثم تراجع عنها"), null);
+785:         new SyncEngine(V1, new FileSyncFolder(f)).sync();
+786:         check(!Snapshot.syncImpact(V1).isEmpty(), "تنبيه أثر التراجع على المزامنة يظهر قبل التأكيد");
+787:         Db V2 = Snapshot.revert(cv, V1, 0);
+788:         check(!SyncEngine.enabled(V2) && Snapshot.lastSyncNote.contains("خرج") && V2.tx(vt) == null,
+789:                 "بعد التراجع إلى ما قبل آخر مزامنة: خرج من المزامنة (لا يعيد أرقام حزم مستعملة) ورجعت بياناته: " + Snapshot.lastSyncNote);
+790:         syncAll(eX, eW);
+791:         check(X.tx(vt) != null && bal(X).equals(bal(W)), "الأجهزة الأخرى لم تتأثر بالتراجع وبقيت حركته عندها");
+792:         new SyncEngine(V2, new FileSyncFolder(f)).join(pw.toCharArray(), false, "عاد بعد التراجع");
+793:         new SyncEngine(V2, new FileSyncFolder(f)).sync();
+794:         check(bal(V2).equals(bal(X)) && V2.tx(vt) != null, "الانضمام من جديد بعد التراجع: الأرصدة نفسها");
+795:         healthy(V2, "الجهاز بعد التراجع والانضمام");
+796: 
+797:         // ك) صلاحيات محدودة: موظف بصلاحية المزامنة لا ينقل الدور ولا يأخذه
+798:         long admin = W.addUser("مدير 16", Auth.ADMIN, null, "123456");
+799:         SmartApp.currentUser = W.user(admin);
+800:         long clerk = W.addUser("موظف 16", Auth.CUSTOM, "VIEW,SYNC", "1111");
+801:         SmartApp.currentUser = W.user(clerk);
+802:         check(errOf(() -> eW.transferFounder(SyncEngine.status(X).device)).contains("للمدير وحده"), "موظف بصلاحية المزامنة لا ينقل دور الجهاز الرئيسي");
+803:         SmartApp.currentUser = W.user(admin);
+804:         check(errOf(() -> eW.transferFounder("لا-يوجد")).contains("غير موجود"), "المدير: جهاز غير موجود يُرفض");
+805:         SmartApp.currentUser = null;
+806:     }
+807: 
+808: 
+809:     /** 10.5 (§7): التحقق والمكاتب والعلامة عبر المزامنة: تحقق متزامن من جهازين لا يضيع ولا يتكرر. */
+810:     static void section17() throws Exception {

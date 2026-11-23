@@ -1,0 +1,84 @@
+1: package com.smart.hawala;
+2: 
+3: import java.nio.charset.StandardCharsets;
+4: import java.security.MessageDigest;
+5: import java.util.LinkedHashSet;
+6: import java.util.Set;
+7: 
+8: /**
+9:  * 9.0: عدّاد يومي لاستخراج معلومات رسائل واتساب في النسخة المجانية (منطق بحت).
+10:  * تُحتسب الرسالة مرة واحدة في اليوم مهما أُعيد استخراجها أو إضافتها للحقول (بصمة نصها)، ويبدأ العد من جديد كل يوم.
+11:  * بعد السقف يعمل نموذج التسجيل بالإدخال اليدوي العادي، ولا يتوقف شيء آخر.
+12:  */
+13: public final class WaQuota {
+14:     /** اليوم yyyyMMdd الذي تخصه البصمات. */
+15:     public String day = "";
+16:     public final Set<String> seen = new LinkedHashSet<>();
+17: 
+18:     public static WaQuota parse(String s) {
+19:         WaQuota q = new WaQuota();
+20:         if (s == null || s.isEmpty()) return q;
+21:         for (String part : s.split(";")) {
+22:             int i = part.indexOf('=');
+23:             if (i <= 0) continue;
+24:             String k = part.substring(0, i), v = part.substring(i + 1);
+25:             if (k.equals("d")) q.day = v;
+26:             else if (k.equals("h")) for (String h : v.split(",")) if (!h.trim().isEmpty()) q.seen.add(h.trim());
+27:         }
+28:         return q;
+29:     }
+30: 
+31:     public String serialize() {
+32:         StringBuilder b = new StringBuilder("d=").append(day).append(";h=");
+33:         boolean first = true;
+34:         for (String h : seen) {
+35:             if (!first) b.append(',');
+36:             b.append(h);
+37:             first = false;
+38:         }
+39:         return b.toString();
+40:     }
+41: 
+42:     /** بصمة قصيرة لنص الرسالة بعد توحيد المسافات (الرسالة نفسها لا تُحفظ). */
+43:     public static String key(String text) {
+44:         String n = text == null ? "" : text.trim().replaceAll("\\s+", " ");
+45:         try {
+46:             byte[] d = MessageDigest.getInstance("SHA-256").digest(n.getBytes(StandardCharsets.UTF_8));
+47:             StringBuilder b = new StringBuilder();
+48:             for (int i = 0; i < 8; i++) b.append(String.format(java.util.Locale.US, "%02x", d[i] & 0xff));
+49:             return b.toString();
+50:         } catch (Exception e) {
+51:             return Integer.toHexString(n.hashCode());
+52:         }
+53:     }
+54: 
+55:     private void roll(String today) {
+56:         if (!today.equals(day)) {
+57:             day = today;
+58:             seen.clear();
+59:         }
+60:     }
+61: 
+62:     /** المستخدم اليوم. */
+63:     public long used(String today) { return today.equals(day) ? seen.size() : 0; }
+64: 
+65:     /** هل يُسمح باستخراج هذه الرسالة اليوم؟ المحتسبة سابقًا اليوم مسموحة دائمًا. */
+66:     public boolean allows(String key, long max, String today) {
+67:         if (max == Entitlements.UNLIMITED) return true;
+68:         if (!today.equals(day)) return max > 0;
+69:         return seen.contains(key) || seen.size() < max;
+70:     }
+71: 
+72:     /** يحتسب الرسالة (مرة واحدة في اليوم). يرجع false إن رُفضت لبلوغ السقف. */
+73:     public boolean use(String key, long max, String today) {
+74:         roll(today);
+75:         if (seen.contains(key)) return true;
+76:         if (max != Entitlements.UNLIMITED && seen.size() >= max) return false;
+77:         seen.add(key);
+78:         return true;
+79:     }
+80: 
+81:     public static long remaining(long used, long max) {
+82:         return max == Entitlements.UNLIMITED ? -1 : Math.max(0, max - used);
+83:     }
+84: }

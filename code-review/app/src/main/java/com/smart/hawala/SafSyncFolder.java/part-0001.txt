@@ -1,0 +1,183 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.ContentResolver;
+4: import android.content.Context;
+5: import android.database.Cursor;
+6: import android.net.Uri;
+7: import android.provider.DocumentsContract;
+8: import java.io.ByteArrayOutputStream;
+9: import java.io.IOException;
+10: import java.io.InputStream;
+11: import java.io.OutputStream;
+12: import java.util.ArrayList;
+13: import java.util.HashMap;
+14: import java.util.List;
+15: import java.util.Map;
+16: 
+17: /**
+18:  * 10.0: مجلد المزامنة على الهاتف (إطار التخزين في أندرويد). يُختار مرة واحدة بصلاحية دائمة.
+19:  * الملف الجديد يُكتب باسم مؤقت ثم يُعاد تسميته فلا يرى جهاز آخر ملفًا نصف مكتوب.
+20:  */
+21: final class SafSyncFolder implements SyncFolder {
+22:     private final ContentResolver cr;
+23:     private final Uri tree;
+24:     private final String treeDoc;
+25:     private final Map<String, String> ids = new HashMap<>();
+26:     /** 10.4: [الحجم، وقت التعديل] لكل ملف من آخر قراءة للقائمة. */
+27:     private final Map<String, long[]> info = new HashMap<>();
+28:     /** 10.4: قُرئت القائمة مرة على الأقل في هذه الجولة (الكتابة لا تعيد قراءتها لكل ملف جديد). */
+29:     private boolean listedOnce;
+30: 
+31:     SafSyncFolder(Context ctx, Uri tree) {
+32:         this.cr = ctx.getContentResolver();
+33:         this.tree = tree;
+34:         this.treeDoc = DocumentsContract.getTreeDocumentId(tree);
+35:     }
+36: 
+37:     /** أول قراءة للمجلد في هذه الجولة تنتظر المزوّد حتى يُكمل تحديث القائمة من السحابة (Google Drive مثلًا). */
+38:     private boolean waited;
+39:     /** للتشخيص: عدد الملفات الظاهرة، وهل بقي المزوّد يحدّث القائمة بعد انتهاء الانتظار. */
+40:     int visible;
+41:     boolean stillLoading;
+42: 
+43:     private void refresh() throws IOException {
+44:         Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, treeDoc);
+45:         boolean wait = !waited && android.os.Looper.myLooper() != android.os.Looper.getMainLooper();
+46:         waited = true;
+47:         if (wait) {
+48:             try {
+49:                 // يطلب من المزوّد جلب أحدث قائمة من السحابة (يتجاهله من لا يدعمه)
+50:                 cr.refresh(children, null, null);
+51:             } catch (Throwable ignored) {
+52:                 // غير مدعوم
+53:             }
+54:         }
+55:         for (int round = 0; ; round++) {
+56:             Map<String, String[]> found = new HashMap<>();
+57:             boolean loading;
+58:             final java.util.concurrent.CountDownLatch changed = new java.util.concurrent.CountDownLatch(1);
+59:             android.database.ContentObserver obs = null;
+60:             Uri notify = null;
+61:             try (Cursor c = cr.query(children, new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+62:                     DocumentsContract.Document.COLUMN_LAST_MODIFIED, DocumentsContract.Document.COLUMN_SIZE}, null, null, null)) {
+63:                 if (c == null) throw new IOException("مجلد المزامنة غير متاح. اختره من جديد من «المزامنة».");
+64:                 while (c.moveToNext()) {
+65:                     String n = c.getString(1);
+66:                     if (n == null) continue;
+67:                     long m = c.isNull(2) ? 0 : c.getLong(2);
+68:                     String[] prev = found.get(n);
+69:                     // أسماء مكررة (Google Drive يسمح بها): الأحدث يفوز
+70:                     long sz = c.isNull(3) ? 0 : c.getLong(3);
+71:                     if (prev == null || Long.parseLong(prev[1]) < m) found.put(n, new String[]{c.getString(0), "" + m, "" + sz});
+72:                 }
+73:                 android.os.Bundle ex = c.getExtras();
+74:                 loading = ex != null && ex.getBoolean(DocumentsContract.EXTRA_LOADING, false);
+75:                 if (loading && wait && round < 4) notify = c.getNotificationUri();
+76:             } catch (SecurityException e) {
+77:                 throw new IOException("انتهت صلاحية الوصول إلى مجلد المزامنة. اختره من جديد من «المزامنة».");
+78:             }
+79:             ids.clear();
+80:             info.clear();
+81:             for (Map.Entry<String, String[]> e : found.entrySet()) {
+82:                 ids.put(e.getKey(), e.getValue()[0]);
+83:                 info.put(e.getKey(), new long[]{Long.parseLong(e.getValue()[2]), Long.parseLong(e.getValue()[1])});
+84:             }
+85:             listedOnce = true;
+86:             visible = ids.size();
+87:             stillLoading = loading;
+88:             if (!loading || !wait || round >= 4) return;
+89:             // المزوّد ما زال يجلب القائمة: ننتظر إشعاره (أو 6 ثوانٍ) ثم نقرأ من جديد
+90:             try {
+91:                 if (notify != null) {
+92:                     obs = new android.database.ContentObserver(null) {
+93:                         @Override public void onChange(boolean self) { changed.countDown(); }
+94:                     };
+95:                     cr.registerContentObserver(notify, true, obs);
+96:                 }
+97:                 changed.await(6, java.util.concurrent.TimeUnit.SECONDS);
+98:             } catch (InterruptedException ie) {
+99:                 Thread.currentThread().interrupt();
+100:                 return;
+101:             } catch (Throwable ignored) {
+102:                 // نكتفي بالانتظار
+103:             } finally {
+104:                 if (obs != null) cr.unregisterContentObserver(obs);
+105:             }
+106:         }
+107:     }
+108: 
+109:     private Uri doc(String name) throws IOException {
+110:         String id = ids.get(name);
+111:         if (id == null) {
+112:             refresh();
+113:             id = ids.get(name);
+114:             if (id == null && !name.startsWith(".")) id = recover(name);
+115:         }
+116:         return id == null ? null : DocumentsContract.buildDocumentUriUsingTree(tree, id);
+117:     }
+118: 
+119:     @Override public List<String> list(String prefix) throws IOException {
+120:         refresh();
+121:         List<String> out = new ArrayList<>();
+122:         for (String n : ids.keySet()) if (n.startsWith(prefix)) out.add(n);
+123:         return out;
+124:     }
+125: 
+126:     @Override public boolean exists(String name) throws IOException { return doc(name) != null; }
+127: 
+128:     @Override public byte[] read(String name) throws IOException {
+129:         Uri u = doc(name);
+130:         if (u == null) return null;
+131:         try (InputStream in = cr.openInputStream(u); ByteArrayOutputStream o = new ByteArrayOutputStream()) {
+132:             if (in == null) return null;
+133:             byte[] buf = new byte[16384];
+134:             int n;
+135:             while ((n = in.read(buf)) > 0) o.write(buf, 0, n);
+136:             return o.toByteArray();
+137:         } catch (java.io.FileNotFoundException e) {
+138:             ids.remove(name);
+139:             return null;
+140:         }
+141:     }
+142: 
+143:     @Override public void write(String name, byte[] data) throws IOException {
+144:         // 10.4: ملف جديد (ليس في القائمة) يُنشأ مباشرة دون إعادة قراءة المجلد كله
+145:         Uri existing;
+146:         if (!listedOnce) existing = doc(name);
+147:         else {
+148:             String id = ids.get(name);
+149:             existing = id == null ? null : DocumentsContract.buildDocumentUriUsingTree(tree, id);
+150:         }
+151:         if (existing != null) {
+152:             replaceSafely(existing, name, data);
+153:             return;
+154:         }
+155:         Uri parent = DocumentsContract.buildDocumentUriUsingTree(tree, treeDoc);
+156:         String tmp = ".tmp-" + System.nanoTime() + "-" + name;
+157:         Uri u = DocumentsContract.createDocument(cr, parent, "application/octet-stream", tmp);
+158:         if (u == null) throw new IOException("تعذر إنشاء ملف في مجلد المزامنة");
+159:         try (OutputStream o = cr.openOutputStream(u, "w")) {
+160:             if (o == null) throw new IOException("تعذر الكتابة في مجلد المزامنة");
+161:             o.write(data);
+162:         }
+163:         Uri renamed = null;
+164:         try {
+165:             renamed = DocumentsContract.renameDocument(cr, u, name);
+166:         } catch (Exception ignored) {
+167:             // بعض المزوّدين لا يدعمون إعادة التسمية: نكتب بالاسم النهائي مباشرة
+168:         }
+169:         if (renamed == null) {
+170:             DocumentsContract.deleteDocument(cr, u);
+171:             Uri direct = DocumentsContract.createDocument(cr, parent, "application/octet-stream", name);
+172:             if (direct == null) throw new IOException("تعذر إنشاء ملف في مجلد المزامنة");
+173:             try (OutputStream o = cr.openOutputStream(direct, "w")) {
+174:                 if (o == null) throw new IOException("تعذر الكتابة في مجلد المزامنة");
+175:                 o.write(data);
+176:             }
+177:             renamed = direct;
+178:         }
+179:         // 10.4: يُضاف الملف إلى القائمة المعروفة دون إعادة قراءة المجلد كله بعد كل ملف
+180:         try {
+181:             ids.put(name, DocumentsContract.getDocumentId(renamed));
+182:             info.put(name, new long[]{data.length, Clock.now()});
+183:         } catch (Exception e) {

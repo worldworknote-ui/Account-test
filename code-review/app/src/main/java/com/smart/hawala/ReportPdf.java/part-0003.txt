@@ -1,0 +1,59 @@
+402:         drawLayout(c, layout(Model.join(foot, "   •   "), small, CW, Layout.Alignment.ALIGN_CENTER), M, H - M - FOOTER + 8);
+403:     }
+404: 
+405:     // ---------------------------------------------------------------------------- الواجهات العامة
+406: 
+407:     public static File pdf(Report r, Opts o, File out) throws IOException {
+408:         ReportPdf ex = new ReportPdf(r, o);
+409:         List<List<Block>> pages = ex.paginate(ex.build());
+410:         PdfDocument doc = new PdfDocument();
+411:         try {
+412:             for (int i = 0; i < pages.size(); i++) {
+413:                 PdfDocument.Page page = doc.startPage(new PdfDocument.PageInfo.Builder((int) ex.W, (int) ex.H, i + 1).create());
+414:                 ex.drawPage(page.getCanvas(), pages.get(i), i, pages.size());
+415:                 doc.finishPage(page);
+416:             }
+417:             try (OutputStream os = new FileOutputStream(out)) {
+418:                 doc.writeTo(os);
+419:             }
+420:         } finally {
+421:             doc.close();
+422:         }
+423:         return out;
+424:     }
+425: 
+426:     public static List<File> png(Report r, Opts o, File dir, String base) throws IOException {
+427:         ReportPdf ex = new ReportPdf(r, o);
+428:         List<List<Block>> pages = ex.paginate(ex.build());
+429:         List<File> files = new ArrayList<>();
+430:         float scale = 2f;
+431:         for (int i = 0; i < pages.size(); i++) {
+432:             Bitmap bm = Bitmap.createBitmap((int) (ex.W * scale), (int) (ex.H * scale), Bitmap.Config.ARGB_8888);
+433:             try {
+434:                 Canvas c = new Canvas(bm);
+435:                 c.scale(scale, scale);
+436:                 ex.drawPage(c, pages.get(i), i, pages.size());
+437:                 File f = new File(dir, base + (pages.size() > 1 ? "-" + (i + 1) : "") + ".png");
+438:                 try (OutputStream os = new FileOutputStream(f)) {
+439:                     bm.compress(Bitmap.CompressFormat.PNG, 100, os);
+440:                 }
+441:                 files.add(f);
+442:             } finally {
+443:                 bm.recycle();
+444:             }
+445:         }
+446:         return files;
+447:     }
+448: 
+449:     /** صورة الصفحة الأولى للمعاينة في شاشة خيارات التصميم. */
+450:     public static Bitmap preview(Report r, Opts o, int widthPx) {
+451:         ReportPdf ex = new ReportPdf(r, o);
+452:         List<List<Block>> pages = ex.paginate(ex.build());
+453:         float scale = widthPx / ex.W;
+454:         Bitmap bm = Bitmap.createBitmap(widthPx, (int) (ex.H * scale), Bitmap.Config.ARGB_8888);
+455:         Canvas c = new Canvas(bm);
+456:         c.scale(scale, scale);
+457:         ex.drawPage(c, pages.isEmpty() ? new ArrayList<Block>() : pages.get(0), 0, Math.max(1, pages.size()));
+458:         return bm;
+459:     }
+460: }

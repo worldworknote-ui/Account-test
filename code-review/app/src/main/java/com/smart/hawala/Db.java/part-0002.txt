@@ -1,0 +1,132 @@
+156:             "clock_offset_ms",
+157:             // 12.1: مراقبة الحافظة وإطار الالتقاط على هذا الكمبيوتر
+158:             "clip_watch", "cap_bounds",
+159:             // 12.2: القراءة التلقائية في إطار الالتقاط، وشرح أول مرة
+160:             "cap_auto", "cap_intro",
+161:             // 11.5: آخر من دخل على هذا الجهاز (لإشعارات المزامنة في الخلفية حين لا يكون أحد داخلًا)
+162:             "notif_last_user",
+163:             "biometric", "lock_timeout", "last_backup", "last_backup_tx", "last_backup_status",
+164:             "pending_backup_file", "reminder_dialog_day", "draft_tx", "mig5", "mig6", "last_office",
+165:             "auto_backup_on", "auto_backup_tree", "auto_backup_pw", "auto_backup_days", "auto_backup_keep",
+166:             "last_auto_backup", "auto_backup_error", "login_fails", "login_locked_until", "pending_export_file",
+167:             "ai_on", "ai_auto", "ai_provider", "ai_key", "ai_model", "ai_url", "wa_queue", "wa_sender_office", "clip_seen",
+168:             "drive_backup_uri", "drive_backup_name", "last_drive_backup", "drive_backup_error", "crypto_v2_done",
+169:             // 8.0: القفل والمهلة، والترخيص والعدّادات (لا تنتقل مع النسخة ولا تُستبدل بالاستعادة)
+170:             "lock_start_rt", "lock_ms", "lock_warning", "secure_screen", "license_token", "license_state", "quota", "quota_mac",
+171:             "license_server", "license_last_check", "license_revoked", "risk_note", "health_last", "health_status",
+172:             "restore_drill_at", "restore_drill_status", "readable_export_at", "auto_backup_hours", "auto_backup_every_tx", "auto_backup_try", "audit_head",
+173:             "readable_export", "readable_export_month", "readable_export_error",
+174:             // 8.1: نسخة الماك (مجلد النسخ التلقائي، مهلة القفل، آخر مجلد تصدير)
+175:             "desk_backup_dir", "desk_lock_min", "last_export_dir", "draft_tx_mac", "last_export_format",
+176:             // 9.0: عدّاد واتساب اليومي، وترتيب المكاتب وآخر فتح لكل مكتب، والإشعارات (لكل جهاز إشعاراته)
+177:             "wa_quota", "wa_quota_mac", "office_opened", "office_sort", "notif_on", "notif_backup", "notif_idle", "notif_recon", "notif_recon_days",
+178:             "notif_idle_off", "notif_recon_off", "notif_last_idle", "notif_last_recon", "notif_hour_from", "notif_hour_to", "rel_home", "draft_cash", "notif_asked",
+179:             // 9.0.1: الصندوق المفتوح وقفله (بصمة أو كلمة سر خاصة بهذا الجهاز)، وإخفاء المبالغ
+180:             "cash_current", "cash_lock", "cash_pin_salt", "cash_pin_hash", "hide_amounts", "cash_fails", "cash_locked_until",
+181:             // 10.0: مجلد المزامنة على هذا الجهاز
+182:             "sync_tree", "sync_dir", "sync_after_change", "sync_transport", "sync_server", "sync_server_key", "sync_server_vault", "sync_drive_ok", "remember_user", "remember_default", "last_login_name", "tabs", "notif_sync_tx", "notif_sync_pending", "app_lock", "app_pin_salt", "app_pin_hash", "app_fails", "app_locked_until", "app_lock_rt", "app_lock_ms",
+183:             // 10.5 (AUDIT-004): مظهر الكمبيوتر، ومعرّف عميل Google للكمبيوتر وسرّه (لا تنتقل بالنسخة ولا تُستبدل بالاستعادة)
+184:             "desk_theme", "drive_client_id", "drive_client_secret"));
+185: 
+186:     public static final String DEFAULT_ORDER = "tx,log,statement,totals,daily,search,office,currency,backup,settings";
+187: 
+188:     private final Context ctx;
+189:     private final Map<String, Integer> decimalsCache = new HashMap<>();
+190: 
+191:     public Db(Context c) {
+192:         // 12.6: الملف كله مشفّر (SQLCipher) بمفتاح مشتق من مفتاح البيانات؛ القاعدة القديمة تُشفَّر هنا قبل أول فتح
+193:         super(c, NAME, prepareCipher(c), null, VER, 0, null, null, false);
+194:         ctx = c.getApplicationContext();
+195:     }
+196: 
+197:     /**
+198:      * 12.6: يوم التحقق من انتهاء الاشتراك (yyyymmdd): أكبر يوم رآه التطبيق على هذا الجهاز (إعداد محلي لا يتزامن)،
+199:      * فإرجاع ساعة الجهاز للوراء لا يمدّد اشتراكًا منتهيًا.
+200:      */
+201:     public long licenseDay() {
+202:         long now = Long.parseLong(new java.text.SimpleDateFormat("yyyyMMdd", Locale.US).format(new java.util.Date(Clock.now())));
+203:         long seen = 0;
+204:         try {
+205:             seen = Long.parseLong(setting("license_day", "0"));
+206:         } catch (Exception ignored) {
+207:             // أول مرة
+208:         }
+209:         if (now > seen) {
+210:             try { setSettingQuiet("license_day", String.valueOf(now)); } catch (Throwable ignored) { /* لا يمنع الإقلاع */ }
+211:             return now;
+212:         }
+213:         return seen;
+214:     }
+215: 
+216:     /** 12.6: سبب بقاء القاعدة غير مشفّرة الآن (فشل التشفير، أو مفتاح البيانات غير متاح)، أو فارغ. */
+217:     public static volatile String cipherNote = "";
+218: 
+219:     /**
+220:      * 12.6: قاعدة مشفّرة لم تُفتح بالمفتاح الحالي (ضياع مفتاح الجهاز): نُقلت جانبًا كما هي — لا تُحذف أبدًا —
+221:      * وفُتحت قاعدة فارغة حتى تظهر شاشة «مفتاح التشفير غير متاح» وتعمل الاستعادة. null = لا شيء.
+222:      */
+223:     public static volatile File lockedAside;
+224: 
+225:     /** هل ملف القاعدة الحالي مشفّر؟ (للعرض والاختبار) */
+226:     public boolean encrypted() {
+227:         File f = ctx.getDatabasePath(NAME);
+228:         return f.exists() && !DbCipher.isPlain(f);
+229:     }
+230: 
+231:     /** 12.7: قاعدة قديمة غير مشفّرة ومفتاحها متاح: أول فتح سيشفّرها (قد يستغرق ثوانيَ مع البيانات الكبيرة). */
+232:     public static boolean needsEncryption(Context c) {
+233:         try {
+234:             Context app = c.getApplicationContext() != null ? c.getApplicationContext() : c;
+235:             File f = app.getDatabasePath(NAME);
+236:             return f.isFile() && f.length() > 0 && DbCipher.isPlain(f) && Crypto.dbKey() != null;
+237:         } catch (Throwable t) {
+238:             return false;
+239:         }
+240:     }
+241: 
+242:     /** 12.7: مرة واحدة في وقت واحد (أي خيط يفتح القاعدة ينتظر الآخر فلا يُشفَّر الملف مرتين معًا). */
+243:     static synchronized String prepareCipher(Context c) {
+244:         // 12.7.1: مكتبة التشفير تُحمَّل قبل أي فتح للقاعدة. كانت تُحمَّل فقط عند تشفير قاعدة قديمة، فتنهار القاعدة الجديدة
+245:         // (أول تثبيت، أو بعد «إعادة التعيين») بـ UnsatisfiedLinkError: No implementation found for net.zetetic…
+246:         DbCipher.load();
+247:         Context app = c.getApplicationContext() != null ? c.getApplicationContext() : c;
+248:         File f = app.getDatabasePath(NAME);
+249:         String key = Crypto.dbKey();
+250:         cipherNote = "";
+251:         if (f.exists() && f.length() == 0) DbCipher.deleteDb(f);   // ملف فارغ لم يُكتب فيه شيء
+252:         if (!f.exists()) {
+253:             if (key == null) cipherNote = "مفتاح البيانات غير متاح: القاعدة الجديدة غير مشفّرة حتى يتوفر.";
+254:             return key == null ? "" : key;
+255:         }
+256:         if (DbCipher.isPlain(f)) {
+257:             if (key == null) {
+258:                 cipherNote = "مفتاح البيانات غير متاح الآن: تبقى القاعدة كما كانت (غير مشفّرة) وتُشفَّر في تشغيل لاحق.";
+259:                 return "";
+260:             }
+261:             try {
+262:                 DbCipher.encrypt(app, f, key);
+263:                 return key;
+264:             } catch (Throwable t) {
+265:                 cipherNote = "تعذر تشفير القاعدة هذه المرة (" + t.getMessage() + "). بياناتك سليمة كما هي، ويُعاد التشفير في التشغيل التالي.";
+266:                 return "";
+267:             }
+268:         }
+269:         if (key != null && DbCipher.canOpen(f, key)) return key;
+270:         // مشفّرة ولا تُفتح الآن: تُنقل جانبًا كما هي (قد يعود المفتاح)، ولا تُحذف
+271:         File aside = new File(f.getParentFile(), "smart_accountant.locked-" + System.currentTimeMillis() + ".db");
+272:         if (f.renameTo(aside)) {
+273:             new File(f.getPath() + "-wal").renameTo(new File(aside.getPath() + "-wal"));
+274:             new File(f.getPath() + "-shm").delete();
+275:             lockedAside = aside;
+276:         }
+277:         return key == null ? "" : key;
+278:     }
+279: 
+280:     /**
+281:      * 12.6: بعد عودة المفتاح («إعادة المحاولة») تُعاد القاعدة المنقولة جانبًا إن فُتحت بالمفتاح؛ يرجع Db جديدة أو null.
+282:      */
+283:     public static Db restoreLockedAside(Context c, Db current) {
+284:         File aside = lockedAside;
+285:         String key = Crypto.dbKey();
+286:         if (aside == null || key == null || !DbCipher.canOpen(aside, key)) return null;
+287:         File f = c.getDatabasePath(NAME);

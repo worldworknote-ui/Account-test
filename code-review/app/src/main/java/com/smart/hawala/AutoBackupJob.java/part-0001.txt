@@ -1,0 +1,31 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.job.JobParameters;
+4: import android.app.job.JobService;
+5: 
+6: /** مهمة دورية من النظام (كل 6 ساعات تقريبًا) تنشئ النسخة التلقائية إن حان موعدها. */
+7: public class AutoBackupJob extends JobService {
+8:     @Override
+9:     public boolean onStartJob(final JobParameters params) {
+10:         new Thread(new Runnable() {
+11:             @Override public void run() {
+12:                 try {
+13:                     Db db = SmartApp.db;
+14:                     if (db == null) {
+15:                         db = new Db(getApplicationContext());
+16:                         SmartApp.db = db;
+17:                     }
+18:                     if (AutoBackup.due(db)) AutoBackup.runNow(getApplicationContext(), db);
+19:                 } catch (Throwable ignored) {
+20:                     // سُجّل الخطأ وأُرسل إشعار
+21:                 } finally {
+22:                     jobFinished(params, false);
+23:                 }
+24:             }
+25:         }, "auto-backup-job").start();
+26:         return true;
+27:     }
+28: 
+29:     @Override
+30:     public boolean onStopJob(JobParameters params) { return true; }
+31: }

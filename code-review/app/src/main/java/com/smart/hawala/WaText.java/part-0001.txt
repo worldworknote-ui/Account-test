@@ -1,0 +1,122 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.List;
+5: import java.util.regex.Matcher;
+6: import java.util.regex.Pattern;
+7: 
+8: /**
+9:  * يقسم نصًا مشارَكًا أو منسوخًا من واتساب إلى رسائل منفصلة.
+10:  * واتساب يضع لكل رسالة عند نسخ عدة رسائل سطرًا مثل «[13/10/26, 1:48 AM] أحمد: …» أو «[07/10, 20:39] أحمد: …»،
+11:  * وعند تصدير المحادثة «13/10/2026, 01:48 - أحمد: …». رسالة واحدة بلا رأس تبقى رسالة واحدة.
+12:  * منطق بحت بلا أندرويد حتى يُختبر على الكمبيوتر.
+13:  */
+14: public final class WaText {
+15:     private WaText() {}
+16: 
+17:     public static final class Msg {
+18:         /** اسم المرسل كما في واتساب، أو فارغ إن لم يُذكر. */
+19:         public final String sender;
+20:         /** التاريخ والوقت كما كتبهما واتساب (للعرض فقط). */
+21:         public final String time;
+22:         public final String body;
+23: 
+24:         public Msg(String sender, String time, String body) {
+25:             this.sender = sender == null ? "" : sender.trim();
+26:             this.time = time == null ? "" : time.trim();
+27:             this.body = body == null ? "" : body.trim();
+28:         }
+29:     }
+30: 
+31:     /** علامات الاتجاه التي يضعها واتساب حول التواريخ والأسماء. */
+32:     static String stripMarks(String s) {
+33:         StringBuilder sb = new StringBuilder(s.length());
+34:         for (char ch : s.toCharArray()) {
+35:             if (ch == '\u200e' || ch == '\u200f' || ch == '\u061c' || (ch >= '\u202a' && ch <= '\u202e') || (ch >= '\u2066' && ch <= '\u2069')) continue;
+36:             if (ch == '\u00a0' || ch == '\u202f') ch = ' ';
+37:             sb.append(ch);
+38:         }
+39:         return sb.toString();
+40:     }
+41: 
+42:     private static final String TIME = "\\d{1,2}:\\d{2}(?::\\d{2})?\\s*(?:[AaPp]\\.?\\s?[Mm]\\.?|ص|م)?";
+43:     /** يوم/شهر/سنة، أو يوم/شهر فقط: واتساب يحذف السنة عند نسخ رسائل من السنة الحالية «[07/10, 20:39]». */
+44:     private static final String DATE = "\\d{1,4}[/.\\-]\\d{1,2}(?:[/.\\-]\\d{1,4})?";
+45:     /** «[13/10/26, 1:48 AM] أحمد: نص» (النسخ في أندرويد وآيفون). */
+46:     private static final Pattern BRACKET = Pattern.compile("^\\s*\\[(" + DATE + "[,،]?\\s*" + TIME + "|" + TIME + "[,،]?\\s*" + DATE + ")\\]\\s*([^:\\n]{1,80}?):\\s?(.*)$");
+47:     /** «13/10/2026, 01:48 - أحمد: نص» (تصدير المحادثة). */
+48:     private static final Pattern DASH = Pattern.compile("^\\s*(" + DATE + "[,،]?\\s+" + TIME + ")\\s+[-–]\\s+([^:\\n]{1,80}?):\\s?(.*)$");
+49:     /** «13/10/2026, 01:48 - رسالة النظام» بلا مرسل: تُتجاهل. */
+50:     private static final Pattern DASH_SYSTEM = Pattern.compile("^\\s*" + DATE + "[,،]?\\s+" + TIME + "\\s+[-–]\\s+[^:]*$");
+51: 
+52:     /** نصوص لا تحمل حوالة: وسائط محذوفة ورسائل محذوفة. */
+53:     private static boolean junk(String body) {
+54:         String b = body.trim().toLowerCase(java.util.Locale.ROOT);
+55:         if (b.isEmpty()) return true;
+56:         String[] junk = {"<media omitted>", "<الوسائط غير مضمنة>", "<تم استبعاد الوسائط>", "تم حذف هذه الرسالة", "this message was deleted",
+57:                 "you deleted this message", "لقد حذفت هذه الرسالة", "null", "image omitted", "video omitted", "audio omitted", "sticker omitted",
+58:                 "document omitted", "gif omitted", "\u200Fصورة محذوفة"};
+59:         for (String j : junk) if (b.equals(j)) return true;
+60:         return false;
+61:     }
+62: 
+63:     /** يحذف علامة «تم تعديل هذه الرسالة» التي يضيفها واتساب لآخر الرسالة. */
+64:     private static String cleanBody(String body) {
+65:         return body.replaceAll("(?i)\\s*<(this message was edited|تم تعديل هذه الرسالة)>\\s*$", "").trim();
+66:     }
+67: 
+68:     /** يقسم النص إلى رسائل. */
+69:     public static List<Msg> split(String text) {
+70:         List<Msg> out = new ArrayList<>();
+71:         if (text == null) return out;
+72:         String t = MessageParser.digits(stripMarks(text)).replace("\r\n", "\n").replace('\r', '\n');
+73:         String[] lines = t.split("\n", -1);
+74:         String sender = null, time = null;
+75:         StringBuilder body = null;
+76:         boolean any = false;
+77:         for (String line : lines) {
+78:             Matcher m = BRACKET.matcher(line);
+79:             Matcher d = m.matches() ? null : DASH.matcher(line);
+80:             if (m.matches() || (d != null && d.matches())) {
+81:                 Matcher h = m.matches() ? m : d;
+82:                 if (body != null) add(out, sender, time, body.toString());
+83:                 any = true;
+84:                 time = h.group(1);
+85:                 sender = h.group(2);
+86:                 body = new StringBuilder(h.group(3));
+87:                 continue;
+88:             }
+89:             if (any && DASH_SYSTEM.matcher(line).matches()) {
+90:                 if (body != null) add(out, sender, time, body.toString());
+91:                 body = null;
+92:                 sender = null;
+93:                 time = null;
+94:                 continue;
+95:             }
+96:             if (body == null) body = new StringBuilder(line);
+97:             else body.append('\n').append(line);
+98:         }
+99:         if (body != null) add(out, sender, time, body.toString());
+100:         if (!any) {
+101:             // بلا رؤوس: رسالة واحدة بنصها كما هو (مع إزالة علامات الاتجاه فقط)
+102:             out.clear();
+103:             String one = cleanBody(stripMarks(text).trim());
+104:             if (!junk(one)) out.add(new Msg("", "", one));
+105:         }
+106:         return out;
+107:     }
+108: 
+109:     private static void add(List<Msg> out, String sender, String time, String body) {
+110:         String b = cleanBody(body);
+111:         if (junk(b)) return;
+112:         out.add(new Msg(sender, time, b));
+113:     }
+114: 
+115:     /** بصمة نص الرسالة للمقارنة (بلا مسافات وعلامات ترقيم، وبحروف موحّدة): تكشف الرسالة نفسها إن شوركت مرتين. */
+116:     public static String fingerprint(String body) {
+117:         String n = MessageParser.norm(stripMarks(body == null ? "" : body));
+118:         StringBuilder sb = new StringBuilder(n.length());
+119:         for (char ch : n.toCharArray()) if (Character.isLetterOrDigit(ch)) sb.append(ch);
+120:         return sb.toString();
+121:     }
+122: }

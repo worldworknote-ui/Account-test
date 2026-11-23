@@ -1,0 +1,154 @@
+336:         // 10.14: اختيار الحساب صراحة من حسابات الهاتف، فيتغيّر فعلًا ويظهر أي حساب متصل
+337:         a.button(ok ? "✓ متصل" + (acct.isEmpty() ? "" : " بـ " + acct) + " — تغيير الحساب" : "1) اختيار حساب Google وتسجيل الدخول", ok ? a.accent : a.primary,
+338:                 v -> signIn(acct, this::show));
+339:         if (ok) createOrJoin("Google Drive");
+340:     }
+341: 
+342:     /** 10.14: اختيار حساب Google من الهاتف ثم الموافقة على صلاحية «مجلد التطبيق» له، وحفظه لهذا الجهاز. */
+343:     private void signIn(String current, final Runnable after) {
+344:         DriveAuth.pickAccount(a, current, email -> DriveAuth.connect(a, email, new DriveAuth.Done() {
+345:             @Override public void ok() {
+346:                 a.db.setSettingQuiet("drive_account", email);
+347:                 a.db.setSettingQuiet("sync_drive_ok", "1");
+348:                 a.toast("تم الاتصال بـ " + email + " ✓");
+349:                 after.run();
+350:             }
+351: 
+352:             @Override public void fail(Exception e) { a.error(e); }
+353:         }));
+354:     }
+355: 
+356:     /** 11.3: هل الخطأ انتهاء دخول Google (لا شبكة ولا غيره)؟ */
+357:     static boolean authError(String m) {
+358:         if (m == null) return false;
+359:         String l = m.toLowerCase(java.util.Locale.ROOT);
+360:         return m.contains("سجّل الدخول") || m.contains("رمز Google") || m.contains("صلاحية الدخول") || l.contains("invalid_grant")
+361:                 || l.contains("unauthorized") || l.contains("401") || l.contains("userrecoverableauth") || l.contains("need permission")
+362:                 || l.contains("token has been expired") || l.contains("revoked");
+363:     }
+364: 
+365:     /** 11.3: إعادة الدخول بالحساب نفسه (لأي مستخدم). */
+366:     void reLogin(final String acct) {
+367:         DriveAuth.connect(a, acct, new DriveAuth.Done() {
+368:             @Override public void ok() {
+369:                 a.db.setSettingQuiet("sync_drive_ok", "1");
+370:                 a.toast("تم الاتصال بـ Google Drive ✓");
+371:                 now(SyncScreen.this::show);
+372:             }
+373: 
+374:             @Override public void fail(Exception e) { a.error(e); }
+375:         });
+376:     }
+377: 
+378:     private void introServer() {
+379:         LinearLayout h = a.card();
+380:         h.addView(a.text("خادم المزامنة الخاص بك", 16, a.primaryInk, true));
+381:         h.addView(a.text("على الجهاز الرئيسي: اكتب عنوان خادمك (https://…) ورمز الخادم إن وُجد، ثم أنشئ المزامنة؛ يظهر بعدها «رابط الانضمام».\n"
+382:                 + "على الأجهزة الأخرى: الصق «رابط الانضمام» نفسه ورمز الخادم ثم انضم.", 13, a.dark, false));
+383:         final EditText url = a.field("عنوان الخادم أو رابط الانضمام");
+384:         String cur = a.db.setting("sync_server", "");
+385:         String v0 = a.db.setting("sync_server_vault", "");
+386:         url.setText(cur.isEmpty() ? "" : v0.isEmpty() ? cur : HttpSyncFolder.link(cur, v0));
+387:         url.setTextDirection(android.view.View.TEXT_DIRECTION_LTR);
+388:         url.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+389:         a.body.addView(url, a.lp(-1, 52, 4));
+390:         final EditText key = a.field("رمز الخادم (إن طلبه خادمك)");
+391:         key.setText(a.db.setting("sync_server_key", ""));
+392:         Ui.secret(key, false);
+393:         a.body.addView(key, a.lp(-1, 52, 4));
+394:         a.button("1) حفظ وفحص الاتصال", a.accent, v -> {
+395:             final String[] pv = HttpSyncFolder.parseLink(url.getText().toString());
+396:             try {
+397:                 HttpSyncFolder.checkUrl(pv[0]);
+398:             } catch (Exception e) {
+399:                 a.error(e);
+400:                 return;
+401:             }
+402:             final String k = key.getText().toString().trim();
+403:             a.busy("جارٍ فحص الخادم…", p -> new HttpSyncFolder(pv[0], pv[1], k).ping(), res -> {
+404:                 a.db.setSettingQuiet("sync_server", pv[0]);
+405:                 a.db.setSettingQuiet("sync_server_vault", pv[1] == null ? "" : pv[1]);
+406:                 a.db.setSettingQuiet("sync_server_key", k);
+407:                 a.toast(String.valueOf(res));
+408:                 show();
+409:             });
+410:         });
+411:         if (!cur.isEmpty()) createOrJoin("الخادم");
+412:     }
+413: 
+414:     private void introFolder() {
+415:         LinearLayout h = a.card();
+416:         h.addView(a.text("المجلد المشترك", 16, a.primaryInk, true));
+417:         h.addView(a.text("اختر المجلد نفسه على كل جهاز:\n"
+418:                 + "• مجلد في Google Drive: قد يتأخر ظهور تغييرات الأجهزة الأخرى حتى يحدّث تطبيق Drive المجلد على الهاتف.\n"
+419:                 + "• \u200FFolderSync أو Syncthing: مجلد في ذاكرة الهاتف تزامنه هذه التطبيقات — أسرع وأثبت.\n"
+420:                 + "• على الماك والويندوز: مجلد داخل Google Drive أو OneDrive أو Dropbox بعد تثبيت تطبيقها.", 13, a.dark, false));
+421:         a.button("1) اختيار مجلد المزامنة", a.accent, v -> pick(this::show));
+422:         String tree = a.db.setting("sync_tree", "");
+423:         if (tree.isEmpty()) return;
+424:         a.hint("المجلد: " + new SafSyncFolder(a, Uri.parse(tree)).describe());
+425:         createOrJoin("المجلد");
+426:     }
+427: 
+428:     void pick(Runnable after) {
+429:         afterPick = after;
+430:         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+431:         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+432:                 | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+433:         a.toast("اختر المجلد المشترك (أو أنشئ واحدًا) ثم اضغط «استخدام هذا المجلد».");
+434:         a.startForResult(i, PICK_TREE);
+435:     }
+436: 
+437:     void onResult(int code, Intent data) {
+438:         if (code != android.app.Activity.RESULT_OK || data == null || data.getData() == null) return;
+439:         Uri tree = data.getData();
+440:         try {
+441:             a.getContentResolver().takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+442:         } catch (Exception e) {
+443:             a.error(new IllegalStateException("لم يمنح هذا المجلد صلاحية دائمة. اختر مجلدًا في ذاكرة الهاتف."));
+444:             return;
+445:         }
+446:         a.db.setSettingQuiet("sync_tree", tree.toString());
+447:         if (afterPick != null) afterPick.run();
+448:     }
+449: 
+450:     private EditText secret(LinearLayout l, String hint) {
+451:         EditText e = a.field(hint);
+452:         Ui.secret(e, false);
+453:         l.addView(e, a.lp(-1, 50, 3));
+454:         return e;
+455:     }
+456: 
+457:     private void createDialog() {
+458:         LinearLayout l = new LinearLayout(a);
+459:         l.setOrientation(LinearLayout.VERTICAL);
+460:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+461:         final EditText name = a.field("اسم هذا الجهاز (مثل: هاتف المحل)");
+462:         l.addView(name, a.lp(-1, 50, 3));
+463:         final EditText p1 = secret(l, "كلمة سر المزامنة (8 محارف على الأقل)"), p2 = secret(l, "أعد كتابتها");
+464:         TextView n = a.text("تُطلب كلمة السر على كل جهاز ينضم. لا تُسترد إن نسيتها، إلا برمز الاسترداد الذي يظهر بعد الإنشاء.", 12, a.muted, false);
+465:         l.addView(n);
+466:         final AlertDialog d = new AlertDialog.Builder(a).setTitle("إنشاء المزامنة").setView(l).setPositiveButton("إنشاء", null).setNegativeButton("إلغاء", null).create();
+467:         d.setOnShowListener(x -> d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+468:             final String s1 = p1.getText().toString();
+469:             if (s1.length() < 8) {
+470:                 p1.setError("8 محارف على الأقل");
+471:                 return;
+472:             }
+473:             if (!s1.equals(p2.getText().toString())) {
+474:                 p2.setError("غير متطابقة");
+475:                 return;
+476:             }
+477:             d.dismiss();
+478:             final String dn = name.getText().toString();
+479:             a.busy("جارٍ إنشاء الخزنة المشفّرة ورفع لقطة البيانات…", p -> new SyncEngine(a.db, folder(a, a.db)).create(s1.toCharArray(), dn), res -> {
+480:                 if ("server".equals(transport(a.db))) a.db.setSettingQuiet("sync_server_vault", SyncEngine.status(a.db).vaultId);
+481:                 recoveryDialog((String) res);
+482:             });
+483:         }));
+484:         d.show();
+485:     }
+486: 
+487:     private void recoveryDialog(final String code) {
+488:         new AlertDialog.Builder(a).setTitle("رمز الاسترداد — احفظه الآن")
+489:                 .setMessage("أُنشئت المزامنة ✓\n\nإن نُسيت كلمة السر فهذا الرمز وحده يفتح الخزنة. يظهر مرة واحدة فقط: انسخه واحفظه في مكان آمن خارج هذا الهاتف.\n\n" + code)

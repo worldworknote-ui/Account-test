@@ -1,0 +1,174 @@
+755:     Model.Tx duplicateOf(String text) {
+756:         String fp = WaText.fingerprint(text);
+757:         if (fp.length() < 12) return null;
+758:         Model.Tx t = recentPrints().get(fp);
+759:         if (t == null || (editing != null && t.id == editing.id)) return null;
+760:         Model.Tx full = db.tx(t.id);
+761:         return full != null && full.isActive() ? full : null;
+762:     }
+763: 
+764:     String dupText(Model.Tx t) {
+765:         return Model.date(t.createdAt) + " — " + db.officeNames().getOrDefault(t.officeId, "") + " — " + Model.fmt(t.amount, db.decimals(t.currency)) + " " + t.currency;
+766:     }
+767: 
+768:     // ===================================================================================
+769:     // الصور
+770:     // ===================================================================================
+771: 
+772:     void attach() {
+773:         File f = Export.open(this, db, "اختر صورة الوصل", ".jpg", ".jpeg", ".png", ".heic", ".gif", ".bmp");
+774:         if (f == null) return;
+775:         try {
+776:             BufferedImage im = ImageIO.read(f);
+777:             if (im == null) throw new IllegalArgumentException("الصيغة غير مدعومة؛ اختر JPG أو PNG (صور HEIC: صدّرها JPG من «الصور»).");
+778:             int max = 2000;
+779:             double s = Math.min(1, (double) max / Math.max(im.getWidth(), im.getHeight()));
+780:             int w = (int) (im.getWidth() * s), h = (int) (im.getHeight() * s);
+781:             BufferedImage rgb = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+782:             Graphics2D g = rgb.createGraphics();
+783:             g.setColor(Color.WHITE);
+784:             g.fillRect(0, 0, w, h);
+785:             g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+786:             g.drawImage(im, 0, 0, w, h, null);
+787:             g.dispose();
+788:             ByteArrayOutputStream o = new ByteArrayOutputStream();
+789:             ImageIO.write(rgb, "jpg", o);
+790:             imageData.add(o.toByteArray());
+791:             renderImages();
+792:         } catch (Exception e) {
+793:             Ui.error(this, e);
+794:         }
+795:     }
+796: 
+797:     void renderImages() {
+798:         images.removeAll();
+799:         for (int i = 0; i < imageData.size(); i++) {
+800:             final int k = i;
+801:             images.add(Ui.ghost("صورة " + (i + 1) + " ×", e -> {
+802:                 imageData.remove(k);
+803:                 renderImages();
+804:             }));
+805:         }
+806:         images.revalidate();
+807:         images.repaint();
+808:     }
+809: 
+810:     // ===================================================================================
+811:     // الملخص والحفظ
+812:     // ===================================================================================
+813: 
+814:     Db.TxInput input(boolean strict) throws Exception {
+815:         Model.Office o = (Model.Office) office.getSelectedItem();
+816:         if (o == null) throw new IllegalArgumentException("اختر المكتب");
+817:         if (type.none()) throw new IllegalArgumentException("اختر «لنا» أو «علينا»");
+818:         String c = (String) currency.getSelectedItem();
+819:         if (c == null) throw new IllegalArgumentException("اختر العملة");
+820:         Db.TxInput in = new Db.TxInput();
+821:         in.office = o.id;
+822:         in.type = type.selected == 0 ? Model.TYPE_DEBIT : Model.TYPE_CREDIT;
+823:         in.currency = c;
+824:         if (amount.val().isEmpty()) throw new IllegalArgumentException("اكتب المبلغ");
+825:         in.amount = Db.minor(amount.getText(), db.decimals(c));
+826:         if (in.amount <= 0) throw new IllegalArgumentException("المبلغ يجب أن يكون أكبر من صفر");
+827:         in.person = person.val();
+828:         in.description = desc.getText().trim();
+829:         in.notes = notes.val();
+830:         Object sv = service.getEditor().getItem();
+831:         in.service = sv == null ? "" : sv.toString().trim();
+832:         in.dest = dest.val();
+833:         long day = date.start();
+834:         long now = Clock.now();
+835:         if (day == 0 || day == Ui.startOfDay(now)) in.when = editing != null && Ui.startOfDay(editing.createdAt) == Ui.startOfDay(now) ? editing.createdAt : now;
+836:         else if (editing != null && Ui.startOfDay(editing.createdAt) == day) in.when = editing.createdAt;
+837:         else {
+838:             Calendar n = Model.cal();
+839:             Calendar x = Model.cal();
+840:             x.setTimeInMillis(day);
+841:             x.set(Calendar.HOUR_OF_DAY, n.get(Calendar.HOUR_OF_DAY));
+842:             x.set(Calendar.MINUTE, n.get(Calendar.MINUTE));
+843:             x.set(Calendar.SECOND, n.get(Calendar.SECOND));
+844:             in.when = Math.min(x.getTimeInMillis(), now);
+845:         }
+846:         if (feeMode.selected == 1) {
+847:             in.feeType = feeSide.selected == 0 ? Model.FEE_US : Model.FEE_THEM;
+848:             if (feeKind.selected == 1) {
+849:                 BigDecimal r = Model.parseRate(rate.getText());
+850:                 in.feeCurrency = c;
+851:                 in.fee = Model.feeFromRate(in.amount, r, per());
+852:                 if (in.fee <= 0) throw new IllegalArgumentException("الأجرة المحسوبة أصغر من أصغر وحدة في " + c + ". اكتبها كمبلغ محدد أو اختر «بدون أجرة».");
+853:             } else {
+854:                 String fc = (String) feeCur.getSelectedItem();
+855:                 in.feeCurrency = fc == null ? c : fc;
+856:                 if (fee.val().isEmpty()) throw new IllegalArgumentException("اكتب مبلغ الأجرة أو اختر «بدون أجرة»");
+857:                 in.fee = Db.minor(fee.getText(), db.decimals(in.feeCurrency));
+858:                 if (in.fee <= 0) throw new IllegalArgumentException("مبلغ الأجرة يجب أن يكون أكبر من صفر");
+859:             }
+860:         } else {
+861:             in.feeType = Model.FEE_NONE;
+862:             in.fee = 0;
+863:             in.feeCurrency = c;
+864:         }
+865:         return in;
+866:     }
+867: 
+868:     String summaryText(Db.TxInput in) {
+869:         Model.Office o = db.office(in.office);
+870:         int d = db.decimals(in.currency);
+871:         boolean us = Model.TYPE_DEBIT.equals(in.type);
+872:         StringBuilder b = new StringBuilder();
+873:         b.append(us ? "لنا " : "علينا ").append(Ui.ltr(Model.fmt(in.amount, d) + " " + in.currency)).append(" — «").append(o == null ? "" : o.name).append("»");
+874:         if (!in.person.isEmpty()) b.append("\nالمستفيد: ").append(in.person);
+875:         if (!Model.FEE_NONE.equals(in.feeType)) b.append("\n").append(in.feeType).append(": ").append(Ui.ltr(Model.fmt(in.fee, db.decimals(in.feeCurrency)) + " " + in.feeCurrency));
+876:         // 10.5 (§11): الرصيد من طبقة البيانات بقواعد الترحيل نفسها (الأجرة بأي عملة، والتعديل بين مكتبين أو عملتين)
+877:         for (Db.Preview p : db.preview(in, editing == null ? null : editing.id))
+878:             for (String cur : p.before.keySet())
+879:                 b.append("\nرصيد «").append(p.officeName).append("» بـ").append(cur).append(": ").append(Model.bal(p.before.get(cur), db.decimals(cur))).append("  ←  ")
+880:                         .append(Model.bal(p.after.get(cur), db.decimals(cur))).append(p.pending ? " بعد الاعتماد" : " بعد التسجيل");
+881:         if (in.when > 0 && Ui.startOfDay(in.when) != Ui.startOfDay(Clock.now())) b.append("\nبتاريخ ").append(Model.day(in.when));
+882:         return b.toString();
+883:     }
+884: 
+885:     void updateSummary() {
+886:         if (summary == null || building) return;
+887:         if (moreToggle != null) {
+888:             boolean filled = !dest.val().isEmpty() || !notes.val().isEmpty() || !imageData.isEmpty() || !service.getEditor().getItem().toString().trim().isEmpty();
+889:             showMore(more.isVisible() || filled);
+890:         }
+891:         try {
+892:             Db.TxInput in = input(false);
+893:             summary.setText("<html><div style='text-align:right'>" + Ui.esc(summaryText(in)) + "</div></html>");
+894:             summary.setForeground(Model.TYPE_DEBIT.equals(in.type) ? Ui.green : Ui.red);
+895:             if (type.getBorder() != null) type.setBorder(null);
+896:         } catch (Exception e) {
+897:             summary.setText("<html><div style='text-align:right'>" + Ui.esc(Ui.friendly(e)) + "</div></html>");
+898:             summary.setForeground(Ui.muted);
+899:         }
+900:     }
+901: 
+902:     List<String> sanity(Db.TxInput in) {
+903:         try {
+904:             Sanity.Input s = new Sanity.Input();
+905:             s.amount = in.amount;
+906:             s.when = in.when;
+907:             s.debit = Model.TYPE_DEBIT.equals(in.type);
+908:             s.currency = in.currency;
+909:             s.dec = db.decimals(in.currency);
+910:             s.person = in.person;
+911:             Long bal = db.balances(in.office).get(in.currency);
+912:             s.balanceBefore = bal == null ? 0 : bal;
+913:             Db.Limit lim = db.officeLimits(in.office).get(in.currency);
+914:             if (lim != null) {
+915:                 s.receivableLimit = lim.receivable;
+916:                 s.payableLimit = lim.payable;
+917:             }
+918:             Db.TxFilter f = new Db.TxFilter();
+919:             f.office = in.office;
+920:             f.limit = 60;
+921:             s.history = db.txLog(f);
+922:             return Sanity.check(s);
+923:         } catch (Exception e) {
+924:             return new ArrayList<>();
+925:         }
+926:     }
+927: 
+928:     /** 10.5: يمنع الحفظ المزدوج (نقرتان أو Enter مرتين أثناء الحفظ). */

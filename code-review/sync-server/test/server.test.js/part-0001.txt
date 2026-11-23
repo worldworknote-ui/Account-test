@@ -1,0 +1,77 @@
+1: // اختبارات خادم المزامنة (10.11): node sync-server/test/server.test.js — محليًا على 127.0.0.1 بمجلد مؤقت.
+2: "use strict";
+3: var path = require("path"), fs = require("fs"), os = require("os"), http = require("http");
+4: 
+5: var dir = fs.mkdtempSync(path.join(os.tmpdir(), "sa-sync-test-"));
+6: process.env.DATA_DIR = dir;
+7: process.env.RATE_PER_MIN = "5";
+8: process.env.MAX_VAULT_MB = "1";
+9: process.env.MAX_TOTAL_MB = "3";
+10: var S = require(path.join(__dirname, "..", "server.js"));
+11: 
+12: var fails = 0, passes = 0;
+13: function check(c, m) {
+14:   if (c) passes++; else fails++;
+15:   console.log((c ? "  PASS " : "  FAIL ") + m);
+16: }
+17: 
+18: function req(port, method, p, headers, body) {
+19:   return new Promise(function (res, rej) {
+20:     var r = http.request({ host: "127.0.0.1", port: port, method: method, path: p, headers: headers || {} }, function (rs) {
+21:       var c = [];
+22:       rs.on("data", function (d) { c.push(d); });
+23:       rs.on("end", function () { res({ code: rs.statusCode, body: Buffer.concat(c).toString() }); });
+24:     });
+25:     r.on("error", rej);
+26:     if (body) r.write(body);
+27:     r.end();
+28:   });
+29: }
+30: 
+31: function listen(srv) { return new Promise(function (ok) { srv.listen(0, "127.0.0.1", function () { ok(srv.address().port); }); }); }
+32: function auth(t) { return { Authorization: "Bearer " + t }; }
+33: 
+34: (async function () {
+35:   var A = "A".repeat(64), B = "B".repeat(64);
+36: 
+37:   console.log("== حد الطلبات");
+38:   var srv = S.makeServer(), port = await listen(srv);
+39:   var spoofed = [];
+40:   for (var i = 0; i < 8; i++) spoofed.push((await req(port, "GET", "/v1/health", { "X-Forwarded-For": "10.0.0." + i })).code);
+41:   check(spoofed.indexOf(429) >= 0, "X-Forwarded-For يكتبه العميل لا يتجاوز حد الطلبات (بلا TRUST_PROXY): " + spoofed.join(","));
+42:   srv.close();
+43: 
+44:   process.env.RATE_PER_MIN = "100000";
+45:   delete require.cache[require.resolve(path.join(__dirname, "..", "server.js"))];
+46:   S = require(path.join(__dirname, "..", "server.js"));
+47:   srv = S.makeServer();
+48:   port = await listen(srv);
+49: 
+50:   console.log("== الكتابة والقراءة");
+51:   var V = "deadbeefdeadbeef";
+52:   check((await req(port, "PUT", "/v1/vault/" + V + "/file/p-1.sab", auth(A), Buffer.from("x"))).code === 200, "أول كتابة تنشئ الخزنة");
+53:   check((await req(port, "GET", "/v1/vault/" + V + "/file/p-1.sab", auth(A))).body === "x", "القراءة بالرمز");
+54:   check((await req(port, "GET", "/v1/vault/" + V + "/file/p-1.sab", auth(B))).code === 401, "رمز آخر يُرفض");
+55: 
+56:   console.log("== الأسماء التي تبدأ بنقطة (ملف الرمز والملفات المؤقتة)");
+57:   check((await req(port, "PUT", "/v1/vault/" + V + "/file/.token", auth(A), Buffer.from("y"))).code === 400, "لا كتابة فوق .token");
+58:   check((await req(port, "DELETE", "/v1/vault/" + V + "/file/.token", auth(A))).code === 400, "لا حذف لـ .token");
+59:   check((await req(port, "GET", "/v1/vault/" + V + "/file/.token", auth(A))).code === 400, "لا قراءة لـ .token");
+60:   var dd = (await req(port, "GET", "/v1/vault/" + V + "/file/..", auth(A))).code;
+61:   check(dd === 400 || dd === 404, "الاسم «..» لا يصل إلى نظام الملفات (" + dd + ")");
+62:   check((await req(port, "PUT", "/v1/vault/" + V + "/file/p-2.sab", auth(B), Buffer.from("z"))).code === 401, "الخزنة ما زالت لصاحبها");
+63: 
+64:   console.log("== الحدود");
+65:   var big = Buffer.alloc(2 * 1024 * 1024, 1);
+66:   check((await req(port, "PUT", "/v1/vault/cafebabecafebabe/file/p-1.sab", auth(A), big)).code === 507, "أول ملف في خزنة جديدة أكبر من حد الخزنة يُرفض");
+67:   var ok = 0;
+68:   for (var k = 0; k < 5; k++) {
+69:     var r = await req(port, "PUT", "/v1/vault/" + ("0123456789abcd" + k + k) + "/file/p-1.sab", auth(A), Buffer.alloc(900 * 1024, 1));
+70:     if (r.code === 200) ok++;
+71:   }
+72:   check(ok === 3, "حد كل الخزنات معًا (3MB): قُبلت " + ok + " خزنات بحجم 900KB من 5");
+73:   srv.close();
+74: 
+75:   console.log("\n" + (fails === 0 ? "ALL " + passes + " PASSED" : fails + " FAILED"));
+76:   process.exit(fails === 0 ? 0 : 1);
+77: })().catch(function (e) { console.error(e); process.exit(1); });

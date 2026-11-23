@@ -1,0 +1,197 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.content.Intent;
+5: import android.graphics.Bitmap;
+6: import android.graphics.Color;
+7: import android.os.Build;
+8: import android.os.Bundle;
+9: import android.os.SystemClock;
+10: import android.view.Gravity;
+11: import android.view.View;
+12: import android.view.WindowManager;
+13: import android.widget.Button;
+14: import android.widget.ImageView;
+15: import android.widget.LinearLayout;
+16: import android.widget.TextView;
+17: import android.widget.Toast;
+18: import java.io.File;
+19: import java.util.ArrayList;
+20: import java.util.Arrays;
+21: import java.util.HashMap;
+22: import java.util.HashSet;
+23: import java.util.LinkedHashMap;
+24: import java.util.List;
+25: import java.util.Map;
+26: import java.util.Set;
+27: 
+28: public class MainActivity extends Ui {
+29: 
+30:     static final int PICK_IMAGES = 20, TAKE_PHOTO = 21, CREATE_BACKUP = 30, OPEN_BACKUP = 31, AUTO_TREE = 32, DRIVE_FILE = 33, PICK_LOGO = 40, SAVE_EXPORT = 60, LICENSE_FILE = 61, LICENSE_QR = 62;
+31:     static final List<String> HOME_KEYS = Arrays.asList("tx", "log", "statement", "totals", "daily", "search", "office", "currency", "backup", "cash", "reports", "mine", "settings");
+32:     static boolean reminderShownThisSession;
+33: 
+34:     final TxScreen txScreen = new TxScreen(this);
+35:     final StatementScreen statementScreen = new StatementScreen(this);
+36:     final BalancesScreen balancesScreen = new BalancesScreen(this);
+37:     final LogScreen logScreen = new LogScreen(this);
+38:     final DailyScreen dailyScreen = new DailyScreen(this);
+39:     final ExportUi exportUi = new ExportUi(this);
+40:     final BackupScreen backupScreen = new BackupScreen(this);
+41:     final ResetScreen resetScreen = new ResetScreen(this);
+42:     final DesignScreen designScreen = new DesignScreen(this);
+43:     final OfficesScreen officesScreen = new OfficesScreen(this);
+44:     final SettingsScreen settingsScreen = new SettingsScreen(this);
+45:     final UsersScreen usersScreen = new UsersScreen(this);
+46:     final ReconScreen reconScreen = new ReconScreen(this);
+47:     final WaQueue waQueue = new WaQueue(this);
+48:     /** 12.1: نقل الرسائل (الحافظة بكل صيغها، القص، التجميع، إطار الالتقاط). */
+49:     final WaMove waMove = new WaMove(this);
+50:     final HomeScreen homeScreen = new HomeScreen(this);
+51:     final OfficeHub officeHub = new OfficeHub(this);
+52:     final MoreScreen moreScreen = new MoreScreen(this);
+53:     final LicenseScreen licenseScreen = new LicenseScreen(this);
+54:     final FxScreen fxScreen = new FxScreen(this);
+55:     final MineScreen mineScreen = new MineScreen(this);
+56:     final TeamScreen teamScreen = new TeamScreen(this);
+57:     final OwnerScreen ownerScreen = new OwnerScreen(this);
+58:     final ReportsScreen reportsScreen = new ReportsScreen(this);
+59:     final CashScreen cashScreen = new CashScreen(this);
+60:     final SyncScreen syncScreen = new SyncScreen(this);
+61:     final TabsScreen tabsScreen = new TabsScreen(this);
+62:     final AppLock appLock = new AppLock(this);
+63:     final NotifScreen notifScreen = new NotifScreen(this);
+64:     final UsageScreen usageScreen = new UsageScreen(this);
+65: 
+66:     /** إعادة إنشاء الشاشة بعد تغيير الخط أو الوضع الليلي: لا تُطلب البصمة مجددًا، ونعود للشاشة نفسها. */
+67:     static boolean trustedRecreate;
+68:     static String recreateTarget;
+69:     static final String ACTION_NEW_TX = "com.smart.hawala.action.NEW_TX";
+70:     static final String ACTION_PASTE = "com.smart.hawala.action.PASTE";
+71:     static final String ACTION_OFFICES = "com.smart.hawala.action.OFFICES";
+72:     static final String ACTION_SEARCH = "com.smart.hawala.action.SEARCH";
+73:     static final String ACTION_PENDING = "com.smart.hawala.action.PENDING";
+74:     static final String ACTION_DUPS = "com.smart.hawala.action.DUPS";
+75:     static final String ACTION_LOG = "com.smart.hawala.action.LOG";
+76:     /** 10.16: يفتح شاشة المزامنة (من إشعار تعارض أو دخول جهاز). */
+77:     static final String ACTION_SYNC = "com.smart.hawala.action.SYNC";
+78:     /** اختصار من أيقونة التطبيق (ضغطة مطولة) ينتظر فتح القفل. */
+79:     String pendingShortcut;
+80: 
+81:     final List<byte[]> pendingImages = new ArrayList<>();
+82:     String cameraFile;
+83:     File restoreInput;
+84:     boolean unlocked;
+85:     /** 8.0: مفتاح التشفير مفقود (فشل الفحص الذاتي): لا إدخال ولا نسخ، والاستعادة فقط. */
+86:     static boolean keyMissing;
+87:     long lastAuthAt;
+88:     long pausedAt;
+89: 
+90:     // ===================================================================================
+91:     // دورة الحياة
+92:     // ===================================================================================
+93: 
+94:     @Override
+95:     public void onCreate(Bundle b) {
+96:         super.onCreate(b);
+97:         // 10.1: كل عملية مسجّلة تجدول مزامنة قريبة (على الخيط الرئيسي)
+98:         final android.os.Handler mh = new android.os.Handler(android.os.Looper.getMainLooper());
+99:         Db.onLocalChange = () -> mh.post(syncScreen::syncSoon);
+100:         try {
+101:             getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+102:         } catch (Throwable ignored) {
+103:             // غير مهم
+104:         }
+105:         if (b != null) {
+106:             cameraFile = b.getString("cameraFile");
+107:             String ri = b.getString("restoreInput");
+108:             if (ri != null) restoreInput = new File(ri);
+109:         }
+110:         // 12.7: أول تشفير لقاعدة قديمة: في الخلفية بشاشة واضحة، ثم يكمل الإقلاع
+111:         if (SmartApp.db == null && Db.needsEncryption(this)) {
+112:             encryptingScreen(b);
+113:             return;
+114:         }
+115:         startWithDb(b);
+116:     }
+117: 
+118:     private void encryptingScreen(final Bundle b) {
+119:         LinearLayout l = new LinearLayout(this);
+120:         l.setOrientation(LinearLayout.VERTICAL);
+121:         l.setGravity(Gravity.CENTER);
+122:         l.setPadding(dp(28), dp(28), dp(28), dp(28));
+123:         l.addView(new android.widget.ProgressBar(this));
+124:         TextView t = new TextView(this);
+125:         t.setText("جارٍ تشفير بيانات المحاسب لأول مرة…\n\nيحدث مرة واحدة فقط وقد يستغرق دقيقة مع البيانات الكبيرة. بياناتك تبقى كما هي، "
+126:                 + "وإن أُغلق التطبيق الآن يُعاد التشفير بأمان في الفتح التالي.");
+127:         t.setTextSize(16);
+128:         t.setGravity(Gravity.CENTER);
+129:         t.setPadding(0, dp(18), 0, 0);
+130:         l.addView(t);
+131:         setContentView(l);
+132:         final android.content.Context app = getApplicationContext();
+133:         new Thread(() -> {
+134:             Throwable err = null;
+135:             try {
+136:                 if (SmartApp.db == null) {
+137:                     SmartApp.db = new Db(app);
+138:                     SmartApp.afterDb(app);
+139:                 }
+140:             } catch (Throwable x) {
+141:                 err = x;
+142:             }
+143:             final Throwable fe = err;
+144:             runOnUiThread(() -> {
+145:                 if (isFinishing()) return;
+146:                 if (fe != null) showFatal(fe);
+147:                 else startWithDb(b);
+148:             });
+149:         }, "first-encrypt").start();
+150:     }
+151: 
+152:     private void startWithDb(Bundle b) {
+153:         try {
+154:             if (SmartApp.db == null) SmartApp.db = new Db(getApplicationContext());
+155:             db = SmartApp.db;
+156:             applySecureScreen();
+157:             keyMissing = !Crypto.healthy(this) || Db.lockedAside != null;   // 12.6: أو قاعدة مشفّرة لم تُفتح بالمفتاح
+158:             applyTheme();
+159:             // مشاركة من واتساب (مرة واحدة: لا تُعاد عند استرجاع الشاشة بعد إغلاق النظام لها)
+160:             if (b == null) {
+161:                 waQueue.pending = waQueue.fromIntent(getIntent());
+162:                 pendingShortcut = shortcutOf(getIntent());
+163:             }
+164:             applyColors();
+165:             cleanShared();
+166:             if (trustedRecreate) {
+167:                 trustedRecreate = false;
+168:                 unlocked = true;
+169:                 lastAuthAt = SystemClock.elapsedRealtime();
+170:                 String target = recreateTarget;
+171:                 recreateTarget = null;
+172:                 if ("design".equals(target) && !(db.usersEnabled() && SmartApp.currentUser == null)) designScreen.show();
+173:                 else afterUnlock();
+174:             } else if (biometricOn()) {
+175:                 appLock.lockScreen();
+176:             } else {
+177:                 unlocked = true;
+178:                 afterUnlock();
+179:             }
+180:             AutoBackup.runIfDueAsync(this);
+181:             Notifier.schedule(this);
+182:         } catch (Throwable t) {
+183:             showFatal(t);
+184:         }
+185:     }
+186: 
+187:     /** إعادة الإنشاء بعد تغيير السمة أو الخط مع الحفاظ على حالة الدخول. */
+188:     void restyle(String target) {
+189:         txScreen.saveDraft();
+190:         trustedRecreate = true;
+191:         recreateTarget = target;
+192:         recreate();
+193:     }
+194: 
+195:     @Override
+196:     public void onConfigurationChanged(android.content.res.Configuration cfg) {
+197:         super.onConfigurationChanged(cfg);

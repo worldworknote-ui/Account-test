@@ -1,0 +1,151 @@
+4108:         getWritableDatabase().execSQL("INSERT OR REPLACE INTO admin_msg_state(uuid,user_id,notified,read_at) VALUES(?,?,1,?)", new Object[]{uuid, me.id, Clock.now()});
+4109:     }
+4110: 
+4111:     /** ما أرسله المدير (الأحدث أولًا) لشاشة الإرسال. */
+4112:     public List<AdminMsg> adminMsgsSent(int limit) {
+4113:         requireAdmin("رسائل المدير للمدير وحده.");
+4114:         List<AdminMsg> out = new ArrayList<>();
+4115:         try (Cursor c = getReadableDatabase().rawQuery("SELECT uuid,created_at,from_user,from_name,to_user,body,deleted FROM admin_msgs WHERE deleted=0 ORDER BY created_at DESC LIMIT " + limit, null)) {
+4116:             while (c.moveToNext()) {
+4117:                 AdminMsg m = readMsg(c);
+4118:                 if (m.toUser != null) {
+4119:                     Model.User u = user(m.toUser);
+4120:                     m.toName = u == null ? "مستخدم محذوف" : u.name;
+4121:                 }
+4122:                 out.add(m);
+4123:             }
+4124:         }
+4125:         return out;
+4126:     }
+4127: 
+4128:     /** سحب رسالة: تختفي عند من لم يقرأها بعد (بعد المزامنة). */
+4129:     public void deleteAdminMsg(String uuid) {
+4130:         requireAdmin("سحب الرسالة للمدير وحده.");
+4131:         ContentValues v = new ContentValues();
+4132:         v.put("deleted", 1);
+4133:         getWritableDatabase().update("admin_msgs", v, "uuid=?", new String[]{uuid});
+4134:     }
+4135: 
+4136:     // ===================================================================================
+4137:     // 10.18: الأمانات والمبالغ المجمّدة
+4138:     //   TRUST  = أمانة منفصلة عن الرصيد (لا تدخل في القيود): side=OURS «أمانة لنا عند المكتب»، THEIRS «أمانة للمكتب عندنا».
+4139:     //   FREEZE = تجميد جزء من الرصيد القائم: الرصيد كما هو، ويظهر «منه مجمّد» و«المتاح». side=OURS من «لنا»، THEIRS من «علينا».
+4140:     // ===================================================================================
+4141: 
+4142:     public static final String HOLD_TRUST = "TRUST", HOLD_FREEZE = "FREEZE", SIDE_OURS = "OURS", SIDE_THEIRS = "THEIRS";
+4143: 
+4144:     public static final class Hold {
+4145:         public String uuid, currency, kind, side, note = "", by = "", releasedBy = "";
+4146:         /** 12.4: مرجع الحركة التي حُوّلت إليها (فارغ = فُكّت بلا حركة أو قائمة). */
+4147:         public String toTx = "";
+4148:         public long officeId, amount, at;
+4149:         public Long releasedAt;
+4150: 
+4151:         public boolean open() { return releasedAt == null; }
+4152: 
+4153:         /** وصف قصير: «أمانة للمكتب عندنا» / «مجمّد من رصيدنا»… */
+4154:         public String label() {
+4155:             boolean ours = SIDE_OURS.equals(side);
+4156:             return HOLD_TRUST.equals(kind) ? (ours ? "أمانة لنا عند المكتب" : "أمانة للمكتب عندنا") : (ours ? "مجمّد من «لنا»" : "مجمّد من «علينا»");
+4157:         }
+4158:     }
+4159: 
+4160:     private Hold readHold(Cursor c) {
+4161:         Hold h = new Hold();
+4162:         h.uuid = c.getString(0);
+4163:         h.officeId = c.getLong(1);
+4164:         h.currency = c.getString(2);
+4165:         h.amount = c.getLong(3);
+4166:         h.kind = c.getString(4);
+4167:         h.side = c.getString(5);
+4168:         h.note = Model.nz(Crypto.dec(c.getString(6)));
+4169:         h.at = c.getLong(7);
+4170:         h.by = shown(Model.nz(Crypto.dec(c.getString(8))));
+4171:         h.releasedAt = c.isNull(9) ? null : c.getLong(9);
+4172:         h.releasedBy = shown(Model.nz(Crypto.dec(c.getString(10))));
+4173:         h.toTx = c.getColumnCount() > 11 && !c.isNull(11) ? c.getString(11) : "";
+4174:         return h;
+4175:     }
+4176: 
+4177:     /** يسجّل أمانة أو تجميدًا. التجميد لا يتجاوز الرصيد القائم في اتجاهه (مع ما هو مجمّد قبله). */
+4178:     public String addHold(long officeId, String currency, String kind, String side, long amountMinor, String note) {
+4179:         require(Auth.Perm.HOLDS);   // 12.0
+4180:         if (office(officeId) == null) throw new IllegalArgumentException("المكتب غير موجود");
+4181:         if (!HOLD_TRUST.equals(kind) && !HOLD_FREEZE.equals(kind)) throw new IllegalArgumentException("نوع غير معروف");
+4182:         if (!SIDE_OURS.equals(side) && !SIDE_THEIRS.equals(side)) throw new IllegalArgumentException("اتجاه غير معروف");
+4183:         if (amountMinor <= 0) throw new IllegalArgumentException("اكتب مبلغًا أكبر من صفر");
+4184:         if (currency == null || currency.trim().isEmpty()) throw new IllegalArgumentException("اختر العملة");
+4185:         if (HOLD_FREEZE.equals(kind)) {
+4186:             Long bal = balances(officeId).get(currency);
+4187:             long b = bal == null ? 0 : bal, have = SIDE_OURS.equals(side) ? Math.max(0, b) : Math.max(0, -b), frozen = 0;
+4188:             for (Hold h : holds(officeId, true)) if (HOLD_FREEZE.equals(h.kind) && h.currency.equals(currency) && h.side.equals(side)) frozen += h.amount;
+4189:             int dc = decimals(currency);
+4190:             if (amountMinor + frozen > have) throw new IllegalStateException("لا يمكن تجميد " + Model.fmt(amountMinor, dc) + " " + currency + ": الرصيد "
+4191:                     + (SIDE_OURS.equals(side) ? "«لنا» " : "«علينا» ") + Model.fmt(have, dc) + (frozen > 0 ? " ومنه مجمّد " + Model.fmt(frozen, dc) : "")
+4192:                     + ". للمبلغ غير الداخل في الرصيد اختر «أمانة منفصلة».");
+4193:         }
+4194:         String uuid = UUID.randomUUID().toString();
+4195:         SQLiteDatabase d = getWritableDatabase();
+4196:         d.beginTransaction();
+4197:         try {
+4198:             ContentValues v = new ContentValues();
+4199:             v.put("uuid", uuid);
+4200:             v.put("office_id", officeId);
+4201:             v.put("currency", currency);
+4202:             v.put("amount_minor", amountMinor);
+4203:             v.put("kind", kind);
+4204:             v.put("side", side);
+4205:             v.put("note", Crypto.enc(note == null ? "" : note.trim()));
+4206:             v.put("created_at", Clock.now());
+4207:             v.put("user_name", Crypto.enc(currentUserName));
+4208:             d.insertOrThrow("office_holds", null, v);
+4209:             audit(d, "HOLD_ADD", "office", officeId, (HOLD_TRUST.equals(kind) ? "أمانة " : "تجميد ") + Model.fmt(amountMinor, decimals(currency)) + " " + currency);
+4210:             d.setTransactionSuccessful();
+4211:         } finally {
+4212:             d.endTransaction();
+4213:         }
+4214:         return uuid;
+4215:     }
+4216: 
+4217:     /** 12.4: يفكّ الأمانة داخل معاملة تسجيل حركتها، مربوطةً بها (to_tx). */
+4218:     private void releaseHoldTo(SQLiteDatabase d, String uuid, long txId, TxInput in) {
+4219:         long office;
+4220:         String cur;
+4221:         long amount;
+4222:         try (Cursor c = d.rawQuery("SELECT office_id,released_at,currency,amount_minor FROM office_holds WHERE uuid=?", new String[]{uuid})) {
+4223:             if (!c.moveToFirst()) throw new IllegalArgumentException("الأمانة غير موجودة");
+4224:             if (!c.isNull(1)) throw new IllegalStateException("فُكّت هذه الأمانة من قبل");
+4225:             office = c.getLong(0);
+4226:             cur = c.getString(2);
+4227:             amount = c.getLong(3);
+4228:         }
+4229:         if (office != in.office) throw new IllegalArgumentException("الحركة لمكتب غير مكتب الأمانة");
+4230:         String txUuid = null;
+4231:         try (Cursor c = d.rawQuery("SELECT uuid FROM tx WHERE id=" + txId, null)) {
+4232:             if (c.moveToFirst()) txUuid = c.getString(0);
+4233:         }
+4234:         ContentValues v = new ContentValues();
+4235:         v.put("released_at", Clock.now());
+4236:         v.put("released_by", Crypto.enc(currentUserName));
+4237:         v.put("to_tx", txUuid);
+4238:         d.update("office_holds", v, "uuid=?", new String[]{uuid});
+4239:         audit(d, "HOLD_TO_TX", "office", office, "حُوّلت إلى حركة " + txId + ": " + Model.fmt(amount, decimals(cur)) + " " + cur
+4240:                 + (amount != in.amount || !cur.equals(in.currency) ? " (الحركة " + Model.fmt(in.amount, decimals(in.currency)) + " " + in.currency + ")" : ""));
+4241:     }
+4242: 
+4243:     // ===================================================================================
+4244:     // 12.4: الحركات الخاصة
+4245:     // ===================================================================================
+4246: 
+4247:     /** الأنواع الافتراضية للحركات الخاصة؛ المحاسب يضيف غيرها (إعداد متزامن special_types). */
+4248:     public static final String[] SPECIAL_DEFAULTS = {"ناقصة أجور", "تحتاج مراجعة", "بانتظار التنفيذ", "عليها مشاكل"};
+4249: 
+4250:     public List<String> specialTypes() {
+4251:         List<String> out = new ArrayList<>();
+4252:         String raw = setting("special_types", "");
+4253:         if (raw.trim().isEmpty()) out.addAll(Arrays.asList(SPECIAL_DEFAULTS));
+4254:         else for (String x : raw.split("\n")) if (!x.trim().isEmpty() && !out.contains(x.trim())) out.add(x.trim());
+4255:         return out;
+4256:     }
+4257: 
+4258:     /** يضيف نوعًا (أو يحذفه remove=true) لقائمة أنواع الحركات الخاصة. */

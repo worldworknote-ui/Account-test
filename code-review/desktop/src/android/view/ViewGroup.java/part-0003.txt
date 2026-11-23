@@ -1,0 +1,40 @@
+348:                 if (q[0] < 0 || q[1] < 0 || q[0] >= c.getWidth() || q[1] >= c.getHeight()) continue;
+349:                 MotionEvent ce = MotionEvent.obtain(e);
+350:                 ce.setLocation(q[0], q[1]);
+351:                 if (c.dispatchTouchEvent(ce)) {
+352:                     touchTarget = c;
+353:                     return true;
+354:                 }
+355:             }
+356:             selfTouch = true;
+357:             boolean r = super.dispatchTouchEvent(e);
+358:             if (!r) selfTouch = false;
+359:             return r;
+360:         }
+361:         if (touchTarget == null) return false;
+362:         View t = touchTarget;
+363:         if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) touchTarget = null;
+364:         return deliver(t, e);
+365:     }
+366: 
+367:     private boolean deliver(View c, MotionEvent e) {
+368:         float[] q = {e.getX() + mScrollX, e.getY() + mScrollY};
+369:         c.parentToLocal(q);
+370:         MotionEvent ce = MotionEvent.obtain(e);
+371:         ce.setLocation(q[0], q[1]);
+372:         return c.dispatchTouchEvent(ce);
+373:     }
+374: 
+375:     /** للتحويم: أعمق عنصر تحت المؤشر. */
+376:     public View deepestAt(float x, float y) {
+377:         float[] p = new float[2];
+378:         View c = childAt(x, y, p);
+379:         if (c == null) return this;
+380:         if (c instanceof ViewGroup) return ((ViewGroup) c).deepestAt(p[0], p[1]);
+381:         return c;
+382:     }
+383: 
+384:     @Override public void dispatchSetSelected(boolean s) { for (View c : children) c.setSelected(s); }
+385:     public void dispatchSetActivated(boolean a) { for (View c : children) c.setActivated(a); }
+386:     public void focusableViewAvailable(View v) {}
+387: }

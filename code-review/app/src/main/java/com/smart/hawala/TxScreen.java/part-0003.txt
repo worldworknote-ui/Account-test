@@ -1,0 +1,171 @@
+365:             if (!a.require(Auth.Perm.SPECIAL)) return;
+366:             approving = false;
+367:             fill(t, after, "تعديل حركة خاصة");
+368:             return;
+369:         }
+370:         if (!a.require(Auth.Perm.TX_EDIT)) return;
+371:         if (!t.isActive()) {
+372:             a.toast("لا يمكن تعديل حركة ملغاة أو معدّلة.");
+373:             return;
+374:         }
+375:         approving = false;
+376:         fill(t, after, "تعديل حركة");
+377:     }
+378: 
+379:     /** 12.4: تعليم حركة عادية كخاصة (نموذج التعديل والخاصة مفعّلة). */
+380:     void showMarkSpecial(final Model.Tx t, Runnable after) {
+381:         if (!a.require(Auth.Perm.SPECIAL)) return;
+382:         if (!t.isActive() || t.isLinked()) {
+383:             a.toast("تُعلَّم الحركة النشطة العادية فقط (لا ساق من عملية مترابطة).");
+384:             return;
+385:         }
+386:         fromHold = null;
+387:         converting = false;
+388:         approving = false;
+389:         fill(t, after, "تعليم كحركة خاصة");
+390:         setSpecial(true);
+391:     }
+392: 
+393:     /**
+394:      * 12.4: تحويل حركة خاصة إلى عادية: نموذج معبّأ بها (يكمل المحاسب الأجور أو يصحح)، والخاصة مطفأة،
+395:      * وبتاريخها الأصلي أو بتاريخ اليوم كما اختار.
+396:      */
+397:     void showConvert(final Model.Tx t, boolean keepDate, Runnable after) {
+398:         if (!a.require(Auth.Perm.SPECIAL)) return;
+399:         fromHold = null;
+400:         converting = true;
+401:         approving = false;
+402:         fill(t, after, "تحويل لحركة عادية");
+403:         setSpecial(false);
+404:         if (!keepDate) setWhen(0);
+405:         a.body.addView(a.text("الحركة الخاصة «" + t.special + "» تصير حركة عادية تنزل بالكشف والمطابقة "
+406:                 + (keepDate ? "بتاريخها " + Model.day(t.createdAt) : "بتاريخ اليوم") + ". أكمل ما ينقص (الأجور مثلًا) ثم «تحويل لحركة عادية».", 13, a.primaryInk, true), 0);
+407:         if (f.saveBtn != null) f.saveBtn.setText("تحويل لحركة عادية");
+408:         updateSummary();
+409:     }
+410: 
+411:     /** 12.4: أمانة أو مبلغ مجمّد إلى حركة عادية: نموذج جديد معبّأ بمبلغها، والأمانة تُفكّ مربوطةً بالحركة عند الحفظ. */
+412:     void showFromHold(final Db.Hold h, boolean keepDate, Runnable after) {
+413:         if (!a.require(Auth.Perm.TX_ADD) || !a.require(Auth.Perm.HOLDS)) return;
+414:         Model.Office o = a.db.office(h.officeId);
+415:         if (o == null || !o.active) {
+416:             a.toast("المكتب موقوف: فعّله أولًا.");
+417:             return;
+418:         }
+419:         editing = null;
+420:         approving = false;
+421:         converting = false;
+422:         afterEdit = after;
+423:         existingAtt.clear();
+424:         removedAtt.clear();
+425:         a.pendingImages.clear();
+426:         build("تحويل «" + h.label() + "» إلى حركة");
+427:         fromHold = h.uuid;
+428:         f.external = true;
+429:         selectOffice(o);
+430:         // الأمانة لنا عنده = «لنا»؛ للمكتب عندنا = «علينا». المجمّد: تسويته تُنقص الجهة التي جُمّد منها (يغيّرها المحاسب إن لزم)
+431:         boolean ours = Db.SIDE_OURS.equals(h.side);
+432:         boolean debit = Db.HOLD_TRUST.equals(h.kind) ? ours : !ours;
+433:         f.type.set(debit ? 0 : 1, false);
+434:         selectCur(f.cur, f.curs, h.currency);
+435:         f.amount.setText(Model.plain(h.amount, a.db.decimals(h.currency)));
+436:         f.notes.setText((h.note.isEmpty() ? "" : h.note + " — ") + "من " + h.label() + " (" + Model.day(h.at) + ")");
+437:         if (keepDate) setWhen(h.at);
+438:         a.body.addView(a.text("تُسجَّل حركة عادية تنزل بالكشف والمطابقة " + (keepDate ? "بتاريخ " + Model.day(h.at) : "بتاريخ اليوم")
+439:                 + "، و«" + h.label() + "» تُفكّ مربوطةً بها. راجع الاتجاه والمبلغ ثم سجّل.", 13, a.primaryInk, true), 0);
+440:         if (f.saveBtn != null) f.saveBtn.setText("تسجيل وفكّ " + (Db.HOLD_TRUST.equals(h.kind) ? "الأمانة" : "التجميد"));
+441:         updateSummary();
+442:     }
+443: 
+444:     /** 12.4: يفتح نموذج حركة جديدة للمكتب والخاصة مفعّلة. */
+445:     void showNewSpecial(final Model.Office o) {
+446:         if (!a.require(Auth.Perm.SPECIAL)) return;
+447:         showForOffice(o);
+448:         if (f != null) setSpecial(true);
+449:     }
+450: 
+451:     /** 12.4: تشغيل أو إطفاء قسم «حركة خاصة» في النموذج. */
+452:     void setSpecial(boolean on) {
+453:         if (f == null || f.specialSw == null) return;
+454:         f.specialSw.setChecked(on);
+455:         f.specialOn = on;
+456:         f.specialBody.setVisibility(on ? View.VISIBLE : View.GONE);
+457:         if (f.saveBtn != null && editing == null && fromHold == null) f.saveBtn.setText(on ? "تسجيل كحركة خاصة" : "تسجيل الحركة");
+458:         updateSummary();
+459:     }
+460: 
+461:     private void fill(final Model.Tx t, Runnable after, String title) {
+462:         editing = t;
+463:         afterEdit = after;
+464:         a.pendingImages.clear();
+465:         existingAtt.clear();
+466:         existingAtt.addAll(a.db.attachmentIds(t.id));
+467:         removedAtt.clear();
+468:         build(title);
+469:         Model.Office o = a.db.office(t.officeId);
+470:         if (o != null) selectOffice(o);
+471:         f.type.set(Model.TYPE_DEBIT.equals(t.type) ? 0 : 1, false);
+472:         f.amount.setText(Model.plain(t.amount, a.db.decimals(t.currency)));
+473:         selectCur(f.cur, f.curs, t.currency);
+474:         f.person.setText(t.person);
+475:         f.desc.setText(t.description);
+476:         // عند التعديل الحقول معبّأة أصلًا: لا تظهر بطاقة الاستخراج إلا إن غيّر المستخدم البيان
+477:         f.desc.removeCallbacks(f.parseLater);
+478:         f.parsedText = Model.nz(t.description);
+479:         if (f.parseBox != null) f.parseBox.setVisibility(View.GONE);
+480:         f.notes.setText(t.notes);
+481:         f.service.setText(t.service);
+482:         f.dest.setText(t.dest);
+483:         setWhen(t.createdAt);
+484:         if (t.hasFee()) {
+485:             // الأجرة المسجّلة مبلغ ثابت (حتى لو حُسبت من نسبة عند التسجيل)
+486:             f.feeKind.set(0, false);
+487:             applyFeeKind();
+488:             f.feeMode.set(1, true);
+489:             f.feeSide.set(Model.FEE_US.equals(t.feeType) ? 0 : 1, false);
+490:             f.fee.setText(Model.plain(t.fee, a.db.decimals(t.feeCurrency)));
+491:             f.feeCurTouched = true;
+492:             selectCur(f.feeCur, f.curs, t.feeCurrency);
+493:         }
+494:         if (!existingAtt.isEmpty()) {
+495:             f.imgMode.set(1, true);
+496:             refreshThumbs();
+497:         }
+498:         if (t.isSpecial() && f.specialSw != null) {
+499:             f.specialType = t.special;
+500:             renderSpecialTypes();
+501:             f.specialBal.set(t.specialBal ? 0 : 1, false);
+502:             setSpecial(true);
+503:         }
+504:         updateSummary();
+505:     }
+506: 
+507:     // ===================================================================================
+508:     // بناء النموذج
+509:     // ===================================================================================
+510: 
+511:     private void build(String title) {
+512:         a.base(title, editing == null ? null : () -> {
+513:             if (afterEdit != null) afterEdit.run();
+514:             else a.showHome();
+515:         });
+516:         f = new Form();
+517:         final Form form = f;
+518:         if (editing != null && approving) {
+519:             a.notice(R.drawable.ic_check2, "اقترحها: " + (editing.userName.isEmpty() ? "موظف" : editing.userName) + ". صحّح ما يلزم ثم اضغط «حفظ التصحيح واعتماد»: "
+520:                     + "تدخل الأرصدة بالقيم المصححة، ويُحفظ ما قبل التصحيح في سجل العمليات.", false, null, null);
+521:         } else if (editing != null) {
+522:             a.hint("التعديل يسجّل قيدًا عكسيًا يلغي الحركة الأصلية بالكامل، ثم يسجّل الحركة المصححة مرتبطة بها. الأصل يبقى ظاهرًا في السجل كمعدّل.");
+523:         }
+524:         // 12.0: التسجيل من رسائل واتساب صلاحية مستقلة (بدونها يبقى البيان حقلًا عاديًا)
+525:         form.wa = "1".equals(a.db.setting("wa_parse", "1")) && a.can(Auth.Perm.TX_WA);
+526:         form.names = a.db.currencyNames();
+527:         form.officeBtn = a.button("اختر المكتب", a.accent, v -> a.officePicker(o -> {
+528:             selectOffice(o);
+529:             chosenOffice = o;   // 12.7: اختيار صريح من المحاسب
+530:         }, true));
+531:         form.balance = a.add(a.text("", 13, a.muted, false));
+532: 
+533:         if (form.wa) {
+534:             // البيان أولًا: تُلصق فيه رسالة واتساب، فتظهر المعلومات المستخرجة، ثم يضيفها المحاسب للحقول بزر
+535:             // 10.13: عنوان قصير وزر «لصق» صغير بجانبه بدل زر عريض، وحقل أصغر يكبر مع النص

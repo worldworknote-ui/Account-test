@@ -1,0 +1,101 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.Arrays;
+4: import java.util.HashSet;
+5: import java.util.Set;
+6: 
+7: /**
+8:  * 12.1: «فحص الحافظة»: يُظهر شكل ما نسخه المستخدم دون محتواه، ليُرسَل للدعم بلا بيانات حقيقية.
+9:  * الحروف العربية تصير «ع»، واللاتينية «x»، والأرقام «#»؛ وتبقى علامات الترقيم والمسافات وأسماء عناصر HTML وخصائصها.
+10:  */
+11: public final class ClipMask {
+12:     private ClipMask() {}
+13: 
+14:     /** خصائص HTML تبقى كما هي (لا تحمل نص الرسالة). */
+15:     private static final Set<String> KEEP = new HashSet<>(Arrays.asList("class", "dir", "role", "data-testid", "data-icon", "tabindex", "lang", "colspan", "rowspan"));
+16:     static final int MAX = 20000;
+17: 
+18:     public static String text(String s) {
+19:         if (s == null) return "";
+20:         StringBuilder b = new StringBuilder(Math.min(s.length(), MAX));
+21:         for (int i = 0; i < s.length() && b.length() < MAX; ) {
+22:             int cp = s.codePointAt(i);
+23:             b.append(mask(cp));
+24:             i += Character.charCount(cp);
+25:         }
+26:         if (s.length() > MAX) b.append("\n…");
+27:         return b.toString();
+28:     }
+29: 
+30:     private static String mask(int cp) {
+31:         if (Character.isDigit(cp)) return "#";
+32:         if (Character.isLetter(cp)) {
+33:             Character.UnicodeScript sc = Character.UnicodeScript.of(cp);
+34:             return sc == Character.UnicodeScript.ARABIC ? "ع" : "x";
+35:         }
+36:         if (Character.getType(cp) == Character.OTHER_SYMBOL) return "☺";
+37:         return new String(Character.toChars(cp));
+38:     }
+39: 
+40:     /** HTML: أسماء العناصر والخصائص تبقى، ونص العناصر وقيم الخصائص (عدا الآمنة) تُخفى. style يُختصر. */
+41:     public static String html(String h) {
+42:         if (h == null) return "";
+43:         StringBuilder out = new StringBuilder();
+44:         int i = 0, n = h.length();
+45:         while (i < n && out.length() < MAX) {
+46:             char c = h.charAt(i);
+47:             if (c != '<') {
+48:                 int j = h.indexOf('<', i);
+49:                 if (j < 0) j = n;
+50:                 out.append(text(h.substring(i, j)));
+51:                 i = j;
+52:                 continue;
+53:             }
+54:             int end = h.indexOf('>', i);
+55:             if (end < 0) end = n - 1;
+56:             out.append(tag(h.substring(i, end + 1)));
+57:             i = end + 1;
+58:         }
+59:         if (n > 0 && out.length() >= MAX) out.append("\n…");
+60:         return out.toString();
+61:     }
+62: 
+63:     private static String tag(String t) {
+64:         if (t.startsWith("<!--")) return "<!--…-->";
+65:         StringBuilder b = new StringBuilder();
+66:         int i = 0, n = t.length();
+67:         // اسم العنصر
+68:         while (i < n && !Character.isWhitespace(t.charAt(i)) && t.charAt(i) != '>') b.append(t.charAt(i++));
+69:         while (i < n) {
+70:             char c = t.charAt(i);
+71:             if (Character.isWhitespace(c) || c == '/' || c == '>') {
+72:                 b.append(c);
+73:                 i++;
+74:                 continue;
+75:             }
+76:             int s = i;
+77:             while (i < n && t.charAt(i) != '=' && !Character.isWhitespace(t.charAt(i)) && t.charAt(i) != '>') i++;
+78:             String name = t.substring(s, i);
+79:             b.append(name);
+80:             if (i < n && t.charAt(i) == '=') {
+81:                 b.append('=');
+82:                 i++;
+83:                 if (i < n && (t.charAt(i) == '"' || t.charAt(i) == '\'')) {
+84:                     char q = t.charAt(i);
+85:                     int e = t.indexOf(q, i + 1);
+86:                     if (e < 0) e = n - 1;
+87:                     String v = t.substring(i + 1, e);
+88:                     String low = name.toLowerCase(java.util.Locale.ROOT);
+89:                     String mv = KEEP.contains(low) ? v : low.equals("style") ? (v.isEmpty() ? "" : "…") : text(v);
+90:                     b.append(q).append(mv).append(q);
+91:                     i = e + 1;
+92:                 } else {
+93:                     int s2 = i;
+94:                     while (i < n && !Character.isWhitespace(t.charAt(i)) && t.charAt(i) != '>') i++;
+95:                     b.append(text(t.substring(s2, i)));
+96:                 }
+97:             }
+98:         }
+99:         return b.toString();
+100:     }
+101: }

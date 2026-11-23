@@ -1,0 +1,129 @@
+284:                     + ". اختر المكاتب التي تُستعاد بكل حركاتها وأرصدتها (اقترحنا الأكثر حركات). لاستعادة الكل فعّل النسخة الكاملة.", ids, labels, (int) maxOff);
+285:             if (keep == null) {
+286:                 BackupManager.clearStaging(app.ctx);
+287:                 return;
+288:             }
+289:             prep.keep = keep;
+290:         }
+291:         StringBuilder sb = new StringBuilder();
+292:         sb.append("تاريخ النسخة: ").append(r.createdAt > 0 ? Model.date(r.createdAt) : "غير معروف")
+293:                 .append("\nإصدار البرنامج: ").append(r.appVersion.isEmpty() ? "—" : r.appVersion).append(" (صيغة ").append(r.format).append(")")
+294:                 .append("\nالمكاتب: ").append(r.offices).append(prep.keep != null ? " — تُستعاد " + prep.keep.size() + " مختارة فقط" : "")
+295:                 .append("\nالحركات: ").append(r.txActive).append(" نشطة + ").append(r.txCancelled).append(" ملغاة")
+296:                 .append(r.cashMoves > 0 ? "\nحركات صندوق المكتب: " + r.cashMoves : "")
+297:                 .append("\nالصور: ").append(r.attachments)
+298:                 .append("\nالعملات: ").append(r.currencies)
+299:                 .append("\n\n✓ القيود متوازنة والعلاقات سليمة.");
+300:         for (String wn : r.warnings) sb.append("\n! ").append(wn);
+301:         sb.append("\n\nبياناتك الحالية: ").append(db.officeCount()).append(" مكتب و ").append(db.txCount()).append(" حركة؛ ستُحفظ منها نسخة أمان ثم تُستبدل.");
+302:         if (!Ui.confirm(this, "معاينة النسخة قبل الاستعادة", sb.toString(), "استعادة الآن")) {
+303:             BackupManager.clearStaging(app.ctx);
+304:             return;
+305:         }
+306:         // 10.13: مع تفضيلات المظهر التي في النسخة أو بدونها
+307:         int lk = JOptionPane.showOptionDialog(this, Ui.rtl(Ui.para("تُستعاد البيانات كاملة في الحالتين. هل تُستعاد معها تفضيلات المظهر التي في النسخة (الألوان، الوضع الليلي، الرئيسية…)؟",
+308:                 14, Ui.ink, 440)), "تفضيلات المظهر", JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, null,
+309:                 new Object[]{"مع تفضيلات المظهر", "بدونها (أبقِ مظهري)"}, "مع تفضيلات المظهر");
+310:         if (lk < 0) {
+311:             BackupManager.clearStaging(app.ctx);
+312:             return;
+313:         }
+314:         prep.keepLook = lk == 1;
+315:         Ui.busy(this, "جارٍ الاستعادة…", p -> {
+316:             BackupManager.applyRestore(app.ctx, db, prep, p::update);
+317:             return null;
+318:         }, x -> {
+319:             db.recordBackup("RESTORE", "تمت الاستعادة (ماك)", f.getName(), f.length(), db.counts(), true, "");
+320:             afterDataReplaced();
+321:             Ui.info(App.frame, "تمت الاستعادة ✓", "تم استبدال البيانات بمحتوى النسخة. إن لم تكن النسخة المطلوبة: النسخ الاحتياطي ← نسخ الأمان ← «تراجع».");
+322:         });
+323:     }
+324: 
+325:     void merge(BackupManager.Prepared prep) {
+326:         Ui.busy(this, "جارٍ مطابقة المكاتب وحساب الأرصدة…", p -> MergePlan.build(prep.parsed.tables, prep.parsed.manifest, db.mergeExisting()), plan -> {
+327:             long maxOff = License.current.maxOffices();
+328:             long live = db.officeCount();
+329:             if (plan.ok() && maxOff != Entitlements.UNLIMITED && live + plan.newOffices > maxOff) {
+330:                 int allowed = (int) Math.max(0, maxOff - live);
+331:                 if (allowed == 0) {
+332:                     Ui.info(this, "لا مكان لمكتب جديد", "عندك الحد الأقصى من المكاتب في النسخة المجانية. احذف مكتبًا لا تحتاجه فيعود مكانه، أو فعّل النسخة الكاملة.");
+333:                     BackupManager.clearStaging(app.ctx);
+334:                     return;
+335:                 }
+336:                 List<Long> ids = new ArrayList<>();
+337:                 List<String> labels = new ArrayList<>();
+338:                 for (MergePlan.Office o : plan.newOfficeList()) {
+339:                     ids.add(o.fileId);
+340:                     labels.add(o.name);
+341:                 }
+342:                 Set<Long> keep = pick("اختر المكاتب الجديدة (حتى " + allowed + ")", "الملف يضيف " + plan.newOffices + " مكتبًا جديدًا وعندك " + live
+343:                         + "، والنسخة المجانية تتسع لـ " + maxOff + ". المكاتب الموجودة عندك تُضاف إليها الأرصدة دائمًا.", ids, labels, allowed);
+344:                 if (keep == null) {
+345:                     BackupManager.clearStaging(app.ctx);
+346:                     return;
+347:                 }
+348:                 plan.keepNew(keep);
+349:             }
+350:             JTextArea a = Ui.area(16);
+351:             a.setEditable(false);
+352:             // 10.16: اعتماد رصيد الملف كما هو بدل جمعه مع الرصيد الحالي
+353:             final JCheckBox adopt = Ui.check("اعتماد رصيد الملف كما هو (بدون جمعه مع الرصيد الحالي)", false);
+354:             Runnable fill = () -> {
+355:                 StringBuilder sb = new StringBuilder(plan.adopt
+356:                         ? "للمكاتب الموجودة: يُلغى رصيدها الحالي بقيد تسوية ظاهر في الكشف ثم يُكتب رصيد الملف، فيصبح الرصيد = رصيد الملف تمامًا. لا تُحذف أي حركة.\n\n"
+357:                         : "تُضاف أرصدة الملف وحركاته إلى بياناتك الحالية. لا يُحذف شيء.\n\n");
+358:                 sb.append("المكاتب: ").append(plan.matchedOffices).append(" موجود، و ").append(plan.newOffices).append(" جديد");
+359:                 sb.append("\nالحركات: ").append(plan.txs.size()).append("   •   الأرصدة السابقة: ").append(plan.openings.size());
+360:                 for (String e : plan.errors) sb.append("\n× ").append(e);
+361:                 for (String w : plan.warnings) sb.append("\n! ").append(w);
+362:                 if (plan.ok()) {
+363:                     sb.append("\n");
+364:                     for (MergePlan.Row r : plan.rows) {
+365:                         boolean rep = plan.adopt && !r.isNew && r.current != 0;
+366:                         sb.append("\n• ").append(r.office).append(" (").append(r.isNew ? "جديد" : r.approximate ? "موجود — اسم مقارب" : "موجود").append(") ").append(r.code);
+367:                         if (rep) sb.append(": الآن ").append(Model.bal(r.current, r.decimals)).append(" (يُلغى) ← يُعتمد رصيد الملف ").append(Model.bal(r.after, r.decimals));
+368:                         else sb.append(": الآن ").append(Model.bal(r.current, r.decimals)).append(" + ").append(Model.bal(r.added, r.decimals)).append(" = ").append(Model.bal(r.after, r.decimals));
+369:                     }
+370:                 }
+371:                 a.setText(sb.toString());
+372:                 a.setCaretPosition(0);
+373:             };
+374:             fill.run();
+375:             adopt.addActionListener(e -> {
+376:                 plan.setAdopt(adopt.isSelected());
+377:                 fill.run();
+378:             });
+379:             JScrollPane sp0 = Ui.areaBox(a);
+380:             sp0.setPreferredSize(new Dimension(620, 420));
+381:             JPanel sp = Ui.column();
+382:             if (plan.ok() && plan.adoptable() > 0) {
+383:                 sp.add(adopt);
+384:                 sp.add(Ui.gap(6));
+385:             }
+386:             sp.add(sp0);
+387:             Ui.rtl(sp);
+388:             if (!plan.ok() || !Ui.form(this, "إضافة ملف النقل", sp, "إضافة الآن")) {
+389:                 if (!plan.ok()) Ui.form(this, "لا يمكن الإضافة", sp, "إغلاق");
+390:                 BackupManager.clearStaging(app.ctx);
+391:                 return;
+392:             }
+393:             Ui.busy(this, "جارٍ حفظ نسخة أمان ثم الإضافة والتحقق…", p -> {
+394:                 Snapshot.take(app.ctx, db, "إضافة ملف النقل");
+395:                 return db.mergeMigration(plan);
+396:             }, res -> {
+397:                 BackupManager.clearStaging(app.ctx);
+398:                 app.changed();
+399:                 Ui.info(this, "تمت الإضافة ✓", "أُضيف " + plan.txs.size() + " حركة و " + plan.openings.size() + " رصيد سابق إلى " + plan.offices.size() + " مكتب ("
+400:                         + res + " جديد)" + (plan.adopt ? "، واعتُمد رصيد الملف للمكاتب الموجودة بدل جمعه" : "") + "، وتحقق البرنامج أن رصيد كل مكتب صار كما في المعاينة تمامًا.");
+401:                 app.go("home");
+402:             });
+403:         });
+404:     }
+405: 
+406:     /** نافذة اختيار حتى max عنصرًا (المقترح: أول max). null = إلغاء. */
+407:     Set<Long> pick(String title, String msg, List<Long> ids, List<String> labels, int max) {
+408:         JPanel c = Ui.column();
+409:         c.add(Ui.para(msg, 13.5f, Ui.ink, 560));
+410:         c.add(Ui.gap(8));
+411:         JLabel counter = Ui.label("", 14, Ui.primaryInk, true);
+412:         c.add(counter);

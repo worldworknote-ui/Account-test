@@ -1,0 +1,44 @@
+1: package android.graphics.drawable;
+2: 
+3: import android.graphics.*;
+4: import android.view.Gravity;
+5: 
+6: public class ClipDrawable extends Drawable implements Drawable.Callback {
+7:     public static final int HORIZONTAL = 1, VERTICAL = 2;
+8:     private final Drawable d;
+9:     private final int gravity, orientation;
+10:     public ClipDrawable(Drawable d, int gravity, int orientation) {
+11:         this.d = d; this.gravity = gravity; this.orientation = orientation;
+12:         if (d != null) d.setCallback(this);
+13:     }
+14:     public Drawable getDrawable() { return d; }
+15:     @Override protected void onBoundsChange(Rect b) { if (d != null) d.setBounds(b); }
+16:     @Override public boolean setState(int[] s) { super.setState(s); return d != null && d.setState(s); }
+17:     @Override public void draw(Canvas c) {
+18:         if (d == null || getLevel() == 0) return;
+19:         Rect b = getBounds();
+20:         float f = getLevel() / 10000f;
+21:         int w = b.width(), h = b.height();
+22:         Rect r = new Rect(b);
+23:         if ((orientation & HORIZONTAL) != 0) {
+24:             int cw = Math.round(w * f);
+25:             int hg = gravity & Gravity.HORIZONTAL_GRAVITY_MASK;
+26:             if (hg == Gravity.RIGHT) r.left = b.right - cw;
+27:             else if (hg == Gravity.CENTER_HORIZONTAL) { r.left = b.left + (w - cw) / 2; r.right = r.left + cw; }
+28:             else r.right = b.left + cw;
+29:         }
+30:         if ((orientation & VERTICAL) != 0) {
+31:             int ch = Math.round(h * f);
+32:             int vg = gravity & Gravity.VERTICAL_GRAVITY_MASK;
+33:             if (vg == Gravity.TOP) r.bottom = b.top + ch;
+34:             else r.top = b.bottom - ch;
+35:         }
+36:         c.save();
+37:         c.clipRect(r);
+38:         d.draw(c);
+39:         c.restore();
+40:     }
+41:     @Override public void invalidateDrawable(Drawable who) { invalidateSelf(); }
+42:     @Override public void scheduleDrawable(Drawable who, Runnable what, long when) {}
+43:     @Override public void unscheduleDrawable(Drawable who, Runnable what) {}
+44: }

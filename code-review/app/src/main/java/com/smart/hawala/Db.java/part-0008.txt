@@ -1,0 +1,149 @@
+973:             saveOfficeCurrencies(d, id, codes, limits);
+974:             audit(d, "UPDATE_OFFICE", "office", id, "");
+975:             d.setTransactionSuccessful();
+976:         } finally {
+977:             d.endTransaction();
+978:         }
+979:     }
+980: 
+981:     public void setPinned(long officeId, boolean pinned) {
+982:         ContentValues v = new ContentValues();
+983:         v.put("pinned", pinned ? 1 : 0);
+984:         getWritableDatabase().update("offices", v, "id=" + officeId, null);
+985:     }
+986: 
+987:     /** عدد حركات المكتب (النشطة والملغاة). */
+988:     public long officeTxCount(long officeId) {
+989:         try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM tx WHERE office_id=" + officeId, null)) {
+990:             return c.moveToFirst() ? c.getLong(0) : 0;
+991:         }
+992:     }
+993: 
+994:     /** إيقاف المكتب أو تفعيله: الموقوف لا يظهر في تسجيل الحركات ولا تُقبل عليه حركات جديدة، ويبقى كشفه ورصيده. */
+995:     public void setOfficeActive(long officeId, boolean active) {
+996:         require(Auth.Perm.OFFICES);
+997:         ContentValues v = new ContentValues();
+998:         v.put("active", active ? 1 : 0);
+999:         getWritableDatabase().update("offices", v, "id=" + officeId, null);
+1000:         audit(active ? "ACTIVATE_OFFICE" : "STOP_OFFICE", "office", officeId, "");
+1001:     }
+1002: 
+1003:     /**
+1004:      * يحذف المكتب نهائيًا مع أرصدته السابقة وحدوده، ومع حركاته وقيودها وصورها إن سُمح بذلك.
+1005:      * يُرفض إن كان للمكتب حركات داخل فترة محاسبية مقفلة.
+1006:      */
+1007:     public void deleteOffice(long officeId, boolean withTransactions) {
+1008:         require(Auth.Perm.DELETE);
+1009:         Model.Office o = office(officeId);
+1010:         if (o == null) throw new IllegalArgumentException("المكتب غير موجود");
+1011:         long txs = officeTxCount(officeId);
+1012:         if (txs > 0 && !withTransactions) throw new IllegalStateException("للمكتب حركات مسجّلة؛ أوقفه بدل حذفه أو اختر الحذف النهائي مع الحركات.");
+1013:         SQLiteDatabase d = getWritableDatabase();
+1014:         d.beginTransaction();
+1015:         try {
+1016:             long lock = lockBefore(d);
+1017:             if (lock > 0) {
+1018:                 try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM tx WHERE office_id=" + officeId + " AND created_at<" + lock, null)) {
+1019:                     if (c.moveToFirst() && c.getLong(0) > 0) {
+1020:                         throw new IllegalStateException("للمكتب حركات داخل فترة محاسبية مقفلة؛ لا يمكن حذفه. يمكنك إيقافه.");
+1021:                     }
+1022:                 }
+1023:             }
+1024:             QuotaState q = quota(d, officeId);
+1025:             purgeOffice(d, officeId);
+1026:             q.officeDeleted(officeId);
+1027:             saveQuota(d, q);
+1028:             audit(d, "DELETE_OFFICE", "office", officeId, Model.nz(o.name) + (txs > 0 ? " — مع " + txs + " حركة" : ""));
+1029:             d.setTransactionSuccessful();
+1030:         } finally {
+1031:             d.endTransaction();
+1032:         }
+1033:         try {
+1034:             cleanupEvidence();
+1035:         } catch (Exception ignored) {
+1036:             // الصور اليتيمة تُنظَّف لاحقًا
+1037:         }
+1038:     }
+1039: 
+1040:     /**
+1041:      * يحذف المكتب وكل ما يخصه (حركاته وقيودها وصورها وأرصدته السابقة ومطابقاته وعملاته) في المعاملة الحالية.
+1042:      * حركات الصندوق المرتبطة به لا تُحذف (النقد خرج أو دخل فعلًا): يُفك ربطها فتبقى في الصندوق كحركات عامة.
+1043:      */
+1044:     private static void purgeOffice(SQLiteDatabase d, long officeId) {
+1045:         d.execSQL("DELETE FROM office_holds WHERE office_id=" + officeId);
+1046:         String txIds = "SELECT id FROM tx WHERE office_id=" + officeId;
+1047:         String entryIds = "SELECT id FROM journal_entries WHERE tx_id IN (" + txIds + ")"
+1048:                 + " UNION SELECT entry_id FROM journal_lines WHERE office_id=" + officeId
+1049:                 + " UNION SELECT entry_id FROM opening_balances WHERE office_id=" + officeId + " AND entry_id IS NOT NULL";
+1050:         d.execSQL("CREATE TEMP TABLE IF NOT EXISTS del_entries(id INTEGER PRIMARY KEY)");
+1051:         d.execSQL("DELETE FROM del_entries");
+1052:         d.execSQL("INSERT OR IGNORE INTO del_entries(id) " + entryIds);
+1053:         d.execSQL("DELETE FROM journal_lines WHERE entry_id IN (SELECT id FROM del_entries)");
+1054:         d.execSQL("DELETE FROM journal_entries WHERE id IN (SELECT id FROM del_entries)");
+1055:         d.execSQL("DELETE FROM del_entries");
+1056:         d.execSQL("DELETE FROM attachments WHERE tx_id IN (" + txIds + ")");
+1057:         d.execSQL("UPDATE tx SET replaces_id=NULL WHERE replaces_id IN (" + txIds + ") AND office_id<>" + officeId);
+1058:         // 10.5 (AUDIT-029): حركة صندوق مرتبطة بحركة مكتب غير نافذة (معلّقة أو مرفوضة أو ملغاة) لا تصير محسوبة بفك ربطها:
+1059:         // تُلغى بسببها. والمرتبطة بحركة نافذة يُفك ربطها فتبقى في الصندوق كما كانت محسوبة (النقد خرج أو دخل فعلًا).
+1060:         ContentValues cc = new ContentValues();
+1061:         cc.put("status", CashBox.CANCELLED);
+1062:         cc.put("cancel_reason", Crypto.enc("حُذف المكتب وحركته لم تكن معتمدة نافذة"));
+1063:         cc.put("cancelled_at", Clock.now());
+1064:         d.update("cash_moves", cc, "status='ACTIVE' AND tx_id IN (SELECT id FROM tx WHERE office_id=" + officeId + " AND status<>'ACTIVE')", null);
+1065:         d.execSQL("UPDATE cash_moves SET tx_id=NULL,office_id=NULL,category='لحساب مكتب محذوف' WHERE office_id=" + officeId + " OR tx_id IN (" + txIds + ")");
+1066:         // 10.5 (§9): ساق التحويل عند المكتب الآخر تبقى حركة عادية له (ساقها هنا حُذفت مع المكتب)، فلا تبقى عملية ناقصة
+1067:         d.execSQL("UPDATE tx SET pair_uuid=NULL,fx_rate=NULL WHERE office_id<>" + officeId + " AND pair_uuid IN (SELECT pair_uuid FROM tx WHERE office_id=" + officeId
+1068:                 + " AND pair_uuid IS NOT NULL AND pair_uuid<>'')");
+1069:         // 10.5 (§7): التحقق من حركاته، ومكاتب المحاسبين، وعلامة آخر رسالة
+1070:         d.execSQL("DELETE FROM tx_checks WHERE tx_id IN (" + txIds + ")");
+1071:         d.execSQL("DELETE FROM user_offices WHERE office_id=" + officeId);
+1072:         d.execSQL("DELETE FROM wa_marks WHERE office_id=" + officeId);
+1073:         d.execSQL("DELETE FROM office_work WHERE office_id=" + officeId);
+1074:         d.execSQL("DELETE FROM tx WHERE office_id=" + officeId);
+1075:         d.execSQL("DELETE FROM opening_balances WHERE office_id=" + officeId);
+1076:         d.execSQL("DELETE FROM reconciliation_lines WHERE recon_id IN (SELECT id FROM reconciliations WHERE office_id=" + officeId + ")");
+1077:         d.execSQL("DELETE FROM reconciliations WHERE office_id=" + officeId);
+1078:         d.execSQL("DELETE FROM office_currencies WHERE office_id=" + officeId);
+1079:         d.execSQL("DELETE FROM offices WHERE id=" + officeId);
+1080:     }
+1081: 
+1082:     public boolean officeActive(long officeId) {
+1083:         try (Cursor c = getReadableDatabase().rawQuery("SELECT active FROM offices WHERE id=" + officeId, null)) {
+1084:             return c.moveToFirst() && c.getInt(0) == 1;
+1085:         }
+1086:     }
+1087: 
+1088:     private static ContentValues officeValues(String name, String sh, String phone, String loc, String contact, String notes, Long usdUs, Long usdOwe) {
+1089:         ContentValues v = new ContentValues();
+1090:         v.put("name", Crypto.enc(name));
+1091:         v.put("short_name", Crypto.enc(sh));
+1092:         v.put("phone", Crypto.enc(phone));
+1093:         v.put("location", Crypto.enc(loc));
+1094:         v.put("contact", Crypto.enc(contact));
+1095:         v.put("notes", Crypto.enc(notes));
+1096:         if (usdUs == null) v.putNull("usd_limit_minor");
+1097:         else v.put("usd_limit_minor", usdUs);
+1098:         if (usdOwe == null) v.putNull("usd_owe_limit_minor");
+1099:         else v.put("usd_owe_limit_minor", usdOwe);
+1100:         return v;
+1101:     }
+1102: 
+1103:     private void saveOfficeCurrencies(SQLiteDatabase d, long id, List<String> codes, Map<String, Limit> limits) {
+1104:         for (String code : codes) {
+1105:             ContentValues x = new ContentValues();
+1106:             x.put("office_id", id);
+1107:             x.put("code", code);
+1108:             Limit l = limits.get(code);
+1109:             if (l != null && l.receivable != null) x.put("limit_minor", l.receivable);
+1110:             if (l != null && l.payable != null) x.put("limit_owe_minor", l.payable);
+1111:             d.insertOrThrow("office_currencies", null, x);
+1112:         }
+1113:     }
+1114: 
+1115:     private static final String OFFICE_COLS = "id,name,short_name,phone,location,contact,notes,active,usd_limit_minor,usd_owe_limit_minor,pinned";
+1116: 
+1117:     /** المكاتب: المثبّتة أولًا، ثم النشطة، ثم أبجديًا. */
+1118:     public List<Model.Office> offices() {
+1119:         List<Model.Office> a = new ArrayList<>();
+1120:         try (Cursor c = getReadableDatabase().rawQuery("SELECT " + OFFICE_COLS + " FROM offices", null)) {
+1121:             while (c.moveToNext()) a.add(readOffice(c));

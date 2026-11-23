@@ -1,0 +1,156 @@
+914:     /** 11.0: إغلاق هذه الواجهة وحدها (التبديل إلى شكل الهاتف): البيانات تبقى مفتوحة. */
+915:     void stop() {
+916:         if (stopped) return;
+917:         stopped = true;
+918:         persistBounds();
+919:         for (Timer t : timers) t.stop();
+920:         if (navAnim != null) navAnim.stop();
+921:         if (ked != null) KeyboardFocusManager.getCurrentKeyboardFocusManager().removeKeyEventDispatcher(ked);
+922:         for (java.awt.event.AWTEventListener l : awt) Toolkit.getDefaultToolkit().removeAWTEventListener(l);
+923:         Db.onLocalChange = null;
+924:         if (frame != null) frame.dispose();
+925:         frame = null;
+926:         if (instance == this) instance = null;
+927:     }
+928: 
+929:     void quit() {
+930:         persistBounds();
+931:         try {
+932:             db.checkpoint();
+933:         } catch (Throwable ignored) {
+934:             // غير مهم
+935:         }
+936:         try {
+937:             db.close();
+938:         } catch (Throwable ignored) {
+939:             // غير مهم
+940:         }
+941:         System.exit(0);
+942:     }
+943: 
+944:     // ===================================================================================
+945:     // القائمة العلوية
+946:     // ===================================================================================
+947: 
+948:     JMenuBar menu() {
+949:         JMenuBar mb = new JMenuBar();
+950:         JMenu file = new JMenu("ملف");
+951:         file.add(item("تسجيل حركة جديدة", KeyEvent.VK_N, () -> go("tx")));
+952:         file.add(shift(item("تسجيل حركة قص عملات", 0, () -> go("fx")), KeyEvent.VK_N));
+953:         file.add(shift(item("تسجيل حركة بين مكتبين", 0, () -> go("xfer")), KeyEvent.VK_T));
+954:         file.add(item("مزامنة الآن", KeyEvent.VK_R, () -> SyncView.now(this)));
+955:         file.add(item("نسخة احتياطية الآن…", KeyEvent.VK_B, () -> {
+956:             go("backup");
+957:             View v = views.get("backup");
+958:             if (v instanceof BackupView) ((BackupView) v).create();
+959:         }));
+960:         file.add(item("استعادة نسخة من ملف…", 0, () -> {
+961:             go("backup");
+962:             View v = views.get("backup");
+963:             if (v instanceof BackupView) ((BackupView) v).restoreFromFile();
+964:         }));
+965:         file.addSeparator();
+966:         // 10.5 (AUDIT-027): كل مستخدم يغيّر رمزه بنفسه بعد إدخال رمزه الحالي (كالهاتف)
+967:         file.add(item("تغيير رمزي السري…", 0, () -> {
+968:             if (!db.usersEnabled() || SmartApp.currentUser == null) {
+969:                 Ui.toast("الرمز الشخصي يعمل بعد تفعيل المستخدمين والدخول.");
+970:                 return;
+971:             }
+972:             String old = LoginView.askPin(frame, "تغيير رمزي السري", "الرمز الحالي");
+973:             if (old == null) return;
+974:             String p1 = LoginView.askPin(frame, "الرمز الجديد", UsersView.pinRule(SmartApp.currentUser.role));
+975:             if (p1 == null) return;
+976:             String p2 = LoginView.askPin(frame, "تأكيد الرمز", "أعد كتابة الرمز الجديد");
+977:             if (p2 == null) return;
+978:             try {
+979:                 if (!p1.equals(p2)) throw new IllegalArgumentException("الرمزان غير متطابقين");
+980:                 if (!LoginView.canTry(db)) return;
+981:                 db.changeOwnPin(old, p1);
+982:                 LoginView.resetFails(db);
+983:                 Ui.toast("تم تغيير رمزك ✓");
+984:             } catch (SecurityException e) {
+985:                 LoginView.recordFail(db, SmartApp.currentUser.name, SmartApp.currentUser.id);
+986:                 Ui.error(frame, e);
+987:             } catch (Exception e) {
+988:                 Ui.error(frame, e);
+989:             }
+990:         }));
+991:         file.add(item("تسجيل الخروج", 0, () -> {
+992:             if (!db.usersEnabled()) return;
+993:             db.forgetUser();
+994:             lock();
+995:         }));
+996:         file.add(item("قفل البرنامج", KeyEvent.VK_L, () -> {
+997:             if (db.usersEnabled()) lock();
+998:             else if (DeskLock.on(db)) DeskLock.lockNow(this);
+999:             else Ui.toast("عيّن كلمة سر للقفل من «الإعدادات ← قفل البرنامج»، أو فعّل نظام المستخدمين.");
+1000:         }));
+1001:         JMenu viewM = new JMenu("عرض");
+1002:         int i = 1;
+1003:         for (String[] s : SECTIONS) {
+1004:             if ("-".equals(s[0])) continue;
+1005:             final String k = s[0];
+1006:             viewM.add(item(s[1], i <= 9 ? KeyEvent.VK_0 + i : 0, () -> go(k)));
+1007:             i++;
+1008:         }
+1009:         // 11.0: العودة إلى شكل الهاتف (الجديد) ومعالج الشكل
+1010:         viewM.addSeparator();
+1011:         viewM.add(item("الشكل الجديد (مثل الهاتف)", 0, () -> Main.switchUi("phone")));
+1012:         viewM.add(item("معالج الشكل والحجم…", 0, () -> LookWizard.open(false)));
+1013:         // 10.16: قائمة «انتقال» للعمل بلوحة المفاتيح
+1014:         JMenu goM = new JMenu("انتقال");
+1015:         goM.add(item("الانتقال السريع (قسم أو مكتب)…", KeyEvent.VK_K, () -> QuickJump.open(this)));
+1016:         goM.add(item("البحث في سجل الحركات", KeyEvent.VK_F, () -> {
+1017:             go("log");
+1018:             View v = views.get("log");
+1019:             if (v instanceof LogView) SwingUtilities.invokeLater(() -> {
+1020:                 ((LogView) v).search.requestFocusInWindow();
+1021:                 ((LogView) v).search.selectAll();
+1022:             });
+1023:         }));
+1024:         JMenuItem backItem = item("رجوع", 0, this::back);
+1025:         backItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, java.awt.event.InputEvent.ALT_DOWN_MASK));
+1026:         goM.add(backItem);
+1027:         JMenuItem f5 = item("تحديث الشاشة", 0, this::refreshCurrent);
+1028:         f5.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_F5, 0));
+1029:         goM.add(f5);
+1030:         goM.add(item("إخفاء المبالغ / إظهارها", KeyEvent.VK_E, () -> {
+1031:             toggleHidden();
+1032:             View v = views.get(current);
+1033:             if (v != null && !locked) v.refresh();
+1034:         }));
+1035:         JMenu help = new JMenu("مساعدة");
+1036:         JMenuItem f1 = item("اختصارات لوحة المفاتيح", 0, () -> QuickJump.help(frame));
+1037:         f1.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_F1, 0));
+1038:         help.add(f1);
+1039:         help.add(item("عن البرنامج", 0, () -> Ui.info(frame, "عن البرنامج", appTitle() + "\nالإصدار " + BuildInfo.VERSION + " " + Ui.forOs() + " (رقم البناء " + BuildInfo.BUILD_DATE + ")\n\n"
+1040:                 + "الحسابات والنسخ الاحتياطي بالصيغة نفسها التي في تطبيق الهاتف: النسخة من أي منهما تُستعاد في الآخر.\n\nمجلد البيانات: " + ctx.home().getAbsolutePath()
+1041:                 + "\n" + db.setting("developer", "برمجة: Ai creative solutions"))));
+1042:         help.add(item("فتح مجلد البيانات", 0, () -> {
+1043:             try {
+1044:                 Desktop.getDesktop().open(ctx.home());
+1045:             } catch (Exception ex) {
+1046:                 Ui.error(frame, ex);
+1047:             }
+1048:         }));
+1049:         mb.add(file);
+1050:         mb.add(goM);
+1051:         mb.add(viewM);
+1052:         mb.add(help);
+1053:         if (!Ui.MAC) mb.applyComponentOrientation(java.awt.ComponentOrientation.RIGHT_TO_LEFT);
+1054:         return mb;
+1055:     }
+1056: 
+1057:     static JMenuItem shift(JMenuItem m, int key) {
+1058:         m.setAccelerator(KeyStroke.getKeyStroke(key, Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx() | java.awt.event.InputEvent.SHIFT_DOWN_MASK));
+1059:         return m;
+1060:     }
+1061: 
+1062:     static JMenuItem item(String text, int key, Runnable r) {
+1063:         JMenuItem m = new JMenuItem(text);
+1064:         m.setFont(Ui.font(13, false));
+1065:         if (key != 0) m.setAccelerator(Ui.key(key));
+1066:         m.addActionListener(e -> r.run());
+1067:         return m;
+1068:     }
+1069: }

@@ -1,0 +1,167 @@
+137:             String extra = name.equals("settings") ? " AND NEW.k NOT LIKE 'sync%'" : "";
+138:             String extraOld = name.equals("settings") ? " AND OLD.k NOT LIKE 'sync%'" : "";
+139:             d.execSQL("CREATE TRIGGER IF NOT EXISTS sync1_i_" + name + " AFTER INSERT ON " + name + " WHEN " + cap + extra
+140:                     + " BEGIN INSERT INTO sync_chg(tbl,rid,op) VALUES('" + name + "'," + nw + ",'U'); END");
+141:             d.execSQL("CREATE TRIGGER IF NOT EXISTS sync1_u_" + name + " AFTER UPDATE ON " + name + " WHEN " + cap + extra
+142:                     + " BEGIN INSERT INTO sync_chg(tbl,rid,op) SELECT '" + name + "'," + od + ",'D' WHERE " + od + "<>" + nw + ";"
+143:                     + " INSERT INTO sync_chg(tbl,rid,op) VALUES('" + name + "'," + nw + ",'U'); END");
+144:             d.execSQL("CREATE TRIGGER IF NOT EXISTS sync1_d_" + name + " AFTER DELETE ON " + name + " WHEN " + cap + extraOld
+145:                     + " BEGIN INSERT INTO sync_chg(tbl,rid,op) VALUES('" + name + "'," + od + ",'D'); END");
+146:         }
+147:     }
+148: 
+149:     // ===================================================================================
+150:     // الحالة المحلية
+151:     // ===================================================================================
+152: 
+153:     static String meta(SQLiteDatabase d, String k) {
+154:         try (Cursor c = d.rawQuery("SELECT v FROM sync_meta WHERE k=?", new String[]{k})) {
+155:             return c.moveToFirst() ? c.getString(0) : null;
+156:         }
+157:     }
+158: 
+159:     static void setMeta(SQLiteDatabase d, String k, String v) {
+160:         if (v == null) d.execSQL("DELETE FROM sync_meta WHERE k=?", new Object[]{k});
+161:         else d.execSQL("INSERT OR REPLACE INTO sync_meta(k,v) VALUES(?,?)", new Object[]{k, v});
+162:     }
+163: 
+164:     static long prefix(SQLiteDatabase d) {
+165:         try {
+166:             String p = meta(d, "prefix");
+167:             return p == null || meta(d, "vault_id") == null ? 0 : Long.parseLong(p);
+168:         } catch (Exception e) {
+169:             return 0;
+170:         }
+171:     }
+172: 
+173:     /**
+174:      * 10.1: هل هذا الجهاز هو الجهاز الرئيسي (منشئ المزامنة)؟ جهاز خارج المزامنة رئيسي لنفسه.
+175:      * للخزنات المنشأة في 10.0 (بلا «founder»): المنشئ هو صاحب اللقطة الأولى عند الرقم 0.
+176:      */
+177:     static boolean founder(SQLiteDatabase d) {
+178:         if (meta(d, "vault_id") == null) return true;
+179:         String f = meta(d, "founder"), me = meta(d, "device");
+180:         if (f != null) return f.equals(me);
+181:         return "1".equals(meta(d, "snap_no")) && "0".equals(meta(d, "snap_seq"));
+182:     }
+183: 
+184:     static void capture(SQLiteDatabase d, boolean on) { d.execSQL("UPDATE sync_flag SET cap=" + (on ? 1 : 0) + " WHERE id=1"); }
+185: 
+186:     /** رقم الصف التالي من نطاق هذا الجهاز. */
+187:     static long nextId(SQLiteDatabase d, String table, long prefix) {
+188:         long next;
+189:         try (Cursor c = d.rawQuery("SELECT next FROM sync_ids WHERE tbl=?", new String[]{table})) {
+190:             if (c.moveToFirst()) next = c.getLong(0);
+191:             else {
+192:                 long base = prefix << 32;
+193:                 try (Cursor m = d.rawQuery("SELECT MAX(id) FROM " + table + " WHERE id>=" + base + " AND id<" + (base + (1L << 32)), null)) {
+194:                     next = m.moveToFirst() && !m.isNull(0) ? m.getLong(0) + 1 : base + 1;
+195:                 }
+196:             }
+197:         }
+198:         if (next >= ((prefix + 1) << 32)) throw new IllegalStateException("نفد نطاق أرقام هذا الجهاز في " + table);
+199:         d.execSQL("INSERT OR REPLACE INTO sync_ids(tbl,next) VALUES(?,?)", new Object[]{table, next + 1});
+200:         return next;
+201:     }
+202: 
+203:     /** خروج من المزامنة: يتوقف الالتقاط وتُنسى الخزنة والمؤشرات (البيانات تبقى كما هي). */
+204:     static void leave(SQLiteDatabase d, String reason) {
+205:         if (meta(d, "vault_id") == null) return;
+206:         capture(d, false);
+207:         for (String t : new String[]{"sync_meta", "sync_chg", "sync_clock", "sync_ids", "sync_outbox", "sync_cursor", "sync_blobs"}) d.execSQL("DELETE FROM " + t);
+208:         setMeta(d, "left_reason", reason);
+209:     }
+210: 
+211:     /** «حتى القيد»: آخر رقم في كل نطاق (JSON). */
+212:     static String marks(SQLiteDatabase d) {
+213:         JSONObject o = new JSONObject();
+214:         try (Cursor c = d.rawQuery("SELECT id>>32,MAX(id) FROM journal_entries GROUP BY id>>32", null)) {
+215:             while (c.moveToNext()) o.put("" + c.getLong(0), c.getLong(1));
+216:         } catch (Exception ignored) {
+217:             // يبقى فارغًا
+218:         }
+219:         return o.toString();
+220:     }
+221: 
+222:     /** شرط SQL: القيد col ضمن ما سبق المطابقة. */
+223:     static String upTo(String col, long cutoff, String marks) {
+224:         if (marks == null || marks.trim().isEmpty() || marks.trim().equals("{}")) return "(" + col + "<=" + cutoff + ")";
+225:         try {
+226:             JSONObject o = new JSONObject(marks);
+227:             StringBuilder b = new StringBuilder("(");
+228:             java.util.Iterator<String> it = o.keys();
+229:             boolean first = true;
+230:             while (it.hasNext()) {
+231:                 String g = it.next();
+232:                 long base = Long.parseLong(g) << 32, max = o.getLong(g);
+233:                 if (!first) b.append(" OR ");
+234:                 b.append("(").append(col).append(">=").append(base).append(" AND ").append(col).append("<=").append(max).append(")");
+235:                 first = false;
+236:             }
+237:             if (first) return "(" + col + "<=" + cutoff + ")";
+238:             return b.append(")").toString();
+239:         } catch (Exception e) {
+240:             return "(" + col + "<=" + cutoff + ")";
+241:         }
+242:     }
+243: 
+244:     // ===================================================================================
+245:     // الختم: من سجل التغييرات إلى عمليات
+246:     // ===================================================================================
+247: 
+248:     static String where(String table, String rid, List<String> args) {
+249:         String[] key = KEYS.get(table);
+250:         if (key.length == 1) {
+251:             args.add(rid);
+252:             return key[0] + "=?";
+253:         }
+254:         String[] parts = rid.split("\\|", -1);
+255:         StringBuilder b = new StringBuilder();
+256:         for (int i = 0; i < key.length; i++) {
+257:             if (i > 0) b.append(" AND ");
+258:             b.append(key[i]).append("=?");
+259:             args.add(i < parts.length ? parts[i] : "");
+260:         }
+261:         return b.toString();
+262:     }
+263: 
+264:     /** صورة الصف الحالية بنص مكشوف (الحقول الحساسة مفكوكة، والصورة المرفقة مضمّنة)، أو null إن لم يعد موجودًا. */
+265:     static JSONObject image(Db db, SQLiteDatabase d, String table, String rid) throws Exception {
+266:         List<String> args = new ArrayList<>();
+267:         String w = where(table, rid, args);
+268:         List<String> sens = Db.SENSITIVE.get(table);
+269:         try (Cursor c = d.rawQuery("SELECT * FROM " + table + " WHERE " + w, args.toArray(new String[0]))) {
+270:             if (!c.moveToFirst()) return null;
+271:             JSONObject o = new JSONObject();
+272:             for (int i = 0; i < c.getColumnCount(); i++) {
+273:                 String col = c.getColumnName(i);
+274:                 switch (c.getType(i)) {
+275:                     case Cursor.FIELD_TYPE_NULL: o.put(col, JSONObject.NULL); break;
+276:                     case Cursor.FIELD_TYPE_INTEGER: o.put(col, c.getLong(i)); break;
+277:                     case Cursor.FIELD_TYPE_FLOAT: o.put(col, c.getDouble(i)); break;
+278:                     case Cursor.FIELD_TYPE_BLOB: o.put(col, "b64:" + Base64.getEncoder().encodeToString(c.getBlob(i))); break;
+279:                     default: {
+280:                         String v = c.getString(i);
+281:                         if (sens != null && sens.contains(col)) v = Crypto.dec(v);
+282:                         if (table.equals("settings") && col.equals("v") && Db.ENCRYPTED_SETTINGS.contains(o.optString("k"))) {
+283:                             // سرّ رموز المستخدمين وسرّ بصمة اليوم: يرسلهما الجهاز الرئيسي وحده (فتطابق الرموز على كل الأجهزة)
+284:                             if (!founder(d) || v == null) return null;
+285:                             v = Crypto.decStrict(v);
+286:                         }
+287:                         o.put(col, v);
+288:                     }
+289:                 }
+290:             }
+291:             if (table.equals("settings") && localSetting(o.optString("k"))) return null;
+292:             if (table.equals("exchange_rates")) {
+293:                 JSONObject m = new JSONObject();
+294:                 m.put("code", o.get("code"));
+295:                 m.put("manual_rate", o.opt("manual_rate"));
+296:                 m.put("manual_at", o.opt("manual_at"));
+297:                 return m;
+298:             }
+299:             if (table.equals("attachments")) {
+300:                 // 10.4: الصورة لا تُضمَّن في الحزمة؛ تُرفع ملفًا مستقلًا (مرة واحدة) وتحمل الحزمة بصمتها فقط
+301:                 File f = db.attachmentFile(o.optString("path"));
+302:                 o.remove("path");
+303:                 String sha = f.isFile() ? blobSha(d, o.getLong("id"), f) : null;

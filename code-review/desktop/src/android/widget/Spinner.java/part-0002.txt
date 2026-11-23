@@ -1,0 +1,34 @@
+171:                 setSelection(pos);
+172:                 if (itemClick != null) itemClick.onItemClick(this, v, pos, adapter.getItemId(pos));
+173:             });
+174:             list.addView(row, new LinearLayout.LayoutParams(-1, -2));
+175:         }
+176:         int w = dropW > 0 ? dropW : Math.max(getWidth(), Math.round(160 * d));
+177:         w = Math.min(w, winW - Math.round(16 * d));
+178:         int below = winH - (loc[1] + getHeight()) - Math.round(8 * d), above = loc[1] - Math.round(8 * d);
+179:         sv.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+180:         int want = sv.getMeasuredHeight();
+181:         boolean down = want <= below || below >= above;
+182:         int h = Math.min(want, Math.max(Math.round(120 * d), down ? below : above));
+183:         FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(w, h, Gravity.TOP | Gravity.LEFT);
+184:         int x = isRtl() ? loc[0] + getWidth() - w : loc[0];
+185:         p.leftMargin = Math.max(Math.round(8 * d), Math.min(x, winW - w - Math.round(8 * d)));
+186:         p.topMargin = down ? loc[1] + getHeight() + dropOffY : loc[1] - h;
+187:         host.addView(sv, p);
+188:         popup = android.app.WindowStack.add(host, ViewRootImpl.LAYER_POPUP);
+189:         popup.onOutsideTouch = this::closePopup;
+190:         popup.onBack = this::closePopup;
+191:         host.setClickable(true);
+192:         host.setOnClickListener(v -> closePopup());
+193:         sv.setAlpha(0f);
+194:         sv.setScaleY(0.92f);
+195:         sv.setPivotY(down ? 0 : h);
+196:         sv.animate().alpha(1f).scaleY(1f).setDuration(140).start();
+197:         if (selected > 2) sv.post(() -> { View r = list.getChildAt(selected); if (r != null) sv.scrollTo(0, r.getTop() - h / 3); });
+198:     }
+199:     private void closePopup() {
+200:         if (popup != null) android.app.WindowStack.remove(popup);
+201:         popup = null;
+202:     }
+203:     @Override protected void onDetachedFromWindow() { super.onDetachedFromWindow(); closePopup(); }
+204: }

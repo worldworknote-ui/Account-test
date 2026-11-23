@@ -1,0 +1,109 @@
+2054:     // العملات
+2055:     var vals = {};
+2056:     var stm = S.mode === "statements";
+2057:     if (stm) {
+2058:       S.stmts.forEach(function (st) {
+2059:         if (!st.curText) return;
+2060:         var k = C.officeKey(st.curText);
+2061:         vals[k] = vals[k] || { text: st.curText, n: 0 };
+2062:         vals[k].n++;
+2063:       });
+2064:     }
+2065:     if (!stm && S.open.enabled && S.open.layout !== "wide" && S.open.currencyFrom === "column") Object.assign(vals, collect(S.open, [S.open.sheet], S.open.cols.currency));
+2066:     if (!stm && S.tx.enabled && S.tx.currencyFrom === "column") {
+2067:       var tv = collect(S.tx, S.tx.sheets, S.tx.cols.currency);
+2068:       Object.keys(tv).forEach(function (k) { if (vals[k]) vals[k].n += tv[k].n; else vals[k] = tv[k]; });
+2069:     }
+2070:     var keys = Object.keys(vals);
+2071:     keys.forEach(function (k) { if (!(k in S.currencyMap)) S.currencyMap[k] = C.guessCurrency(vals[k].text) || ""; });
+2072:     if (keys.length) {
+2073:       if (keys.length > 60) html += '<div class="msg warn">عمود العملة فيه ' + keys.length + " قيمة مختلفة؛ تأكد أنك اخترت عمود العملة الصحيح.</div>";
+2074:       html += '<h3>العملات كما وردت في ' + (stm ? "الكشوفات" : "الملف") + '</h3><div class="mapgrid"><span class="h">في الملف</span><span class="h">' + (stm ? "كشوفات" : "عدد") + '</span><span class="h">العملة في التطبيق</span>';
+2075:       keys.slice(0, 120).forEach(function (k) {
+2076:         var v = S.currencyMap[k];
+2077:         html += "<span>" + esc(vals[k].text) + "</span><span>" + vals[k].n + '</span><select data-curmap="' + esc(k) + '"' + (!v ? ' style="border-color:#AD2E36"' : "") + ">" +
+2078:           codeOptions(v, '<option value=""' + (!v ? " selected" : "") + '>— اختر —</option><option value="__skip"' + (v === "__skip" ? " selected" : "") + ">" + (stm ? "استبعاد هذه الكشوفات" : "استبعاد هذه الصفوف") + "</option>") + "</select>";
+2079:       });
+2080:       html += "</div>";
+2081:     }
+2082:     // أنواع الحركات
+2083:     if (!stm && S.tx.enabled && S.tx.layout === "typed") {
+2084:       var tvals = collect(S.tx, S.tx.sheets, S.tx.cols.type);
+2085:       var tk = Object.keys(tvals);
+2086:       tk.forEach(function (k) { if (!(k in S.typeMap)) S.typeMap[k] = C.guessDirection(tvals[k].text) || ""; });
+2087:       html += '<h3>أنواع الحركات</h3><p class="hint">«لنا» = المكتب أصبح مدينًا لنا بهذا المبلغ. «علينا» = نحن أصبحنا مدينين للمكتب.</p><div class="mapgrid"><span class="h">في الملف</span><span class="h">عدد</span><span class="h">في التطبيق</span>';
+2088:       tk.slice(0, 80).forEach(function (k) {
+2089:         var v = S.typeMap[k];
+2090:         html += "<span>" + esc(tvals[k].text) + "</span><span>" + tvals[k].n + '</span><select data-typemap="' + esc(k) + '"' + (!v ? ' style="border-color:#AD2E36"' : "") + ">" +
+2091:           [["", "— اختر —"], ["D", "لنا (مدين)"], ["C", "علينا (دائن)"], ["X", "استبعاد هذه الصفوف"]].map(function (x) {
+2092:             return '<option value="' + x[0] + '"' + (v === x[0] ? " selected" : "") + ">" + x[1] + "</option>"; }).join("") + "</select>";
+2093:       });
+2094:       html += "</div>";
+2095:     }
+2096:     // تعريف العملات المستخدمة
+2097:     var used = {};
+2098:     Object.keys(S.currencyMap).forEach(function (k) { var c = S.currencyMap[k]; if (c && c !== "__skip") used[c] = true; });
+2099:     if (!stm && S.open.enabled && S.open.layout === "wide") S.open.wide.forEach(function (w) { if (w.code) used[w.code] = true; });
+2100:     if (!stm && S.open.enabled && S.open.layout !== "wide" && S.open.currencyFrom === "fixed") used[S.open.fixedCurrency] = true;
+2101:     if (!stm && S.tx.enabled && S.tx.currencyFrom === "fixed") used[S.tx.fixedCurrency] = true;
+2102:     Object.keys(used).forEach(ensureDef);
+2103:     var uc = Object.keys(used).sort();
+2104:     if (uc.length) {
+2105:       html += '<h3>العملات التي ستُنشأ في التطبيق</h3><p class="hint">عدد المنازل العشرية مهم: المبالغ بمنازل أكثر منه تُرفض بدل تقريبها بصمت.</p><div class="curdefs"><span class="h hint">الرمز</span><span class="h hint">الاسم</span><span class="h hint">منازل عشرية</span>';
+2106:       uc.forEach(function (c) {
+2107:         var d = S.currencyDefs[c];
+2108:         html += '<b class="ltr">' + esc(c) + '</b><input type="text" data-curname="' + c + '" value="' + esc(d.name) + '"><select data-curdec="' + c + '">' +
+2109:           [0, 1, 2, 3, 4, 5, 6].map(function (n) { return "<option" + (d.dec === n ? " selected" : "") + ">" + n + "</option>"; }).join("") + "</select>";
+2110:       });
+2111:       html += "</div>";
+2112:     }
+2113:     if (stm) html += '<h3>أسماء المكاتب</h3><p class="hint">اسم المكتب من سطر الحساب أعلى كل كشف (بدون رمزه؛ الرمز يُحفظ في ملاحظات المكتب). تظهر القائمة في الخطوة 4 ويمكن تعديلها هناك.</p>';
+2114:     else html += '<h3>أسماء المكاتب</h3><label class="check"><input type="checkbox" id="mergeSimilar"' + (S.mergeSimilar ? " checked" : "") +
+2115:       '> دمج الأسماء المتشابهة في الكتابة (أ/ا، ة/ه، ى/ي) كمكتب واحد</label><div id="officeNames" class="hint">تظهر قائمة المكاتب بعد التحليل في الخطوة 4، ويمكن تعديل أسمائها هناك.</div>';
+2116:     box.innerHTML = html || '<p class="hint">لا توجد قيم تحتاج مطابقة.</p>';
+2117:   }
+2118: 
+2119:   // ===================================================================================
+2120:   // 4. التحليل والمراجعة
+2121:   // ===================================================================================
+2122: 
+2123:   function config() {
+2124:     var o = S.open, t = S.tx;
+2125:     function cols(c) { var r = {}; Object.keys(c).forEach(function (k) { if (c[k] !== undefined && c[k] !== null && c[k] !== "" && !isNaN(c[k])) r[k] = +c[k]; }); return r; }
+2126:     var oDate = null;
+2127:     if (o.date) { var p = o.date.split("-"); oDate = new Date(+p[0], +p[1] - 1, +p[2], 12, 0, 0).getTime(); }
+2128:     return {
+2129:       now: Date.now(), reverse: S.reverse, mergeSimilar: S.mergeSimilar, currencyMap: S.currencyMap, typeMap: S.typeMap, currencies: S.currencyDefs,
+2130:       rename: S.rename, sourceName: S.fileName, officeName: $("myOffice").value.trim(),
+2131:       statements: { balancesOnly: S.st.balancesOnly, mergeCom: S.st.mergeCom && !S.st.balancesOnly, positiveIs: S.st.positiveIs },
+2132:       openings: { enabled: o.enabled, headerRow: o.headerRow, layout: o.layout === "single" ? "signed" : o.layout, positiveIs: o.positiveIs, cols: cols(o.cols),
+2133:         currencyFrom: o.currencyFrom, fixedCurrency: o.fixedCurrency, wide: o.wide.filter(function (w) { return w.code; }), date: oDate },
+2134:       txs: { enabled: t.enabled, headerRow: t.headerRow, officeFrom: t.officeFrom, layout: t.layout, currencyFrom: t.currencyFrom, fixedCurrency: t.fixedCurrency,
+2135:         positiveIs: t.positiveIs, dateOrder: t.dateOrder, fillDate: t.fillDate, feeDir: t.feeDir, balancePositiveIs: t.balancePositiveIs,
+2136:         cols: cols(t.cols), descCols: t.descCols.filter(function (c) { return c !== undefined && c !== null && !isNaN(c); }) }
+2137:     };
+2138:   }
+2139: 
+2140:   function missingSetup() {
+2141:     var m = [];
+2142:     if (S.mode === "statements") {
+2143:       if (!S.stmts.length) m.push("لا توجد كشوفات حساب. اختر الملفات في الخطوة 1.");
+2144:       return m;
+2145:     }
+2146:     if (!S.open.enabled && !S.tx.enabled) m.push("حدّد في الخطوة 2 ما تريد نقله: الأرصدة أو الحركات أو كلاهما.");
+2147:     if (S.open.enabled) {
+2148:       var oc = S.open.cols;
+2149:       if (oc.office === undefined) m.push("الأرصدة: اختر عمود اسم المكتب.");
+2150:       if (S.open.layout === "single" && oc.amount === undefined) m.push("الأرصدة: اختر عمود الرصيد.");
+2151:       if (S.open.layout === "split" && (oc.debit === undefined || oc.credit === undefined)) m.push("الأرصدة: اختر عمودي «لنا» و«علينا».");
+2152:       if (S.open.layout === "wide" && !S.open.wide.some(function (w) { return w.code; })) m.push("الأرصدة: حدّد عملة عمود واحد على الأقل.");
+2153:       if (S.open.layout !== "wide" && S.open.currencyFrom === "column" && oc.currency === undefined) m.push("الأرصدة: اختر عمود العملة أو «عملة واحدة».");
+2154:     }
+2155:     if (S.tx.enabled) {
+2156:       var tc = S.tx.cols;
+2157:       if (!S.tx.sheets.length) m.push("الحركات: حدّد ورقة واحدة على الأقل.");
+2158:       if (S.tx.officeFrom === "column" && tc.office === undefined) m.push("الحركات: اختر عمود المكتب.");
+2159:       if (tc.date === undefined) m.push("الحركات: اختر عمود التاريخ.");
+2160:       if (S.tx.layout === "split" && (tc.debit === undefined || tc.credit === undefined)) m.push("الحركات: اختر عمودي «لنا» و«علينا».");
+2161:       if (S.tx.layout !== "split" && tc.amount === undefined) m.push("الحركات: اختر عمود المبلغ.");
+2162:       if (S.tx.layout === "typed" && tc.type === undefined) m.push("الحركات: اختر عمود النوع.");

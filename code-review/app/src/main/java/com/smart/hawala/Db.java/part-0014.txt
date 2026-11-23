@@ -1,0 +1,155 @@
+1833:             audit(d, "EDIT_FX", "tx", t.id, "new=" + ids[0] + "," + ids[1] + " rate=" + rate + (reason == null || reason.trim().isEmpty() ? "" : " — " + reason.trim()));
+1834:             d.setTransactionSuccessful();
+1835:             return ids;
+1836:         } finally {
+1837:             d.endTransaction();
+1838:         }
+1839:     }
+1840: 
+1841:     /** 10.18: ما يلزم لفتح قص عملات للتعديل: {الساق المباعة («علينا»)، الساق المشتراة («لنا»)}، أو null إن لم تكن عملية قص نشطة بساقين. */
+1842:     public Model.Tx[] fxLegsOf(long legId) {
+1843:         Model.Tx t = tx(legId);
+1844:         if (t == null || !t.isFx()) return null;
+1845:         Model.Tx sell = null, buy = null;
+1846:         for (Model.Tx x : legs(t)) {
+1847:             if (TYPE_CREDIT.equals(x.type)) sell = x;
+1848:             else buy = x;
+1849:         }
+1850:         return sell == null || buy == null ? null : new Model.Tx[]{sell, buy};
+1851:     }
+1852: 
+1853:     /**
+1854:      * 10.18: معاينة تعديل القص: لكل عملة {الرصيد بعد عكس العملية القديمة، الرصيد بعد العملية المصحّحة}.
+1855:      * (المعاينة العادية تحسب العملية القديمة ضمن «قبل»، فتُضاعِف أثرها.)
+1856:      */
+1857:     public Map<String, long[]> fxEditPreview(Model.Tx[] old, String sellCur, long sellAmount, String buyCur, long buyAmount) {
+1858:         Map<String, Long> bal = balances(old[0].officeId);
+1859:         Map<String, long[]> out = new LinkedHashMap<>();
+1860:         for (String c : new String[]{old[0].currency, old[1].currency, sellCur, buyCur}) {
+1861:             if (c == null || c.isEmpty() || out.containsKey(c)) continue;
+1862:             long base = bal.getOrDefault(c, 0L);
+1863:             if (c.equals(old[0].currency)) base += old[0].amount;   // الساق المباعة كانت خصمًا
+1864:             if (c.equals(old[1].currency)) base -= old[1].amount;   // والمشتراة كانت إضافة
+1865:             long after = base;
+1866:             if (c.equals(sellCur)) after -= sellAmount;
+1867:             if (c.equals(buyCur)) after += buyAmount;
+1868:             out.put(c, new long[]{base, after});
+1869:         }
+1870:         return out;
+1871:     }
+1872: 
+1873:     public String[] addFx(long office, String usCur, long usAmount, String themCur, long themAmount, String rate, String description, long when) {
+1874:         require(Auth.Perm.TX_ADD);
+1875:         require(Auth.Perm.FX);   // 12.0 (كانت تحتاج «التعديل»؛ صارت صلاحية «قص العملات» نفسها)
+1876:         TxInput[] legs = fxLegs(office, usCur, usAmount, themCur, themAmount, rate, description, when);
+1877:         TxInput a = legs[0], b = legs[1];
+1878:         String pair = UUID.randomUUID().toString();
+1879:         a.pairUuid = pair;
+1880:         b.pairUuid = pair;
+1881:         validate(a);
+1882:         validate(b);
+1883:         Entitlements ent = License.current;
+1884:         SQLiteDatabase d = getWritableDatabase();
+1885:         d.beginTransaction();
+1886:         try {
+1887:             checkLock(d, when, "تاريخ العملية يقع داخل فترة محاسبية مقفلة");
+1888:             QuotaState q = unlimited(ent) ? null : quota(d, office);
+1889:             if (q != null) {
+1890:                 Model.Office off = office(office);
+1891:                 String no = q.txRefusal(ent, office, off == null ? "" : Model.nz(off.name));
+1892:                 if (no == null && q.txOf(office) + 2 > ent.maxTxPerOffice()) no = Entitlements.txLimitMessage(off == null ? "" : Model.nz(off.name), ent.maxTxPerOffice());
+1893:                 if (no != null) throw new Entitlements.LimitReached(no);
+1894:             }
+1895:             // 10.5 (AUDIT-018): التبديل يخضع للاعتماد كأي حركة: الساقان معلّقتان معًا ولا أثر لهما في الأرصدة حتى تُعتمدا
+1896:             boolean pending = approvalRequired(a);
+1897:             long ia = insertTx(d, a, null, pending);
+1898:             long ib = insertTx(d, b, null, pending);
+1899:             if (q != null) {
+1900:                 q.tx.put(office, q.txOf(office) + 2);
+1901:                 saveQuota(d, q);
+1902:             }
+1903:             audit(d, pending ? "PROPOSE_FX" : "CREATE_FX", "tx", ia, "pair=" + ib + " rate=" + rate);
+1904:             d.setTransactionSuccessful();
+1905:             return new String[]{"" + ia, "" + ib};
+1906:         } finally {
+1907:             d.endTransaction();
+1908:         }
+1909:     }
+1910: 
+1911:     // ===================================================================================
+1912:     // 10.5 (§9)، صُحّح في 10.7: الحركة بين مكتبين — طالب الحركة «لنا» والمنفّذ «علينا»، ساقان برقم عملية واحد
+1913:     // ===================================================================================
+1914: 
+1915:     public static final class TransferInput {
+1916:         /**
+1917:          * 10.7: المكتب طالب الحركة (from) يطلب منا تسليم مبلغ عن طريق مكتب آخر، فيصير مدينًا لنا: «لنا» عليه.
+1918:          * المكتب المنفّذ (to) يسلّم المبلغ نيابة عنا، فنصير مدينين له: «علينا» له. (في 10.5–10.6 كان الاتجاه معكوسًا.)
+1919:          */
+1920:         public long from, to;
+1921:         public String currency, person = "", description = "", notes = "";
+1922:         public long amount, when;
+1923:         /** أجرة كل طرف صريحة (بدون أجرة افتراضيًا)، بعملة التحويل. */
+1924:         public String fromFeeType = FEE_NONE, toFeeType = FEE_NONE;
+1925:         public long fromFee, toFee;
+1926:     }
+1927: 
+1928:     /** ساقا التحويل كما تُسجَّلان (للمعاينة والتسجيل بالقواعد نفسها). */
+1929:     public TxInput[] transferLegs(TransferInput in) {
+1930:         if (in.from == in.to) throw new IllegalArgumentException("المكتب طالب الحركة والمكتب المنفّذ يجب أن يكونا مختلفين");
+1931:         TxInput a = new TxInput(), b = new TxInput();
+1932:         Model.Office fo = office(in.from), to = office(in.to);
+1933:         for (TxInput x : new TxInput[]{a, b}) {
+1934:             x.currency = in.currency;
+1935:             x.amount = in.amount;
+1936:             x.person = Model.nz(in.person);
+1937:             x.notes = Model.nz(in.notes);
+1938:             x.when = in.when;
+1939:             x.service = "تحويل بين مكتبين";
+1940:             x.fxRate = Model.TRANSFER_MARK;
+1941:         }
+1942:         // طالب الحركة: مدين لنا بالمبلغ (وأجرتنا عليه إن وُجدت «الأجرة لنا»)
+1943:         a.office = in.from;
+1944:         a.type = TYPE_DEBIT;
+1945:         a.dest = to == null ? "" : Model.nz(to.name);
+1946:         a.description = Model.nz(in.description).isEmpty() ? "حركة نفّذها «" + (to == null ? "" : Model.nz(to.name)) + "»" : in.description;
+1947:         a.feeType = in.fromFeeType == null ? FEE_NONE : in.fromFeeType;
+1948:         a.fee = FEE_NONE.equals(a.feeType) ? 0 : in.fromFee;
+1949:         a.feeCurrency = FEE_NONE.equals(a.feeType) ? null : in.currency;
+1950:         // المنفّذ: دائن لنا بالمبلغ الذي سلّمه عنا (وأجرته علينا إن وُجدت «الأجرة علينا»)
+1951:         b.office = in.to;
+1952:         b.type = TYPE_CREDIT;
+1953:         b.dest = fo == null ? "" : Model.nz(fo.name);
+1954:         b.description = Model.nz(in.description).isEmpty() ? "تنفيذ حركة لطلب «" + (fo == null ? "" : Model.nz(fo.name)) + "»" : in.description;
+1955:         b.feeType = in.toFeeType == null ? FEE_NONE : in.toFeeType;
+1956:         b.fee = FEE_NONE.equals(b.feeType) ? 0 : in.toFee;
+1957:         b.feeCurrency = FEE_NONE.equals(b.feeType) ? null : in.currency;
+1958:         return new TxInput[]{a, b};
+1959:     }
+1960: 
+1961:     /**
+1962:      * يسجّل التحويل: الساقان في معاملة واحدة برقم عملية واحد (لا ساق بلا أخرى)، وتخضعان للاعتماد معًا، ولا تُعدَّل ساق وحدها.
+1963:      * لا حركة صندوق: التحويل بين مكتبين لا يحرّك النقد (حركة النقد تُسجَّل صراحة من الصندوق إن حدثت). يرجع [رقم ساق المرسل، رقم ساق المنفّذ].
+1964:      */
+1965:     public long[] addTransfer(TransferInput in) {
+1966:         require(Auth.Perm.TX_ADD);
+1967:         require(Auth.Perm.XFER);   // 12.0
+1968:         TxInput[] legs = transferLegs(in);
+1969:         String pair = UUID.randomUUID().toString();
+1970:         for (TxInput x : legs) {
+1971:             x.pairUuid = pair;
+1972:             validate(x);
+1973:         }
+1974:         Entitlements ent = License.current;
+1975:         SQLiteDatabase d = getWritableDatabase();
+1976:         d.beginTransaction();
+1977:         try {
+1978:             checkLock(d, in.when, "تاريخ العملية يقع داخل فترة محاسبية مقفلة");
+1979:             QuotaState q = unlimited(ent) ? null : quota(d, in.from);
+1980:             if (q != null) {
+1981:                 q.raiseTo(0, liveTx(d, in.to));
+1982:                 for (TxInput x : legs) {
+1983:                     Model.Office off = office(x.office);
+1984:                     String no = q.txRefusal(ent, x.office, off == null ? "" : Model.nz(off.name));
+1985:                     if (no != null) throw new Entitlements.LimitReached(no);
+1986:                 }
+1987:             }

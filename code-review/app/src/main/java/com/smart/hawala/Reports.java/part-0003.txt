@@ -1,0 +1,131 @@
+305:         if (s.rows.isEmpty()) s.note = "لا توجد حركات في هذا اليوم.";
+306:         Report.Section l = txSection(r, "حركات اليوم", "الحركات", txs, officeNames, decimals, attachments);
+307:         if (l.rows.isEmpty()) l.note = "لا توجد حركات.";
+308:         return r;
+309:     }
+310: 
+311:     // ===================================================================================
+312:     // سجل الحركات / نتائج البحث
+313:     // ===================================================================================
+314: 
+315:     public static Report txList(String title, List<String> filters, List<Model.Tx> txs, Map<Long, String> officeNames,
+316:                                 Map<String, Integer> decimals, String issuer, long generatedAt) {
+317:         return txList(title, filters, txs, officeNames, decimals, issuer, generatedAt, null);
+318:     }
+319: 
+320:     public static Report txList(String title, List<String> filters, List<Model.Tx> txs, Map<Long, String> officeNames,
+321:                                 Map<String, Integer> decimals, String issuer, long generatedAt, Map<Long, List<Long>> attachments) {
+322:         Report r = new Report();
+323:         r.title = title;
+324:         if (issuer != null && !issuer.trim().isEmpty()) r.headerLines.add("صادر عن: " + issuer.trim());
+325:         for (String f : filters) if (f != null && !f.isEmpty()) r.headerLines.add(f);
+326:         r.headerLines.add("عدد الحركات: " + txs.size() + "   •   تاريخ الإصدار: " + Model.date(generatedAt));
+327:         r.fileBase = "سجل-الحركات";
+328:         Report.Section s = txSection(r, "الحركات", "الحركات", txs, officeNames, decimals, attachments);
+329:         if (s.rows.isEmpty()) s.note = "لا توجد حركات مطابقة.";
+330:         return r;
+331:     }
+332: 
+333:     static Report.Section txSection(Report r, String heading, String sheet, List<Model.Tx> txs, Map<Long, String> officeNames,
+334:                                     Map<String, Integer> decimals, Map<Long, List<Long>> attachments) {
+335:         Report.Section s = r.section(heading, sheet);
+336:         s.col("التاريخ", 1.15f, Report.DATE).col("المكتب", 1.5f, Report.TEXT).col("البيان", 2.6f, Report.TEXT)
+337:                 .col("لنا", 1.1f, Report.MONEY).col("علينا", 1.1f, Report.MONEY).col("العملة", 0.7f, Report.TEXT)
+338:                 .col("الأجرة", 1.3f, Report.TEXT).col("الحالة", 0.8f, Report.TEXT);
+339:         boolean shade = false;
+340:         for (Model.Tx t : txs) {
+341:             int d = dec(decimals, t.currency);
+342:             String desc = Model.join(Model.list(Model.nz(t.person), MessageParser.compact(t.description, t.person), "مرجع: " + Model.shortRef(t.uuid)), "\n");
+343:             String fee = t.hasFee() ? (Model.FEE_US.equals(t.feeType) ? "لنا " : "علينا ") + Model.fmt(t.fee, dec(decimals, t.feeCurrency)) + " " + t.feeCurrency : "";
+344:             boolean us = Model.TYPE_DEBIT.equals(t.type);
+345:             String name = officeNames.get(t.officeId);
+346:             Report.Row row = s.row(t.isActive() ? (shade ? Report.SHADED : Report.NORMAL) : Report.MUTED, new Report.DateV(t.createdAt), name == null ? "—" : name, desc,
+347:                     us ? new Report.Money(t.amount, d) : "", us ? "" : new Report.Money(t.amount, d), t.currency, fee,
+348:                     t.isActive() ? (t.replacesId != null ? "معدّلة" : "نشطة") : t.isPending() ? "بانتظار الاعتماد" : t.isRejected() ? "مرفوضة" : "ملغاة");
+349:             if (attachments != null) {
+350:                 List<Long> ids = attachments.get(t.id);
+351:                 if (ids != null && !ids.isEmpty()) row.images = ids;
+352:             }
+353:             shade = !shade;
+354:         }
+355:         return s;
+356:     }
+357: 
+358:     // ===================================================================================
+359:     // ألوان العملات
+360:     // ===================================================================================
+361: 
+362:     /**
+363:      * يلوّن كل عملة بلونها: أقسام العملة الواحدة (رأس الجدول والعنوان)، والصفوف التي فيها عمود «العملة»
+364:      * (خلفية خفيفة وأرقام بلون العملة). لا يغيّر أي رقم أو نص.
+365:      */
+366:     public static void colorize(Report r, ExportStyle st) {
+367:         if (r == null || st == null || !st.curColors) return;
+368:         for (Report.Section s : r.sections) {
+369:             if (s.accent == 0 && s.heading != null && s.heading.startsWith("العملة: ") && isCode(s.sheetName)) s.accent = st.colorFor(s.sheetName);
+370:             int ci = -1;
+371:             for (int i = 0; i < s.cols.size(); i++) if ("العملة".equals(s.cols.get(i).title)) ci = i;
+372:             if (ci < 0) continue;
+373:             for (Report.Row row : s.rows) {
+374:                 if (row.style == Report.MUTED || ci >= row.cells.length) continue;
+375:                 String code = codeOf(Report.text(row.cells[ci]));
+376:                 if (code != null) row.tint = st.colorFor(code);
+377:             }
+378:         }
+379:     }
+380: 
+381:     static String codeOf(String cell) {
+382:         String t = cell == null ? "" : cell.trim();
+383:         int i = t.indexOf(' ');
+384:         if (i > 0) t = t.substring(0, i);
+385:         return isCode(t) ? t : null;
+386:     }
+387: 
+388:     static boolean isCode(String s) {
+389:         return s != null && s.matches("[A-Z0-9]{2,10}");
+390:     }
+391: 
+392:     // ===================================================================================
+393:     // كشف تجريبي لمعاينة خيارات التصميم
+394:     // ===================================================================================
+395: 
+396:     public static Report sample(ExportStyle st, String issuer) {
+397:         StatementInput in = new StatementInput();
+398:         in.officeName = "مكتب النور للصرافة";
+399:         in.issuer = issuer == null || issuer.trim().isEmpty() ? "مكتبك" : issuer;
+400:         in.periodLabel = "هذا الشهر";
+401:         in.periodHasStart = true;
+402:         in.currencyNames.put("USD", "دولار أمريكي");
+403:         in.decimals.put("USD", 2);
+404:         in.opening.put("USD", 150000L);
+405:         in.fullBalance.put("USD", 230000L);
+406:         in.currencyNames.put("EUR", "يورو");
+407:         in.decimals.put("EUR", 2);
+408:         in.opening.put("EUR", 50000L);
+409:         in.fullBalance.put("EUR", 30000L);
+410:         long t = Clock.now() - 5L * 86400000L;
+411:         String[][] data = {{"PRINCIPAL", "D", "120000", "أحمد علي", "حوالة إلى حلب"}, {"FEE", "D", "1500", "", ""},
+412:                 {"PRINCIPAL", "C", "45000", "سامر خليل", "تسليم نقدي"}, {"PRINCIPAL", "D", "3500", "محمد", "تسوية"},
+413:                 {"PRINCIPAL", "C", "20000", "رامي", "تسليم يورو", "EUR"}};
+414:         int i = 0;
+415:         for (String[] x : data) {
+416:             Model.Line l = new Model.Line();
+417:             l.kind = x[0];
+418:             l.currency = x.length > 5 ? x[5] : "USD";
+419:             l.createdAt = t + (i++) * 86400000L;
+420:             long v = Long.parseLong(x[2]);
+421:             if ("D".equals(x[1])) l.debit = v;
+422:             else l.credit = v;
+423:             l.person = x[3];
+424:             l.description = x[4];
+425:             l.txType = "D".equals(x[1]) ? Model.TYPE_DEBIT : Model.TYPE_CREDIT;
+426:             l.feeType = Model.FEE_US;
+427:             l.txUuid = "a1b2c3d4-" + i;
+428:             l.status = "ACTIVE";
+429:             in.lines.add(l);
+430:         }
+431:         Report r = statement(in, st);
+432:         colorize(r, st);
+433:         return r;
+434:     }
+435: }

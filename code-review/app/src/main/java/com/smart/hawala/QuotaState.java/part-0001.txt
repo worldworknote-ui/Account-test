@@ -1,0 +1,90 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.Map;
+4: import java.util.TreeMap;
+5: 
+6: /**
+7:  * عدّادات النسخة المجانية (منطق بحت). عدّادان لا ينقصان: المكاتب المنشأة، والحركات الجديدة لكل مكتب.
+8:  * يُحفظان في إعدادات الهاتف (لا تنتقل مع النسخة ولا تُستبدل بالاستعادة) مع بصمة HMAC بمفتاح Keystore.
+9:  * يُؤخذ دائمًا الأكبر بين العدّاد وأرضية البيانات الحية، وإعادة التثبيت تبدأ من البيانات الموجودة.
+10:  * 9.0: حذف مكتب يعيد مكانه فارغًا (يُحذف معه كل ما عليه). التصحيحات (تعديل حركة) لا تُحتسب.
+11:  */
+12: public final class QuotaState {
+13:     /** المكاتب المنشأة منذ التثبيت. */
+14:     public long offices;
+15:     /** الحركات الجديدة لكل مكتب (رقم المكتب ← العدد). */
+16:     public final Map<Long, Long> tx = new TreeMap<>();
+17: 
+18:     public static QuotaState parse(String s) {
+19:         QuotaState q = new QuotaState();
+20:         if (s == null || s.isEmpty()) return q;
+21:         for (String part : s.split(";")) {
+22:             int i = part.indexOf('=');
+23:             if (i <= 0) continue;
+24:             String k = part.substring(0, i);
+25:             try {
+26:                 long v = Long.parseLong(part.substring(i + 1));
+27:                 if (v < 0) continue;
+28:                 if (k.equals("o")) q.offices = v;
+29:                 else if (k.startsWith("t")) q.tx.put(Long.parseLong(k.substring(1)), v);
+30:             } catch (NumberFormatException ignored) {
+31:                 // جزء فاسد يُتجاهل (تحكم الأرضية)
+32:             }
+33:         }
+34:         return q;
+35:     }
+36: 
+37:     /** نص ثابت الترتيب (تُحسب عليه البصمة). */
+38:     public String serialize() {
+39:         StringBuilder b = new StringBuilder("o=").append(offices);
+40:         for (Map.Entry<Long, Long> e : tx.entrySet()) if (e.getValue() > 0) b.append(";t").append(e.getKey()).append('=').append(e.getValue());
+41:         return b.toString();
+42:     }
+43: 
+44:     public long txOf(long office) {
+45:         Long v = tx.get(office);
+46:         return v == null ? 0 : v;
+47:     }
+48: 
+49:     /** يرفع العدّاد إلى الأرضية إن كانت أكبر (لا ينقص أبدًا). */
+50:     public void raiseTo(long liveOffices, Map<Long, Long> liveTx) {
+51:         offices = Math.max(offices, liveOffices);
+52:         for (Map.Entry<Long, Long> e : liveTx.entrySet()) tx.put(e.getKey(), Math.max(txOf(e.getKey()), e.getValue()));
+53:     }
+54: 
+55:     /**
+56:      * 9.0: حذف مكتب (بحركاته أو بدونها) يعيد مكانه فارغًا: المكتب وكل حركاته تُحذف معه، فلا بيانات تُصفَّر
+57:      * والعدّاد يعود إلى عدد المكاتب الموجودة فعلًا.
+58:      */
+59:     public void officeDeleted(long office) {
+60:         if (offices > 0) offices--;
+61:         tx.remove(office);
+62:     }
+63: 
+64:     /**
+65:      * دمج مكتبين (اسمان لحساب واحد): حركات المصدر تنتقل إلى الهدف وتُحتسب عليه، فيعود مكان المصدر
+66:      * (لا بيانات تُحذف ولا عدّاد يُصفَّر: الحركات كلها باقية ومحسوبة).
+67:      */
+68:     public void officesMerged(long from, long into) {
+69:         tx.put(into, txOf(into) + txOf(from));
+70:         tx.remove(from);
+71:         if (offices > 0) offices--;
+72:     }
+73: 
+74:     /** null = يُسمح بمكتب جديد، وإلا نص الرفض. */
+75:     public String officeRefusal(Entitlements e) {
+76:         long max = e.maxOffices();
+77:         return offices >= max ? Entitlements.officeLimitMessage(max) : null;
+78:     }
+79: 
+80:     /** null = يُسمح بحركة جديدة على هذا المكتب، وإلا نص الرفض. التعديل والإلغاء لا يمرّان من هنا أبدًا. */
+81:     public String txRefusal(Entitlements e, long office, String officeName) {
+82:         long max = e.maxTxPerOffice();
+83:         return txOf(office) >= max ? Entitlements.txLimitMessage(officeName, max) : null;
+84:     }
+85: 
+86:     /** المتبقي قبل السقف (للعرض: «بقي 37 حركة»)، أو -1 إن لم يكن هناك سقف. */
+87:     public static long remaining(long used, long max) {
+88:         return max == Entitlements.UNLIMITED ? -1 : Math.max(0, max - used);
+89:     }
+90: }

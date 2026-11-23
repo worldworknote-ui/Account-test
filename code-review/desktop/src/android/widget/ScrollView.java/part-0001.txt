@@ -1,0 +1,157 @@
+1: package android.widget;
+2: 
+3: import android.content.Context;
+4: import android.graphics.*;
+5: import android.view.*;
+6: 
+7: /** تمرير عمودي: عجلة الفأرة ولوحة اللمس، والسحب بالفأرة، وشريط تمرير رفيع يظهر أثناء التمرير. */
+8: public class ScrollView extends FrameLayout {
+9:     private boolean fill;
+10:     private float lastY, startY;
+11:     private boolean dragging;
+12:     private android.animation.ValueAnimator smooth;
+13:     private long barShown;
+14:     private boolean smoothEnabled = true;
+15: 
+16:     public ScrollView(Context c) { super(c); setVerticalScrollBarEnabled(true); }
+17:     public ScrollView(Context c, android.util.AttributeSet a) { this(c); }
+18: 
+19:     public void setFillViewport(boolean f) { fill = f; requestLayout(); }
+20:     public boolean isFillViewport() { return fill; }
+21:     public void setSmoothScrollingEnabled(boolean e) { smoothEnabled = e; }
+22:     @Override protected ViewGroup.LayoutParams generateDefaultLayoutParams() { return new FrameLayout.LayoutParams(-1, -2); }
+23: 
+24:     @Override public void addView(View v, int index, ViewGroup.LayoutParams p) {
+25:         if (getChildCount() > 0) throw new IllegalStateException("ScrollView can host only one direct child");
+26:         super.addView(v, index, p);
+27:     }
+28: 
+29:     @Override protected void onMeasure(int ws, int hs) {
+30:         if (getChildCount() == 0) { super.onMeasure(ws, hs); return; }
+31:         View c = getChildAt(0);
+32:         MarginLayoutParams p = margins(c);
+33:         int cws = getChildMeasureSpec(ws, getPaddingLeft() + getPaddingRight() + p.leftMargin + p.rightMargin, p.width);
+34:         c.measure(cws, MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+35:         int w = resolveSize(Math.max(getSuggestedMinimumWidth(), c.getMeasuredWidth() + getPaddingLeft() + getPaddingRight() + p.leftMargin + p.rightMargin), ws);
+36:         int h = resolveSize(Math.max(getSuggestedMinimumHeight(), c.getMeasuredHeight() + getPaddingTop() + getPaddingBottom() + p.topMargin + p.bottomMargin), hs);
+37:         setMeasuredDimension(w, h);
+38:         if (fill && MeasureSpec.getMode(hs) != MeasureSpec.UNSPECIFIED) {
+39:             int avail = h - getPaddingTop() - getPaddingBottom() - p.topMargin - p.bottomMargin;
+40:             if (c.getMeasuredHeight() < avail) c.measure(cws, MeasureSpec.makeMeasureSpec(avail, MeasureSpec.EXACTLY));
+41:         }
+42:     }
+43: 
+44:     @Override protected void onLayout(boolean changed, int l, int t, int r, int b) {
+45:         if (getChildCount() == 0) return;
+46:         View c = getChildAt(0);
+47:         MarginLayoutParams p = margins(c);
+48:         int x = getPaddingLeft() + p.leftMargin, y = getPaddingTop() + p.topMargin;
+49:         c.layout(x, y, x + c.getMeasuredWidth(), y + c.getMeasuredHeight());
+50:         clamp();
+51:     }
+52: 
+53:     public int maxScroll() {
+54:         if (getChildCount() == 0) return 0;
+55:         View c = getChildAt(0);
+56:         MarginLayoutParams p = margins(c);
+57:         return Math.max(0, c.getHeight() + p.topMargin + p.bottomMargin + getPaddingTop() + getPaddingBottom() - getHeight());
+58:     }
+59:     private void clamp() { int m = maxScroll(); if (getScrollY() > m) scrollTo(getScrollX(), m); if (getScrollY() < 0) scrollTo(getScrollX(), 0); }
+60:     @Override public void scrollTo(int x, int y) {
+61:         int m = maxScroll();
+62:         super.scrollTo(0, Math.max(0, Math.min(y, m)));
+63:     }
+64:     public void smoothScrollTo(int x, int y) {
+65:         if (smooth != null) smooth.cancel();
+66:         int from = getScrollY(), to = Math.max(0, Math.min(y, maxScroll()));
+67:         if (!isAttachedToWindow() || android.animation.Choreo.instant || from == to) { scrollTo(0, to); return; }
+68:         smooth = android.animation.ValueAnimator.ofInt(from, to);
+69:         smooth.setDuration(250);
+70:         smooth.setInterpolator(new android.view.animation.DecelerateInterpolator());
+71:         smooth.addUpdateListener(a -> { scrollTo(0, (int) a.getAnimatedValue()); showBar(); });
+72:         smooth.start();
+73:     }
+74:     public void smoothScrollBy(int dx, int dy) { smoothScrollTo(0, getScrollY() + dy); }
+75:     public boolean fullScroll(int dir) { smoothScrollTo(0, dir == FOCUS_UP ? 0 : maxScroll()); return true; }
+76:     public boolean pageScroll(int dir) { smoothScrollBy(0, dir == FOCUS_UP ? -getHeight() : getHeight()); return true; }
+77:     public boolean arrowScroll(int dir) { return pageScroll(dir); }
+78:     @Override public boolean canScrollVertically(int dir) { return dir < 0 ? getScrollY() > 0 : getScrollY() < maxScroll(); }
+79:     @Override public boolean wheel(float dx, float dy) {
+80:         if (dy == 0 || maxScroll() == 0) return false;
+81:         if ((dy < 0 && getScrollY() == 0) || (dy > 0 && getScrollY() >= maxScroll())) return false;
+82:         if (smooth != null) smooth.cancel();
+83:         scrollBy(0, Math.round(dy));
+84:         showBar();
+85:         return true;
+86:     }
+87:     @Override public boolean requestChildRectangleOnScreen(View child, Rect r, boolean immediate) {
+88:         int top = r.top, bottom = r.bottom, h = getHeight(), sy = getScrollY();
+89:         int margin = Math.round(16 * getResources().getDisplayMetrics().density);
+90:         if (top < sy) { scrollTo(0, top - margin); return true; }
+91:         if (bottom > sy + h) { scrollTo(0, bottom - h + margin); return true; }
+92:         return false;
+93:     }
+94: 
+95:     @Override public boolean onInterceptTouchEvent(MotionEvent e) {
+96:         switch (e.getActionMasked()) {
+97:             case MotionEvent.ACTION_DOWN:
+98:                 lastY = startY = e.getY();
+99:                 dragging = false;
+100:                 if (smooth != null) smooth.cancel();
+101:                 return false;
+102:             case MotionEvent.ACTION_MOVE:
+103:                 if (!dragging && Math.abs(e.getY() - startY) > ViewConfiguration.TOUCH_SLOP && maxScroll() > 0) {
+104:                     dragging = true;
+105:                     lastY = e.getY();
+106:                     if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
+107:                 }
+108:                 return dragging;
+109:             default:
+110:                 dragging = false;
+111:                 return false;
+112:         }
+113:     }
+114:     @Override public boolean onTouchEvent(MotionEvent e) {
+115:         switch (e.getActionMasked()) {
+116:             case MotionEvent.ACTION_DOWN: lastY = startY = e.getY(); return maxScroll() > 0;
+117:             case MotionEvent.ACTION_MOVE:
+118:                 if (!dragging && Math.abs(e.getY() - startY) > ViewConfiguration.TOUCH_SLOP) dragging = true;
+119:                 if (dragging) {
+120:                     int dy = Math.round(lastY - e.getY());
+121:                     scrollBy(0, dy);
+122:                     // e.getY نسبي للعنصر الذي يتحرك محتواه، فنحفظ آخر نقطة
+123:                     lastY = e.getY();
+124:                     showBar();
+125:                 }
+126:                 return true;
+127:             default:
+128:                 dragging = false;
+129:                 return true;
+130:         }
+131:     }
+132: 
+133:     private void showBar() {
+134:         barShown = System.currentTimeMillis();
+135:         invalidate();
+136:         postDelayed(this::invalidate, 900);
+137:         postDelayed(this::invalidate, 1250);
+138:     }
+139: 
+140:     @Override public void onDrawForeground(Canvas c) {
+141:         super.onDrawForeground(c);
+142:         if (!isVerticalScrollBarEnabled()) return;
+143:         int m = maxScroll();
+144:         long age = System.currentTimeMillis() - barShown;
+145:         if (m <= 0 || age > 1200) return;
+146:         float a = age < 900 ? 1f : 1f - (age - 900) / 300f;
+147:         float d = getResources().getDisplayMetrics().density;
+148:         float h = getHeight(), total = h + m;
+149:         float barH = Math.max(24 * d, h * h / total), y = (h - barH) * getScrollY() / m;
+150:         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+151:         p.setColor(0x66000000);
+152:         p.setAlpha(Math.round(0x66 * a));
+153:         float w = 3 * d;
+154:         float x = isRtl() ? 2 * d : getWidth() - 2 * d - w;
+155:         c.drawRoundRect(new RectF(x, y + 2 * d, x + w, y + barH - 2 * d), w / 2, w / 2, p);
+156:     }
+157: }

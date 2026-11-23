@@ -1,0 +1,133 @@
+317:         b.append("التاريخ: ").append(Model.date(m.createdAt)).append("\nبواسطة: ").append(m.userName);
+318:         if (!m.stateText().isEmpty()) b.append("\nالحالة: ").append(m.stateText());
+319:         if (m.cancelled() || !can(Auth.Perm.TX_CANCEL)) {
+320:             Ui.info(this, "حركة صندوق", b.toString());
+321:             return;
+322:         }
+323:         int k = Ui.choose(this, "حركة صندوق", b.toString(), new String[]{"إغلاق", "إلغاء الحركة"});
+324:         if (k != 1) return;
+325:         String msg = m.officeId != null ? "تُلغى معها حركة المكتب المرتبطة بقيد عكسي." : m.clientId != null ? "تُلغى معها الحركة على حساب العميل."
+326:                 : CashBox.EXCHANGE.equals(m.kind) ? "تُلغى العملة ومقابلها معًا." : CashBox.TRANSFER.equals(m.kind) ? "يُلغى التحويل في الصندوقين معًا." : "";
+327:         String reason = Ui.input(this, "إلغاء حركة الصندوق", msg + " السبب:", "");
+328:         if (reason == null) return;
+329:         try {
+330:             db.cancelCashMove(m.id, reason);
+331:             app.changed();
+332:             refresh();
+333:         } catch (Exception e) {
+334:             Ui.error(this, e);
+335:         }
+336:     }
+337: 
+338:     // ===================================================================================
+339:     // التفاصيل قبل التسجيل
+340:     // ===================================================================================
+341: 
+342:     long when(Ui.DateField f) throws Exception {
+343:         long s = f.start();
+344:         long today = Ui.startOfDay(Clock.now());
+345:         if (s == 0 || s == today) return Clock.now();
+346:         if (s > today) throw new IllegalArgumentException("لا يمكن اختيار تاريخ في المستقبل");
+347:         return s + 12 * 3600000L;
+348:     }
+349: 
+350:     static String opName(CashBox.Input x) {
+351:         switch (x.kind) {
+352:             case CashBox.IN: return x.officeId != null ? "استلام لحساب مكتب" : x.clientId != null ? "استلام من عميل" : "استلام إلى الصندوق";
+353:             case CashBox.OUT: return x.officeId != null ? "تسليم لحساب مكتب" : x.clientId != null ? "تسليم لعميل" : "تسليم من الصندوق";
+354:             case CashBox.EXPENSE: return "مصروف";
+355:             case CashBox.EXCHANGE: return CashBox.BUY.equals(x.side) ? "شراء عملة" : "بيع عملة";
+356:             case CashBox.TRANSFER: return "تحويل بين الصناديق";
+357:             default: return CashBox.kindName(x.kind);
+358:         }
+359:     }
+360: 
+361:     String side(long v, String cur) { return v == 0 ? "صفر" : ClientBook.side(v) + " " + money(Math.abs(v), cur); }
+362: 
+363:     /** نص التفاصيل الكاملة قبل الحفظ، مع رصيد الصندوق قبل ← بعد لكل عملة تتأثر. */
+364:     String preview(CashBox.Input x) {
+365:         CashBox.Config cfg = db.cashBox(x.boxId);
+366:         Map<String, Integer> dec = db.decimalsMap();
+367:         Map<String, Long> bal = db.cashBalances(x.boxId);
+368:         StringBuilder b = new StringBuilder();
+369:         b.append("العملية: ").append(opName(x)).append("\nالصندوق: ").append(cfg.name).append('\n');
+370:         if (CashBox.EXCHANGE.equals(x.kind)) {
+371:             boolean buy = CashBox.BUY.equals(x.side);
+372:             b.append(buy ? "تشتري: " : "تبيع: ").append(money(x.amount, x.currency)).append('\n');
+373:             if (!Model.nz(x.rate).isEmpty()) b.append("السعر: ").append(Ui.ltr("1 " + x.currency + " = " + x.rate + " " + x.toCurrency)).append('\n');
+374:             b.append(buy ? "وتدفع: " : "وتستلم: ").append(money(x.toAmount, x.toCurrency)).append('\n');
+375:             BigDecimal mk = CashBox.crossRate(x.currency, x.toCurrency, db.usdRates());
+376:             if (mk != null) {
+377:                 BigDecimal diff = BigDecimal.valueOf(x.toAmount, CashBox.dec(dec, x.toCurrency)).subtract(BigDecimal.valueOf(x.amount, CashBox.dec(dec, x.currency)).multiply(mk));
+378:                 if (buy) diff = diff.negate();
+379:                 b.append("سعر السوق: ").append(Ui.ltr("1 " + x.currency + " = " + mk.toPlainString() + " " + x.toCurrency)).append(" — ")
+380:                         .append(diff.signum() >= 0 ? "لصالحك ≈ " : "عليك ≈ ").append(Ui.ltr(diff.abs().setScale(2, RoundingMode.HALF_EVEN) + " " + x.toCurrency)).append('\n');
+381:             }
+382:         } else b.append(x.dir() > 0 ? "يدخل الصندوق: " : "يخرج من الصندوق: ").append(money(x.amount, x.currency)).append('\n');
+383:         if (!Model.nz(x.category).isEmpty() && x.officeId == null && x.clientId == null) b.append("البند: ").append(x.category).append('\n');
+384:         if (x.officeId != null) {
+385:             Model.Office o = db.office(x.officeId);
+386:             b.append("المكتب: ").append(o == null ? "#" + x.officeId : o.name).append(" — ").append(CashBox.IN.equals(x.kind) ? "علينا " : "لنا ").append(money(x.amount, x.currency)).append('\n');
+387:         }
+388:         if (x.clientId != null) {
+389:             ClientBook.Client c = db.client(x.clientId);
+390:             b.append("العميل: ").append(c == null ? "#" + x.clientId : c.name).append(" — ").append(CashBox.IN.equals(x.kind) ? "علينا له " : "لنا عليه ")
+391:                     .append(money(x.clientAmount, x.clientCurrency)).append('\n');
+392:             if (!x.clientCurrency.equals(x.currency))
+393:                 b.append("السعر: ").append(Ui.ltr("1 " + x.clientCurrency + " = " + ClientBook.rateOf(x.clientAmount, CashBox.dec(dec, x.clientCurrency), x.amount, CashBox.dec(dec, x.currency)) + " " + x.currency)).append('\n');
+394:             Map<String, Long> cb = ClientBook.balances(db.clientMoves(x.clientId));
+395:             long before = cb.getOrDefault(x.clientCurrency, 0L), after = before + (CashBox.IN.equals(x.kind) ? -x.clientAmount : x.clientAmount);
+396:             b.append("رصيده ").append(x.clientCurrency).append(": ").append(side(before, x.clientCurrency)).append(" ← ").append(side(after, x.clientCurrency)).append('\n');
+397:         }
+398:         if (x.fee > 0) b.append("الأجور: ").append(money(x.fee, x.currency)).append(CashBox.FEE_US.equals(x.feeSide) ? " لنا" : " علينا")
+399:                 .append(x.officeId == null || x.feeInCash ? " — نقدًا في الصندوق" : " — على حساب المكتب").append('\n');
+400:         if (!Model.nz(x.party).isEmpty() && x.clientId == null) b.append("الشخص: ").append(x.party).append('\n');
+401:         if (!Model.nz(x.description).isEmpty()) b.append("البيان: ").append(x.description).append('\n');
+402:         b.append("التاريخ: ").append(Model.date(x.when)).append("\n\nرصيد الصندوق قبل ← بعد:\n");
+403:         for (Map.Entry<String, Long> e : CashBox.changes(x).entrySet()) {
+404:             long bb = bal.getOrDefault(e.getKey(), 0L);
+405:             int d = CashBox.dec(dec, e.getKey());
+406:             b.append(e.getKey()).append(": ").append(Ui.ltr(Model.fmt(bb, d))).append(" ← ").append(Ui.ltr(Model.fmt(bb + e.getValue(), d)))
+407:                     .append(" (").append(Ui.ltr((e.getValue() >= 0 ? "+" : "−") + Model.fmt(Math.abs(e.getValue()), d))).append(")\n");
+408:         }
+409:         if (CashBox.TRANSFER.equals(x.kind) && x.toBox != null) {
+410:             CashBox.Config to = db.cashBox(x.toBox);
+411:             long tb = db.cashBalances(x.toBox).getOrDefault(x.currency, 0L);
+412:             int d = CashBox.dec(dec, x.currency);
+413:             b.append("«").append(to.name).append("» ").append(x.currency).append(": ").append(Ui.ltr(Model.fmt(tb, d))).append(" ← ").append(Ui.ltr(Model.fmt(tb + x.amount, d))).append('\n');
+414:         }
+415:         return b.toString();
+416:     }
+417: 
+418:     void save(CashBox.Input x) {
+419:         CashBox.Config cfg = db.cashBox(x.boxId);
+420:         String err = CashBox.validate(x, cfg, Clock.now());
+421:         if (err != null) {
+422:             Ui.error(this, new IllegalArgumentException(err));
+423:             return;
+424:         }
+425:         String neg = CashBox.negativeAfter(x, db.cashBalances(x.boxId), db.decimalsMap());
+426:         String text = (neg == null ? "" : "! " + neg + "\n\n") + preview(x);
+427:         if (!Ui.confirm(this, "راجع قبل التسجيل", text, neg == null ? "تسجيل" : "تسجيل رغم ذلك")) return;
+428:         try {
+429:             db.addCashMove(x);
+430:             app.changed();
+431:             Ui.toast("سُجّلت الحركة ✓");
+432:             refresh();
+433:             View cv = app.views.get("clients");
+434:             if (cv != null) cv.refresh();
+435:         } catch (Exception e) {
+436:             Ui.error(this, e);
+437:         }
+438:     }
+439: 
+440:     // ===================================================================================
+441:     // الاستلام والتسليم (بدون حساب، لحساب مكتب، أو لحساب عميل ولو بعملة أخرى)
+442:     // ===================================================================================
+443: 
+444:     /** 10.18: المكتب الذي يُختار مسبقًا في نافذة التسليم/الاستلام (من زر «الصندوق» في صفحة المكتب). */
+445:     Long presetOffice;
+446: 
+447:     void move(String kind, ClientBook.Client preset) {
+448:         CashBox.Config cfg = db.cashConfig();
+449:         boolean in = CashBox.IN.equals(kind);

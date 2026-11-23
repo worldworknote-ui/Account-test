@@ -1,0 +1,44 @@
+1: import com.smart.hawala.*;
+2: import java.util.Base64;
+3: import javax.crypto.SecretKey;
+4: /** 7.2: تشفير الحقول بمفتاح البيانات (السريع) والتمييز عن الصيغة القديمة. */
+5: public class FieldCipherTest {
+6:   static int fails = 0;
+7:   static void check(boolean c, String m) { System.out.println((c ? "  PASS " : "  FAIL ") + m); if (!c) fails++; }
+8:   public static void main(String[] a) throws Exception {
+9:     SecretKey k = FieldCipher.newKey();
+10:     String[] samples = {"", "سامر علي", "حوالة 500 دولار\nالشام", "1410100092 الخال", "😀 emoji", new String(new char[5000]).replace('\0', 'x')};
+11:     for (String s : samples) {
+12:       String e = FieldCipher.encrypt(k, s);
+13:       byte[] raw = Base64.getDecoder().decode(e);
+14:       check(FieldCipher.isV2(raw) && FieldCipher.isV2(e) && FieldCipher.decrypt(k, raw).equals(s), "round trip (" + Math.min(s.length(), 20) + " chars)");
+15:     }
+16:     String e1 = FieldCipher.encrypt(k, "نفس النص"), e2 = FieldCipher.encrypt(k, "نفس النص");
+17:     check(!e1.equals(e2), "random IV: same text encrypts differently");
+18:     // الصيغة القديمة تبدأ بطول IV = 12 ولا تُعامل كجديدة
+19:     byte[] legacy = new byte[1 + 12 + 30];
+20:     legacy[0] = 12;
+21:     check(!FieldCipher.isV2(legacy), "legacy layout (first byte 12) is not v2");
+22:     check(!FieldCipher.isV2("نص عادي") && !FieldCipher.isV2(""), "plain text / empty is not v2");
+23:     // العبث بالنص المشفّر يُكتشف
+24:     byte[] raw = Base64.getDecoder().decode(FieldCipher.encrypt(k, "500 USD"));
+25:     raw[raw.length - 1] ^= 1;
+26:     boolean caught = false;
+27:     try { FieldCipher.decrypt(k, raw); } catch (Exception ex) { caught = true; }
+28:     check(caught, "tampering detected (GCM tag)");
+29:     // مفتاح آخر لا يفك
+30:     caught = false;
+31:     try { FieldCipher.decrypt(FieldCipher.newKey(), Base64.getDecoder().decode(e1)); } catch (Exception ex) { caught = true; }
+32:     check(caught, "another key cannot decrypt");
+33:     // المفتاح المحفوظ (32 بايت) يعاد بناؤه
+34:     SecretKey k2 = FieldCipher.key(k.getEncoded());
+35:     check(FieldCipher.decrypt(k2, Base64.getDecoder().decode(e1)).equals("نفس النص"), "key rebuilt from saved bytes");
+36:     // السرعة: 20,000 تشفير وفك (كشف 5000 حركة × 4 حقول)
+37:     long t0 = System.nanoTime();
+38:     for (int i = 0; i < 20000; i++) FieldCipher.decrypt(k, Base64.getDecoder().decode(FieldCipher.encrypt(k, "حوالة رقم " + i)));
+39:     long ms = (System.nanoTime() - t0) / 1000000;
+40:     check(ms < 5000, "20,000 encrypt+decrypt in " + ms + " ms");
+41:     System.out.println(fails == 0 ? "ALL FIELD CIPHER TESTS PASSED" : fails + " FAILED");
+42:     System.exit(fails == 0 ? 0 : 1);
+43:   }
+44: }

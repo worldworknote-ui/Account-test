@@ -1,0 +1,79 @@
+1: package android.animation;
+2: 
+3: import java.lang.reflect.Method;
+4: 
+5: /** يحرّك خاصية في كائن بالاسم (setScaleX...) أو بخاصية Property. قيمة واحدة = من القيمة الحالية إليها. */
+6: public final class ObjectAnimator extends ValueAnimator {
+7:     private Object target;
+8: 
+9:     public static ObjectAnimator ofFloat(Object t, String prop, float... v) {
+10:         ObjectAnimator a = new ObjectAnimator(); a.target = t; a.values = new PropertyValuesHolder[]{PropertyValuesHolder.ofFloat(prop, v)}; return a;
+11:     }
+12:     public static <T> ObjectAnimator ofFloat(T t, android.util.Property<T, Float> p, float... v) {
+13:         ObjectAnimator a = new ObjectAnimator(); a.target = t; a.values = new PropertyValuesHolder[]{PropertyValuesHolder.ofFloat(p, v)}; return a;
+14:     }
+15:     public static ObjectAnimator ofInt(Object t, String prop, int... v) {
+16:         ObjectAnimator a = new ObjectAnimator(); a.target = t; a.values = new PropertyValuesHolder[]{PropertyValuesHolder.ofInt(prop, v)}; return a;
+17:     }
+18:     public static ObjectAnimator ofArgb(Object t, String prop, int... v) {
+19:         ObjectAnimator a = ofInt(t, prop, v); a.setEvaluator(ArgbEvaluator.getInstance()); return a;
+20:     }
+21:     public static ObjectAnimator ofObject(Object t, String prop, TypeEvaluator ev, Object... v) {
+22:         ObjectAnimator a = new ObjectAnimator(); a.target = t; a.values = new PropertyValuesHolder[]{PropertyValuesHolder.ofObject(prop, ev, v)}; return a;
+23:     }
+24:     public static ObjectAnimator ofPropertyValuesHolder(Object t, PropertyValuesHolder... h) {
+25:         ObjectAnimator a = new ObjectAnimator(); a.target = t; a.values = h; return a;
+26:     }
+27:     @Override public void setTarget(Object t) { target = t; }
+28:     public Object getTarget() { return target; }
+29:     public void setPropertyName(String n) { if (values != null && values.length > 0) values[0].name = n; }
+30:     public String getPropertyName() { return values == null || values.length == 0 ? null : values[0].name; }
+31:     @Override public ObjectAnimator setDuration(long d) { super.setDuration(d); return this; }
+32:     public void setAutoCancel(boolean c) {}
+33: 
+34:     @Override void prepare() {
+35:         if (target == null || values == null) return;
+36:         for (PropertyValuesHolder h : values) {
+37:             if (h.singleF == null && h.floats != null && h.floats.length == 1) h.singleF = h.floats[0];
+38:             if (h.singleI == null && h.ints != null && h.ints.length == 1) h.singleI = h.ints[0];
+39:             float cur = h.property != null ? ((Number) h.property.get(target)).floatValue() : getFloat(target, h.name);
+40:             if (h.singleF != null) h.floats = new float[]{cur, h.singleF};
+41:             else if (h.singleI != null) h.ints = new int[]{(int) cur, h.singleI};
+42:         }
+43:     }
+44:     @Override void animateValue(float f) {
+45:         super.animateValue(f);
+46:         if (target == null || values == null) return;
+47:         for (PropertyValuesHolder h : values) {
+48:             if (h.value == null) continue;
+49:             if (h.property != null) { h.property.set(target, h.value); continue; }
+50:             set(target, h.name, h.value);
+51:         }
+52:     }
+53: 
+54:     private static String cap(String n) { return n.isEmpty() ? n : Character.toUpperCase(n.charAt(0)) + n.substring(1); }
+55: 
+56:     public static float getFloat(Object t, String n) {
+57:         try {
+58:             Method m = t.getClass().getMethod("get" + cap(n));
+59:             Object v = m.invoke(t);
+60:             return v instanceof Number ? ((Number) v).floatValue() : 0f;
+61:         } catch (Exception e) {
+62:             return 0f;
+63:         }
+64:     }
+65:     public static void setFloat(Object t, String n, float v) { set(t, n, v); }
+66:     static void set(Object t, String n, Object v) {
+67:         String m = "set" + cap(n);
+68:         try {
+69:             for (Method x : t.getClass().getMethods()) {
+70:                 if (!x.getName().equals(m) || x.getParameterCount() != 1) continue;
+71:                 Class<?> p = x.getParameterTypes()[0];
+72:                 if (p == float.class && v instanceof Number) { x.invoke(t, ((Number) v).floatValue()); return; }
+73:                 if (p == int.class && v instanceof Number) { x.invoke(t, ((Number) v).intValue()); return; }
+74:                 if (!p.isPrimitive() && p.isInstance(v)) { x.invoke(t, v); return; }
+75:             }
+76:         } catch (Exception ignored) { }
+77:     }
+78:     @Override public ObjectAnimator clone() { return (ObjectAnimator) super.clone(); }
+79: }

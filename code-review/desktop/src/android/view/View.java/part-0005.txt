@@ -1,0 +1,186 @@
+642:     public void setOverScrollMode(int m) {}
+643:     public void setNestedScrollingEnabled(boolean e) {}
+644:     public void setVerticalFadingEdgeEnabled(boolean e) {}
+645:     public void setHorizontalFadingEdgeEnabled(boolean e) {}
+646:     public void setFadingEdgeLength(int l) {}
+647:     public boolean requestRectangleOnScreen(Rect r) { return requestRectangleOnScreen(r, false); }
+648:     public boolean requestRectangleOnScreen(Rect r, boolean immediate) {
+649:         // يمرر الآباء القابلة للتمرير حتى يظهر المستطيل
+650:         View child = this;
+651:         Rect rect = new Rect(r);
+652:         ViewParent p = parent;
+653:         while (p instanceof ViewGroup) {
+654:             ViewGroup g = (ViewGroup) p;
+655:             rect.offset(child.getLeft() - child.getScrollX(), child.getTop() - child.getScrollY());
+656:             g.requestChildRectangleOnScreen(child, rect, immediate);
+657:             child = g;
+658:             p = g.parent;
+659:         }
+660:         return true;
+661:     }
+662: 
+663:     // ------------------------------------------------------------------ المواضع
+664:     public void getLocationInWindow(int[] out) {
+665:         float[] p = {0, 0};
+666:         mapToRoot(p);
+667:         out[0] = Math.round(p[0]);
+668:         out[1] = Math.round(p[1]);
+669:     }
+670:     public void getLocationOnScreen(int[] out) {
+671:         getLocationInWindow(out);
+672:         if (attachInfo != null) {
+673:             java.awt.Point s = attachInfo.root.screenOrigin();
+674:             out[0] += s.x;
+675:             out[1] += s.y;
+676:         }
+677:     }
+678:     /** يحوّل نقطة من إحداثيات العنصر إلى إحداثيات الجذر (مع التحويلات والتمرير). */
+679:     public void mapToRoot(float[] p) {
+680:         View v = this;
+681:         while (v != null) {
+682:             v.mapToParent(p);
+683:             v = v.parent instanceof View ? (View) v.parent : null;
+684:         }
+685:     }
+686:     void mapToParent(float[] p) {
+687:         if (!hasIdentityTransform()) {
+688:             float pvx = getPivotX(), pvy = getPivotY();
+689:             float x = p[0] - pvx, y = p[1] - pvy;
+690:             x *= sx; y *= sy;
+691:             if (rot != 0) {
+692:                 double a = Math.toRadians(rot);
+693:                 float nx = (float) (x * Math.cos(a) - y * Math.sin(a)), ny = (float) (x * Math.sin(a) + y * Math.cos(a));
+694:                 x = nx; y = ny;
+695:             }
+696:             p[0] = x + pvx; p[1] = y + pvy;
+697:         }
+698:         p[0] += mLeft + tx;
+699:         p[1] += mTop + ty;
+700:         if (parent instanceof View) {
+701:             p[0] -= ((View) parent).mScrollX;
+702:             p[1] -= ((View) parent).mScrollY;
+703:         }
+704:     }
+705:     /** العكس: من إحداثيات الأب (بعد تمريره) إلى إحداثيات العنصر. */
+706:     public boolean parentToLocal(float[] p) {
+707:         p[0] -= mLeft + tx;
+708:         p[1] -= mTop + ty;
+709:         if (!hasIdentityTransform()) {
+710:             float pvx = getPivotX(), pvy = getPivotY();
+711:             float x = p[0] - pvx, y = p[1] - pvy;
+712:             if (rot != 0) {
+713:                 double a = -Math.toRadians(rot);
+714:                 float nx = (float) (x * Math.cos(a) - y * Math.sin(a)), ny = (float) (x * Math.sin(a) + y * Math.cos(a));
+715:                 x = nx; y = ny;
+716:             }
+717:             if (sx != 0) x /= sx;
+718:             if (sy != 0) y /= sy;
+719:             p[0] = x + pvx; p[1] = y + pvy;
+720:         }
+721:         return true;
+722:     }
+723:     public boolean getGlobalVisibleRect(Rect r) {
+724:         if (!isShown()) return false;
+725:         int[] l = new int[2];
+726:         getLocationInWindow(l);
+727:         r.set(l[0], l[1], l[0] + getWidth(), l[1] + getHeight());
+728:         if (attachInfo != null) return r.intersect(0, 0, attachInfo.root.width(), attachInfo.root.height());
+729:         return !r.isEmpty();
+730:     }
+731:     public boolean getGlobalVisibleRect(Rect r, Point offset) { return getGlobalVisibleRect(r); }
+732:     public boolean getLocalVisibleRect(Rect r) { boolean v = getGlobalVisibleRect(r); int[] l = new int[2]; getLocationInWindow(l); r.offset(-l[0], -l[1]); return v; }
+733:     public void getHitRect(Rect r) { r.set(mLeft + (int) tx, mTop + (int) ty, mRight + (int) tx, mBottom + (int) ty); }
+734:     public void getDrawingRect(Rect r) { r.set(mScrollX, mScrollY, mScrollX + getWidth(), mScrollY + getHeight()); }
+735:     public void getWindowVisibleDisplayFrame(Rect r) { if (attachInfo != null) r.set(0, 0, attachInfo.root.width(), attachInfo.root.height()); }
+736: 
+737:     // ------------------------------------------------------------------ اللمس والضغط
+738:     public void setOnClickListener(OnClickListener l) { if (!clickable) clickable = true; onClick = l; if (l == null) {} }
+739:     public void setOnLongClickListener(OnLongClickListener l) { if (!longClickable) longClickable = true; onLongClick = l; }
+740:     public void setOnTouchListener(OnTouchListener l) { onTouch = l; }
+741:     public void setOnFocusChangeListener(OnFocusChangeListener l) { onFocus = l; }
+742:     public OnFocusChangeListener getOnFocusChangeListener() { return onFocus; }
+743:     public void setOnKeyListener(OnKeyListener l) { onKey = l; }
+744:     public void setOnHoverListener(OnHoverListener l) { onHover = l; }
+745:     public void setOnGenericMotionListener(OnGenericMotionListener l) {}
+746:     public void setOnCreateContextMenuListener(OnCreateContextMenuListener l) {}
+747:     public void setOnSystemUiVisibilityChangeListener(OnSystemUiVisibilityChangeListener l) {}
+748:     public void setOnApplyWindowInsetsListener(OnApplyWindowInsetsListener l) {}
+749:     public void setOnDragListener(OnDragListener l) {}
+750:     public boolean hasOnClickListeners() { return onClick != null; }
+751:     public boolean performClick() {
+752:         if (onClick != null) {
+753:             playSoundEffect(SoundEffectConstants.CLICK);
+754:             onClick.onClick(this);
+755:             return true;
+756:         }
+757:         return false;
+758:     }
+759:     public boolean callOnClick() { if (onClick != null) { onClick.onClick(this); return true; } return false; }
+760:     public boolean performLongClick() { return onLongClick != null && onLongClick.onLongClick(this); }
+761:     public boolean performLongClick(float x, float y) { return performLongClick(); }
+762:     public boolean performContextClick() { return false; }
+763:     public boolean showContextMenu() { return false; }
+764:     public boolean performHapticFeedback(int c) { return true; }
+765:     public boolean performHapticFeedback(int c, int f) { return true; }
+766:     public void setHapticFeedbackEnabled(boolean e) { hapticEnabled = e; }
+767:     public boolean isHapticFeedbackEnabled() { return hapticEnabled; }
+768:     public void setSoundEffectsEnabled(boolean e) { soundEnabled = e; }
+769:     public void playSoundEffect(int s) {}
+770:     public boolean onKeyDown(int code, KeyEvent e) { return false; }
+771:     public boolean onKeyUp(int code, KeyEvent e) { return false; }
+772:     public boolean dispatchKeyEvent(KeyEvent e) { return onKey != null && onKey.onKey(this, e.getKeyCode(), e); }
+773: 
+774:     /** يُستدعى من الجذر أو من الأب. */
+775:     public boolean dispatchTouchEvent(MotionEvent e) {
+776:         if (onTouch != null && enabled && onTouch.onTouch(this, e)) return true;
+777:         return onTouchEvent(e);
+778:     }
+779:     boolean dispatchHover(MotionEvent e) {
+780:         if (onHover != null && onHover.onHover(this, e)) return true;
+781:         return onHoverEvent(e);
+782:     }
+783:     public boolean onHoverEvent(MotionEvent e) { return false; }
+784:     public boolean onGenericMotionEvent(MotionEvent e) { return false; }
+785:     public boolean dispatchGenericMotionEvent(MotionEvent e) { return onGenericMotionEvent(e); }
+786: 
+787:     private Runnable pendingLong;
+788:     private boolean longFired;
+789:     private float downX, downY;
+790: 
+791:     public boolean onTouchEvent(MotionEvent e) {
+792:         boolean can = clickable || longClickable;
+793:         if (!enabled) return can;
+794:         if (!can) return false;
+795:         switch (e.getActionMasked()) {
+796:             case MotionEvent.ACTION_DOWN:
+797:                 longFired = false;
+798:                 downX = e.getX(); downY = e.getY();
+799:                 drawableHotspotChanged(e.getX(), e.getY());
+800:                 setPressed(true);
+801:                 if (longClickable && onLongClick != null) {
+802:                     pendingLong = () -> {
+803:                         if (isPressed() && performLongClick()) {
+804:                             longFired = true;
+805:                             setPressed(false);
+806:                         }
+807:                     };
+808:                     postDelayed(pendingLong, ViewConfiguration.getLongPressTimeout());
+809:                 }
+810:                 return true;
+811:             case MotionEvent.ACTION_MOVE:
+812:                 drawableHotspotChanged(e.getX(), e.getY());
+813:                 if (!pointInView(e.getX(), e.getY(), ViewConfiguration.TOUCH_SLOP)) {
+814:                     cancelLong();
+815:                     setPressed(false);
+816:                 }
+817:                 return true;
+818:             case MotionEvent.ACTION_UP:
+819:                 boolean was = isPressed();
+820:                 cancelLong();
+821:                 setPressed(false);
+822:                 if (was && !longFired) {
+823:                     if (attachInfo != null && attachInfo.root.focusOnClick(this)) { }
+824:                     final MotionEvent copy = e;
+825:                     performClickSafely();
+826:                 }
+827:                 return true;

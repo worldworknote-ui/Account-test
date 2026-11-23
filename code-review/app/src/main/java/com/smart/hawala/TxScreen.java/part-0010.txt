@@ -1,0 +1,153 @@
+1475:                 form.ratePer.set(r.rajePer == Model.PER_MILLE ? 1 : 0, false);
+1476:                 form.rate.setText(r.rajeRate);
+1477:                 applyFeeKind(form);
+1478:             } else {
+1479:                 form.feeKind.set(0, false);
+1480:                 applyFeeKind(form);
+1481:                 if (form.feeCur != null && form.cur != null && !form.cur.none()) form.feeCur.set(form.cur.selected, false);
+1482:                 form.fee.setText(r.rajeAmount);
+1483:             }
+1484:             done.add("الراجع (أجرة لنا)");
+1485:         }
+1486:         form.filled = true;
+1487:         renderParse(form);
+1488:         if (form.type.none()) form.type.flagMissing(true);
+1489:         updateSummary();
+1490:         if (done.isEmpty()) a.toast("لا توجد معلومات يمكن إضافتها" + (form.office == null ? "؛ اختر المكتب أولًا." : "."));
+1491:         else a.toast("أُضيف: " + Model.join(done, "، ") + ". الآن اختر «لنا» أو «علينا» وراجع الملخص.");
+1492:     }
+1493: 
+1494:     private void setWhen(long when) {
+1495:         if (f == null) return;
+1496:         f.when = when;
+1497:         boolean today = when == 0 || Model.day(when).equals(Model.day(Clock.now()));
+1498:         f.dateBtn.setText("التاريخ: " + (today && editing == null ? "اليوم " : "") + Model.day(when == 0 ? Clock.now() : when) + "   (اضغط للتغيير)");
+1499:         updateSummary();
+1500:     }
+1501: 
+1502:     private void pickDate() {
+1503:         final Calendar c = Model.cal();
+1504:         if (f.when > 0) c.setTimeInMillis(f.when);
+1505:         DatePickerDialog dp = new DatePickerDialog(a, (v, y, m, d) -> {
+1506:             Calendar now = Model.cal();
+1507:             Calendar x = Model.cal();
+1508:             x.set(y, m, d, now.get(Calendar.HOUR_OF_DAY), now.get(Calendar.MINUTE), now.get(Calendar.SECOND));
+1509:             boolean isToday = Model.day(x.getTimeInMillis()).equals(Model.day(Clock.now()));
+1510:             setWhen(isToday && editing == null ? 0 : Math.min(x.getTimeInMillis(), Clock.now()));
+1511:             long lock = a.db.settingLong("lock_before", 0);
+1512:             if (lock > 0 && x.getTimeInMillis() < lock) a.toast("تنبيه: هذا التاريخ داخل فترة مقفلة ولن يُقبل.");
+1513:         }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH));
+1514:         dp.getDatePicker().setMaxDate(Clock.now());
+1515:         dp.show();
+1516:     }
+1517: 
+1518:     // ===================================================================================
+1519:     // الملخص المباشر
+1520:     // ===================================================================================
+1521: 
+1522:     /** 10.9: يفتح «تفاصيل إضافية» أو يطويها، ويكتب في العنوان ما فيها مما مُلئ. */
+1523:     private void showMore(Form form, boolean open) {
+1524:         if (form == null || form.more == null) return;
+1525:         if (open != (form.more.getVisibility() == View.VISIBLE)) {
+1526:             form.more.setVisibility(open ? View.VISIBLE : View.GONE);
+1527:             if (open && !Ui.NO_MOTION) {
+1528:                 form.more.setAlpha(0f);
+1529:                 form.more.setTranslationY(-a.dp(8));
+1530:                 form.more.animate().alpha(1f).translationY(0).setDuration(420).start();
+1531:             }
+1532:         }
+1533:         List<String> used = new ArrayList<>();
+1534:         if (!form.notes.getText().toString().trim().isEmpty()) used.add("ملاحظات");
+1535:         if (!form.service.getText().toString().trim().isEmpty()) used.add("الخدمة");
+1536:         if (!form.dest.getText().toString().trim().isEmpty()) used.add("الوجهة");
+1537:         if (form.when != 0 && !Model.day(form.when).equals(Model.day(Clock.now()))) used.add("التاريخ");
+1538:         if (form.imgMode != null && form.imgMode.selected == 1) used.add("الصور");
+1539:         form.moreToggle.setText((open ? "▴  " : "▾  ") + "تفاصيل إضافية" + (used.isEmpty() ? ": ملاحظات، الخدمة، الوجهة، التاريخ، الصور" : " — " + Model.join(used, "، ")));
+1540:     }
+1541: 
+1542:     /**
+1543:      * 12.6: المعدن يُسجَّل بالوزن: «الوزن (غرام ذهب عيار 21)» بدل «المبلغ»، والأجرة يختار المحاسب كل مرة
+1544:      * بالوزن من نفس المعدن أو بعملة (من أزرار عملة الأجرة).
+1545:      */
+1546:     private void metalLabels(Form form) {
+1547:         if (form == null) return;
+1548:         String cur = form.cur == null ? null : form.cur.label();
+1549:         Metals.Metal m = Metals.of(cur);
+1550:         if (form.amountLabel != null) form.amountLabel.setText(m == null ? "المبلغ" : "الوزن (" + m.u().name + " — " + Metals.unitText(cur) + ")");
+1551:         if (form.amount != null) form.amount.setHint(m == null ? "0" : "0 " + m.u().shortName);
+1552:         String fc = form.feeCur == null ? null : form.feeCur.label();
+1553:         if (form.feeCurLabel != null) form.feeCurLabel.setText(m == null && !Metals.isMetal(fc) ? "عملة الأجرة (تتبع عملة المبلغ تلقائيًا)"
+1554:                 : "الأجرة: بالوزن من نفس المعدن أو بعملة — اختر هنا");
+1555:         if (form.fee != null) form.fee.setHint(Metals.isMetal(fc) ? "وزن الأجرة (" + Metals.unitText(fc) + ")" : "مبلغ الأجرة");
+1556:     }
+1557: 
+1558:     private void updateSummary() {
+1559:         if (f == null || f.summary == null) return;
+1560:         tintTxCard();
+1561:         metalLabels(f);
+1562:         // ما مُلئ من التفاصيل الإضافية (مسودة، تعديل، رسالة) يبقى ظاهرًا
+1563:         if (f.more != null && f.more.getVisibility() != View.VISIBLE && (!f.notes.getText().toString().trim().isEmpty()
+1564:                 || !f.service.getText().toString().trim().isEmpty() || !f.dest.getText().toString().trim().isEmpty()
+1565:                 || (f.when != 0 && !Model.day(f.when).equals(Model.day(Clock.now()))) || (f.imgMode != null && f.imgMode.selected == 1))) showMore(f, true);
+1566:         String[] lines = summaryText().split("\n");
+1567:         List<String> missing = new ArrayList<>();
+1568:         LinearLayout box = f.summary;
+1569:         box.removeAllViews();
+1570:         TextView head = a.text(lines[0].replace("⚠ ", ""), 14, a.red, true);
+1571:         head.setPadding(a.dp(2), 0, a.dp(2), a.dp(4));
+1572:         box.addView(head);
+1573:         for (int i = 1; i < lines.length; i++) {
+1574:             String l = lines[i];
+1575:             boolean bad = l.startsWith("✗");
+1576:             if (bad) missing.add(l.substring(1).trim().replaceFirst(":.*$", ""));
+1577:             String body = bad ? l.substring(1).trim() : l;
+1578:             int c = body.indexOf(": ");
+1579:             String label = c > 0 ? body.substring(0, c) : body;
+1580:             String value = c > 0 ? body.substring(c + 2) : "";
+1581:             LinearLayout r = a.row();
+1582:             r.setPadding(0, a.dp(1), 0, a.dp(1));
+1583:             boolean wa = !bad && label.equals(WA_SENDER);
+1584:             if (wa) r.setBackground(a.round(a.goldSoft, a.goldSoft, 8));
+1585:             TextView lt = a.text((bad ? "✗ " : "") + label, 13, bad ? a.red : wa ? a.goldInk : a.muted, bad);
+1586:             lt.setPadding(a.dp(2), a.dp(2), a.dp(2), a.dp(2));
+1587:             r.addView(lt, new LinearLayout.LayoutParams(a.dp(92), -2));
+1588:             TextView vt = a.text(value, 14, bad ? a.red : wa ? a.goldInk : a.ink, true);
+1589:             vt.setPadding(a.dp(2), a.dp(2), a.dp(2), a.dp(2));
+1590:             r.addView(vt, new LinearLayout.LayoutParams(0, -2, 1));
+1591:             box.addView(r);
+1592:         }
+1593:         if (f.footerLine != null) {
+1594:             if (!missing.isEmpty()) {
+1595:                 f.footerLine.setText("ناقص: " + Model.join(missing, "، "));
+1596:                 f.footerLine.setTextColor(a.red);
+1597:             } else {
+1598:                 f.footerLine.setText("✓ " + shortLine());
+1599:                 f.footerLine.setTextColor(a.readable(f.type.selected == 0 ? a.green : a.red));
+1600:             }
+1601:         }
+1602:     }
+1603: 
+1604:     /** سطر واحد لما سيُسجَّل: المكتب • لنا/علينا المبلغ العملة • المستفيد. */
+1605:     private String shortLine() {
+1606:         final Form x = f;
+1607:         String cur = x.cur == null ? "" : Model.nz(x.cur.label());
+1608:         String amt;
+1609:         try {
+1610:             int d = a.db.decimals(cur);
+1611:             amt = Model.fmt(Db.minor(x.amount.getText().toString(), d), d);
+1612:         } catch (Exception e) {
+1613:             amt = x.amount.getText().toString().trim();
+1614:         }
+1615:         String p = x.person.getText().toString().trim();
+1616:         return (x.office == null ? "" : x.office.name + " • ") + (x.type.selected == 0 ? "لنا " : "علينا ") + "\u2066" + amt + " " + cur + "\u2069"
+1617:                 + (p.isEmpty() ? "" : " • " + p) + (x.feeMode.selected == 1 ? " • مع أجرة" : "");
+1618:     }
+1619: 
+1620:     /** ما سيُسجَّل، سطرًا لكل معلومة، مع ✗ أمام الناقص. يُعرض فوق زر التسجيل وفي نافذة التأكيد. */
+1621:     private static final String WA_SENDER = "مرسل الرسالة";
+1622: 
+1623:     private String summaryText() {
+1624:         final Form x = f;
+1625:         List<String> l = new ArrayList<>();
+1626:         l.add(editing == null ? "⚠ راجع قبل التسجيل:" : "⚠ راجع قبل حفظ التعديل:");
+1627:         if (!x.waSender.isEmpty()) l.add(WA_SENDER + ": " + x.waSender);

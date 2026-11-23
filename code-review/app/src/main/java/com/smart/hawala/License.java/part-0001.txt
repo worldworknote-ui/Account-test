@@ -1,0 +1,177 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.Context;
+4: import android.content.pm.ApplicationInfo;
+5: import android.content.pm.PackageInfo;
+6: import android.content.pm.PackageManager;
+7: import android.content.pm.Signature;
+8: import android.os.Build;
+9: import android.security.keystore.KeyGenParameterSpec;
+10: import android.security.keystore.KeyProperties;
+11: import android.security.keystore.StrongBoxUnavailableException;
+12: import java.io.File;
+13: import java.io.FileOutputStream;
+14: import java.io.InputStream;
+15: import java.io.OutputStream;
+16: import java.net.HttpURLConnection;
+17: import java.net.URL;
+18: import java.nio.charset.StandardCharsets;
+19: import java.security.KeyPairGenerator;
+20: import java.security.KeyStore;
+21: import java.security.MessageDigest;
+22: import java.security.PrivateKey;
+23: import java.security.SecureRandom;
+24: import java.security.cert.Certificate;
+25: import java.security.spec.ECGenParameterSpec;
+26: import java.util.Base64;
+27: import java.util.Locale;
+28: import javax.crypto.KeyGenerator;
+29: import javax.crypto.Mac;
+30: import javax.crypto.SecretKey;
+31: import org.json.JSONArray;
+32: import org.json.JSONObject;
+33: 
+34: /**
+35:  * الترخيص على الهاتف: مفتاح جهاز داخل Android Keystore (في StrongBox إن وُجد) لا يغادر العتاد،
+36:  * وطلب تفعيل يحمل سلسلة تصديق المفتاح، ورمز موقّع من البائع مربوط ببصمة هذا المفتاح.
+37:  *
+38:  * الفشل يعني المجاني لا الإغلاق: لا شيء هنا يحجز البيانات أو يغلق التطبيق، ولا تُبدَّل رخصة مدفوعة بالمجانية بصمت
+39:  * (السبب يظهر في شاشة الترخيص). الاتصال بخادم الترخيص اختياري ومعطّل حتى يُكتب عنوانه.
+40:  */
+41: public final class License {
+42:     private License() {}
+43: 
+44:     static final String DEV = "smart_license_device_v1";
+45:     static final String MAC = "quota_mac_v1";
+46:     private static final String FILE = "license.txt";
+47:     static final String REQ_PREFIX = "SA8-REQ:", REL_PREFIX = "SA8-REL:";
+48: 
+49:     /** ما يحق لهذه النسخة الآن. يُبنى عند الإقلاع ويُعاد بعد كل تفعيل أو تحرير. */
+50:     public static volatile Entitlements current = Entitlements.free("");
+51:     /** إشارات البيئة (للعرض وللتقدير، لا للإغلاق). */
+52:     public static volatile String signals = "";
+53:     public static volatile boolean signatureOk = true;
+54:     /** 11.5: تعذّر فحص التوقيع (لا «مطابق» ولا «غير مطابق»): لا يُعدّ إثبات أصالة، ولا يحرم المشتري من رخصته. */
+55:     public static volatile boolean signatureUnknown;
+56: 
+57:     // ===================================================================================
+58:     // الإقلاع
+59:     // ===================================================================================
+60: 
+61:     /** يُستدعى عند الإقلاع بعد فتح قاعدة البيانات. لا يرمي أبدًا. */
+62:     public static synchronized void load(Context ctx, Db db) {
+63:         try {
+64:             int sig = signatureState(ctx);
+65:             signatureOk = sig != SIG_MISMATCH;
+66:             signatureUnknown = sig == SIG_UNKNOWN;
+67:             if (signatureUnknown) {
+68:                 try { db.audit("LICENSE_SIG_UNKNOWN", "license", 0, "تعذّر التحقق من توقيع التطبيق عند الإقلاع"); } catch (Throwable ignored) { /* سجل */ }
+69:             }
+70:             signals = environmentSignals(ctx);
+71:             String token = storedToken(ctx, db);
+72:             if (token.isEmpty()) {
+73:                 current = Entitlements.free("");
+74:                 return;
+75:             }
+76:             byte[] dk = deviceKeyX509();
+77:             LicenseToken.Grant g = LicenseToken.verify(token, dk);
+78:             if (g == null) {
+79:                 current = Entitlements.free(dk == null
+80:                         ? "رمز الترخيص المحفوظ يخص هاتفًا آخر أو مفتاح الجهاز غير موجود هنا (مثلًا بعد نقل البيانات إلى هاتف جديد). اطلب نقل الرخصة."
+81:                         : "رمز الترخيص المحفوظ لا يطابق مفتاح هذا الهاتف. اطلب رمزًا جديدًا من البائع.");
+82:                 return;
+83:             }
+84:             if (revoked(db, g.lid())) {
+85:                 current = Entitlements.free("أُلغيت الرخصة " + g.lid() + " (مسرّبة أو منقولة). تواصل مع البائع.");
+86:                 return;
+87:             }
+88:             if (!signatureOk) {
+89:                 current = Entitlements.free("هذه نسخة من التطبيق ليست موقّعة من مطوّره (معدَّلة أو من مصدر مجهول)؛ الرخصة لا تعمل عليها. "
+90:                         + "ثبّت النسخة الأصلية؛ بياناتك تنتقل بنسخة احتياطية.");
+91:                 return;
+92:             }
+93:             current = LicenseGuard.decide(ctx, db, g);   // 12.7: المكتب والوقت الموثوق
+94:         } catch (Throwable t) {
+95:             current = Entitlements.free("تعذر التحقق من الترخيص الآن (" + t.getClass().getSimpleName() + "). أعد فتح التطبيق؛ الإضافة متوقفة عند حدود المجاني فقط.");
+96:         }
+97:     }
+98: 
+99:     /** الرمز في موضعين (إعدادات الهاتف + ملف داخلي): يُقارَنان ويُرمَّم أحدهما من الآخر إن تلف. */
+100:     static String storedToken(Context ctx, Db db) {
+101:         String a = db.setting("license_token", "").trim();
+102:         String b = readFile(ctx).trim();
+103:         if (a.equals(b)) return a;
+104:         byte[] dk = null;
+105:         try {
+106:             dk = deviceKeyX509();
+107:         } catch (Throwable ignored) {
+108:             // يُعامل كغير صالح
+109:         }
+110:         boolean aOk = !a.isEmpty() && LicenseToken.verify(a, dk) != null;
+111:         boolean bOk = !b.isEmpty() && LicenseToken.verify(b, dk) != null;
+112:         String keep = aOk ? a : bOk ? b : (a.isEmpty() ? b : a);
+113:         save(ctx, db, keep);
+114:         return keep;
+115:     }
+116: 
+117:     private static String readFile(Context ctx) {
+118:         try (InputStream in = new java.io.FileInputStream(new File(ctx.getFilesDir(), FILE))) {
+119:             return new String(Db.readAll(in), StandardCharsets.UTF_8);
+120:         } catch (Exception e) {
+121:             return "";
+122:         }
+123:     }
+124: 
+125:     private static void save(Context ctx, Db db, String token) {
+126:         db.setSettingQuiet("license_token", token);
+127:         File f = new File(ctx.getFilesDir(), FILE);
+128:         if (token.isEmpty()) {
+129:             f.delete();
+130:             return;
+131:         }
+132:         try (OutputStream o = new FileOutputStream(f)) {
+133:             o.write(token.getBytes(StandardCharsets.UTF_8));
+134:         } catch (Exception ignored) {
+135:             // يكفي الموضع الأول
+136:         }
+137:     }
+138: 
+139:     private static boolean revoked(Db db, String lid) {
+140:         for (String x : db.setting("license_revoked", "").split(",")) if (!x.trim().isEmpty() && x.trim().equals(lid)) return true;
+141:         return false;
+142:     }
+143: 
+144:     // ===================================================================================
+145:     // مفتاح الجهاز وطلب التفعيل
+146:     // ===================================================================================
+147: 
+148:     /** بايتات X.509 لمفتاح هذا الهاتف، أو null قبل أول طلب تفعيل. */
+149:     static byte[] deviceKeyX509() throws Exception {
+150:         KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+151:         ks.load(null);
+152:         Certificate c = ks.getCertificate(DEV);
+153:         return c == null ? null : c.getPublicKey().getEncoded();
+154:     }
+155: 
+156:     /** يُنشأ مرة واحدة عند أول طلب؛ التحدّي = رقم الطلب، فيرتبط المفتاح المصدَّق ببيعة واحدة. */
+157:     private static void createDeviceKey(byte[] challenge) throws Exception {
+158:         KeyPairGenerator g = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore");
+159:         for (boolean strong : new boolean[]{true, false}) {
+160:             try {
+161:                 KeyGenParameterSpec.Builder b = new KeyGenParameterSpec.Builder(DEV, KeyProperties.PURPOSE_SIGN)
+162:                         .setAlgorithmParameterSpec(new ECGenParameterSpec("secp256r1"))
+163:                         .setDigests(KeyProperties.DIGEST_SHA256)
+164:                         .setAttestationChallenge(challenge);
+165:                 if (strong) b.setIsStrongBoxBacked(true);
+166:                 g.initialize(b.build());
+167:                 g.generateKeyPair();
+168:                 return;
+169:             } catch (StrongBoxUnavailableException e) {
+170:                 // لا StrongBox في هذا الهاتف: العتاد الآمن العادي (TEE)
+171:             }
+172:         }
+173:         throw new IllegalStateException("تعذر إنشاء مفتاح الجهاز");
+174:     }
+175: 
+176:     /**
+177:      * نص طلب التفعيل الذي يرسله العميل للبائع (واتساب أو بريد): رقم الطلب، اسم الحزمة، بصمة مفتاح الهاتف ومفتاحه العام،

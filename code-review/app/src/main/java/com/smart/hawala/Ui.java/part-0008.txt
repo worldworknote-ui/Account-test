@@ -1,0 +1,162 @@
+1194:             if (!onEye) return false;
+1195:             visible[0] = !visible[0];
+1196:             int at = e.getSelectionEnd();
+1197:             e.setTransformationMethod(visible[0] ? android.text.method.HideReturnsTransformationMethod.getInstance()
+1198:                     : android.text.method.PasswordTransformationMethod.getInstance());
+1199:             e.setCompoundDrawablesRelative(null, null, visible[0] ? hide : show, null);
+1200:             e.setSelection(Math.max(0, Math.min(at < 0 ? e.length() : at, e.length())));
+1201:             v.performClick();
+1202:             return true;
+1203:         });
+1204:     }
+1205: 
+1206:     static void numeric(EditText e) { e.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL); }
+1207: 
+1208:     // ===================================================================================
+1209:     // 10.9: الحركة — ضغطة مرنة لكل زر، وزر «اضغط مطوّلًا» يفتح التأكيد نفسه
+1210:     // ===================================================================================
+1211: 
+1212:     private static android.animation.Animator scaleTo(View v, float to, long ms, android.animation.TimeInterpolator in) {
+1213:         android.animation.AnimatorSet a = new android.animation.AnimatorSet();
+1214:         a.playTogether(android.animation.ObjectAnimator.ofFloat(v, "scaleX", to), android.animation.ObjectAnimator.ofFloat(v, "scaleY", to));
+1215:         a.setDuration(ms);
+1216:         a.setInterpolator(in);
+1217:         return a;
+1218:     }
+1219: 
+1220:     /** ينضغط العنصر قليلًا عند اللمس ويعود بارتداد خفيف. */
+1221:     static void springy(View v) { springy(v, 0.95f); }
+1222: 
+1223:     static void springy(View v, float to) {
+1224:         android.animation.StateListAnimator s = new android.animation.StateListAnimator();
+1225:         s.addState(new int[]{android.R.attr.state_pressed}, scaleTo(v, to, 150, new android.view.animation.DecelerateInterpolator()));
+1226:         s.addState(new int[]{}, scaleTo(v, 1f, 480, new android.view.animation.OvershootInterpolator(2.6f)));
+1227:         v.setStateListAnimator(s);
+1228:     }
+1229: 
+1230:     /**
+1231:      * زر «اضغط مطوّلًا»: يمتلئ تحت الإصبع خلال ثلثي ثانية ثم يضغط الزر نفسه (فتظهر نافذة التأكيد كما هي). رفع الإصبع قبل الامتلاء
+1232:      * يلغيه دون أي أثر، واللمسة القصيرة تذكّر بالطريقة. قارئ الشاشة يضغطه مباشرة (performClick) فيصل إلى التأكيد نفسه.
+1233:      */
+1234:     void holdToConfirm(final Button b) {
+1235:         if (!holdOn()) return;
+1236:         final Drawable base = b.getBackground();
+1237:         GradientDrawable fill = new GradientDrawable();
+1238:         fill.setColor(night ? mix(primary, Color.WHITE, 0.35f) : mix(primary, Color.WHITE, 0.28f));
+1239:         fill.setCornerRadius(dp(16));
+1240:         final android.graphics.drawable.ClipDrawable clip = new android.graphics.drawable.ClipDrawable(fill, Gravity.RIGHT, android.graphics.drawable.ClipDrawable.HORIZONTAL);
+1241:         b.setBackground(new LayerDrawable(new Drawable[]{base, clip}));
+1242:         b.setContentDescription(b.getText() + " — اضغط مطوّلًا حتى يمتلئ الزر لفتح التأكيد");
+1243:         final android.animation.ValueAnimator[] run = {null};
+1244:         final boolean[] fired = {false};
+1245:         final Runnable back = () -> {
+1246:             if (run[0] != null) run[0].cancel();
+1247:             b.setPressed(false);
+1248:             android.animation.ValueAnimator r = android.animation.ValueAnimator.ofInt(clip.getLevel(), 0);
+1249:             r.setDuration(200);
+1250:             r.addUpdateListener(x -> clip.setLevel((int) x.getAnimatedValue()));
+1251:             r.start();
+1252:         };
+1253:         b.setOnTouchListener((v, e) -> {
+1254:             switch (e.getActionMasked()) {
+1255:                 case android.view.MotionEvent.ACTION_DOWN:
+1256:                     if (!v.isEnabled()) return false;
+1257:                     fired[0] = false;
+1258:                     v.setPressed(true);
+1259:                     if (run[0] != null) run[0].cancel();
+1260:                     android.animation.ValueAnimator an = android.animation.ValueAnimator.ofInt(clip.getLevel(), 10000);
+1261:                     an.setDuration(Math.max(80, (long) (850 * (1 - clip.getLevel() / 10000f))));
+1262:                     an.setInterpolator(new android.view.animation.LinearInterpolator());
+1263:                     an.addUpdateListener(x -> clip.setLevel((int) x.getAnimatedValue()));
+1264:                     an.addListener(new android.animation.AnimatorListenerAdapter() {
+1265:                         boolean cancelled;
+1266: 
+1267:                         @Override public void onAnimationCancel(android.animation.Animator a) { cancelled = true; }
+1268: 
+1269:                         @Override public void onAnimationEnd(android.animation.Animator a) {
+1270:                             if (cancelled) return;
+1271:                             fired[0] = true;
+1272:                             thud(v);
+1273:                             v.setPressed(false);
+1274:                             v.performClick();
+1275:                             v.postDelayed(() -> clip.setLevel(0), 300);
+1276:                         }
+1277:                     });
+1278:                     run[0] = an;
+1279:                     an.start();
+1280:                     return true;
+1281:                 case android.view.MotionEvent.ACTION_MOVE:
+1282:                     if (!fired[0] && (e.getX() < 0 || e.getY() < 0 || e.getX() > v.getWidth() || e.getY() > v.getHeight())) back.run();
+1283:                     return true;
+1284:                 case android.view.MotionEvent.ACTION_UP:
+1285:                     if (!fired[0]) {
+1286:                         boolean quick = e.getEventTime() - e.getDownTime() < 350;
+1287:                         back.run();
+1288:                         if (quick) {
+1289:                             toast("اضغط مطوّلًا على الزر حتى يمتلئ، ثم أكّد");
+1290:                             v.animate().translationX(dp(6)).setDuration(60).withEndAction(() -> v.animate().translationX(-dp(5)).setDuration(60)
+1291:                                     .withEndAction(() -> v.animate().translationX(0).setDuration(80).start()).start()).start();
+1292:                         }
+1293:                     }
+1294:                     return true;
+1295:                 case android.view.MotionEvent.ACTION_CANCEL:
+1296:                     if (!fired[0]) back.run();
+1297:                     return true;
+1298:                 default:
+1299:                     return false;
+1300:             }
+1301:         });
+1302:     }
+1303: 
+1304:     /** يلوّن الزر حسب دوره: الأساسي ممتلئ، الذهبي هادئ، الرمادي بإطار، وغيرها ممتلئ بلونه. */
+1305:     private void styleButton(Button b, int color, int radius) {
+1306:         int fill, stroke, txt;
+1307:         if (color == accent) {
+1308:             fill = goldSoft;
+1309:             stroke = frames ? mix(goldSoft, goldInk, 0.45f) : goldSoft;
+1310:             txt = goldInk;
+1311:         } else if (isGray(color)) {
+1312:             fill = surface;
+1313:             stroke = frames ? mix(line, ink, 0.18f) : line;
+1314:             txt = ink;
+1315:         } else {
+1316:             fill = color;
+1317:             stroke = frames ? mix(color, night ? Color.WHITE : Color.BLACK, 0.22f) : color;
+1318:             txt = onColor(color);
+1319:         }
+1320:         b.setTextColor(txt);
+1321:         b.setBackground(ripple(round(fill, stroke, radius), radius));
+1322:         b.setElevation(0);
+1323:         springy(b);
+1324:     }
+1325: 
+1326:     /** 10.13: إطارات الأزرار والبطاقات ظاهرة (خيار في «المظهر»). */
+1327:     boolean frames = true;
+1328: 
+1329:     /** 10.13: حركة الصفحات: «متتابعة» (العناصر تصعد واحدًا بعد الآخر) أو «دفعة واحدة» أو «بلا حركة». */
+1330:     String pageMotion() { return db == null ? "stagger" : db.setting("page_motion", "stagger"); }
+1331: 
+1332:     /** 10.13: «اضغط مطوّلًا» للتسجيل خيار لا إجبار (الافتراضي: ضغطة عادية ثم نافذة التأكيد). */
+1333:     boolean holdOn() { return db != null && "on".equals(db.setting("hold_confirm", "off")); }
+1334: 
+1335:     /** 10.13: شكل الشريط السفلي: «جزيرة» أو «دائرة تتمدد». */
+1336:     /** 10.15: الافتراضي الشريط الزجاجي بتجويف؛ من اختار «جزيرة» أو «دائرة» سابقًا يبقى على اختياره. */
+1337:     String tabStyle() { return db == null ? NavPrefs.STYLE_ISLAND : NavPrefs.style(db.setting("tab_style", NavPrefs.STYLE_NOTCH)); }
+1338: 
+1339:     /** 10.12: اهتزاز خفيف للأزرار المهمة — يُفعَّل ويُوقف من «الإعدادات والتصميم» (لكل مستخدم). */
+1340:     boolean hapticsOn() {
+1341:         return db == null || !"off".equals(db.setting("haptics", "on"));
+1342:     }
+1343: 
+1344:     void tick(View v) {
+1345:         if (v != null && hapticsOn()) v.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP);
+1346:     }
+1347: 
+1348:     void thud(View v) {
+1349:         if (v != null && hapticsOn()) v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+1350:     }
+1351: 
+1352:     Button makeButton(String label, int color, View.OnClickListener l) {
+1353:         Button b = new Button(this);
+1354:         b.setText(label);
+1355:         b.setTextSize(16);

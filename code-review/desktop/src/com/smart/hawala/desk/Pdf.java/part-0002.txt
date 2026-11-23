@@ -1,0 +1,207 @@
+216:             }
+217:         };
+218:         b.h = Math.max(lab.h, val.h) + 2 * PAD;
+219:         return b;
+220:     }
+221: 
+222:     private Block note(String s) {
+223:         final TB l = new TB(s, muted, mutedC, CW, RIGHT);
+224:         Block b = new Block() {
+225:             @Override void draw(Graphics2D g, float top) { l.draw(g, M, top + 4); }
+226:         };
+227:         b.h = l.h + 8;
+228:         return b;
+229:     }
+230: 
+231:     private float[] widths(List<Report.Col> cols) {
+232:         float sum = 0;
+233:         for (Report.Col c : cols) sum += c.weight;
+234:         float[] w = new float[cols.size()];
+235:         for (int i = 0; i < w.length; i++) w[i] = CW * cols.get(i).weight / sum;
+236:         return w;
+237:     }
+238: 
+239:     private Block row(final List<Report.Col> cols, final float[] w, Object[] cells, final int style, final boolean isHeader, final int accentInt, final int tintInt) {
+240:         final Color accent = argb(accentInt), tint = argb(tintInt);
+241:         final TB[] ls = new TB[cols.size()];
+242:         float hh = 0;
+243:         for (int i = 0; i < cols.size(); i++) {
+244:             Object v = i < cells.length ? cells[i] : "";
+245:             String s = isHeader ? cols.get(i).title : Report.text(v);
+246:             boolean num = v instanceof Report.Money || v instanceof Report.Bal;
+247:             Font f = isHeader ? bold : (style == Report.BOLD || style == Report.TOTAL || (tint != null && num)) ? bold : style == Report.MUTED ? muted : text;
+248:             Color c = isHeader ? Color.WHITE : style == Report.MUTED ? mutedC : (tint != null && num) ? darker(tint) : ink;
+249:             int al = isHeader || cols.get(i).type != Report.TEXT ? CENTER : RIGHT;
+250:             ls[i] = new TB(s, f, c, w[i] - 2 * PAD, al);
+251:             hh = Math.max(hh, ls[i].h);
+252:         }
+253:         Block b = new Block() {
+254:             @Override void draw(Graphics2D g, float top) {
+255:                 Color base = accent != null ? accent : o.accent;
+256:                 Color bg = isHeader ? base : (style == Report.TOTAL ? (accent != null || tint != null ? blend(tint != null ? tint : accent, 0.22f) : total)
+257:                         : tint != null ? blend(tint, style == Report.SHADED ? 0.15f : 0.08f) : (style == Report.SHADED ? shade : Color.WHITE));
+258:                 if (!Color.WHITE.equals(bg)) {
+259:                     g.setColor(bg);
+260:                     g.fill(new Rectangle2D.Float(M, top, CW, h));
+261:                 }
+262:                 if (tint != null && !isHeader) {
+263:                     g.setColor(tint);
+264:                     g.fill(new Rectangle2D.Float(W - M - 3, top, 3, h));
+265:                 }
+266:                 float x = W - M;
+267:                 for (int i = 0; i < ls.length; i++) {
+268:                     float left = x - w[i];
+269:                     ls[i].draw(g, left + PAD, top + PAD);
+270:                     vline(g, left, top, top + h);
+271:                     x = left;
+272:                 }
+273:                 vline(g, W - M, top, top + h);
+274:                 hline(g, M, top + h, W - M);
+275:                 if (isHeader) hline(g, M, top, W - M);
+276:             }
+277:         };
+278:         b.h = hh + 2 * PAD;
+279:         return b;
+280:     }
+281: 
+282:     private Block image(final long id, float maxH) {
+283:         if (o.db == null) return null;
+284:         BufferedImage im;
+285:         try {
+286:             byte[] raw = o.db.attachment(id);
+287:             im = raw == null ? null : ImageIO.read(new java.io.ByteArrayInputStream(raw));
+288:         } catch (Exception e) {
+289:             im = null;
+290:         }
+291:         if (im == null) return note("(صورة رقم " + id + " غير قابلة للعرض)");
+292:         float maxW = Math.min(o.style.imageWidth(), CW - 40);
+293:         float scale = Math.min(maxW / im.getWidth(), Math.min(maxH, 420f) / im.getHeight());
+294:         final float iw = im.getWidth() * scale, ih = im.getHeight() * scale;
+295:         final BufferedImage img = im;
+296:         Block b = new Block() {
+297:             @Override void draw(Graphics2D g, float top) {
+298:                 g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+299:                 g.drawImage(img, (int) (W - M - 20 - iw), (int) (top + 4), (int) iw, (int) ih, null);
+300:                 g.setColor(new Color(200, 200, 200));
+301:                 g.setStroke(new BasicStroke(0.6f));
+302:                 g.draw(new Rectangle2D.Float(W - M - 20 - iw, top + 4, iw, ih));
+303:             }
+304:         };
+305:         b.h = ih + 10;
+306:         return b;
+307:     }
+308: 
+309:     private Block signature() {
+310:         final TB a = new TB("توقيع المحاسب: ..............................", text, ink, CW / 2 - 10, RIGHT);
+311:         final TB bb = new TB("توقيع المكتب: ..............................", text, ink, CW / 2 - 10, RIGHT);
+312:         Block b = new Block() {
+313:             @Override void draw(Graphics2D g, float top) {
+314:                 a.draw(g, W / 2 + 5, top + 26);
+315:                 bb.draw(g, M, top + 26);
+316:             }
+317:         };
+318:         b.h = 26 + Math.max(a.h, bb.h) + 10;
+319:         return b;
+320:     }
+321: 
+322:     private Block spacer(float h) {
+323:         Block s = new Block() {
+324:             @Override void draw(Graphics2D g, float top) {}
+325:         };
+326:         s.h = h;
+327:         s.keepWithNext = true;
+328:         return s;
+329:     }
+330: 
+331:     private List<Block> build() {
+332:         List<Block> out = new ArrayList<>();
+333:         out.add(header());
+334:         float maxImg = H - 2 * M - FOOTER - RUNNING - 60;
+335:         for (Report.Section s : r.sections) {
+336:             if (s.heading != null && !s.heading.isEmpty()) out.add(band(s.heading, s.accent));
+337:             for (int i = 0; i < s.summary.size(); i++) {
+338:                 if (i == 0) out.add(spacer(6));
+339:                 Block k = kv(s.summary.get(i));
+340:                 k.keepWithNext = i < s.summary.size() - 1;
+341:                 out.add(k);
+342:             }
+343:             if (s.note != null && !s.note.isEmpty()) out.add(note(s.note));
+344:             if (!s.cols.isEmpty() && !s.rows.isEmpty()) {
+345:                 float[] w = widths(s.cols);
+346:                 out.add(spacer(6));
+347:                 Block head = row(s.cols, w, new Object[0], Report.NORMAL, true, s.accent, 0);
+348:                 head.keepWithNext = true;
+349:                 out.add(head);
+350:                 for (Report.Row rw : s.rows) {
+351:                     Block b = row(s.cols, w, rw.cells, rw.style, false, s.accent, rw.tint);
+352:                     b.repeatHeader = head;
+353:                     out.add(b);
+354:                     if (rw.images != null && o.db != null) {
+355:                         for (Long id : rw.images) {
+356:                             Block im = image(id, maxImg);
+357:                             if (im != null) {
+358:                                 im.repeatHeader = head;
+359:                                 out.add(im);
+360:                             }
+361:                         }
+362:                     }
+363:                 }
+364:             }
+365:         }
+366:         if (r.signature) out.add(signature());
+367:         return out;
+368:     }
+369: 
+370:     List<List<Block>> pages() { return paginate(build()); }
+371: 
+372:     private List<List<Block>> paginate(List<Block> blocks) {
+373:         List<List<Block>> pages = new ArrayList<>();
+374:         List<Block> page = new ArrayList<>();
+375:         float avail = H - 2 * M - FOOTER;
+376:         float used = 0;
+377:         for (int i = 0; i < blocks.size(); i++) {
+378:             Block b = blocks.get(i);
+379:             float need = b.h;
+380:             int j = i;
+381:             while (blocks.get(j).keepWithNext && j + 1 < blocks.size() && need < avail * 0.5f) {
+382:                 j++;
+383:                 need += blocks.get(j).h;
+384:             }
+385:             if (used + need > avail && !page.isEmpty()) {
+386:                 pages.add(page);
+387:                 page = new ArrayList<>();
+388:                 avail = H - 2 * M - FOOTER - RUNNING;
+389:                 used = 0;
+390:                 if (b.repeatHeader != null) {
+391:                     page.add(b.repeatHeader);
+392:                     used += b.repeatHeader.h;
+393:                 }
+394:             }
+395:             page.add(b);
+396:             used += b.h;
+397:         }
+398:         if (!page.isEmpty()) pages.add(page);
+399:         return pages;
+400:     }
+401: 
+402:     void drawPage(Graphics2D g, List<Block> blocks, int index, int count) {
+403:         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+404:         g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+405:         g.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON);
+406:         g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+407:         g.setColor(Color.WHITE);
+408:         g.fill(new Rectangle2D.Float(0, 0, W, H));
+409:         float y = M;
+410:         if (index > 0) {
+411:             new TB(r.title, small, new Color(110, 110, 110), CW, RIGHT).draw(g, M, y);
+412:             hline(g, M, y + RUNNING - 6, W - M);
+413:             y += RUNNING;
+414:         }
+415:         for (Block b : blocks) {
+416:             b.draw(g, y);
+417:             y += b.h;
+418:         }
+419:         List<String> foot = new ArrayList<>();
+420:         foot.add("صفحة " + (index + 1) + " من " + count);
+421:         if (r.watermark != null && !r.watermark.isEmpty()) foot.add(r.watermark);
+422:         if (r.footer != null && !r.footer.trim().isEmpty()) foot.add(r.footer.trim());

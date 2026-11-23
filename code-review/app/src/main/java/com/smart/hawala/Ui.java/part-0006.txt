@@ -1,0 +1,166 @@
+854:                     }
+855:                     return;
+856:                 }
+857:                 final int cFrom = tabColor(from);
+858:                 frameInd.setTranslationX(items.getLeft() + prev.getLeft() + dp(3));
+859:                 frameInd.setTranslationY(ty);
+860:                 frameInd.setBackground(frameDrawable(cFrom, islandBg));
+861:                 frameInd.animate().translationX(tx).setDuration(600).setInterpolator(new android.view.animation.OvershootInterpolator(1.15f)).start();
+862:                 android.animation.ValueAnimator col = android.animation.ValueAnimator.ofObject(new android.animation.ArgbEvaluator(), cFrom, cTo);
+863:                 col.setDuration(600);
+864:                 col.addUpdateListener(x -> frameInd.setBackground(frameDrawable((int) x.getAnimatedValue(), islandBg)));
+865:                 col.start();
+866:                 // كلمة التبويب الجديد تتلوّن تدريجيًا، والسابق يعود رماديًا
+867:                 final TextView nl = labels.get(active), ol2 = labels.get(from);
+868:                 android.animation.ValueAnimator txt = android.animation.ValueAnimator.ofFloat(0f, 1f);
+869:                 txt.setDuration(600);
+870:                 txt.addUpdateListener(x -> {
+871:                     float f = (float) x.getAnimatedValue();
+872:                     if (nl != null) nl.setTextColor(mix(muted, cTo, f));
+873:                     if (ol2 != null) ol2.setTextColor(mix(cFrom, muted, f));
+874:                 });
+875:                 if (nl != null) nl.setTextColor(muted);
+876:                 txt.start();
+877:             }
+878:         });
+879:         if ("bubble".equals(tabStyle())) bubble(tf, grp, items, active, gapB);
+880:         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, dp(TAB_FRAME_DP));
+881:         p.topMargin = -dp(24);
+882:         column.addView(tf, p);
+883:         tabs = tf;
+884:     }
+885: 
+886:     // ===================================================================================
+887:     // 10.15: الشريط الزجاجي بتجويف وقائمة «+» (من «أموالي» 1.6)
+888:     // ===================================================================================
+889: 
+890:     private String navJson;
+891:     private NavPrefs navCache;
+892: 
+893:     /** إعدادات الشريط والقائمة لهذا المستخدم (nav_prefs شخصي). */
+894:     NavPrefs nav() {
+895:         String j = db == null ? "" : db.setting("nav_prefs", "");
+896:         if (navCache == null || !j.equals(navJson)) {
+897:             navCache = NavPrefs.from(j);
+898:             navJson = j;
+899:         }
+900:         return navCache;
+901:     }
+902: 
+903:     void saveNav(NavPrefs p) {
+904:         if (db != null) db.setSettingQuiet("nav_prefs", p.toJson());
+905:         navCache = null;
+906:     }
+907: 
+908:     /** الجزء الذي يغطيه الشريط الطافي من أسفل المحتوى (بكسل)؛ 0 لغير الشريط الزجاجي. */
+909:     int tabCover;
+910: 
+911:     /** زر «+» في الشريط الزجاجي (MainActivity يفتح القائمة السريعة). الافتراضي: صفحة التسجيل. */
+912:     void plusPressed(NotchBar nb, int index, int activeIndex) { openTab("tx"); }
+913: 
+914:     /** لون شريط النظام تحت الشريط الزجاجي الموصول بالحواف (فيبدوان قطعة واحدة). */
+915:     int navBarColor() {
+916:         if (tabs instanceof NotchBar) return NotchBar.navColor(bg, nav(), nav().bar(header));
+917:         return surface;
+918:     }
+919: 
+920:     /**
+921:      * الشريط الزجاجي يطفو فوق المحتوى (في frame لا في العمود)، فيظهر ما تحته عبر زجاجه، والمحتوى يُمرَّر تحته
+922:      * وله هامش سفلي حتى لا يختفي آخره خلفه. التبويب الحالي دائرة بارزة بلونه، وتنزلق إلى التبويب الجديد.
+923:      */
+924:     private void notchBar(String active) {
+925:         final java.util.List<String> keys = tabKeys();
+926:         final NavPrefs st = nav();
+927:         final java.util.List<Drawable> icons = new java.util.ArrayList<>();
+928:         final java.util.List<String> names = new java.util.ArrayList<>();
+929:         int[] circles = new int[keys.size()];
+930:         for (int i = 0; i < keys.size(); i++) {
+931:             String k = keys.get(i);
+932:             icons.add(getDrawable("tx".equals(k) ? R.drawable.ic_plus_circle : tabIcon(k)));
+933:             names.add(tabName(k));
+934:             circles[i] = "tx".equals(k) ? st.circle(primary) : st.circle(tabColor(k));
+935:         }
+936:         final int idx = Math.max(0, keys.indexOf(active));
+937:         final NotchBar[] nb = new NotchBar[1];
+938:         nb[0] = new NotchBar(this, icons, names, idx, st, st.bar(header), circles, st.icons(header), i -> {
+939:             String k = keys.get(i);
+940:             if ("tx".equals(k)) plusPressed(nb[0], i, idx);
+941:             else if (!k.equals(active) || !onHome) openTab(k);
+942:         });
+943:         nb[0].typeface(text("ا", 10, ink, true).getTypeface());
+944:         frame.addView(nb[0], new FrameLayout.LayoutParams(-1, dp(NotchBar.heightDp(st)), Gravity.BOTTOM));
+945:         tabs = nb[0];
+946:         tabCover = dp(NotchBar.coverDp(st));
+947:         body.setPadding(body.getPaddingLeft(), body.getPaddingTop(), body.getPaddingRight(), tabCover + dp(48));
+948:         footerBox.setPadding(footerBox.getPaddingLeft(), footerBox.getPaddingTop(), footerBox.getPaddingRight(), tabCover + dp(2));
+949:     }
+950: 
+951:     /** 10.13: نمط «الدائرة»: هل الشريط ممدود الآن (يُطوى بعد الانتقال إلى تبويب). */
+952:     static boolean bubbleOpen;
+953: 
+954:     /**
+955:      * 10.13: الشريط السفلي دائرة واحدة بلون التبويب الحالي وأيقونته؛ الضغط عليها يمدّ الجزيرة يمينًا وشمالًا من الوسط،
+956:      * وتظهر الأزرار من القريب للبعيد، و«تسجيل» في الوسط. الضغط على التبويب الحالي يطويها من جديد.
+957:      */
+958:     private void bubble(final FrameLayout tf, final FrameLayout grp, final LinearLayout items, final String active, int gapB) {
+959:         final FrameLayout b = new FrameLayout(this);
+960:         int c = tabColor(active);
+961:         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{mix(c, Color.WHITE, 0.2f), c});
+962:         g.setShape(GradientDrawable.OVAL);
+963:         g.setStroke(dp(3), night ? Color.rgb(36, 50, 44) : Color.rgb(242, 245, 243));
+964:         b.setBackground(ripple(g, 30));
+965:         b.setElevation(dp(10));
+966:         b.addView(icon(tabIcon(active), onColor(c), 24), new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
+967:         b.setContentDescription("القائمة — " + tabName(active));
+968:         springy(b, 0.88f);
+969:         FrameLayout.LayoutParams bp = new FrameLayout.LayoutParams(dp(58), dp(58), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+970:         bp.bottomMargin = gapB;
+971:         tf.addView(b, bp);
+972:         final Runnable open = () -> {
+973:             bubbleOpen = true;
+974:             b.animate().alpha(0f).scaleX(0.6f).scaleY(0.6f).setDuration(NO_MOTION ? 0 : 200).withEndAction(() -> b.setVisibility(View.GONE)).start();
+975:             grp.setVisibility(View.VISIBLE);
+976:             if (NO_MOTION) return;
+977:             grp.setPivotX(grp.getWidth() / 2f);
+978:             grp.setScaleX(0.16f);
+979:             grp.setAlpha(0.4f);
+980:             grp.animate().scaleX(1f).alpha(1f).setDuration(460).setInterpolator(new android.view.animation.OvershootInterpolator(1.1f)).start();
+981:             int n = items.getChildCount();
+982:             for (int i = 0; i < n; i++) {
+983:                 View ch = items.getChildAt(i);
+984:                 float dist = Math.abs(i - (n - 1) / 2f);
+985:                 ch.setAlpha(0f);
+986:                 ch.setScaleX(0.5f);
+987:                 ch.setScaleY(0.5f);
+988:                 ch.animate().alpha(1f).scaleX(1f).scaleY(1f).setStartDelay(120 + (long) (dist * 70)).setDuration(320)
+989:                         .setInterpolator(new android.view.animation.OvershootInterpolator(1.4f)).start();
+990:             }
+991:         };
+992:         if (bubbleOpen) b.setVisibility(View.GONE);
+993:         else grp.setVisibility(View.INVISIBLE);
+994:         b.setOnClickListener(v -> {
+995:             tick(v);
+996:             open.run();
+997:         });
+998:         // التبويب الحالي يطوي الشريط من جديد
+999:         for (int i = 0; i < items.getChildCount(); i++) {
+1000:             final View ch = items.getChildAt(i);
+1001:             if (!tabName(active).equals(String.valueOf(ch.getContentDescription()))) continue;
+1002:             ch.setOnClickListener(v -> {
+1003:                 tick(v);
+1004:                 bubbleOpen = false;
+1005:                 grp.animate().scaleX(0.16f).alpha(0f).setDuration(NO_MOTION ? 0 : 260).withEndAction(() -> {
+1006:                     grp.setVisibility(View.INVISIBLE);
+1007:                     grp.setScaleX(1f);
+1008:                     grp.setAlpha(1f);
+1009:                 }).start();
+1010:                 b.setVisibility(View.VISIBLE);
+1011:                 b.setAlpha(0f);
+1012:                 b.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(NO_MOTION ? 0 : 260).start();
+1013:             });
+1014:         }
+1015:     }
+1016: 
+1017:     /** إطار التبويب الحالي: حافة بلونه وتعبئة خفيفة منه. */
+1018:     private Drawable frameDrawable(int c, int islandBg) {
+1019:         GradientDrawable g = new GradientDrawable();

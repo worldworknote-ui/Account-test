@@ -1,0 +1,118 @@
+158:         check(b(db.cashBalances(), "USD") == b(counted, "USD"), "بعد الاعتماد الصندوق = المعدود (لم يُحسب مرتين)");
+159: 
+160:         System.out.println("== AUDIT-029: حذف مكتب له حركات صندوق معلّقة ومرفوضة");
+161:         as(db, clerk);
+162:         db.addCashMove(cashIn(C, "USD", 40000, true));
+163:         db.addCashMove(cashIn(C, "USD", 15000, true));
+164:         List<Model.Tx> pc = db.pendingTx();
+165:         as(db, acct);
+166:         db.rejectTx(pc.get(0).id, "خطأ");
+167:         long before = b(db.cashBalances(), "USD");
+168:         as(db, admin);
+169:         db.deleteOffice(C, true);
+170:         check(b(db.cashBalances(), "USD") == before, "حذف المكتب لا يجعل المعلّقة والمرفوضة محسوبة: " + before + " = " + b(db.cashBalances(), "USD"));
+171:         int cancelled = 0;
+172:         int byReject = 0;
+173:         for (CashBox.Move m : db.cashMoves()) {
+174:             if (m.cancelled() && m.cancelReason.contains("حُذف المكتب")) cancelled++;
+175:             if (m.cancelled() && m.cancelReason.contains("رُفضت حركة المكتب")) byReject++;
+176:         }
+177:         check(cancelled == 1 && byReject == 1, "وأُلغيت حركتا الصندوق بسبب واضح (المرفوضة عند رفضها، والمعلّقة عند حذف المكتب)");
+178:         healthy(db, "بعد حذف المكتب");
+179: 
+180:         System.out.println("== AUDIT-018 (أ): تبديل العملة يخضع للاعتماد");
+181:         as(db, clerk);
+182:         long usdA = b(db.balances(A), "USD"), eurA = b(db.balances(A), "EUR");
+183:         String[] legs = db.addFx(A, "USD", 11200, "EUR", 10000, "1.12", "تبديل", System.currentTimeMillis() - 1000);
+184:         check(db.tx(Long.parseLong(legs[0])).isPending() && db.tx(Long.parseLong(legs[1])).isPending(), "ساقا تبديل الموظف معلّقتان معًا");
+185:         check(b(db.balances(A), "USD") == usdA && b(db.balances(A), "EUR") == eurA, "ولا أثر لهما في الأرصدة");
+186:         as(db, clerk);
+187:         check(throwsMsg(() -> db.approveTx(Long.parseLong(legs[0])), null), "صاحب العملية لا يعتمدها");
+188:         as(db, acct);
+189:         check(throwsMsg(() -> db.approveEdited(Long.parseLong(legs[0]), txIn(A, Model.TYPE_DEBIT, 1, "USD"), null, null), "مترابطة"), "لا تُصحَّح ساق وحدها");
+190:         db.approveTx(Long.parseLong(legs[1]));
+191:         check(db.tx(Long.parseLong(legs[0])).isActive() && db.tx(Long.parseLong(legs[1])).isActive(), "اعتماد ساق يعتمد الأخرى معها");
+192:         check(b(db.balances(A), "USD") == usdA + 11200 && b(db.balances(A), "EUR") == eurA - 10000, "الأثر: لنا 112 USD وعلينا 100 EUR");
+193:         as(db, clerk);
+194:         String[] legs2 = db.addFx(A, "USD", 5000, "EUR", 4000, "1.25", "", System.currentTimeMillis() - 1000);
+195:         as(db, acct);
+196:         db.rejectTx(Long.parseLong(legs2[0]), "سعر خاطئ");
+197:         check(db.tx(Long.parseLong(legs2[1])).isRejected(), "رفض ساق يرفض الأخرى");
+198:         healthy(db, "بعد التبديل");
+199: 
+200:         System.out.println("== AUDIT-023: صلاحية «المستخدمون» لا تمس حساب المدير");
+201:         as(db, mgr);
+202:         check(throwsMsg(() -> db.addUser("دخيل", Auth.ADMIN, null, "654321"), "للمدير"), "لا ينشئ مديرًا");
+203:         check(throwsMsg(() -> db.setPin(admin, "999999"), "رمز المدير"), "لا يغيّر رمز المدير");
+204:         check(db.verifyPin(admin, "123456"), "ورمز المدير كما هو");
+205:         check(throwsMsg(() -> db.updateUser(admin, "المدير", Auth.CUSTOM, "VIEW", true), "المدير"), "لا يعدّل حساب المدير");
+206:         check(throwsMsg(() -> db.updateUser(mgr, "مدير الموظفين", Auth.ADMIN, null, true), "للمدير"), "لا يرقّي نفسه مديرًا");
+207:         check(throwsMsg(() -> db.updateUser(mgr, "مدير الموظفين", Auth.CUSTOM, "VIEW,USERS,APPROVE", true), "بنفسك"), "لا يعدّل صلاحياته بنفسه");
+208:         check(throwsMsg(() -> db.updateUser(clerk, "سامر", Auth.CUSTOM, "VIEW,TX_ADD,TX_EDIT,CASH,REVIEW,APPROVE", true), "لا تملكها"), "لا يمنح صلاحية لا يملكها (الاعتماد)");
+209:         check(throwsMsg(() -> db.updateUser(clerk, "سامر", Auth.CUSTOM, "VIEW,TX_ADD,TX_EDIT,CASH", true), "اعتماد"), "لا يرفع قيد «حركاته تحتاج اعتمادًا» دون صلاحية الاعتماد");
+210:         db.updateUser(clerk, "سامر الحلبي", Auth.CUSTOM, "VIEW,TX_ADD,TX_EDIT,CASH,REVIEW", true);
+211:         check("سامر الحلبي".equals(db.user(clerk).name) && Auth.needsReview(db.user(clerk)), "ويعدّل بيانات موظف ضمن ما يملك");
+212:         db.updateUser(clerk, "سامر", Auth.CUSTOM, "VIEW,TX_ADD,TX_EDIT,CASH,REVIEW", true);
+213:         // 10.11 (AUDIT-001): «سامر» يملك صلاحيات لا يملكها مدير الموظفين (التسجيل والتعديل والصندوق)؛ لو غيّر رمزه لدخل بها
+214:         check(throwsMsg(() -> db.setPin(clerk, "5555"), "لا تملكها") && db.verifyPin(clerk, "1111"), "لا يغيّر رمز موظف فيه صلاحية لا يملكها (10.11)");
+215:         as(db, admin);
+216:         db.setPin(clerk, "5555");
+217:         as(db, mgr);
+218:         check(db.verifyPin(clerk, "5555"), "والمدير يغيّره");
+219:         check(throwsMsg(() -> db.disableUsers(), "للمدير"), "لا يوقف نظام المستخدمين");
+220:         check(throwsMsg(() -> db.newRecoveryCode(), "المدير"), "لا ينشئ رمز استرداد المدير");
+221: 
+222:         System.out.println("== AUDIT-027: الموظف يغيّر رمزه بنفسه");
+223:         as(db, clerk);
+224:         check(throwsMsg(() -> db.changeOwnPin("0000", "7777"), "غير صحيح"), "برمز حالي خاطئ يُرفض");
+225:         db.changeOwnPin("5555", "7777");
+226:         check(db.verifyPin(clerk, "7777") && !db.verifyPin(clerk, "5555"), "برمزه الحالي يتغير دون صلاحية «المستخدمون»");
+227:         check(throwsMsg(() -> db.setPin(acct, "8888"), "صلاحية"), "ولا يغيّر رمز غيره");
+228: 
+229:         System.out.println("== AUDIT-003: إذن المزامنة خاص بخيطها");
+230:         java.lang.reflect.Method set = Db.class.getDeclaredMethod("setSystem", boolean.class);
+231:         set.setAccessible(true);
+232:         final boolean[] other = {false};
+233:         Thread t = new Thread(() -> {
+234:             try {
+235:                 set.invoke(db, true);
+236:                 Thread.sleep(400);
+237:                 set.invoke(db, false);
+238:             } catch (Exception e) {
+239:                 other[0] = true;
+240:             }
+241:         });
+242:         t.start();
+243:         Thread.sleep(150);
+244:         as(db, clerk);
+245:         check(throwsMsg(() -> db.addUser("س", Auth.CUSTOM, "VIEW", "1212"), "صلاحية"), "أثناء مزامنة في خيط آخر تبقى صلاحيات المستخدم مفحوصة هنا");
+246:         t.join();
+247:         check(!other[0], "خيط المزامنة عمل بإذنه دون خطأ");
+248: 
+249:         System.out.println("== §9 (صُحّح في 10.7): الحركة بين مكتبين — طالب الحركة «لنا» عليه والمنفّذ «علينا» له");
+250:         as(db, acct);
+251:         long aU = b(db.balances(A), "USD"), bU = b(db.balances(B), "USD"), cashU = b(db.cashBalances(), "USD");
+252:         Db.TransferInput tr = new Db.TransferInput();
+253:         tr.from = A;
+254:         tr.to = B;
+255:         tr.currency = "USD";
+256:         tr.amount = 50000;
+257:         tr.fromFeeType = Model.FEE_US;
+258:         tr.fromFee = 700;
+259:         tr.toFeeType = Model.FEE_THEM;
+260:         tr.toFee = 1000;
+261:         tr.person = "مستفيد";
+262:         tr.when = System.currentTimeMillis() - 2000;
+263:         List<Db.Preview> pv = db.preview(Arrays.asList(db.transferLegs(tr)), null);
+264:         long[] ids = db.addTransfer(tr);
+265:         check(b(db.balances(A), "USD") == aU + 50000 + 700 && b(db.balances(B), "USD") == bU - 50000 - 1000,
+266:                 "طالب الحركة مدين لنا بـ 500 وأجرتنا 7، والمنفّذ دائن لنا بـ 500 وأجرته 10 (فرق الأجرة علينا 3)");
+267:         Model.Tx req = db.tx(ids[0]), exe = db.tx(ids[1]);
+268:         check(req.officeId == A && Model.TYPE_DEBIT.equals(req.type) && exe.officeId == B && Model.TYPE_CREDIT.equals(exe.type)
+269:                 && req.description.contains("نفّذها") && exe.description.contains("لطلب"), "الساق الأولى لطالب الحركة «لنا»، والثانية للمنفّذ «علينا»، بوصف واضح");
+270:         check(pv.size() == 2 && pv.get(0).after.get("USD") == b(db.balances(A), "USD") && pv.get(1).after.get("USD") == b(db.balances(B), "USD"),
+271:                 "المعاينة قبل الحفظ = الرصيد الفعلي بعده للمكتبين");
+272:         check(b(db.cashBalances(), "USD") == cashU, "التحويل لا يحرّك النقد في الصندوق");
+273:         Model.Tx l0 = db.tx(ids[0]), l1 = db.tx(ids[1]);
+274:         check(l0.isTransfer() && !l0.isFx() && l0.pairUuid.equals(l1.pairUuid) && db.legs(l0).size() == 2, "ساقان برقم عملية واحد، وليستا تبديل عملة");
+275:         check(throwsMsg(() -> db.editTx(ids[1], txIn(B, Model.TYPE_DEBIT, 1, "USD"), null, null, "x"), "تحويل بين مكتبين"), "لا تُعدَّل ساق وحدها");

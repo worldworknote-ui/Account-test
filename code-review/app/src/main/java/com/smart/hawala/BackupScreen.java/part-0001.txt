@@ -1,0 +1,150 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.Activity;
+4: import android.app.AlertDialog;
+5: import android.content.Intent;
+6: import android.content.pm.PackageManager;
+7: import android.graphics.Color;
+8: import android.net.Uri;
+9: import android.os.Build;
+10: import android.provider.DocumentsContract;
+11: import android.text.Editable;
+12: import android.text.InputType;
+13: import android.text.method.HideReturnsTransformationMethod;
+14: import android.text.method.PasswordTransformationMethod;
+15: import android.view.View;
+16: import android.widget.Button;
+17: import android.widget.CheckBox;
+18: import android.widget.EditText;
+19: import android.widget.LinearLayout;
+20: import android.widget.Spinner;
+21: import android.widget.TextView;
+22: import java.io.File;
+23: import java.util.ArrayList;
+24: import java.util.Arrays;
+25: import java.util.Collections;
+26: import java.util.List;
+27: import java.util.Map;
+28: 
+29: /** النسخ الاحتياطي اليدوي والتلقائي المجدول، والاستعادة مع المعاينة والتراجع، والتذكير، وسجل النسخ. */
+30: final class BackupScreen {
+31:     private final MainActivity a;
+32: 
+33:     BackupScreen(MainActivity a) { this.a = a; }
+34: 
+35:     interface PwCb { void on(char[] pw); }
+36: 
+37:     // ===================================================================================
+38:     // الشاشة
+39:     // ===================================================================================
+40: 
+41:     void show() {
+42:         if (!a.require(Auth.Perm.BACKUP)) return;
+43:         a.here(this::show);
+44:         a.tabbedScreen("النسخ الاحتياطي والاستعادة", a.moreScreen::show, "more");
+45:         long last = a.db.settingLong("last_backup", 0);
+46:         String status = a.db.setting("last_backup_status", "");
+47:         LinearLayout c = a.card();
+48:         c.addView(a.text("حالة النسخ الاحتياطي", 18, a.primary, true));
+49:         String st = "verified".equals(status) ? "محفوظة ومُتحقق منها ✓" : "shared".equals(status) ? "أُرسلت بالمشاركة" : "unverified".equals(status) ? "محفوظة دون إعادة قراءة" : "";
+50:         c.addView(a.text("آخر نسخة: " + (last == 0 ? "لا يوجد" : Model.date(last) + " (" + MainActivity.ago(last) + ")" + (st.isEmpty() ? "" : " — " + st)), 15, a.dark, false));
+51:         c.addView(a.text("حركات جديدة منذ آخر نسخة: " + a.txSinceBackup(), 15, a.dark, false));
+52:         String reminder = a.backupReminderText();
+53:         if (reminder != null) c.addView(a.text("⚠ " + reminder, 14, a.red, true));
+54: 
+55:         a.button("إنشاء نسخة احتياطية جديدة", a.primary, v -> backupDialog());
+56:         if (a.can(Auth.Perm.RESTORE)) {
+57:             a.button("استعادة نسخة من ملف", a.red, v -> new AlertDialog.Builder(a).setTitle("استعادة نسخة")
+58:                     .setMessage("ستُستبدل بيانات التطبيق الحالية بمحتوى النسخة بعد فحصها كاملًا ومعاينتها.\n\nقبل الاستبدال تُحفظ نسخة أمان من بياناتك الحالية تلقائيًا، ويمكنك التراجع عنها من هذه الشاشة.")
+59:                     .setPositiveButton("اختيار الملف", (d, w) -> {
+60:                         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+61:                         i.addCategory(Intent.CATEGORY_OPENABLE);
+62:                         i.setType("*/*");
+63:                         a.startForResult(i, MainActivity.OPEN_BACKUP);
+64:                     }).setNegativeButton("إلغاء", null).show());
+65:             if (Snapshot.exists(a)) {
+66:                 int n = Snapshot.list(a).size();
+67:                 a.button("التراجع عن " + snapshotWhat() + " (" + Model.date(Snapshot.time(a)) + ")", Color.rgb(120, 120, 120), v -> revertDialog());
+68:                 if (n > 1) a.body.addView(a.smallButton("نسخ أمان أقدم (" + (n - 1) + ")", Color.rgb(120, 120, 120), v -> olderSnapshots()), a.lp(-1, 42, 4));
+69:             }
+70:         }
+71: 
+72:         autoSection();
+73:         recoverySection();
+74: 
+75:         a.title("التذكير");
+76:         final String[] dayLabels = {"إيقاف التذكير بالأيام", "يوميًا", "كل 3 أيام", "أسبوعيًا", "كل أسبوعين"};
+77:         final long[] dayValues = {0, 1, 3, 7, 14};
+78:         final Spinner days = a.spinner(dayLabels);
+79:         long dv = a.db.settingLong("reminder_days", 7);
+80:         for (int i = 0; i < dayValues.length; i++) if (dayValues[i] == dv) days.setSelection(i);
+81:         a.body.addView(days, a.lp(-1, 54, 4));
+82:         final String[] txLabels = {"بدون تذكير بعدد الحركات", "بعد كل 10 حركات", "بعد كل 20 حركة", "بعد كل 50 حركة", "بعد كل 100 حركة"};
+83:         final long[] txValues = {0, 10, 20, 50, 100};
+84:         final Spinner txs = a.spinner(txLabels);
+85:         long tv = a.db.settingLong("reminder_tx", 20);
+86:         for (int i = 0; i < txValues.length; i++) if (txValues[i] == tv) txs.setSelection(i);
+87:         a.body.addView(txs, a.lp(-1, 54, 4));
+88:         android.widget.AdapterView.OnItemSelectedListener saver = new android.widget.AdapterView.OnItemSelectedListener() {
+89:             @Override public void onItemSelected(android.widget.AdapterView<?> p, View v, int pos, long id) {
+90:                 long d = dayValues[days.getSelectedItemPosition()];
+91:                 long t = txValues[txs.getSelectedItemPosition()];
+92:                 if (d != a.db.settingLong("reminder_days", 7)) a.db.setSetting("reminder_days", "" + d);
+93:                 if (t != a.db.settingLong("reminder_tx", 20)) a.db.setSetting("reminder_tx", "" + t);
+94:             }
+95: 
+96:             @Override public void onNothingSelected(android.widget.AdapterView<?> p) {}
+97:         };
+98:         days.setOnItemSelectedListener(saver);
+99:         txs.setOnItemSelectedListener(saver);
+100: 
+101:         List<File> local = BackupManager.localBackups(a);
+102:         a.title("نسخ محفوظة داخل التطبيق (آخر 3)");
+103:         a.hint("هذه نسخ مؤقتة داخل الهاتف للحماية من الأخطاء؛ تضيع إذا حُذف التطبيق أو ضاع الهاتف. احفظ نسخة خارج الهاتف دائمًا.");
+104:         if (local.isEmpty()) a.hint("لا توجد");
+105:         for (final File f : local) {
+106:             LinearLayout x = a.card();
+107:             x.addView(a.text(Model.date(f.lastModified()) + " — " + BackupManager.size(f.length()), 15, a.dark, true));
+108:             LinearLayout r = a.row();
+109:             r.addView(a.smallButton("حفظ في ملف", a.primary, v -> saveBackupTo(f)), a.weight(44, 1, 2));
+110:             r.addView(a.smallButton("مشاركة", a.accent, v -> shareBackup(f)), a.weight(44, 1, 2));
+111:             x.addView(r);
+112:             LinearLayout r2 = a.row();
+113:             if (a.can(Auth.Perm.RESTORE)) r2.addView(a.smallButton("استعادة", a.red, v -> restorePasswordDialog(f, false)), a.weight(44, 1, 2));
+114:             r2.addView(a.smallButton("حذف", Color.rgb(120, 120, 120), v -> new AlertDialog.Builder(a).setMessage("حذف هذه النسخة من داخل التطبيق؟")
+115:                     .setPositiveButton("حذف", (d, w) -> {
+116:                         f.delete();
+117:                         show();
+118:                     }).setNegativeButton("إلغاء", null).show()), a.weight(44, 1, 2));
+119:             x.addView(r2);
+120:         }
+121: 
+122:         List<Db.BackupRecord> hist = a.db.backupHistory(15);
+123:         a.title("سجل النسخ");
+124:         if (hist.isEmpty()) a.hint("لا يوجد");
+125:         for (Db.BackupRecord r : hist) {
+126:             String kind = "SAVE".equals(r.kind) ? "حفظ في ملف" : "SHARE".equals(r.kind) ? "مشاركة" : "CREATE".equals(r.kind) ? "إنشاء داخل التطبيق"
+127:                     : "RESTORE".equals(r.kind) ? "استعادة" : "AUTO".equals(r.kind) ? "نسخ تلقائي" : r.kind;
+128:             String line = Model.date(r.createdAt) + " • " + kind + " • " + r.status + (r.size > 0 ? " • " + BackupManager.size(r.size) : "")
+129:                     + (r.tx > 0 || r.offices > 0 ? "\nمكاتب " + r.offices + " • حركات " + r.tx + " • صور " + r.att : "")
+130:                     + (r.verified ? " • ✓ متحقق" : "") + (r.details.isEmpty() ? "" : "\n" + r.details);
+131:             a.add(a.text(line, 13, a.dark, false)).setBackground(a.round(Color.WHITE, Color.rgb(228, 223, 214), 10));
+132:         }
+133:     }
+134: 
+135:     String snapshotWhat() {
+136:         String l = Snapshot.label(a);
+137:         return l.isEmpty() ? "آخر استعادة" : l;
+138:     }
+139: 
+140:     /** يعيد البيانات كما كانت قبل آخر عملية كبيرة (استعادة نسخة أو حذف مكتب). */
+141:     void revertDialog() {
+142:         if (!a.require(Auth.Perm.RESTORE)) return;
+143:         if (!Snapshot.exists(a)) {
+144:             a.toast("لا توجد نسخة أمان للتراجع.");
+145:             return;
+146:         }
+147:         new AlertDialog.Builder(a).setTitle("التراجع عن " + snapshotWhat())
+148:                 .setMessage("ستعود البيانات كما كانت قبل " + snapshotWhat() + " (" + Model.date(Snapshot.time(a)) + "). أي حركات سُجّلت بعد ذلك ستُفقد. هل تريد المتابعة؟"
+149:                         + syncWarn())
+150:                 .setPositiveButton("تراجع", (d, w) -> a.busy("جارٍ إرجاع البيانات…", p -> Snapshot.revert(a, a.db), res -> {

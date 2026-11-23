@@ -1,0 +1,112 @@
+272:             x.getWritableDatabase().execSQL("UPDATE sync_flag SET cap=0 WHERE id=1");
+273:             x.getWritableDatabase().execSQL("DELETE FROM settings WHERE k='office_uid'");
+274:             x.getWritableDatabase().execSQL("UPDATE sync_flag SET cap=1 WHERE id=1");
+275:         }
+276:         check(LicenseGuard.officeUid(B).isEmpty(), "الجهاز المنضم لا يُنشئ هوية مكتب بنفسه");
+277:         Map<String, String> gB = new HashMap<>(gf);
+278:         gB.put("of", "OF-0123456789ABCDEF01");
+279:         Entitlements eb = LicenseGuard.decide(ctx, B, grant(gB));
+280:         check(!eb.pro && eb.note.contains("لم تصل"), "وقبل وصولها: رسالة «اضغط مزامنة الآن» بلا تسجيل محاولة غش");
+281:         new SyncEngine(db, new FileSyncFolder(shared)).sync();
+282:         String uA = LicenseGuard.currentUid(db);
+283:         new SyncEngine(B, new FileSyncFolder(shared)).sync();
+284:         System.out.println("      A=" + uA + " B=" + LicenseGuard.currentUid(B));
+285:         check(!uA.isEmpty() && uA.equals(LicenseGuard.currentUid(B)), "الرئيسي أنشأ الهوية في المزامنة ووصلت للمنضم");
+286: 
+287:         System.out.println("== 7) تأكيد الوقت من الإنترنت (خادم وهمي محلي)");
+288:         final long[] fake = {Clock.now() + 3 * 86_400_000L};
+289:         // خادم وهمي محلي بسيط (رأس Date كما نريده بالضبط)
+290:         final java.net.ServerSocket ss = new java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"));
+291:         Thread srv = new Thread(() -> {
+292:             while (!ss.isClosed()) {
+293:                 try (java.net.Socket so = ss.accept()) {
+294:                     java.io.BufferedReader rd = new java.io.BufferedReader(new java.io.InputStreamReader(so.getInputStream(), StandardCharsets.US_ASCII));
+295:                     String ln;
+296:                     while ((ln = rd.readLine()) != null && !ln.isEmpty()) { /* الرأس */ }
+297:                     java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", Locale.US);
+298:                     f.setTimeZone(TimeZone.getTimeZone("GMT"));
+299:                     so.getOutputStream().write(("HTTP/1.1 200 OK\r\nDate: " + f.format(new Date(fake[0])) + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+300:                     so.getOutputStream().flush();
+301:                 } catch (Exception e) {
+302:                     // إغلاق
+303:                 }
+304:             }
+305:         });
+306:         srv.setDaemon(true);
+307:         srv.start();
+308:         String base = "http://127.0.0.1:" + ss.getLocalPort() + "/";
+309:         setStatic(LicenseGuard.class, "testSources", new String[]{"http://127.0.0.1:1/", base});
+310:         Map<String, String> tf = new HashMap<>(gf);
+311:         tf.put("tc", "14");
+312:         tf.put("tg", "14");
+313:         db.getWritableDatabase().execSQL("DELETE FROM settings WHERE k IN ('license_time','license_time_try')");
+314:         Entitlements t1 = LicenseGuard.decide(ctx, db, grant(tf));
+315:         check(!t1.pro && LicenseGuard.timeState == 2, "رخصة تطلب تأكيد الوقت ولم يُؤكَّد أبدًا: حدود المجاني حتى أول اتصال");
+316:         long got = LicenseGuard.fetchTime(db);
+317:         check(Math.abs(got - fake[0]) < 2000, "الوقت جاء من المصدر الذي يعمل (الأول معطّل؛ يكفي مصدر واحد)");
+318:         check(LicenseGuard.decide(ctx, db, grant(tf)).pro && LicenseGuard.timeState == 0, "بعد التأكيد: الرخصة تعمل");
+319:         check(LicenseGuard.trustedNow(db) >= fake[0] - 1000, "الوقت الموثوق أكبر من ساعة الجهاز المتأخرة (تأخير الساعة لا يفيد)");
+320:         long y = Long.parseLong(new java.text.SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date(fake[0])));
+321:         check(db.licenseDay() >= y, "اليوم الموثوق صار حدًّا أدنى لا ترجع عنه الرخصة");
+322:         long now = Clock.now();
+323:         db.setSettingQuiet("license_time", (now - 20 * 86_400_000L) + "|" + (android.os.SystemClock.elapsedRealtime() + 999_999_999L) + "|x");
+324:         Entitlements t3 = LicenseGuard.decide(ctx, db, grant(tf));
+325:         check(t3.pro && LicenseGuard.timeState == 1 && LicenseGuard.timeNote.contains("بقي"), "مضى 20 يومًا (أكثر من 14): تنبيه ومهلة، والرخصة ما زالت تعمل");
+326:         db.setSettingQuiet("license_time", (now - 30 * 86_400_000L) + "|" + (android.os.SystemClock.elapsedRealtime() + 999_999_999L) + "|x");
+327:         Entitlements t4 = LicenseGuard.decide(ctx, db, grant(tf));
+328:         check(!t4.pro && LicenseGuard.timeState == 2, "مضى 30 يومًا (أكثر من 14 + 14): حدود المجاني دون مسّ البيانات");
+329:         fake[0] = now - 40 * 86_400_000L;
+330:         db.setSettingQuiet("license_time", now + "|" + android.os.SystemClock.elapsedRealtime() + "|x");
+331:         LicenseGuard.fetchTime(db);
+332:         check(LicenseGuard.lastTrusted(db) >= now - 5000, "مصدر يعطي وقتًا أقدم من آخر وقت موثوق يُرفض");
+333:         Map<String, String> nf = new HashMap<>(gf);
+334:         check(LicenseGuard.decide(ctx, db, grant(nf)).pro && !LicenseGuard.timeDue(db, grant(nf)), "رخصة بلا مدة تأكيد: لا اتصال ولا قيد");
+335:         ss.close();
+336:         setStatic(LicenseGuard.class, "testSources", null);
+337: 
+338:         System.out.println("== 8) الحركات لكل مستخدم، ومزوّدات القراءة الذكية السحابية");
+339:         Map<String, Long> cnt = db.txCountsByUser(0);
+340:         long sum = 0;
+341:         for (long v : cnt.values()) sum += v;
+342:         check(sum == 6000, "مجموع حركات المستخدمين = كل الحركات (" + sum + ")");
+343:         AiExtract.Config c1 = AiPrefs.config(db);
+344:         check(c1.claude() && c1.endpoint().equals(AiExtract.CLAUDE_URL), "الافتراضي Claude كما كان");
+345:         db.setSetting("ai_provider", AiExtract.GEMINI);
+346:         AiExtract.Config c2 = AiPrefs.config(db);
+347:         check(!c2.claude() && c2.endpoint().equals(AiExtract.GEMINI_URL + "/chat/completions"), "قالب Gemini بعنوانه الجاهز (صيغة OpenAI)");
+348:         db.setSetting("ai_provider", AiExtract.CUSTOM);
+349:         db.setSettingQuiet("ai_key", Crypto.enc("k"));
+350:         db.setSetting("ai_model", "any-model");
+351:         AiExtract.Config c3 = AiPrefs.config(db);
+352:         check(c3.problem() != null && c3.problem().contains("عنوان"), "«مخصّص» بلا عنوان: يُطلب العنوان");
+353:         db.setSetting("ai_url", "https://ai.example.com/v1/");
+354:         check(AiPrefs.config(db).problem() == null && AiPrefs.config(db).endpoint().equals("https://ai.example.com/v1/chat/completions"), "«مخصّص» بعنوان أي خدمة متوافقة");
+355:         db.setSetting("ai_provider", AiExtract.OPENAI);
+356:         db.setSetting("ai_url", "");
+357:         check(AiPrefs.config(db).endpoint().equals(AiExtract.OPENAI_URL + "/chat/completions"), "قالب OpenAI");
+358:         db.setSetting("ai_provider", "openai-old-or-unknown");
+359:         check(AiPrefs.config(db).claude(), "قيمة غير معروفة: تعود لـ Claude بأمان");
+360: 
+361:         System.out.println(fails == 0 ? "نجحت اختبارات 12.7 كلها (" + passes + ")" : "فشل " + fails + " من " + (passes + fails));
+362:         System.exit(fails == 0 ? 0 : 1);
+363:     }
+364: 
+365:     static void setStatic(Class<?> k, String f, Object v) throws Exception {
+366:         java.lang.reflect.Field x = k.getDeclaredField(f);
+367:         x.setAccessible(true);
+368:         x.set(null, v);
+369:     }
+370: 
+371:     static byte[] inflate(byte[] z) throws Exception {
+372:         java.util.zip.Inflater in = new java.util.zip.Inflater(true);
+373:         in.setInput(z);
+374:         java.io.ByteArrayOutputStream o = new java.io.ByteArrayOutputStream();
+375:         byte[] b = new byte[4096];
+376:         while (!in.finished()) {
+377:             int n = in.inflate(b);
+378:             if (n == 0 && (in.needsInput() || in.needsDictionary())) break;
+379:             o.write(b, 0, n);
+380:         }
+381:         return o.toByteArray();
+382:     }
+383: }

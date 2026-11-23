@@ -1,0 +1,135 @@
+1: plugins {
+2:     id 'com.android.application'
+3: }
+4: 
+5: // 8.0: توقيع النسخة النهائية إلزامي بالمفتاح الجديد.
+6: // ضع keystore.properties ومجلد signing (يُرسلان منفصلين، لا داخل المشروع) في مجلد المشروع الرئيسي.
+7: // بدونهما تُبنى نسخة التجربة (debug) فقط، ويتوقف بناء release برسالة واضحة بدل توقيعه بمفتاح التجربة.
+8: def keystorePropsFile = rootProject.file('keystore.properties')
+9: def keystoreProps = new Properties()
+10: if (keystorePropsFile.exists()) {
+11:     keystorePropsFile.withInputStream { keystoreProps.load(it) }
+12: }
+13: 
+14: android {
+15:     namespace 'com.smart.hawala'
+16:     compileSdk 35
+17: 
+18:     defaultConfig {
+19:         // 8.0 حزمة جديدة بمفتاح جديد: تُثبَّت بجانب 7.x، وتنتقل البيانات بنسخة احتياطية و«استبدال الكل».
+20:         applicationId 'com.smart.hawala.v8'
+21:         minSdk 28
+22:         targetSdk 35
+23:         versionCode 77
+24:         versionName '12.7.1'
+25:     }
+26: 
+27:     compileOptions {
+28:         sourceCompatibility JavaVersion.VERSION_11
+29:         targetCompatibility JavaVersion.VERSION_11
+30:     }
+31: 
+32:     signingConfigs {
+33:         if (keystorePropsFile.exists()) {
+34:             release {
+35:                 storeFile rootProject.file(keystoreProps['storeFile'])
+36:                 storePassword keystoreProps['storePassword']
+37:                 keyAlias keystoreProps['keyAlias']
+38:                 keyPassword keystoreProps['keyPassword']
+39:             }
+40:         }
+41:     }
+42: 
+43:     testOptions {
+44:         unitTests {
+45:             includeAndroidResources = true
+46:             all {
+47:                 maxHeapSize = '3g'
+48:                 systemProperty 'robolectric.graphicsMode', 'NATIVE'
+49:                 systemProperty 'shots.dir', System.getProperty('shots.dir', '/tmp/shots')
+50:                 testLogging { events 'passed', 'failed', 'standardOut', 'standardError'; showStandardStreams = true }
+51:             }
+52:         }
+53:     }
+54: 
+55:     lint {
+56:         // أخطاء جديدة توقف النسخة النهائية؛ القديمة محفوظة في lint-baseline.xml (يُنشأ في أول بناء)
+57:         checkReleaseBuilds true
+58:         abortOnError true
+59:         baseline = file('lint-baseline.xml')
+60:     }
+61: 
+62:     buildTypes {
+63:         release {
+64:             // R8: تصغير وتمويه (أصعب تعديلًا وأصغر حجمًا). احفظ build/outputs/mapping/release/mapping.txt مع كل إصدار.
+65:             minifyEnabled true
+66:             shrinkResources true
+67:             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+68:             if (keystorePropsFile.exists()) signingConfig signingConfigs.release
+69:         }
+70:     }
+71: }
+72: 
+73: // لا نسخة نهائية بمفتاح التجربة أبدًا: التحديثات لا تُثبَّت فوقها، والترخيص يرفضها (بصمة الشهادة مضمّنة في التطبيق).
+74: // 10.11: -PunsignedRelease يبني النسخة النهائية (R8 وبوابة الاختبارات) بلا توقيع أبدًا، ليوقّعها صاحب المفتاح على جهازه بـ apksigner
+75: // (انظر release/sign-android.sh). لا توقيع بمفتاح التجربة في أي حال.
+76: gradle.taskGraph.whenReady { graph ->
+77:     def wantsRelease = graph.allTasks.any { it.project == project && it.name.toLowerCase().contains('release') }
+78:     if (wantsRelease && !keystorePropsFile.exists() && !project.hasProperty('unsignedRelease')) {
+79:         throw new GradleException("لا يوجد keystore.properties: النسخة النهائية تُوقَّع بمفتاح 8.0 فقط. " +
+80:                 "ضع keystore.properties ومجلد signing في مجلد المشروع (انظر keystore.properties.example)، أو ابنِ نسخة debug للتجربة.")
+81:     }
+82: }
+83: 
+84: // ===================================================================================
+85: // بوابة الاختبارات: النسخة النهائية لا تُبنى إذا فشل اختبار حسابي واحد.
+86: // للتجاوز عند الضرورة فقط: ./gradlew assembleRelease -PskipTests
+87: // ===================================================================================
+88: configurations {
+89:     pureTestLibs
+90: }
+91: dependencies {
+92:     implementation 'com.google.android.gms:play-services-auth:21.2.0'
+93:     // 12.6: تشفير ملف قاعدة البيانات كاملًا (SQLCipher 4، AES-256؛ رخصة BSD من Zetetic)، ومعه واجهات androidx.sqlite
+94:     implementation 'net.zetetic:sqlcipher-android:4.17.0'
+95:     implementation 'androidx.sqlite:sqlite:2.6.2'
+96:     // 11.6: قراءة رمز QR الترخيص من صورة (مكتبة ZXing الأساسية، جافا خالصة بلا أذونات)
+97:     // (الملف نفسه من Maven Central، SHA-1 ca1349214a356cd7958651b2d5a0e1f3811a9c4b)
+98:     implementation files('libs/zxing-core-3.5.3.jar')
+99:     pureTestLibs 'org.json:json:20240303'
+100:     testImplementation 'junit:junit:4.13.2'
+101:     testImplementation 'org.robolectric:robolectric:4.14.1'
+102: }
+103: 
+104: def pureClasses = ['Clock', 'Amounts', 'Auth', 'BackupFormat', 'ExportStyle', 'Ledger', 'MessageParser', 'NumberWords', 'AiExtract', 'Model', 'Pin',
+105:                    'Reconcile', 'Report', 'Reports', 'SecureStreams', 'XlsxWriter', 'WaText', 'FieldCipher', 'MergePlan',
+106:                    'LicenseToken', 'Entitlements', 'QuotaState', 'BackupPolicy', 'BuildInfo', 'OwnerReports', 'AuditChain', 'Sanity', 'DayClose',
+107:                    'ReportBuilder', 'CashBox', 'WaQuota', 'OfficeOrder', 'AboutText', 'ClientBook', 'Hlc', 'SyncCrypto', 'NavPrefs', 'WaWords', 'WaCuts', 'Metals']
+108: 
+109: def compilePureTests = tasks.register('compilePureTests', JavaCompile) {
+110:     source = files(pureClasses.collect { "src/main/java/com/smart/hawala/${it}.java" }.findAll { file(it).exists() }) +
+111:             fileTree(rootProject.file('tests')) { include '*.java' }
+112:     classpath = configurations.pureTestLibs
+113:     destinationDirectory = layout.buildDirectory.dir('pure-tests/classes')
+114:     options.encoding = 'UTF-8'
+115:     sourceCompatibility = '11'
+116:     targetCompatibility = '11'
+117: }
+118: 
+119: tasks.register('pureTests', JavaExec) {
+120:     group = 'verification'
+121:     description = 'اختبارات الحسابات والنسخ والترخيص (بلا هاتف)'
+122:     dependsOn compilePureTests
+123:     classpath = files(layout.buildDirectory.dir('pure-tests/classes')) + configurations.pureTestLibs
+124:     mainClass = 'RunAll'
+125:     jvmArgs '-Dfile.encoding=UTF-8', '-Dstdout.encoding=UTF-8'
+126:     args layout.buildDirectory.dir('pure-tests/out').get().asFile.absolutePath
+127:     def data = rootProject.file('tests/data')
+128:     if (data.exists()) args data.absolutePath
+129: }
+130: 
+131: afterEvaluate {
+132:     tasks.matching { it.name == 'preReleaseBuild' }.configureEach { t ->
+133:         if (!project.hasProperty('skipTests')) t.dependsOn('pureTests')
+134:     }
+135: }

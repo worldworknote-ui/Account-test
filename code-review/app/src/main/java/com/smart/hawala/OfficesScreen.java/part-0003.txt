@@ -1,0 +1,157 @@
+313:             if (!v.missingRates.isEmpty() && !out.isEmpty()) out.add("  (لا يوجد سعر لـ " + v.missingRates + " فلم تدخل في التقويم)");
+314:         }
+315:         return out;
+316:     }
+317: 
+318:     // ===================================================================================
+319:     // العملات
+320:     // ===================================================================================
+321: 
+322:     void showCurrencies() {
+323:         // 12.6: الشاشة لمن يملك العملات أو المعادن، وكل قسم بصلاحيته
+324:         final boolean cur = a.can(Auth.Perm.CURRENCIES), met = a.can(Auth.Perm.METALS);
+325:         if (!cur && !met && !a.require(Auth.Perm.CURRENCIES)) return;
+326:         a.here(this::showCurrencies);
+327:         a.tabbedScreen("العملات والمعادن", a.moreScreen::show, "more");
+328:         a.button("أسعار الصرف (أونلاين ويدوي)", a.primary, v -> showRates(this::showCurrencies));
+329:         List<Model.Currency> all = a.db.currencies(true);
+330:         for (final Model.Currency c : all) {
+331:             if (Metals.isMetal(c.code) || !cur) continue;
+332:             LinearLayout x = a.card();
+333:             x.addView(a.text(c.toString() + " — " + c.decimals + " منازل" + (c.active ? "" : " — معطلة"), 17, c.active ? a.dark : a.muted, true));
+334:             LinearLayout r = a.row();
+335:             r.addView(a.smallButton(c.active ? "تعطيل" : "تفعيل", c.active ? a.red : a.primary, v -> {
+336:                 try {
+337:                     a.db.saveCurrency(c.code, c.name, c.decimals, !c.active);
+338:                     showCurrencies();
+339:                 } catch (Exception e) {
+340:                     a.error(e);
+341:                 }
+342:             }), a.weight(46, 1, 3));
+343:             r.addView(a.smallButton("تعديل", a.accent, v -> currencyDialog(c)), a.weight(46, 1, 3));
+344:             x.addView(r);
+345:         }
+346:         if (cur) a.button("إضافة عملة", a.primary, v -> currencyDialog(null));
+347:         if (!met) return;
+348: 
+349:         // 12.5: المعادن الثمينة بالوزن
+350:         a.body.addView(a.text("المعادن الثمينة (بالوزن)", 18, a.ink, true), a.lp(-1, -2, 16));
+351:         a.hint("ذهب، فضة، بلاتين… كل معدن بعياره حساب مستقل بالوزن، وله كل ما للعملات: الحركات والكشوفات والمطابقات والقص. "
+352:                 + "فعّله لأي مكتب كالعملة. التحويل بين العيارات بـ«قص» بنسبة ظاهرة.");
+353:         for (final Model.Currency c : all) {
+354:             final Metals.Metal m = Metals.of(c.code);
+355:             if (m == null) continue;
+356:             LinearLayout x = a.card();
+357:             x.addView(a.text(c.name + " · " + c.code + (c.active ? "" : " — معطّل"), 17, c.active ? a.dark : a.muted, true));
+358:             x.addView(a.text(Metals.baseName(m.base) + (m.fineness > 0 ? " • " + Metals.purityLabel(m.base, m.fineness) + " (" + m.fineness + "‰)" : "")
+359:                     + " • الوحدة: " + m.u().name + " (" + m.u().decimals + " منازل)"
+360:                     + " • " + (m.valued ? "يدخل الميزان بالدولار" : "بالوزن فقط (خارج الميزان)"), 13, a.muted, false));
+361:             LinearLayout r = a.row();
+362:             r.addView(a.smallButton(c.active ? "تعطيل" : "تفعيل", c.active ? a.red : a.primary, v -> {
+363:                 try {
+364:                     a.db.saveMetal(c.code, c.name, m.base, m.fineness, m.unit, m.valued, !c.active);
+365:                     showCurrencies();
+366:                 } catch (Exception e) {
+367:                     a.error(e);
+368:                 }
+369:             }), a.weight(46, 1, 3));
+370:             r.addView(a.smallButton("تعديل", a.accent, v -> metalDialog(c, m)), a.weight(46, 1, 3));
+371:             x.addView(r);
+372:         }
+373:         a.button("إضافة معدن (ذهب، فضة…)", a.accent, v -> metalDialog(null, null));
+374:     }
+375: 
+376:     /** 12.5: معدن جديد أو تعديله: النوع، العيار، الوحدة (ثابتة بعد أول حركة)، الرمز والاسم، والتقويم بالدولار. */
+377:     private void metalDialog(final Model.Currency old, final Metals.Metal om) {
+378:         LinearLayout l = new LinearLayout(a);
+379:         l.setOrientation(LinearLayout.VERTICAL);
+380:         l.setPadding(a.dp(16), a.dp(8), a.dp(16), a.dp(8));
+381:         final boolean used = old != null && a.db.currencyUsed(old.code);
+382:         final String[] baseIds = Metals.BASES;
+383:         final String[] baseNames = new String[baseIds.length];
+384:         for (int i = 0; i < baseIds.length; i++) baseNames[i] = Metals.baseName(baseIds[i]);
+385:         l.addView(a.label("المعدن"));
+386:         final Ui.Seg base = a.new Seg(baseNames, null, om == null ? 0 : java.util.Arrays.asList(baseIds).indexOf(om.base), false);
+387:         l.addView(base.view);
+388:         l.addView(a.label("العيار"));
+389:         final EditText fin = a.field("الذهب: 24 أو 21 أو 18… الفضة: 999 أو 925 (اتركه فارغًا إن لم يكن)");
+390:         Ui.numeric(fin);
+391:         if (om != null && om.fineness > 0) {
+392:             int k = Metals.karatOf(om.fineness);
+393:             fin.setText(Metals.GOLD.equals(om.base) && k > 0 ? String.valueOf(k) : String.valueOf(om.fineness));
+394:         }
+395:         l.addView(fin);
+396:         // 12.6: أزرار العيارات الشائعة (كل عيار حساب مستقل)
+397:         final Ui.Flow purChips = a.flow();
+398:         l.addView(purChips, a.lp(-1, -2, 2));
+399:         final Runnable fillChips = () -> {
+400:             purChips.removeAllViews();
+401:             if (used) return;
+402:             for (final String p : Metals.commonPurities(baseIds[Math.max(0, base.selected)]))
+403:                 purChips.addView(a.pill(p, p.equals(fin.getText().toString().trim()), v -> fin.setText(p)));
+404:         };
+405:         l.addView(a.label("وحدة الوزن"));
+406:         final List<String> unitIds = new ArrayList<>(Metals.UNITS.keySet());
+407:         String[] unitNames = new String[unitIds.size()];
+408:         for (int i = 0; i < unitIds.size(); i++) unitNames[i] = Metals.UNITS.get(unitIds.get(i)).shortName;
+409:         final Ui.Seg unit = a.new Seg(unitNames, null, om == null ? 0 : unitIds.indexOf(om.unit), false);
+410:         l.addView(unit.view);
+411:         if (used) {
+412:             l.addView(a.text("عليه حركات: المعدن والعيار والوحدة لا تتغير (تغييرها يغيّر معنى كل وزن مسجّل).", 12, a.red, false));
+413:             base.view.setEnabled(false);
+414:             fin.setEnabled(false);
+415:             unit.view.setEnabled(false);
+416:         }
+417:         final EditText code = a.field("الرمز مثل XAU21");
+418:         final EditText name = a.field("الاسم مثل ذهب عيار 21 (غرام)");
+419:         if (old != null) {
+420:             code.setText(old.code);
+421:             code.setEnabled(false);
+422:             name.setText(old.name);
+423:         }
+424:         l.addView(a.label("الرمز والاسم"));
+425:         l.addView(code);
+426:         l.addView(name);
+427:         final android.widget.CheckBox valued = new android.widget.CheckBox(a);
+428:         valued.setText("يدخل الميزان والتقويم بالدولار (بسعر وحدة تدخله في «أسعار الصرف»)");
+429:         valued.setChecked(om != null && om.valued);
+430:         l.addView(valued);
+431:         Runnable suggest = () -> {
+432:             if (old != null) return;
+433:             try {
+434:                 String b = baseIds[Math.max(0, base.selected)];
+435:                 int f = fineness(b, fin.getText().toString());
+436:                 String u = unitIds.get(Math.max(0, unit.selected));
+437:                 java.util.List<String> taken = new java.util.ArrayList<>();
+438:                 for (Model.Currency x : a.db.currencies(true)) taken.add(x.code);
+439:                 code.setText(Metals.uniqueCode(b, f, u, taken));
+440:                 name.setText(Metals.suggestName(b, f, u));
+441:             } catch (Exception ignored) {
+442:                 // عيار غير مفهوم بعد
+443:             }
+444:         };
+445:         base.listener = i -> {
+446:             fillChips.run();
+447:             suggest.run();
+448:         };
+449:         unit.listener = i -> suggest.run();
+450:         fin.addTextChangedListener(new android.text.TextWatcher() {
+451:             @Override public void beforeTextChanged(CharSequence s, int st, int c, int af) {}
+452: 
+453:             @Override public void onTextChanged(CharSequence s, int st, int b, int c) {}
+454: 
+455:             @Override public void afterTextChanged(android.text.Editable e) {
+456:                 suggest.run();
+457:                 fillChips.run();
+458:             }
+459:         });
+460:         fillChips.run();
+461:         suggest.run();
+462:         android.widget.ScrollView sv = new android.widget.ScrollView(a);
+463:         sv.addView(l);
+464:         new AlertDialog.Builder(a).setTitle(old == null ? "معدن جديد" : "تعديل " + old.code).setView(sv).setPositiveButton("حفظ", (d, w) -> {
+465:             try {
+466:                 String b = baseIds[Math.max(0, base.selected)];
+467:                 int f = fineness(b, fin.getText().toString());
+468:                 String u = unitIds.get(Math.max(0, unit.selected));
+469:                 String cc = code.getText().toString().trim().toUpperCase(Locale.US);

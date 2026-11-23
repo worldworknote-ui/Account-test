@@ -1,0 +1,159 @@
+182:             TextView t = a.chip(a.amountsHidden() ? "•••• " + e.getKey() : CashScreen.iso(Model.fmt(Math.abs(v), a.db.decimals(e.getKey())) + " " + e.getKey()) + " " + ClientBook.side(v),
+183:                     v > 0 ? a.green : a.red, v > 0 ? a.creditBg : a.debitBg);
+184:             t.setTextSize(12);
+185:             f.addView(t);
+186:         }
+187:         if (b.isEmpty()) col.addView(a.text(k.active ? "الحساب مسدَّد (صفر)" : "مؤرشف", 12, a.muted, false));
+188:         else col.addView(f);
+189:         r.addView(col, new LinearLayout.LayoutParams(0, -2, 1));
+190:         r.setOnClickListener(v -> page(k.id));
+191:         return r;
+192:     }
+193: 
+194:     // ===================================================================================
+195:     // اختيار عميل (من نموذج الاستلام والتسليم)
+196:     // ===================================================================================
+197: 
+198:     void pick(final Consumer<ClientBook.Client> done) {
+199:         final List<ClientBook.Client> all = new ArrayList<>();
+200:         for (ClientBook.Client k : a.db.clients()) if (k.active) all.add(k);
+201:         final Map<Long, Map<String, Long>> bals = a.db.clientBalances();
+202:         LinearLayout l = new LinearLayout(a);
+203:         l.setOrientation(LinearLayout.VERTICAL);
+204:         l.setPadding(a.dp(16), a.dp(8), a.dp(16), 0);
+205:         final EditText q = a.field("ابحث بالاسم أو الهاتف");
+206:         l.addView(q, a.lp(-1, 48, 2));
+207:         final LinearLayout box = new LinearLayout(a);
+208:         box.setOrientation(LinearLayout.VERTICAL);
+209:         ScrollView sv = new ScrollView(a);
+210:         sv.addView(box);
+211:         l.addView(sv, new LinearLayout.LayoutParams(-1, a.dp(320)));
+212:         final AlertDialog d = new AlertDialog.Builder(a).setTitle("اختر العميل").setView(l)
+213:                 .setPositiveButton("+ عميل جديد", (x, w) -> edit(null, done)).setNegativeButton("إلغاء", null).create();
+214:         final Runnable fill = () -> {
+215:             box.removeAllViews();
+216:             String f = q.getText().toString().trim().toLowerCase(Locale.ROOT);
+217:             for (final ClientBook.Client k : all) {
+218:                 if (!f.isEmpty() && !(k.name + " " + k.phone).toLowerCase(Locale.ROOT).contains(f)) continue;
+219:                 Map<String, Long> b = bals.containsKey(k.id) ? bals.get(k.id) : new HashMap<>();
+220:                 List<String> parts = new ArrayList<>();
+221:                 for (Map.Entry<String, Long> e : b.entrySet()) parts.add(bal(e.getValue(), e.getKey()));
+222:                 LinearLayout row = new LinearLayout(a);
+223:                 row.setOrientation(LinearLayout.VERTICAL);
+224:                 row.setPadding(a.dp(8), a.dp(8), a.dp(8), a.dp(8));
+225:                 row.setBackground(a.ripple(a.round(a.surface, a.line, 12), 12));
+226:                 row.addView(a.text(k.name, 15, a.ink, true));
+227:                 row.addView(a.text(parts.isEmpty() ? "رصيده صفر" : Model.join(parts, " • "), 12, a.muted, false));
+228:                 row.setOnClickListener(v -> {
+229:                     d.dismiss();
+230:                     done.accept(k);
+231:                 });
+232:                 box.addView(row, a.lp(-1, -2, 2));
+233:             }
+234:             if (box.getChildCount() == 0) box.addView(a.text(all.isEmpty() ? "لا يوجد عملاء بعد. أضف عميلًا." : "لا نتائج.", 13, a.muted, false));
+235:         };
+236:         q.addTextChangedListener(Ui.watcher(fill));
+237:         fill.run();
+238:         d.show();
+239:     }
+240: 
+241:     /** إضافة عميل أو تعديل بياناته. */
+242:     void edit(final ClientBook.Client k, final Consumer<ClientBook.Client> after) {
+243:         if (!a.require(Auth.Perm.CASH)) return;
+244:         LinearLayout l = new LinearLayout(a);
+245:         l.setOrientation(LinearLayout.VERTICAL);
+246:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+247:         final EditText name = a.field("اسم العميل"), phone = a.field("الهاتف (اختياري)"), note = a.field("ملاحظة (اختياري)");
+248:         phone.setInputType(android.text.InputType.TYPE_CLASS_PHONE);
+249:         if (k != null) {
+250:             name.setText(k.name);
+251:             phone.setText(k.phone);
+252:             note.setText(k.note);
+253:         }
+254:         l.addView(name, a.lp(-1, 52, 2));
+255:         l.addView(phone, a.lp(-1, 52, 2));
+256:         l.addView(note, a.lp(-1, 52, 2));
+257:         final AlertDialog d = new AlertDialog.Builder(a).setTitle(k == null ? "عميل جديد" : "بيانات العميل").setView(l)
+258:                 .setPositiveButton("حفظ", null).setNegativeButton("إلغاء", null).create();
+259:         d.setOnShowListener(x -> d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+260:             try {
+261:                 ClientBook.Client n = new ClientBook.Client();
+262:                 n.id = k == null ? 0 : k.id;
+263:                 n.name = name.getText().toString().trim();
+264:                 n.phone = phone.getText().toString().trim();
+265:                 n.note = note.getText().toString().trim();
+266:                 long id = a.db.saveClient(n);
+267:                 d.dismiss();
+268:                 a.toast(k == null ? "أُضيف العميل ✓" : "حُفظت البيانات");
+269:                 after.accept(a.db.client(id));
+270:             } catch (Exception e) {
+271:                 a.error(e);
+272:             }
+273:         }));
+274:         d.show();
+275:     }
+276: 
+277:     // ===================================================================================
+278:     // صفحة العميل
+279:     // ===================================================================================
+280: 
+281:     void page(final long id) {
+282:         if (!a.require(Auth.Perm.CLIENTS)) return;
+283:         c.guard(() -> pageImpl(id));
+284:     }
+285: 
+286:     private void pageImpl(final long id) {
+287:         final ClientBook.Client k = a.db.client(id);
+288:         if (k == null) {
+289:             listImpl();
+290:             return;
+291:         }
+292:         c.tabbed(k.name, this::listImpl);
+293:         a.eyeAction(() -> pageImpl(id));
+294:         if (a.can(Auth.Perm.CASH)) a.headerAction(R.drawable.ic_edit, "بيانات العميل", v -> options(k));
+295:         a.headerAction(R.drawable.ic_report, "كشف الحساب", v -> statement(k, a.reportsScreen.range()[0], a.reportsScreen.range()[1]));
+296:         final List<ClientBook.Move> moves = a.db.clientMoves(k.id);
+297:         Map<String, Long> b = ClientBook.balances(moves);
+298: 
+299:         LinearLayout card = new LinearLayout(a);
+300:         card.setOrientation(LinearLayout.VERTICAL);
+301:         card.setPadding(a.dp(18), a.dp(14), a.dp(18), a.dp(14));
+302:         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR, a.night ? new int[]{Color.rgb(28, 44, 72), Color.rgb(14, 22, 40)} : new int[]{CashScreen.NAVY, CashScreen.NAVY2});
+303:         g.setCornerRadius(a.dp(20));
+304:         card.setBackground(g);
+305:         card.addView(c.plain("رصيد العميل" + (k.phone.isEmpty() ? "" : "   •   " + CashScreen.iso(k.phone)), 13, Color.rgb(196, 210, 232), false));
+306:         if (b.isEmpty()) card.addView(c.plain("الحساب مسدَّد بالكامل (صفر)", 18, Color.WHITE, true));
+307:         for (Map.Entry<String, Long> e : b.entrySet()) {
+308:             long v = e.getValue();
+309:             LinearLayout r = a.row();
+310:             r.setPadding(0, a.dp(4), 0, a.dp(4));
+311:             r.addView(c.plain(e.getKey(), 15, Color.rgb(214, 224, 240), false), new LinearLayout.LayoutParams(0, -2, 1));
+312:             TextView amt = c.plain(a.amountsHidden() ? "••••" : Model.fmt(Math.abs(v), a.db.decimals(e.getKey())), 20, Color.WHITE, true);
+313:             amt.setTextDirection(View.TEXT_DIRECTION_LTR);
+314:             r.addView(amt, new LinearLayout.LayoutParams(-2, -2));
+315:             TextView chip = c.plain(ClientBook.side(v), 12, v > 0 ? Color.rgb(20, 92, 53) : Color.rgb(142, 31, 39), true);
+316:             chip.setPadding(a.dp(10), a.dp(1), a.dp(10), a.dp(2));
+317:             GradientDrawable cg = new GradientDrawable();
+318:             cg.setColor(v > 0 ? Color.rgb(227, 241, 232) : Color.rgb(248, 227, 228));
+319:             cg.setCornerRadius(a.dp(50));
+320:             chip.setBackground(cg);
+321:             LinearLayout.LayoutParams chp = new LinearLayout.LayoutParams(-2, -2);
+322:             chp.setMargins(a.dp(8), 0, 0, 0);
+323:             r.addView(chip, chp);
+324:             card.addView(r);
+325:         }
+326:         card.addView(c.plain("«لنا»: العميل مدين لنا • «علينا»: له عندنا", 11, Color.rgb(170, 186, 212), false));
+327:         if (!k.note.isEmpty()) card.addView(c.plain(k.note, 12, Color.rgb(196, 210, 232), false));
+328:         a.body.addView(card, a.lp(-1, -2, 6));
+329:         if (!k.active) a.notice(R.drawable.ic_info, "الحساب مؤرشف: لا تُسجَّل عليه حركات جديدة.", false, "إعادته", v -> {
+330:             try {
+331:                 a.db.setClientActive(k.id, true);
+332:                 pageImpl(id);
+333:             } catch (Exception e) {
+334:                 a.error(e);
+335:             }
+336:         });
+337: 
+338:         if (k.active && a.can(Auth.Perm.CASH)) {
+339:             LinearLayout r1 = a.row(), r2 = a.row();
+340:             r1.addView(c.tile(R.drawable.ic_download, "استلام منه", "يدخل الصندوق", c.green(), v -> c.form(CashBox.IN, null, k)), a.weight(-2, 1, 4));

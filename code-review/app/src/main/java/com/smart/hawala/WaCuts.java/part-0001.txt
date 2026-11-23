@@ -1,0 +1,118 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.List;
+5: import java.util.TreeSet;
+6: import java.util.regex.Pattern;
+7: 
+8: /**
+9:  * 12.1: تقسيم نص ملزوق بلا رؤوس واتساب (كما يخرج من واتساب ديسكتوب على ويندوز أو من المتصفح).
+10:  * سطر فيه الوقت وحده («10:32» أو «10:32 م» أو «تم التعديل 10:32 PM») هو آخر الفقاعة في واتساب: قطع مؤكد.
+11:  * السطر الفارغ قطع مقترح فقط، يظهر في شاشة «القص» اليدوية ليختار المستخدم.
+12:  * منطق بحت بلا أندرويد حتى يُختبر على الكمبيوتر.
+13:  */
+14: public final class WaCuts {
+15:     private WaCuts() {}
+16: 
+17:     private static final String T = "\\d{1,2}:\\d{2}(?::\\d{2})?\\s*(?:[AaPp]\\.?\\s?[Mm]\\.?|ص|م)?";
+18:     /** سطر الوقت في أسفل الفقاعة، مع علامات القراءة أو «تم التعديل» إن وُجدت. */
+19:     private static final Pattern TIME_LINE = Pattern.compile(
+20:             "^\\s*(?:(?:تم التعديل|معدّلة|معدلة|Edited)\\s*)?(" + T + ")\\s*(?:[✓✔√]{1,2}|msg-(?:dblcheck|check|time))?\\s*$", Pattern.CASE_INSENSITIVE);
+21:     /** أسطر لا تخص نص الرسالة. */
+22:     private static final Pattern META = Pattern.compile("^\\s*(?:تم التعديل|Edited|محوّلة|محولة|Forwarded|تمت إعادة توجيهها|معاد توجيهها)\\s*$", Pattern.CASE_INSENSITIVE);
+23: 
+24:     public static boolean timeLine(String line) {
+25:         return TIME_LINE.matcher(MessageParser.digits(WaText.stripMarks(line))).matches();
+26:     }
+27: 
+28:     static String timeOf(String line) {
+29:         java.util.regex.Matcher m = TIME_LINE.matcher(MessageParser.digits(WaText.stripMarks(line)));
+30:         return m.matches() ? m.group(1).trim() : "";
+31:     }
+32: 
+33:     /** آخر سطر وقت في النص (وقت الفقاعة). */
+34:     static String lastTime(String text) {
+35:         String[] l = text.split("\n");
+36:         for (int i = l.length - 1; i >= 0; i--) {
+37:             if (l[i].trim().isEmpty()) continue;
+38:             return timeOf(l[i]);
+39:         }
+40:         return "";
+41:     }
+42: 
+43:     /** يحذف أسطر الوقت والعلامات من آخر الفقاعة وأولها. */
+44:     public static String dropMeta(String text) {
+45:         List<String> l = new ArrayList<>();
+46:         for (String s : text.split("\n", -1)) l.add(s);
+47:         while (!l.isEmpty() && (l.get(l.size() - 1).trim().isEmpty() || timeLine(l.get(l.size() - 1)) || META.matcher(l.get(l.size() - 1)).matches()))
+48:             l.remove(l.size() - 1);
+49:         while (!l.isEmpty() && (l.get(0).trim().isEmpty() || META.matcher(l.get(0)).matches())) l.remove(0);
+50:         return String.join("\n", l);
+51:     }
+52: 
+53:     private static final Pattern GLUED = Pattern.compile("^(.*?)\\s*(" + T + ")\\s*(?:[✓✔√]{1,2})?\\s*$", Pattern.DOTALL);
+54: 
+55:     /** وقت ملصق بآخر النص بلا سطر جديد («… 100 دولار10:32 م»): يعيد {النص، الوقت}، والوقت فارغ إن لم يوجد. */
+56:     public static String[] trailingTime(String body) {
+57:         String d = MessageParser.digits(body);
+58:         java.util.regex.Matcher m = GLUED.matcher(d);
+59:         if (m.matches() && m.group(1).trim().length() > 0 && !m.group(1).trim().endsWith(":")) return new String[]{body.substring(0, m.group(1).length()).trim(), m.group(2).trim()};
+60:         return new String[]{body, ""};
+61:     }
+62: 
+63:     public static List<String> lines(String text) {
+64:         List<String> out = new ArrayList<>();
+65:         if (text == null) return out;
+66:         for (String s : WaText.stripMarks(text).replace("\r\n", "\n").replace('\r', '\n').split("\n", -1)) out.add(s);
+67:         while (!out.isEmpty() && out.get(out.size() - 1).trim().isEmpty()) out.remove(out.size() - 1);
+68:         while (!out.isEmpty() && out.get(0).trim().isEmpty()) out.remove(0);
+69:         return out;
+70:     }
+71: 
+72:     /** أماكن القطع المؤكدة: بعد كل سطر وقت (رقم السطر الذي تبدأ عنده رسالة جديدة). */
+73:     public static TreeSet<Integer> sure(List<String> lines) {
+74:         TreeSet<Integer> c = new TreeSet<>();
+75:         for (int i = 0; i < lines.size() - 1; i++) if (timeLine(lines.get(i))) c.add(i + 1);
+76:         return c;
+77:     }
+78: 
+79:     /** أماكن القطع المقترحة: المؤكدة، وبعد كل سطر فارغ. */
+80:     public static TreeSet<Integer> suggest(List<String> lines) {
+81:         TreeSet<Integer> c = sure(lines);
+82:         // 12.3: كلمة البداية نفسها في أول سطر (حوالة… حوالة…)، أو سطر اسم مرسل في الغروب، تبدأ رسالة مقترحة
+83:         String open = "";
+84:         for (String l : lines) if (!l.trim().isEmpty()) { open = WaWords.firstWord(l); break; }
+85:         boolean opener = WaWords.OPENERS.contains(open);
+86:         for (int i = 1; i < lines.size(); i++) {
+87:             String l = lines.get(i);
+88:             if (lines.get(i - 1).trim().isEmpty() && !l.trim().isEmpty()) c.add(i);
+89:             else if (opener && !l.trim().isEmpty() && WaWords.firstWord(l).equals(open)) c.add(i);
+90:             else if (WaWords.sender(l) != null && i + 1 < lines.size()) c.add(i);
+91:         }
+92:         return c;
+93:     }
+94: 
+95:     /** يقسم الأسطر عند القطع المعطاة. سطر الوقت يصير وقت الرسالة ولا يدخل نصها. */
+96:     public static List<WaText.Msg> apply(List<String> lines, java.util.Collection<Integer> cuts) {
+97:         List<WaText.Msg> out = new ArrayList<>();
+98:         TreeSet<Integer> c = new TreeSet<>(cuts);
+99:         c.add(lines.size());
+100:         int from = 0;
+101:         for (int at : c) {
+102:             if (at <= from || at > lines.size()) continue;
+103:             String part = String.join("\n", lines.subList(from, at));
+104:             String time = lastTime(part);
+105:             String body = dropMeta(part).trim();
+106:             if (!body.isEmpty()) out.add(new WaText.Msg("", time, body));
+107:             from = at;
+108:         }
+109:         return out;
+110:     }
+111: 
+112:     /** تقسيم تلقائي بالقطع المؤكدة فقط؛ رسالة واحدة إن لم يوجد شيء مؤكد. */
+113:     public static List<WaText.Msg> auto(String text) {
+114:         List<String> l = lines(text);
+115:         TreeSet<Integer> s = sure(l);
+116:         return apply(l, s);
+117:     }
+118: }

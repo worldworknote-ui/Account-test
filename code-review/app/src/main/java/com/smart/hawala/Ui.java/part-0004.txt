@@ -1,0 +1,160 @@
+534: 
+535:     /** 10.12: هل أيقونات الشريط العلوي مفتوحة (تبقى كما هي عند إعادة رسم الشاشة نفسها). */
+536:     static boolean headerOpen;
+537: 
+538:     /**
+539:      * 10.12: «أكورديون» الشريط العلوي: إن كانت في الشريط ثلاث أيقونات أو أكثر (الوضع الليلي، المستخدم، المزامنة، الإخفاء…)
+540:      * تبقى أيقونة واحدة، والضغط عليها يُظهر الباقي على يمينها واحدةً بعد الأخرى، والضغط ثانيةً يطويها.
+541:      */
+542:     void foldActions(final LinearLayout acts) {
+543:         if (acts != barActions || acts.getChildCount() < 3) return;
+544:         final List<View> items = new ArrayList<>();
+545:         for (int i = 0; i < acts.getChildCount(); i++) items.add(acts.getChildAt(i));
+546:         acts.removeAllViews();
+547:         // 10.13: كبسولة ناعمة تحمل الأيقونات، وزر صغير أنيق (32dp) بلون التطبيق الخفيف
+548:         final LinearLayout tray = row();
+549:         tray.setClipChildren(false);
+550:         tray.setGravity(Gravity.CENTER_VERTICAL);
+551:         tray.setPadding(dp(2), 0, dp(2), 0);
+552:         tray.setBackground(round(mix(header, headerInk, night ? 0.08f : 0.05f), mix(header, headerInk, night ? 0.08f : 0.05f), 22));
+553:         for (View v : items) tray.addView(v, new LinearLayout.LayoutParams(dp(38), dp(38)));
+554:         tray.setVisibility(headerOpen ? View.VISIBLE : View.GONE);
+555:         LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-2, dp(42));
+556:         tp.gravity = Gravity.CENTER_VERTICAL;
+557:         tp.setMargins(0, 0, dp(4), 0);
+558:         acts.setGravity(Gravity.CENTER_VERTICAL);
+559:         acts.addView(tray, tp);
+560:         final FrameLayout toggle = new FrameLayout(this);
+561:         toggle.addView(icon(R.drawable.ic_dots, primaryInk, 18), new FrameLayout.LayoutParams(dp(18), dp(18), Gravity.CENTER));
+562:         toggle.setContentDescription("أدوات الشاشة");
+563:         springy(toggle, 0.85f);
+564:         toggle.setRotation(headerOpen ? 90f : 0f);
+565:         GradientDrawable ring = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+566:                 new int[]{mix(primarySoft, Color.WHITE, night ? 0f : 0.35f), primarySoft});
+567:         ring.setShape(GradientDrawable.OVAL);
+568:         ring.setStroke(dp(1), mix(primarySoft, primaryInk, 0.25f));
+569:         toggle.setBackground(ripple(ring, 16));
+570:         toggle.setOnClickListener(v -> {
+571:             tick(v);
+572:             headerOpen = !headerOpen;
+573:             toggle.animate().rotation(headerOpen ? 90f : 0f).setDuration(NO_MOTION ? 0 : 380)
+574:                     .setInterpolator(new android.view.animation.OvershootInterpolator(1.4f)).start();
+575:             int n = tray.getChildCount();
+576:             if (headerOpen) {
+577:                 tray.setVisibility(View.VISIBLE);
+578:                 for (int i = 0; i < n; i++) {
+579:                     View c = tray.getChildAt(i);
+580:                     if (NO_MOTION) continue;
+581:                     // من جهة الأيقونة إلى مكانها: أقربها إليها أولًا
+582:                     int k = n - 1 - i;
+583:                     c.setAlpha(0f);
+584:                     c.setTranslationX(-dp(18));
+585:                     c.setScaleX(0.6f);
+586:                     c.setScaleY(0.6f);
+587:                     c.animate().alpha(1f).translationX(0).scaleX(1f).scaleY(1f).setStartDelay(k * 60L).setDuration(380)
+588:                             .setInterpolator(new android.view.animation.OvershootInterpolator(1.3f)).start();
+589:                 }
+590:             } else if (NO_MOTION) {
+591:                 tray.setVisibility(View.GONE);
+592:             } else {
+593:                 for (int i = 0; i < n; i++) {
+594:                     View c = tray.getChildAt(i);
+595:                     c.animate().alpha(0f).translationX(-dp(18)).scaleX(0.6f).scaleY(0.6f).setStartDelay(i * 40L).setDuration(240).start();
+596:                 }
+597:                 tray.postDelayed(() -> {
+598:                     if (!headerOpen) tray.setVisibility(View.GONE);
+599:                     for (int i = 0; i < tray.getChildCount(); i++) {
+600:                         View c = tray.getChildAt(i);
+601:                         c.setAlpha(1f);
+602:                         c.setTranslationX(0);
+603:                         c.setScaleX(1f);
+604:                         c.setScaleY(1f);
+605:                     }
+606:                 }, 240 + n * 40L);
+607:             }
+608:         });
+609:         LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(dp(32), dp(32));
+610:         gp.gravity = Gravity.CENTER_VERTICAL;
+611:         gp.setMargins(dp(2), 0, dp(4), 0);
+612:         acts.addView(toggle, gp);
+613:     }
+614: 
+615:     /** أيقونة إضافية في الشريط العلوي (بحث، إضافة...). */
+616:     void headerAction(int icon, String desc, View.OnClickListener l) {
+617:         barActions.addView(iconButton(icon, headerInk, desc, l), new LinearLayout.LayoutParams(dp(44), dp(44)));
+618:     }
+619: 
+620:     /** شريط ثابت أسفل الشاشة فوق لوحة المفاتيح (ملخص الحركة وزر التسجيل مثلًا). */
+621:     void footer(View v) {
+622:         footerBox.removeAllViews();
+623:         footerBox.addView(v, new LinearLayout.LayoutParams(-1, -2));
+624:         footerBox.setBackground(topLine(surface));
+625:         footerBox.setPadding(dp(16), dp(8), dp(16), dp(10) + (tabs != null && tabs.getVisibility() == View.VISIBLE ? tabCover : 0));
+626:         footerBox.setVisibility(View.VISIBLE);
+627:         body.setPadding(body.getPaddingLeft(), body.getPaddingTop(), body.getPaddingRight(), dp(24));
+628:         systemBars(header, surface);
+629:     }
+630: 
+631:     /** خلفية بسطر رفيع في أعلاها (للشريط الثابت والتبويبات). */
+632:     Drawable topLine(int fill) {
+633:         GradientDrawable l = new GradientDrawable();
+634:         l.setColor(line);
+635:         GradientDrawable f = new GradientDrawable();
+636:         f.setColor(fill);
+637:         LayerDrawable ld = new LayerDrawable(new Drawable[]{l, f});
+638:         ld.setLayerInset(1, 0, dp(1), 0, 0);
+639:         return ld;
+640:     }
+641: 
+642:     // ===================================================================================
+643:     // شريط التبويبات السفلي
+644:     // ===================================================================================
+645: 
+646:     // 10.2: الشريط السفلي قابل للتخصيص (ماذا يظهر وبأي ترتيب). الافتراضي: الصندوق في أقصى اليسار بلون مميز.
+647:     static final String[] TAB_KEYS = {"home", "offices", "tx", "log", "more", "cash"};
+648:     /** كل ما يمكن وضعه في الشريط: [المفتاح، الاسم]. */
+649:     static final String[][] TAB_ALL = {{"home", "الرئيسية"}, {"offices", "المكاتب"}, {"tx", "تسجيل"}, {"log", "الحركات"}, {"cash", "الصندوق"},
+650:             {"clients", "العملاء"}, {"mine", "مكاتبي"}, {"reports", "التقارير"}, {"balances", "الأرصدة"}, {"daily", "اليومي"}, {"more", "المزيد"}};
+651: 
+652:     static String tabName(String k) {
+653:         for (String[] t : TAB_ALL) if (t[0].equals(k)) return t[1];
+654:         return k;
+655:     }
+656: 
+657:     static int tabIcon(String k) {
+658:         switch (k) {
+659:             case "home": return R.drawable.ic_home;
+660:             case "offices": return R.drawable.ic_offices;
+661:             case "tx": return R.drawable.ic_plus;
+662:             case "log": return R.drawable.ic_list;
+663:             case "cash": return R.drawable.ic_cash;
+664:             case "clients": return R.drawable.ic_users;
+665:             case "mine": return R.drawable.ic_check2;
+666:             case "reports": return R.drawable.ic_report;
+667:             case "balances": return R.drawable.ic_scale;
+668:             case "daily": return R.drawable.ic_calendar;
+669:             default: return R.drawable.ic_more;
+670:         }
+671:     }
+672: 
+673:     /** التبويبات الظاهرة لهذا المستخدم (يحددها MainActivity: الترتيب المحفوظ مع إخفاء ما لا يملك صلاحيته). */
+674:     java.util.List<String> tabKeys() { return java.util.Arrays.asList(TAB_KEYS); }
+675: 
+676:     /** 10.10: آخر تبويب كان مختارًا: إطار الشريط ينزلق منه إلى التبويب الجديد. */
+677:     static String lastTab;
+678:     /** ارتفاع إطار الشريط (الجزيرة مع الزر البارز فوقها). */
+679:     static final int TAB_FRAME_DP = 80;
+680: 
+681:     /** 11.3: نسخة مقروءة من اللون فوق خلفية داكنة (يُفتَّح الداكن فقط بقدر ما يلزم). */
+682:     static int readableOnDark(int c) {
+683:         float l = (0.2126f * Color.red(c) + 0.7152f * Color.green(c) + 0.0722f * Color.blue(c)) / 255f;
+684:         if (l >= 0.55f) return c;
+685:         return mix(c, Color.WHITE, Math.min(0.7f, (0.55f - l) * 1.25f + 0.1f));
+686:     }
+687: 
+688:     /** لون كل تبويب (النهاري، والليلي أفتح). 11.3: الافتراضي = اللون الأساسي لكل التبويبات، و«لون لكل تبويب» خيار. */
+689:     int tabColor(String k) {
+690:         if (db == null || !"multi".equals(db.setting("tab_tint", "primary"))) return night ? primaryInk : primary;
+691:         int c;
+692:         switch (k) {
+693:             case "home": c = night ? Color.rgb(96, 165, 250) : Color.rgb(37, 99, 235); break;

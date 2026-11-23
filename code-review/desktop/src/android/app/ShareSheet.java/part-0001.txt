@@ -1,0 +1,162 @@
+1: package android.app;
+2: 
+3: import android.content.Context;
+4: import android.content.SharedPreferences;
+5: import android.net.Uri;
+6: import android.view.Gravity;
+7: import android.view.View;
+8: import android.widget.LinearLayout;
+9: import android.widget.TextView;
+10: import android.widget.Toast;
+11: import java.awt.Desktop;
+12: import java.awt.Toolkit;
+13: import java.awt.datatransfer.DataFlavor;
+14: import java.awt.datatransfer.Transferable;
+15: import java.awt.datatransfer.UnsupportedFlavorException;
+16: import java.io.File;
+17: import java.util.ArrayList;
+18: import java.util.List;
+19: 
+20: /**
+21:  * 11.2: قائمة المشاركة على الماك والويندوز (بدل قائمة أندرويد): واتساب (التطبيق أو ويب)، تلغرام، البريد،
+22:  * النسخ للصق، الحفظ، الفتح، الإظهار في المجلد. يمكن تذكّر اختيار ثابت لكل نوع (نص أو ملفات) ويُغيَّر من «المظهر».
+23:  * <p>
+24:  * تطبيقات المراسلة على الكمبيوتر لا تستقبل ملفًا من برنامج آخر مباشرة: يُنسخ الملف (والصورة نفسها) إلى الحافظة،
+25:  * ويُفتح التطبيق والنص جاهز في خانة الكتابة، فيكفي اختيار المحادثة ثم اللصق.
+26:  */
+27: public final class ShareSheet {
+28:     private ShareSheet() {}
+29: 
+30:     static final boolean MAC = System.getProperty("os.name", "").toLowerCase().contains("mac");
+31:     public static final String PREFS = "desk_share";
+32: 
+33:     public static final String SYSTEM = "system";
+34:     public static final String WA_APP = "wa_app", WA_WEB = "wa_web", TG = "tg", MAIL = "mail", COPY = "copy", SAVE = "save", OPEN = "open", REVEAL = "reveal";
+35:     /** 11.6: واتساب بسحب الملف: يُظهر الملف في مجلده ويُفتح واتساب، فتسحبه إلى المحادثة. */
+36:     public static final String WA_DRAG = "wa_drag";
+37:     /** الاختيارات التي يمكن جعلها ثابتة (الأولى = يسأل كل مرة). */
+38:     public static final String[] FIXED = {"", SYSTEM, WA_APP, WA_WEB, TG};
+39:     public static final String[] FIXED_LABELS = {"يسأل كل مرة", "مشاركة النظام", "واتساب", "واتساب ويب", "تلغرام"};
+40: 
+41:     static String label(String id, boolean files) {
+42:         switch (id) {
+43:             case SYSTEM: return (MAC ? "قائمة مشاركة الماك" : "نافذة مشاركة ويندوز") + ": واتساب وغيره مباشرة";
+44:             case WA_APP: return files ? "واتساب: نسخ الملف ثم لصقه في المحادثة (" + (MAC ? "⌘V" : "Ctrl+V") + ")" : "واتساب (التطبيق)";
+45:             case WA_DRAG: return "واتساب: إظهار الملف في المجلد لسحبه إلى المحادثة";
+46:             case WA_WEB: return "واتساب ويب (المتصفح)";
+47:             case TG: return "تلغرام";
+48:             case MAIL: return files && MAC ? "البريد (Mail) مع المرفق" : "البريد";
+49:             case COPY: return files ? "نسخ للصق في أي برنامج" : "نسخ النص";
+50:             case SAVE: return files ? "حفظ نسخة في…" : "حفظ كملف نصي…";
+51:             case OPEN: return "فتح الملف";
+52:             case REVEAL: return "إظهار في المجلد";
+53:             default: return id;
+54:         }
+55:     }
+56: 
+57:     /** 12.0: الاسم القصير تحت الأيقونة. */
+58:     static String shortLabel(String id, boolean files) {
+59:         switch (id) {
+60:             case SYSTEM: return MAC ? "مشاركة الماك" : "مشاركة ويندوز";
+61:             case WA_APP:
+62:             case WA_DRAG: return "واتساب";
+63:             case WA_WEB: return "واتساب ويب";
+64:             case TG: return "تلغرام";
+65:             case MAIL: return "البريد";
+66:             case COPY: return "نسخ النص";
+67:             case SAVE: return files ? "حفظ نسخة" : "حفظ كملف";
+68:             case OPEN: return "فتح الملف";
+69:             case REVEAL: return "في المجلد";
+70:             default: return id;
+71:         }
+72:     }
+73: 
+74:     /** 12.0: سطر صغير يشرح ما يحدث. */
+75:     static String hint(String id, boolean files) {
+76:         switch (id) {
+77:             case SYSTEM: return "واتساب وغيره مباشرة";
+78:             case WA_APP: return "يفتح التطبيق والنص جاهز";
+79:             case WA_DRAG: return "يُظهر الملف لتسحبه إلى المحادثة";
+80:             case WA_WEB: return files ? "في المتصفح: الصق الملف" : "في المتصفح";
+81:             case TG: return files ? "الصق الملف في المحادثة" : "يفتح التطبيق والنص جاهز";
+82:             case MAIL: return files ? "رسالة مع المرفق" : "رسالة جديدة";
+83:             case COPY: return "للصق في أي مكان";
+84:             case SAVE: return "في مكان تختاره";
+85:             case OPEN: return "بالبرنامج المعتاد";
+86:             case REVEAL: return MAC ? "يُظهره في Finder" : "يُظهره في المستكشف";
+87:             default: return "";
+88:         }
+89:     }
+90: 
+91:     public static void share(Context ctx, List<File> files, CharSequence text, String subject) {
+92:         boolean hasFiles = !files.isEmpty();
+93:         SharedPreferences p = ctx.getSharedPreferences(PREFS, 0);
+94:         // القائمة تظهر دائمًا (للنص والملفات). 12.0: شبكة بأيقونات. للملفات: كل الخيارات ما عدا «نسخ الملف ولصقه في
+95:         // تطبيق واتساب» (لا يعمل مع PDF): السحب من المجلد، وواتساب ويب وتلغرام (لصق)، ومشاركة النظام، والبريد والحفظ والفتح.
+96:         List<String> ids = new ArrayList<>();
+97:         if (hasFiles) ids.add(WA_DRAG);
+98:         else ids.add(WA_APP);
+99:         ids.add(WA_WEB);
+100:         ids.add(TG);
+101:         if (SystemShare.supported()) ids.add(SYSTEM);
+102:         ids.add(MAIL);
+103:         if (!hasFiles) ids.add(COPY);
+104:         ids.add(SAVE);
+105:         if (hasFiles) {
+106:             if (files.size() == 1) ids.add(OPEN);
+107:             ids.add(REVEAL);
+108:         }
+109:         float d = ctx.getResources().getDisplayMetrics().density;
+110:         LinearLayout box = new LinearLayout(ctx);
+111:         box.setOrientation(LinearLayout.VERTICAL);
+112:         box.setPadding(Math.round(10 * d), Math.round(2 * d), Math.round(10 * d), 0);
+113:         final AlertDialog[] dlg = {null};
+114:         String last = p.getString("last_" + (hasFiles ? "files" : "text"), "");
+115:         if (!last.isEmpty() && ids.remove(last)) ids.add(0, last);
+116:         String what = hasFiles ? (files.size() == 1 ? files.get(0).getName() : files.size() + " ملفات") : "نص";
+117:         TextView sub = new TextView(ctx);
+118:         sub.setText(what);
+119:         sub.setTextSize(12);
+120:         sub.setTextColor(0xFF7A7F87);
+121:         sub.setSingleLine(true);
+122:         sub.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+123:         sub.setPadding(Math.round(6 * d), 0, Math.round(6 * d), Math.round(8 * d));
+124:         box.addView(sub);
+125:         LinearLayout rowL = null;
+126:         int col = 0;
+127:         final int cols = ids.size() > 6 ? 4 : 3;
+128:         for (final String id : ids) {
+129:             if (col % cols == 0) {
+130:                 rowL = new LinearLayout(ctx);
+131:                 rowL.setOrientation(LinearLayout.HORIZONTAL);
+132:                 box.addView(rowL, new LinearLayout.LayoutParams(-1, -2));
+133:             }
+134:             col++;
+135:             LinearLayout tile = new LinearLayout(ctx);
+136:             tile.setOrientation(LinearLayout.VERTICAL);
+137:             tile.setGravity(Gravity.CENTER_HORIZONTAL);
+138:             tile.setPadding(Math.round(6 * d), Math.round(10 * d), Math.round(6 * d), Math.round(8 * d));
+139:             android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+140:             bg.setCornerRadius(16 * d);
+141:             bg.setColor(id.equals(last) ? 0x1425D366 : 0x08000000);
+142:             bg.setStroke(Math.max(1, Math.round(d)), id.equals(last) ? 0x6625D366 : 0x14000000);
+143:             tile.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22000000), bg, null));
+144:             tile.setContentDescription(label(id, hasFiles));
+145:             ShareIcon ic = new ShareIcon(ctx, id);
+146:             tile.addView(ic, new LinearLayout.LayoutParams(Math.round(46 * d), Math.round(46 * d)));
+147:             TextView t = new TextView(ctx);
+148:             t.setText(shortLabel(id, hasFiles));
+149:             t.setTextSize(14);
+150:             t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+151:             t.setGravity(Gravity.CENTER);
+152:             t.setPadding(0, Math.round(6 * d), 0, 0);
+153:             tile.addView(t, new LinearLayout.LayoutParams(-1, -2));
+154:             TextView h = new TextView(ctx);
+155:             h.setText(hint(id, hasFiles) + (id.equals(last) ? "\n· الأخير ·" : ""));
+156:             h.setTextSize(11);
+157:             h.setTextColor(0xFF7A7F87);
+158:             h.setGravity(Gravity.CENTER);
+159:             h.setMaxLines(3);
+160:             tile.addView(h, new LinearLayout.LayoutParams(-1, -2));
+161:             tile.setOnClickListener(v -> {
+162:                 p.edit().putString("last_" + (hasFiles ? "files" : "text"), id).apply();

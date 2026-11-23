@@ -1,0 +1,196 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.util.ArrayList;
+6: import java.util.List;
+7: import javax.swing.*;
+8: import javax.swing.border.EmptyBorder;
+9: 
+10: /**
+11:  * 10.6: أساس شاشتي «تسجيل حركة قص عملات» و«تسجيل حركة بين مكتبين» بأسلوب «تسجيل حركة»: النموذج في بطاقة يمنى،
+12:  * والملخص الحي وزر التسجيل في بطاقة يسرى. المال والصلاحيات تُفرض في Db عند الحفظ (هنا العرض والمعاينة فقط).
+13:  */
+14: abstract class RecordView extends View {
+15:     /** فتح الشاشة على مكتب محدد (من صفحة المكتب). */
+16:     static final class Open {
+17:         final long office;
+18: 
+19:         Open(long office) { this.office = office; }
+20:     }
+21: 
+22:     final JLabel summary = Ui.label("", 14, Ui.ink, false);
+23:     final JLabel footLine = Ui.label(" ", 13.5f, Ui.red, true);
+24:     Ui.Btn save;
+25:     boolean building, saving;
+26: 
+27:     RecordView(App app, String title) { super(app, title); }
+28: 
+29:     /** اختيار مكتب بالبحث والقائمة (كما في «تسجيل حركة»). */
+30:     final class OfficeBox extends JPanel {
+31:         final Ui.Field search = Ui.field("ابحث…");
+32:         /** 10.18: الضغط على القائمة يفتح نافذة «اختر المكتب» كالهاتف (تصفية، آخر المكاتب، مكاتبي) بدل القائمة المنسدلة. */
+33:         final JComboBox<Model.Office> combo = new JComboBox<Model.Office>() {
+34:             @Override public void setPopupVisible(boolean v) {
+35:                 if (!v || !isEnabled()) {
+36:                     super.setPopupVisible(false);
+37:                     return;
+38:                 }
+39:                 SwingUtilities.invokeLater(() -> {
+40:                     Model.Office o = OfficePicker.pick(this, db, null);
+41:                     if (o != null) load(o.id, true);
+42:                 });
+43:             }
+44:         };
+45:         final JLabel balance = Ui.label(" ", 12.5f, Ui.muted, false);
+46:         Runnable onChange;
+47:         boolean quiet;
+48: 
+49:         OfficeBox(String empty) {
+50:             setOpaque(false);
+51:             setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
+52:             setAlignmentX(Component.RIGHT_ALIGNMENT);
+53:             combo.setFont(Ui.font(15, true));
+54:             combo.setMaximumSize(new Dimension(Integer.MAX_VALUE, 40));
+55:             combo.setComponentOrientation(Ui.RTL);
+56:             combo.setRenderer(new DefaultListCellRenderer() {
+57:                 @Override public Component getListCellRendererComponent(JList<?> l, Object v, int i, boolean s, boolean f) {
+58:                     JLabel c = (JLabel) super.getListCellRendererComponent(l, v instanceof Model.Office ? (((Model.Office) v).pinned ? " " : "") + ((Model.Office) v).name : "— " + empty + " —", i, s, f);
+59:                     c.setHorizontalAlignment(SwingConstants.RIGHT);
+60:                     c.setFont(Ui.font(14, v != null));
+61:                     return c;
+62:                 }
+63:             });
+64:             combo.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+65:             combo.setToolTipText("انقر لاختيار المكتب بالبحث");
+66:             add(combo);
+67:             add(Ui.gap(4));
+68:             add(balance);
+69:             search.getDocument().addDocumentListener(TxView.doc(() -> load(get() == null ? -1 : get().id, true)));
+70:             combo.addActionListener(e -> {
+71:                 if (!quiet) changed();
+72:             });
+73:         }
+74: 
+75:         Model.Office get() { return (Model.Office) combo.getSelectedItem(); }
+76: 
+77:         void load(long select, boolean fire) {
+78:             quiet = true;
+79:             String q = OwnerReports.norm(search.getText());
+80:             DefaultComboBoxModel<Model.Office> m = new DefaultComboBoxModel<>();
+81:             m.addElement(null);
+82:             for (Model.Office o : myFirst(db, db.offices()))
+83:                 if (o.active && (q.isEmpty() || OwnerReports.norm(o.name + " " + Model.nz(o.shortName)).contains(q))) m.addElement(o);
+84:             combo.setModel(m);
+85:             for (int i = 0; i < m.getSize(); i++) if (m.getElementAt(i) != null && m.getElementAt(i).id == select) combo.setSelectedIndex(i);
+86:             if (combo.getSelectedItem() == null && !q.isEmpty() && m.getSize() == 2) combo.setSelectedIndex(1);
+87:             quiet = false;
+88:             if (fire) changed();
+89:             else showBalance();
+90:         }
+91: 
+92:         void showBalance() {
+93:             Model.Office o = get();
+94:             if (o == null) {
+95:                 balance.setText(" ");
+96:                 return;
+97:             }
+98:             StringBuilder sb = new StringBuilder();
+99:             for (java.util.Map.Entry<String, Long> e : db.balances(o.id).entrySet()) {
+100:                 if (sb.length() > 0) sb.append("   •   ");
+101:                 sb.append(e.getKey()).append(": ").append(Model.bal(e.getValue(), db.decimals(e.getKey())));
+102:             }
+103:             balance.setText(sb.length() == 0 ? "لا رصيد بعد" : "الرصيد الحالي: " + sb);
+104:         }
+105: 
+106:         void changed() {
+107:             showBalance();
+108:             if (onChange != null) onChange.run();
+109:         }
+110:     }
+111: 
+112:     /**
+113:      * 10.7: نوع الحركة أعلى صفحة «تسجيل حركة» (عادية، قص عملات، بين مكتبين) — بدل القائمة نصف الدائرية.
+114:      * المكتب المختار يصير «آخر مكتب» فيظهر مختارًا في النوع الآخر؛ وكل نوع يحتفظ بما كُتب فيه.
+115:      */
+116:     static Ui.Seg kinds(App app, String current, java.util.function.Supplier<Model.Office> office) {
+117:         List<RecordMenu.Item> items = RecordMenu.allowed(app::can);
+118:         String[] labels = new String[items.size()];
+119:         int sel = 0;
+120:         for (int i = 0; i < labels.length; i++) {
+121:             labels[i] = items.get(i).label;
+122:             if (items.get(i).key.equals(current)) sel = i;
+123:         }
+124:         Ui.Seg s = new Ui.Seg(labels, null, sel);
+125:         final int own = sel;
+126:         s.setMaximumSize(new Dimension(Integer.MAX_VALUE, 42));
+127:         s.setVisible(items.size() > 1);
+128:         s.listener = i -> {
+129:             String k = items.get(i).key;
+130:             if (k.equals(current)) return;
+131:             s.set(own);
+132:             Model.Office o = office == null ? null : office.get();
+133:             if (o != null) app.db.setSettingQuiet("last_office", "" + o.id);
+134:             app.go(k);
+135:         };
+136:         return s;
+137:     }
+138: 
+139:     /** 10.7: «مكاتبي» أولًا في قوائم اختيار المكتب (اختصار للمحاسب)، ثم الباقي بترتيبه. */
+140:     static List<Model.Office> myFirst(Db db, List<Model.Office> all) {
+141:         java.util.Set<Long> mine = new java.util.HashSet<>();
+142:         for (Model.Office o : db.myOffices()) mine.add(o.id);
+143:         if (mine.isEmpty()) return all;
+144:         List<Model.Office> out = new ArrayList<>();
+145:         for (Model.Office o : all) if (mine.contains(o.id)) out.add(o);
+146:         for (Model.Office o : all) if (!mine.contains(o.id)) out.add(o);
+147:         return out;
+148:     }
+149: 
+150:     /** بطاقة ملوّنة بعنوان ونقطة بلونها (طرف «لنا» بالأخضر و«علينا» بالأحمر). */
+151:     static Ui.Card side(String title, String sub, Color color, Color fill) {
+152:         Ui.Card c = Ui.tinted(fill, Ui.mix(fill, color, 0.45f));
+153:         c.setBorder(new EmptyBorder(14, 16, 16, 16));
+154:         JLabel t = Ui.label(title, 15.5f, color, true);
+155:         t.setIcon(new Icon() {
+156:             @Override public void paintIcon(Component cc, Graphics g, int x, int y) {
+157:                 Graphics2D g2 = (Graphics2D) g.create();
+158:                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+159:                 g2.setColor(color);
+160:                 g2.fillOval(x, y + 1, 10, 10);
+161:                 g2.dispose();
+162:             }
+163: 
+164:             @Override public int getIconWidth() { return 10; }
+165: 
+166:             @Override public int getIconHeight() { return 12; }
+167:         });
+168:         t.setIconTextGap(8);
+169:         c.add(t);
+170:         if (sub != null) c.add(Ui.label(sub, 12, Ui.muted, false));
+171:         c.add(Ui.gap(8));
+172:         return c;
+173:     }
+174: 
+175:     /** أزرار عملات (لا عملة محددة مسبقًا) داخل حامل. */
+176:     static Ui.Seg chips(JPanel holder, List<String> codes, Color color, java.util.function.Consumer<Integer> l, String empty) {
+177:         holder.removeAll();
+178:         if (codes.isEmpty()) {
+179:             holder.add(Ui.label(empty, 13, Ui.red, false));
+180:             holder.revalidate();
+181:             return null;
+182:         }
+183:         Ui.Seg s = new Ui.Seg(codes.toArray(new String[0]), new Color[]{color}, -1);
+184:         s.listener = l;
+185:         s.setMaximumSize(new Dimension(Math.min(Integer.MAX_VALUE, 96 * codes.size()), 40));
+186:         holder.add(s);
+187:         holder.revalidate();
+188:         holder.repaint();
+189:         return s;
+190:     }
+191: 
+192:     static String label(Ui.Seg s) { return s == null || s.none() ? null : s.buttons.get(s.selected).getText(); }
+193: 
+194:     static JPanel holder() {
+195:         JPanel p = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+196:         p.setOpaque(false);

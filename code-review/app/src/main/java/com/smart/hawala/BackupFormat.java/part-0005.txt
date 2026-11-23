@@ -1,0 +1,212 @@
+753:             if (o == null) continue;
+754:             Long dr = lng(row, "debit_minor"), cr = lng(row, "credit_minor");
+755:             String c = str(row, "currency");
+756:             long v = (dr == null ? 0 : dr) - (cr == null ? 0 : cr);
+757:             Long b = o.balances.get(c);
+758:             o.balances.put(c, (b == null ? 0 : b) + v);
+759:         }
+760:         return new ArrayList<>(m.values());
+761:     }
+762: 
+763:     // ===================================================================================
+764:     // أدوات
+765:     // ===================================================================================
+766: 
+767:     public static Long lng(JSONObject row, String k) {
+768:         if (!row.has(k) || row.isNull(k)) return null;
+769:         Object v = row.opt(k);
+770:         if (v instanceof Number) return ((Number) v).longValue();
+771:         try {
+772:             return Long.parseLong(String.valueOf(v).trim());
+773:         } catch (NumberFormatException e) {
+774:             return null;
+775:         }
+776:     }
+777: 
+778:     public static String str(JSONObject row, String k) {
+779:         if (!row.has(k) || row.isNull(k)) return null;
+780:         return String.valueOf(row.opt(k));
+781:     }
+782: 
+783:     private static Set<Long> ids(List<JSONObject> rows) {
+784:         Set<Long> s = new HashSet<>();
+785:         for (JSONObject r : rows) {
+786:             Long id = lng(r, "id");
+787:             if (id != null) s.add(id);
+788:         }
+789:         return s;
+790:     }
+791: 
+792:     private static String readText(InputStream in) throws IOException {
+793:         ByteArrayOutputStream o = new ByteArrayOutputStream();
+794:         byte[] b = new byte[8192];
+795:         int n;
+796:         while ((n = in.read(b)) > 0) {
+797:             o.write(b, 0, n);
+798:             if (o.size() > MAX_TEXT_ENTRY) throw new SecureStreams.CorruptBackupException("ملف داخل النسخة أكبر من المتوقع");
+799:         }
+800:         return new String(o.toByteArray(), StandardCharsets.UTF_8);
+801:     }
+802: 
+803:     /** حد الجدول في الذاكرة (بالأحرف) قبل نقله إلى ملف مؤقت مشفّر. */
+804:     public static long spillChars = 4L * 1024 * 1024;
+805: 
+806:     private static List<JSONObject> readLines(InputStream in, File spillDir) throws IOException, JSONException {
+807:         BufferedReader br = new BufferedReader(new InputStreamReader(new NonClosing(in), StandardCharsets.UTF_8));
+808:         List<String> pending = new ArrayList<>();
+809:         long chars = 0;
+810:         SpilledRows spill = null;
+811:         String line;
+812:         while ((line = br.readLine()) != null) {
+813:             if (line.trim().isEmpty()) continue;
+814:             if (spill != null) {
+815:                 new JSONObject(line);   // يُرفض السطر الفاسد هنا كما في الذاكرة
+816:                 spill.append(line);
+817:                 continue;
+818:             }
+819:             pending.add(line);
+820:             chars += line.length();
+821:             if (spillDir != null && chars > spillChars) {
+822:                 spill = new SpilledRows(spillDir);
+823:                 for (String l : pending) {
+824:                     new JSONObject(l);
+825:                     spill.append(l);
+826:                 }
+827:                 pending = null;
+828:             }
+829:         }
+830:         if (spill != null) {
+831:             spill.finish();
+832:             return spill;
+833:         }
+834:         List<JSONObject> rows = new ArrayList<>(pending.size());
+835:         for (String l : pending) rows.add(new JSONObject(l));
+836:         return rows;
+837:     }
+838: 
+839:     /**
+840:      * صفوف جدول كبير في ملف مؤقت مشفّر (AES-CTR بمفتاح عابر في الذاكرة فقط، فلا يُقرأ الملف بعد انتهاء العملية)،
+841:      * تُقرأ بالتتابع عند كل مرور. للقراءة فقط: get(i) يمر من البداية (للاختبارات)، والتعديل غير مدعوم.
+842:      */
+843:     public static final class SpilledRows extends java.util.AbstractList<JSONObject> {
+844:         private final File file;
+845:         private final javax.crypto.SecretKey key;
+846:         private final byte[] iv = new byte[16];
+847:         private java.io.Writer w;
+848:         private int size;
+849: 
+850:         SpilledRows(File dir) throws IOException {
+851:             if (!dir.exists() && !dir.mkdirs()) throw new IOException("تعذر إنشاء مجلد مؤقت للقراءة");
+852:             file = new File(dir, "rows-" + UUID.randomUUID() + ".tmp");
+853:             try {
+854:                 javax.crypto.KeyGenerator kg = javax.crypto.KeyGenerator.getInstance("AES");
+855:                 kg.init(256);
+856:                 key = kg.generateKey();
+857:                 new java.security.SecureRandom().nextBytes(iv);
+858:                 javax.crypto.Cipher c = javax.crypto.Cipher.getInstance("AES/CTR/NoPadding");
+859:                 c.init(javax.crypto.Cipher.ENCRYPT_MODE, key, new javax.crypto.spec.IvParameterSpec(iv));
+860:                 w = new java.io.BufferedWriter(new java.io.OutputStreamWriter(
+861:                         new javax.crypto.CipherOutputStream(new java.io.FileOutputStream(file), c), StandardCharsets.UTF_8), 65536);
+862:             } catch (java.security.GeneralSecurityException e) {
+863:                 throw new IOException(e);
+864:             }
+865:         }
+866: 
+867:         void append(String line) throws IOException {
+868:             w.write(line);
+869:             w.write('\n');
+870:             size++;
+871:         }
+872: 
+873:         void finish() throws IOException {
+874:             w.close();
+875:             w = null;
+876:         }
+877: 
+878:         public File file() { return file; }
+879: 
+880:         @Override public int size() { return size; }
+881: 
+882:         @Override public JSONObject get(int i) {
+883:             if (i < 0 || i >= size) throw new IndexOutOfBoundsException("" + i);
+884:             int k = 0;
+885:             for (JSONObject o : this) if (k++ == i) return o;
+886:             throw new IndexOutOfBoundsException("" + i);
+887:         }
+888: 
+889:         @Override public java.util.Iterator<JSONObject> iterator() {
+890:             final BufferedReader r;
+891:             try {
+892:                 javax.crypto.Cipher c = javax.crypto.Cipher.getInstance("AES/CTR/NoPadding");
+893:                 c.init(javax.crypto.Cipher.DECRYPT_MODE, key, new javax.crypto.spec.IvParameterSpec(iv));
+894:                 r = new BufferedReader(new InputStreamReader(new javax.crypto.CipherInputStream(new java.io.FileInputStream(file), c), StandardCharsets.UTF_8), 65536);
+895:             } catch (Exception e) {
+896:                 throw new IllegalStateException("تعذرت قراءة الملف المؤقت للنسخة: " + e.getMessage(), e);
+897:             }
+898:             return new java.util.Iterator<JSONObject>() {
+899:                 int read;
+900:                 String next = advance();
+901: 
+902:                 private String advance() {
+903:                     try {
+904:                         String l;
+905:                         while ((l = r.readLine()) != null) if (!l.trim().isEmpty()) return l;
+906:                         r.close();
+907:                         return null;
+908:                     } catch (IOException e) {
+909:                         throw new IllegalStateException("تعذرت قراءة الملف المؤقت للنسخة: " + e.getMessage(), e);
+910:                     }
+911:                 }
+912: 
+913:                 @Override public boolean hasNext() { return next != null && read < size; }
+914: 
+915:                 @Override public JSONObject next() {
+916:                     if (!hasNext()) throw new java.util.NoSuchElementException();
+917:                     String l = next;
+918:                     read++;
+919:                     next = read < size ? advance() : null;
+920:                     try {
+921:                         return new JSONObject(l);
+922:                     } catch (JSONException e) {
+923:                         throw new IllegalStateException(e);
+924:                     }
+925:                 }
+926:             };
+927:         }
+928:     }
+929: 
+930:     /** يحذف ملفات الجداول المؤقتة (بعد الاستعادة أو الفحص). */
+931:     public static void discardSpill(Parsed p) {
+932:         for (List<JSONObject> t : p.tables.values()) if (t instanceof SpilledRows) ((SpilledRows) t).file().delete();
+933:     }
+934: 
+935:     private static void drain(InputStream in) throws IOException {
+936:         byte[] b = new byte[8192];
+937:         while (in.read(b) > 0) { /* حتى النهاية */ }
+938:     }
+939: 
+940:     private static byte[] gunzip(byte[] b) throws IOException {
+941:         try (GZIPInputStream z = new GZIPInputStream(new ByteArrayInputStream(b));
+942:              ByteArrayOutputStream o = new ByteArrayOutputStream()) {
+943:             byte[] x = new byte[8192];
+944:             int n;
+945:             while ((n = z.read(x)) > 0) o.write(x, 0, n);
+946:             return o.toByteArray();
+947:         }
+948:     }
+949: 
+950:     public static String sha256Hex(byte[] data) {
+951:         try {
+952:             return hex(MessageDigest.getInstance("SHA-256").digest(data));
+953:         } catch (Exception e) {
+954:             throw new IllegalStateException(e);
+955:         }
+956:     }
+957: 
+958:     public static String hex(byte[] b) {
+959:         StringBuilder sb = new StringBuilder(b.length * 2);
+960:         for (byte x : b) sb.append(String.format("%02x", x & 0xFF));
+961:         return sb.toString();
+962:     }
+963: 
+964:     /** يمنع BufferedReader من إغلاق ZipInputStream. */

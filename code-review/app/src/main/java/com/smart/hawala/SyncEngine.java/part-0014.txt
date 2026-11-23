@@ -1,0 +1,122 @@
+2036:             case "chain": return base + " — سلسلة الحزم منقطعة (حُذفت حزمة)؛ توقفت للحماية";
+2037:             case "newer": return base + " — من إصدار أحدث؛ حدّث التطبيق هنا";
+2038:             default: return base;
+2039:         }
+2040:     }
+2041: 
+2042:     static boolean depsMet(SQLiteDatabase d, JSONObject deps, String me) {
+2043:         if (deps == null) return true;
+2044:         Map<String, Long> cur = SyncStore.cursors(d);
+2045:         Iterator<String> it = deps.keys();
+2046:         while (it.hasNext()) {
+2047:             String x = it.next();
+2048:             if (x.equals(me)) continue;
+2049:             Long have = cur.get(x);
+2050:             if ((have == null ? 0 : have) < deps.optLong(x)) return false;
+2051:         }
+2052:         return true;
+2053:     }
+2054: 
+2055:     // ===================================================================================
+2056:     // جولة كاملة
+2057:     // ===================================================================================
+2058: 
+2059:     /** جولة مزامنة: ختم ← رفع ← استلام ← (ختم ما نتج عن حل التعارض ورفعه) ← بطاقة العضو ← مقارنة البصمات. */
+2060:     public Result sync() throws Exception {
+2061:         VAULT.lock();
+2062:         try {
+2063:             return syncLocked();
+2064:         } finally {
+2065:             VAULT.unlock();
+2066:         }
+2067:     }
+2068: 
+2069:     private Result syncLocked() throws Exception {
+2070:         Result res = new Result();
+2071:         SQLiteDatabase d = db.getWritableDatabase();
+2072:         try {
+2073:             roundMembers = null;
+2074:             if (!License.current.sync()) throw new Entitlements.LimitReached("المزامنة بين الأجهزة ميزة في النسخة المدفوعة. بياناتك على هذا الجهاز تبقى كما هي.");
+2075:             JSONObject h = header();
+2076:             if (h == null) {
+2077:                 SyncStore.setMeta(d, "header_missing", "1");
+2078:                 throw new IOException("ملف الخزنة غير موجود في " + folder.describe() + ". إن نقلت المزامنة إلى مكان جديد فاضغط «إصلاح» في شاشة المزامنة، "
+2079:                         + "أو اختر المكان الصحيح.");
+2080:             }
+2081:             SyncStore.setMeta(d, "header_missing", null);
+2082:             // 11.5: أمر حذف/نقل لا يُنفَّذ إلا إن كان موقّعًا بمفتاح هذه الخزنة (لا خروج ولا مسح لحزم لم تُرسل بسبب ملف معدَّل)
+2083:             if (tombstone(h) && h.optString("vault").equals(SyncStore.meta(d, "vault_id")) && !tombVerified(h, keys().vault)) {
+2084:                 SyncStore.setMeta(d, "tomb_unverified", "1");
+2085:                 throw new IllegalStateException(TOMB_UNVERIFIED);
+2086:             }
+2087:             SyncStore.setMeta(d, "tomb_unverified", null);
+2088:             // 10.14: حُذفت الخزنة من هنا: يخرج هذا الجهاز من المزامنة (بياناته تبقى)؛ نُقلت: لا يُرسل إلى المكان القديم ويطلب الانتقال
+2089:             if (h.has("deleted") && h.optString("vault").equals(SyncStore.meta(d, "vault_id"))) {
+2090:                 leave(tombText(h));
+2091:                 throw new IllegalStateException(tombText(h) + " خرج هذا الجهاز من المزامنة وبياناته باقية كما هي. خذ نسخة احتياطية، ثم أنشئ مزامنة جديدة أو انضم إليها.");
+2092:             }
+2093:             if (h.has("moved")) {
+2094:                 boolean fresh = h.optJSONObject("moved") != null && h.optJSONObject("moved").optBoolean("fresh");
+2095:                 SyncStore.setMeta(d, "moved_to", tombText(h));
+2096:                 SyncStore.setMeta(d, "moved_fresh", fresh ? "1" : null);
+2097:                 SyncStore.setMeta(d, "moved_target", h.optJSONObject("moved") == null ? null : h.optJSONObject("moved").optString("to", null));
+2098:                 throw new IllegalStateException(tombText(h) + (fresh
+2099:                         ? " أوقف المزامنة هنا ثم انضم إلى المزامنة الجديدة (تُستبدل بيانات هذا الجهاز ببياناتها؛ خذ نسخة احتياطية قبلها)."
+2100:                         : " لا يُرسل هذا الجهاز شيئًا إلى المكان القديم. من شاشة «المزامنة» سجّل الدخول بالحساب أو المكان الجديد."));
+2101:             }
+2102:             SyncStore.setMeta(d, "moved_to", null);
+2103:             SyncStore.setMeta(d, "moved_fresh", null);
+2104:             SyncStore.setMeta(d, "moved_target", null);
+2105:             if (!h.toString().equals(SyncStore.meta(d, "header_copy"))) SyncStore.setMeta(d, "header_copy", h.toString());
+2106:             if (!h.optString("vault").equals(SyncStore.meta(d, "vault_id"))) throw new IllegalStateException("المجلد فيه خزنة أخرى غير خزنة هذا الجهاز");
+2107:             // 10.4/10.5: ترقية الخزنة إلى الصيغة الحالية (الأجهزة بإصدار أقدم يُطلب منها التحديث)
+2108:             if (h.optInt("v") < FORMAT) {
+2109:                 h.put("v", FORMAT);
+2110:                 folder.write(HEADER, h.toString(1).getBytes(StandardCharsets.UTF_8));
+2111:                 SyncStore.setMeta(d, "header_copy", h.toString());
+2112:                 db.audit("SYNC_UPGRADE", "sync", 0, "رُقّيت خزنة المزامنة إلى الصيغة " + FORMAT);
+2113:             }
+2114:             // 10.4: جهاز أزاله المدير من المزامنة يخرج منها (بياناته تبقى)
+2115:             roundMembers = readMembersRaw(keys());
+2116:             readMembers(keys());
+2117:             JSONObject meRemoved = removedMap().get(SyncStore.meta(d, "device"));
+2118:             if (meRemoved != null) {
+2119:                 // 10.5 (AUDIT-001): ما أرسله قبل الإزالة (حتى upTo) يصل للجميع؛ ما بعده لا يُرسل. يُذكر عدده صراحة ولا يُحذف من هنا.
+2120:                 long mySeq = lng(SyncStore.meta(d, "my_seq")), upTo = meRemoved.optLong("upTo", mySeq);
+2121:                 long unsealed = 0;
+2122:                 try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM sync_chg", null)) {
+2123:                     if (c.moveToFirst()) unsealed = c.getLong(0);
+2124:                 }
+2125:                 long lost = Math.max(0, mySeq - upTo);
+2126:                 String extra = lost + unsealed == 0 ? ""
+2127:                         : " لم يصل إلى الأجهزة الأخرى " + (lost > 0 ? lost + " حزمة" : "") + (lost > 0 && unsealed > 0 ? " و" : "")
+2128:                         + (unsealed > 0 ? unsealed + " تغييرًا لم يُختم" : "") + " من هذا الجهاز: هي باقية هنا فقط. خذ نسخة احتياطية قبل أي انضمام جديد"
+2129:                         + " (الانضمام يستبدل بيانات هذا الجهاز ببيانات الخزنة) وسجّل تلك الحركات من جديد على جهاز في المزامنة.";
+2130:                 d.beginTransaction();
+2131:                 try {
+2132:                     SyncStore.leave(d, "أزال المدير هذا الجهاز من المزامنة. لإعادته: «الانضمام» من جديد." + extra);
+2133:                     d.setTransactionSuccessful();
+2134:                 } finally {
+2135:                     d.endTransaction();
+2136:                 }
+2137:                 db.syncPrefix = 0;
+2138:                 db.audit("SYNC_REMOVED_HERE", "sync", 0, "أُخرج هذا الجهاز من المزامنة لأن المدير أزاله." + extra);
+2139:                 throw new IllegalStateException("أزال المدير هذا الجهاز من المزامنة. بياناته باقية عليه؛ لإعادته انضم من جديد." + extra);
+2140:             }
+2141:             // 10.1: الجهاز الرئيسي معروف للجميع (خزنات 10.0: يكتبه منشئها في الرأس عند أول مزامنة)
+2142:             if (h.optString("founder").isEmpty()) {
+2143:                 if (SyncStore.meta(d, "founder") == null && SyncStore.founder(d)) {
+2144:                     h.put("founder", SyncStore.meta(d, "device"));
+2145:                     folder.write(HEADER, h.toString(1).getBytes(StandardCharsets.UTF_8));
+2146:                     SyncStore.setMeta(d, "founder", h.getString("founder"));
+2147:                 }
+2148:             } else if (!h.optString("founder").equals(SyncStore.meta(d, "founder"))) {
+2149:                 // 10.5 (AUDIT-002): انتقل الدور (نقلًا أو استلامًا): الرأس هو المرجع، فلا يبقى جهازان رئيسيان
+2150:                 String was = SyncStore.meta(d, "founder"), now = h.optString("founder"), me = SyncStore.meta(d, "device");
+2151:                 SyncStore.setMeta(d, "founder", now);
+2152:                 if (now.equals(me)) SyncStore.setMeta(d, "secrets_sent", "1");
+2153:                 if (was != null) {
+2154:                     String txt = me.equals(was) ? "لم يعد هذا الجهاز هو الجهاز الرئيسي (" + h.optString("founder_how") + ")"
+2155:                             : now.equals(me) ? "أصبح هذا الجهاز هو الجهاز الرئيسي (" + h.optString("founder_how") + ")"
+2156:                             : "تغيّر الجهاز الرئيسي (" + h.optString("founder_how") + ")";
+2157:                     db.audit("SYNC_FOUNDER", "sync", 0, txt);

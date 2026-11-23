@@ -1,0 +1,191 @@
+3754:         try (Cursor c = getReadableDatabase().rawQuery(q, null)) {
+3755:             while (c.moveToNext()) m.put(c.getString(0), c.getLong(1));
+3756:         }
+3757:         return m;
+3758:     }
+3759: 
+3760:     private List<Model.Line> readLines(String extraWhere, long office) {
+3761:         List<Model.Line> out = new ArrayList<>();
+3762:         String q = "SELECT l.id,l.entry_id,COALESCE(e.kind,''),COALESCE(e.created_at,0),l.currency,l.debit_minor,l.credit_minor,e.tx_id,"
+3763:                 + "t.uuid,t.type,t.person,t.description,t.status,t.fee_type,t.notes,t.special"
+3764:                 + " FROM journal_lines l JOIN journal_entries e ON e.id=l.entry_id LEFT JOIN tx t ON t.id=e.tx_id"
+3765:                 + " WHERE l.account='OFFICE' AND l.office_id=" + office
+3766:                 + extraWhere
+3767:                 + " ORDER BY COALESCE(e.created_at,0),l.id";
+3768:         try (Cursor c = getReadableDatabase().rawQuery(q, null)) {
+3769:             while (c.moveToNext()) {
+3770:                 Model.Line l = new Model.Line();
+3771:                 l.lineId = c.getLong(0);
+3772:                 l.entryId = c.getLong(1);
+3773:                 l.kind = c.getString(2);
+3774:                 l.createdAt = c.getLong(3);
+3775:                 l.currency = c.getString(4);
+3776:                 l.debit = c.getLong(5);
+3777:                 l.credit = c.getLong(6);
+3778:                 l.txId = c.isNull(7) ? null : c.getLong(7);
+3779:                 l.txUuid = c.getString(8);
+3780:                 l.txType = c.getString(9);
+3781:                 l.person = Model.nz(Crypto.dec(c.getString(10)));
+3782:                 l.description = Model.nz(Crypto.dec(c.getString(11)));
+3783:                 l.status = c.isNull(7) ? "ACTIVE" : c.getString(12);
+3784:                 l.feeType = c.getString(13);
+3785:                 l.notes = Model.nz(Crypto.dec(c.getString(14)));
+3786:                 l.special = c.isNull(15) ? "" : Model.nz(c.getString(15));
+3787:                 out.add(l);
+3788:             }
+3789:         }
+3790:         return out;
+3791:     }
+3792: 
+3793:     /** الرصيد قبل تاريخ لكل عملة. excludeCancelled يستبعد الحركات الملغاة وعكسها (صافيها صفر). */
+3794:     public Map<String, Long> balanceBefore(long office, long before, boolean excludeCancelled) {
+3795:         Map<String, Long> m = new TreeMap<>();
+3796:         String q = "SELECT l.currency,SUM(l.debit_minor-l.credit_minor) FROM journal_lines l JOIN journal_entries e ON e.id=l.entry_id"
+3797:                 + " LEFT JOIN tx t ON t.id=e.tx_id WHERE l.account='OFFICE' AND l.office_id=" + office
+3798:                 + " AND COALESCE(e.created_at,0)<" + before
+3799:                 + (excludeCancelled ? " AND (e.tx_id IS NULL OR t.status='ACTIVE')" : "")
+3800:                 + " GROUP BY l.currency";
+3801:         try (Cursor c = getReadableDatabase().rawQuery(q, null)) {
+3802:             while (c.moveToNext()) m.put(c.getString(0), c.getLong(1));
+3803:         }
+3804:         return m;
+3805:     }
+3806: 
+3807:     // ===================================================================================
+3808:     // أسعار الصرف
+3809:     // ===================================================================================
+3810: 
+3811:     public static class Rate {
+3812:         public BigDecimal usd;
+3813:         public String source;
+3814:         public long at;
+3815:         public BigDecimal online;
+3816:         public long onlineAt;
+3817:         public BigDecimal manual;
+3818:         public long manualAt;
+3819:     }
+3820: 
+3821:     public Map<String, Rate> rates() {
+3822:         Map<String, Rate> m = new TreeMap<>();
+3823:         try (Cursor c = getReadableDatabase().rawQuery("SELECT code,usd_rate,updated_at,manual_rate,manual_at FROM exchange_rates", null)) {
+3824:             while (c.moveToNext()) {
+3825:                 Rate r = new Rate();
+3826:                 r.online = parseRate(c.getString(1));
+3827:                 r.onlineAt = c.isNull(2) ? 0 : c.getLong(2);
+3828:                 r.manual = parseRate(c.getString(3));
+3829:                 r.manualAt = c.isNull(4) ? 0 : c.getLong(4);
+3830:                 if (r.manual != null) {
+3831:                     r.usd = r.manual;
+3832:                     r.source = "يدوي";
+3833:                     r.at = r.manualAt;
+3834:                 } else if (r.online != null) {
+3835:                     r.usd = r.online;
+3836:                     r.source = "أونلاين";
+3837:                     r.at = r.onlineAt;
+3838:                 } else continue;
+3839:                 m.put(c.getString(0), r);
+3840:             }
+3841:         }
+3842:         Rate usd = new Rate();
+3843:         usd.usd = BigDecimal.ONE;
+3844:         usd.source = "ثابت";
+3845:         m.put("USD", usd);
+3846:         return m;
+3847:     }
+3848: 
+3849:     public Map<String, BigDecimal> usdRates() {
+3850:         refreshMetals(getReadableDatabase());
+3851:         Map<String, BigDecimal> m = new HashMap<>();
+3852:         for (Map.Entry<String, Rate> e : rates().entrySet()) {
+3853:             // 12.5: معدن «بالوزن فقط» لا يدخل التقويم بالدولار ولا يُعدّ «بلا سعر»
+3854:             if (Metals.notValued(e.getKey())) continue;
+3855:             m.put(e.getKey(), e.getValue().usd);
+3856:         }
+3857:         return m;
+3858:     }
+3859: 
+3860:     private static BigDecimal parseRate(String s) {
+3861:         if (s == null || s.trim().isEmpty()) return null;
+3862:         try {
+3863:             BigDecimal b = new BigDecimal(s.trim());
+3864:             return b.signum() > 0 ? b : null;
+3865:         } catch (Exception e) {
+3866:             return null;
+3867:         }
+3868:     }
+3869: 
+3870:     /** 12.6: مصدر الأسعار الأونلاين (فارغ = الافتراضي) بصلاحية «تحديث الأسعار من الإنترنت». */
+3871:     public void setRatesUrl(String url) {
+3872:         require(Auth.Perm.RATES_ONLINE);
+3873:         setSetting("rates_url", Model.nz(url).trim());
+3874:     }
+3875: 
+3876:     public void saveOnlineRates(Map<String, BigDecimal> usdPerUnit0, long at) {
+3877:         require(Auth.Perm.RATES_ONLINE);   // 12.6
+3878:         // 12.5: سعر الأونصة الصافية (XAU، XAG، XPT، XPD) إن أعطاه المصدر ← سعر وحدة كل حساب معدن بعياره، للاستئناس
+3879:         Map<String, BigDecimal> usdPerUnit = new HashMap<>(usdPerUnit0);
+3880:         refreshMetals(getReadableDatabase());
+3881:         for (Metals.Metal m : metals()) {
+3882:             BigDecimal oz = usdPerUnit0.get(m.base);
+3883:             if (oz != null && !m.code.equals(m.base)) usdPerUnit.put(m.code, Metals.usdPerUnitFromOunce(oz, m));
+3884:             else if (oz != null) usdPerUnit.put(m.code, Metals.usdPerUnitFromOunce(oz, m));
+3885:         }
+3886:         SQLiteDatabase d = getWritableDatabase();
+3887:         d.beginTransaction();
+3888:         try {
+3889:             for (Map.Entry<String, BigDecimal> e : usdPerUnit.entrySet()) {
+3890:                 ContentValues v = new ContentValues();
+3891:                 v.put("usd_rate", e.getValue().toPlainString());
+3892:                 v.put("updated_at", at);
+3893:                 if (d.update("exchange_rates", v, "code=?", new String[]{e.getKey()}) == 0) {
+3894:                     v.put("code", e.getKey());
+3895:                     d.insertOrThrow("exchange_rates", null, v);
+3896:                 }
+3897:             }
+3898:             d.setTransactionSuccessful();
+3899:         } finally {
+3900:             d.endTransaction();
+3901:         }
+3902:     }
+3903: 
+3904:     public void setManualRate(String code, BigDecimal usdPerUnit) {
+3905:         require(Auth.Perm.RATES);   // 12.0
+3906:         SQLiteDatabase d = getWritableDatabase();
+3907:         ContentValues v = new ContentValues();
+3908:         if (usdPerUnit == null) {
+3909:             v.putNull("manual_rate");
+3910:             v.putNull("manual_at");
+3911:         } else {
+3912:             v.put("manual_rate", usdPerUnit.toPlainString());
+3913:             v.put("manual_at", Clock.now());
+3914:         }
+3915:         if (d.update("exchange_rates", v, "code=?", new String[]{code}) == 0 && usdPerUnit != null) {
+3916:             v.put("code", code);
+3917:             v.put("usd_rate", "0");
+3918:             v.put("updated_at", 0);
+3919:             d.insertOrThrow("exchange_rates", null, v);
+3920:         }
+3921:         audit("MANUAL_RATE", "currency", 0, code + "=" + (usdPerUnit == null ? "—" : usdPerUnit.toPlainString()));
+3922:     }
+3923: 
+3924:     // ===================================================================================
+3925:     // المستخدمون
+3926:     // ===================================================================================
+3927: 
+3928:     public List<Model.User> users(boolean onlyActive) {
+3929:         List<Model.User> a = new ArrayList<>();
+3930:         // 10.8: الحسابات المحذوفة لا تظهر في القوائم (وتبقى لأسماء التاريخ عبر user(id))
+3931:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id,name,role,active,perms,deleted_at,nick FROM users WHERE deleted_at IS NULL" + (onlyActive ? " AND active=1" : "") + " ORDER BY id", null)) {
+3932:             while (c.moveToNext()) a.add(readUser(c));
+3933:         }
+3934:         return a;
+3935:     }
+3936: 
+3937:     private static Model.User readUser(Cursor c) {
+3938:         Model.User u = new Model.User();
+3939:         u.id = c.getLong(0);
+3940:         u.name = c.getString(1);
+3941:         u.role = c.getString(2);
+3942:         u.active = c.getInt(3) == 1;
+3943:         u.perms = c.isNull(4) ? null : c.getString(4);
+3944:         u.deleted = c.getColumnCount() > 5 && !c.isNull(5);

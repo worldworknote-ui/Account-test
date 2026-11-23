@@ -1,0 +1,159 @@
+170:         JPanel tr = new JPanel(new GridLayout(1, Math.max(1, tiles.size()), 12, 0));
+171:         tr.setOpaque(false);
+172:         tr.setAlignmentX(Component.RIGHT_ALIGNMENT);
+173:         for (Ui.Tile t : tiles) tr.add(t);
+174:         tr.setMaximumSize(new Dimension(Math.min(Integer.MAX_VALUE, 150 * tiles.size()), 108));
+175:         Ui.rtl(tr);
+176:         JPanel trh = Ui.row(tr, Box.createHorizontalGlue());
+177:         add(trh);
+178:         space(16);
+179: 
+180:         // التبويبات (كالهاتف)
+181:         Ui.Seg tabs = new Ui.Seg(new String[]{"الحركات", "المطابقات", "الأمانات", "البيانات"}, null, tab);
+182:         tabs.listener = i -> {
+183:             tab = i;
+184:             refresh();
+185:         };
+186:         tabs.setMaximumSize(new Dimension(760, 48));
+187:         tabs.setPreferredSize(new Dimension(760, 48));
+188:         add(Ui.row(tabs, Box.createHorizontalGlue()));
+189:         space(12);
+190:         if (tab == 0) txTab(o, w, dec);
+191:         else if (tab == 1) reconTab(o, w, dec);
+192:         else if (tab == 2) holdsCard(o, w);
+193:         else infoTab(o, w, dec, limits);
+194:         done();
+195:     }
+196: 
+197:     /** التبويب الحالي في صفحة المكتب (0 الحركات، 1 المطابقات، 2 الأمانات، 3 البيانات). */
+198:     int tab;
+199: 
+200:     void cash(Model.Office o, String kind) {
+201:         app.go("cash");
+202:         View v = app.views.get("cash");
+203:         if (v instanceof CashView) {
+204:             ((CashView) v).presetOffice = o.id;
+205:             ((CashView) v).move(kind, null);
+206:         }
+207:     }
+208: 
+209:     /** الحركات: شرائح العملات + بحث، والجدول مع «الرصيد بعدها» لكل حركة دائمًا (بعملة الحركة نفسها). */
+210:     void txTab(Model.Office o, int w, Map<String, Integer> dec) {
+211:         List<String> curs = new ArrayList<>(db.officeCurrencies(o.id));
+212:         for (String k : db.balances(o.id).keySet()) if (!curs.contains(k)) curs.add(k);
+213:         if (txCur != null && !curs.contains(txCur)) txCur = null;
+214:         String[] labels = new String[curs.size() + 1];
+215:         labels[0] = "كل العملات";
+216:         for (int i = 0; i < curs.size(); i++) labels[i + 1] = curs.get(i);
+217:         Ui.Seg pick = new Ui.Seg(labels, null, txCur == null ? 0 : curs.indexOf(txCur) + 1);
+218:         pick.listener = i -> {
+219:             txCur = i == 0 ? null : curs.get(i - 1);
+220:             refresh();
+221:         };
+222:         pick.setMaximumSize(new Dimension(Math.min(900, 130 * labels.length), 42));
+223:         Ui.Field find = Ui.field("بحث في حركات المكتب…");
+224:         find.setText(txFind);
+225:         find.setMaximumSize(new Dimension(280, 40));
+226:         add(Ui.row(pick, Box.createHorizontalGlue(), find));
+227:         space(8);
+228:         Db.TxFilter f = new Db.TxFilter();
+229:         f.office = o.id;
+230:         f.includeCancelled = true;
+231:         f.currency = txCur;
+232:         f.limit = txCur == null ? 300 : 2000;
+233:         List<Model.Tx> all = db.txLog(f), txs = new ArrayList<>();
+234:         String q = OwnerReports.norm(txFind);
+235:         for (Model.Tx x : all) {
+236:             if (!q.isEmpty()) {
+237:                 String hay = OwnerReports.norm(Model.nz(x.person) + " " + Model.nz(x.description) + " " + Model.nz(x.notes) + " " + Model.nz(x.dest) + " " + Model.fmt(x.amount, db.decimals(x.currency)));
+238:                 boolean ok = true;
+239:                 for (String wq : q.split(" ")) ok &= wq.isEmpty() || hay.contains(wq);
+240:                 if (!ok) continue;
+241:             }
+242:             txs.add(x);
+243:         }
+244:         Map<Long, Long> after = new HashMap<>();
+245:         if (txCur != null) after.putAll(db.balancesAfter(o.id, txCur));
+246:         else for (String c : curs) after.putAll(db.balancesAfter(o.id, c));
+247:         JTable t = LogView.txTable(app, txs, false, after, txCur == null ? -1 : db.decimals(txCur));
+248:         JScrollPane sp = Ui.tableBox(t);
+249:         // الجدول بكامل صفوفه والصفحة هي التي تتمرر
+250:         int th = Math.max(3, txs.size()) * t.getRowHeight() + 42;
+251:         sp.setPreferredSize(new Dimension(800, th));
+252:         sp.setMaximumSize(new Dimension(Integer.MAX_VALUE, th));
+253:         sp.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER);
+254:         Ui.passWheel(sp);
+255:         add(sp);
+256:         find.addActionListener(e -> {
+257:             txFind = find.val();
+258:             refresh();
+259:         });
+260:         space(4);
+261:         add(Ui.label("«الرصيد بعدها» = رصيد المكتب بعملة الحركة بعد تسجيلها (مع أجرتها بالعملة نفسها). الحركات الملغاة بلا رصيد."
+262:                 + (txCur == null && all.size() >= 300 ? " تظهر آخر 300 حركة؛ اختر عملة لترى كل حركاتها." : ""), 12, Ui.muted, false));
+263:     }
+264: 
+265:     /** المطابقات: سجل المطابقات مع أوامرها. */
+266:     void reconTab(Model.Office o, int w, Map<String, Integer> dec) {
+267:         List<Model.Recon> rs = db.recons(o.id, 50);
+268:         if (rs.isEmpty()) {
+269:             add(Ui.label("لا مطابقات بعد. اضغط «مطابقة رصيد» لإرسال أول مطابقة.", 14, Ui.muted, false));
+270:             return;
+271:         }
+272:         for (Model.Recon r : rs) {
+273:             Ui.Card c = Ui.card();
+274:             StringBuilder sb = new StringBuilder();
+275:             for (Map.Entry<String, Long> e : r.balances.entrySet())
+276:                 sb.append(sb.length() > 0 ? " · " : "").append(e.getKey()).append(" ").append(Model.bal(e.getValue(), dec.getOrDefault(e.getKey(), 2)));
+277:             c.add(Ui.label(Model.date(r.createdAt) + " — " + r.statusLabel(), 14, Model.RECON_CONFIRMED.equals(r.status) ? Ui.green : Model.RECON_DISPUTED.equals(r.status) ? Ui.red : Ui.warnInk, true));
+278:             c.add(Ui.para(sb.toString() + (Model.nz(r.note).isEmpty() ? "" : "\nملاحظة: " + r.note), 13, Ui.ink, w));
+279:             // 10.8: من أنشأها ومن تحقق منها
+280:             c.add(Ui.label(db.reconPeople(r), 12.5f, r.checkedBy != null ? Ui.green : Ui.muted, false));
+281:             List<Component> bs = new ArrayList<>();
+282:             if (r.checkedBy == null && can(Auth.Perm.VERIFY)) bs.add(Ui.ghost("تم التحقق ✓", e -> {
+283:                 try {
+284:                     db.verifyRecon(r.id);
+285:                     Ui.toast("سُجّل تحققك من المطابقة ✓");
+286:                     refresh();
+287:                 } catch (Exception ex) {
+288:                     Ui.error(this, ex);
+289:                 }
+290:             }));
+291:             if (can(Auth.Perm.TX_ADD)) {
+292:                 if (Model.RECON_SENT.equals(r.status)) {
+293:                     bs.add(Ui.ghost("أكّد المكتب ✓", e -> status(r, Model.RECON_CONFIRMED)));
+294:                     bs.add(Ui.ghost("غير مطابق ×", e -> status(r, Model.RECON_DISPUTED)));
+295:                 } else bs.add(Ui.ghost("تغيير الحالة…", e -> changeStatus(r)));
+296:             }
+297:             // 10.18: إعادة إرسال المطابقة نفسها (بأرصدتها وتاريخها) نصًا أو صورة
+298:             if (can(Auth.Perm.EXPORT)) bs.add(Ui.ghost("إعادة الإرسال…", e -> resend(o, r)));
+299:             bs.add(Ui.ghost("كشف ما بعدها", e -> app.go("statement", new StatementView.Since(o.id, r.id))));
+300:             if (can(Auth.Perm.DELETE)) bs.add(Ui.ghost("حذف", e -> {
+301:                 if (Ui.confirm(this, "حذف المطابقة", "تُحذف المطابقة من السجل فقط؛ لا تتغير أي حركة.", "حذف")) {
+302:                     db.deleteRecon(r.id);
+303:                     refresh();
+304:                 }
+305:             }));
+306:             c.add(Ui.flow(bs.toArray(new Component[0])));
+307:             add(c);
+308:             space(6);
+309:         }
+310:     }
+311: 
+312:     /** البيانات: معلومات المكتب، العملات والحدود، وآخر رسالة واتساب نُقلت. */
+313:     void infoTab(Model.Office o, int w, Map<String, Integer> dec, Map<String, Db.Limit> limits) {
+314:         Ui.Card ic = Ui.card();
+315:         ic.add(Ui.heading("بيانات المكتب"));
+316:         String[][] rows = {{"الاسم", o.name}, {"اسم مختصر", Model.nz(o.shortName)}, {"الهاتف", Model.nz(o.phone)}, {"المدينة / العنوان", Model.nz(o.location)},
+317:                 {"المسؤول", Model.nz(o.contact)}, {"ملاحظات", Model.nz(o.notes)}, {"الحالة", o.active ? "نشط" : "موقوف"},
+318:                 {"العملات", Model.join(db.officeCurrencies(o.id), "، ")}};
+319:         for (String[] r : rows) {
+320:             if (r[1].isEmpty()) continue;
+321:             ic.add(Ui.row(Ui.label(r[0], 13.5f, Ui.muted, true), Box.createHorizontalStrut(12), Ui.label(r[1], 14.5f, Ui.ink, false), Box.createHorizontalGlue()));
+322:             ic.add(Ui.gap(4));
+323:         }
+324:         for (Map.Entry<String, Db.Limit> e : limits.entrySet()) {
+325:             int d = dec.getOrDefault(e.getKey(), 2);
+326:             Db.Limit l = e.getValue();
+327:             ic.add(Ui.label("حد " + e.getKey() + ": " + (l.receivable != null ? "لنا " + Model.fmt(l.receivable, d) : "") + (l.payable != null ? (l.receivable != null ? " · " : "") + "علينا " + Model.fmt(l.payable, d) : ""), 13, Ui.ink, false));
+328:         }

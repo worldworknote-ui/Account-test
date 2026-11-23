@@ -1,0 +1,175 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.app.DatePickerDialog;
+5: import android.graphics.Color;
+6: import android.widget.Button;
+7: import android.widget.CheckBox;
+8: import android.widget.LinearLayout;
+9: import android.widget.TextView;
+10: import java.text.SimpleDateFormat;
+11: import java.util.ArrayList;
+12: import java.util.Calendar;
+13: import java.util.Date;
+14: import java.util.HashMap;
+15: import java.util.HashSet;
+16: import java.util.List;
+17: import java.util.Locale;
+18: import java.util.Map;
+19: import java.util.Set;
+20: 
+21: /** كشف المكتب: الأرصدة المفصلة لكل عملة، الفترة، الحركات (تحديد/تفاصيل/تعديل/إلغاء)، والتصدير. */
+22: final class StatementScreen {
+23:     private final MainActivity a;
+24: 
+25:     StatementScreen(MainActivity a) { this.a = a; }
+26: 
+27:     static final class Period {
+28:         final String label;
+29:         final long from, to;
+30: 
+31:         Period(String label, long from, long to) {
+32:             this.label = label;
+33:             this.from = from;
+34:             this.to = to;
+35:         }
+36: 
+37:         static Period all() { return new Period("كل الفترات", 0, Long.MAX_VALUE); }
+38: 
+39:         boolean hasStart() { return from > 0; }
+40:     }
+41: 
+42:     interface OnPeriod { void on(Period p); }
+43: 
+44:     static long startOfDay(Calendar c) {
+45:         c.set(Calendar.HOUR_OF_DAY, 0);
+46:         c.set(Calendar.MINUTE, 0);
+47:         c.set(Calendar.SECOND, 0);
+48:         c.set(Calendar.MILLISECOND, 0);
+49:         return c.getTimeInMillis();
+50:     }
+51: 
+52:     /** اختيار فترة: جاهزة أو من تاريخ إلى تاريخ. */
+53:     void choosePeriod(final OnPeriod cb) {
+54:         String[] items = {"كل الفترات", "اليوم", "هذا الشهر", "الشهر الماضي", "آخر 30 يومًا", "هذه السنة", "من تاريخ إلى تاريخ…"};
+55:         new AlertDialog.Builder(a).setTitle("اختر الفترة").setItems(items, (d, w) -> {
+56:             Calendar c = Model.cal();
+57:             long end = Long.MAX_VALUE;
+58:             switch (w) {
+59:                 case 0: cb.on(Period.all()); break;
+60:                 case 1: cb.on(new Period("اليوم", startOfDay(c), end)); break;
+61:                 case 2:
+62:                     c.set(Calendar.DAY_OF_MONTH, 1);
+63:                     cb.on(new Period("هذا الشهر", startOfDay(c), end));
+64:                     break;
+65:                 case 3: {
+66:                     c.set(Calendar.DAY_OF_MONTH, 1);
+67:                     long to = startOfDay(c);
+68:                     c.add(Calendar.MONTH, -1);
+69:                     cb.on(new Period("الشهر الماضي (" + Model.sdf(new SimpleDateFormat("yyyy/MM", Locale.US)).format(new Date(c.getTimeInMillis())) + ")", startOfDay(c), to));
+70:                     break;
+71:                 }
+72:                 case 4:
+73:                     c.add(Calendar.DAY_OF_MONTH, -30);
+74:                     cb.on(new Period("آخر 30 يومًا", startOfDay(c), end));
+75:                     break;
+76:                 case 5:
+77:                     c.set(Calendar.DAY_OF_YEAR, 1);
+78:                     cb.on(new Period("هذه السنة", startOfDay(c), end));
+79:                     break;
+80:                 default:
+81:                     customPeriod(cb);
+82:             }
+83:         }).show();
+84:     }
+85: 
+86:     void customPeriod(final OnPeriod cb) {
+87:         final Calendar c = Model.cal();
+88:         DatePickerDialog first = new DatePickerDialog(a, (v1, y1, m1, d1) -> {
+89:             Calendar from = Model.cal();
+90:             from.set(y1, m1, d1);
+91:             final long f = startOfDay(from);
+92:             DatePickerDialog second = new DatePickerDialog(a, (v2, y2, m2, d2) -> {
+93:                 Calendar to = Model.cal();
+94:                 to.set(y2, m2, d2);
+95:                 to.add(Calendar.DAY_OF_MONTH, 1);
+96:                 long t = startOfDay(to);
+97:                 if (t <= f) {
+98:                     a.error(new Exception("تاريخ النهاية يجب أن يكون بعد تاريخ البداية"));
+99:                     return;
+100:                 }
+101:                 cb.on(new Period("من " + Model.day(f) + " إلى " + Model.day(t - 1), f, t));
+102:             }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH));
+103:             second.setTitle("إلى تاريخ");
+104:             second.show();
+105:         }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), 1);
+106:         first.setTitle("من تاريخ");
+107:         first.show();
+108:     }
+109: 
+110:     void show(Model.Office o) { show(o, Period.all(), false); }
+111: 
+112:     void show(final Model.Office office, final Period period, final boolean showCancelled) {
+113:         if (!a.require(Auth.Perm.VIEW) || !a.require(Auth.Perm.STATEMENT)) return;   // 12.0
+114:         final Model.Office o = a.db.office(office.id) == null ? office : a.db.office(office.id);
+115:         a.here(() -> show(o, period, showCancelled));
+116:         a.tabbedScreen("كشف — " + o.name, () -> a.officeHub.showOffice(o), "offices");
+117:         OfficeHub.touch(a.db, o.id);
+118:         final Runnable refresh = () -> show(o, period, showCancelled);
+119: 
+120:         // الأرصدة المفصلة: كل ما لنا، كل ما علينا، الرصيد
+121:         List<Model.OfficeTotals> tl = a.db.officeTotals(o.id);
+122:         LinearLayout c = a.card();
+123:         LinearLayout head = a.row();
+124:         head.addView(a.text("أرصدة المكتب (كل الفترات)", 17, a.primary, true), new LinearLayout.LayoutParams(0, -2, 1));
+125:         head.addView(a.smallButton(o.pinned ? "إلغاء التثبيت" : "📌 تثبيت", Color.rgb(120, 120, 120), v -> {
+126:             a.db.setPinned(o.id, !o.pinned);
+127:             show(a.db.office(o.id), period, showCancelled);
+128:         }), new LinearLayout.LayoutParams(-2, a.dp(40)));
+129:         c.addView(head);
+130:         if (!o.active) c.addView(a.text("⏸ هذا المكتب موقوف: لا يظهر في تسجيل الحركات ولا تُقبل عليه حركات جديدة.", 13, a.red, true));
+131:         if (!tl.isEmpty() && !tl.get(0).perCurrency.isEmpty()) {
+132:             for (Map.Entry<String, long[]> e : tl.get(0).perCurrency.entrySet()) {
+133:                 int dec = a.db.decimals(e.getKey());
+134:                 long[] v = e.getValue();
+135:                 TextView t = a.text(e.getKey() + "   الرصيد: " + Model.bal(v[2], dec)
+136:                         + "\nكل ما لنا: " + Model.fmt(v[0], dec) + "   •   كل ما علينا: " + Model.fmt(v[1], dec), 15, a.dark, false);
+137:                 c.addView(t);
+138:             }
+139:         } else c.addView(a.text("لا توجد عملات مفعّلة لهذا المكتب", 14, a.muted, false));
+140:         Map<String, Long> net = a.db.balances(o.id);
+141:         Ledger.Valuation val = Ledger.valueOffice(net, a.db.usdRates(), a.db.decimalsMap());
+142:         if (val.receivableUsd.signum() != 0 || val.payableUsd.signum() != 0) {
+143:             c.addView(a.text("تقويم تقريبي بالدولار: لنا ≈ " + Db.fmtUsd(val.receivableUsd) + " • علينا ≈ " + Db.fmtUsd(val.payableUsd)
+144:                     + (val.missingRates.isEmpty() ? "" : "\nبدون سعر: " + val.missingRates), 12, a.muted, false));
+145:         }
+146:         List<String> alerts = a.officesScreen.limitAlerts(o);
+147:         if (!alerts.isEmpty()) c.addView(a.text("⚠ تجاوز الحد:\n" + Model.join(alerts, "\n"), 14, a.red, true));
+148: 
+149:         // المطابقة مع المكتب
+150:         LinearLayout rc = a.card();
+151:         final Model.Recon last = a.db.lastRecon(o.id, false);
+152:         rc.addView(a.text("المطابقة مع المكتب", 16, a.primary, true));
+153:         if (last == null) rc.addView(a.text("لم تُرسل مطابقة رصيد لهذا المكتب بعد.", 13, a.muted, false));
+154:         else rc.addView(a.text("آخر مطابقة: " + Model.date(last.createdAt) + " — " + ReconScreen.statusText(last), 14, a.reconScreen.statusColor(last), true));
+155:         LinearLayout rb = a.row();
+156:         rb.addView(a.smallButton("مطابقة رصيد", a.primary, v -> a.reconScreen.sendDialog(o, refresh)), a.weight(44, 1.1f, 2));
+157:         rb.addView(a.smallButton("بعد آخر مطابقة", a.accent, v -> a.exportUi.statementDialog(o, period, null, ExportUi.SCOPE_SINCE, null)), a.weight(44, 1.1f, 2));
+158:         rb.addView(a.smallButton("السجل", Color.rgb(120, 120, 120), v -> a.reconScreen.showOffice(o)), a.weight(44, 0.7f, 2));
+159:         rc.addView(rb);
+160:         if (last != null && Model.RECON_SENT.equals(last.status)) {
+161:             LinearLayout qb = a.row();
+162:             qb.addView(a.smallButton("✓ أكّد المكتب", a.green, v -> a.reconScreen.statusDialog(last, Model.RECON_CONFIRMED, refresh)), a.weight(42, 1, 2));
+163:             qb.addView(a.smallButton("✗ غير مطابق", a.red, v -> a.reconScreen.statusDialog(last, Model.RECON_DISPUTED, refresh)), a.weight(42, 1, 2));
+164:             rc.addView(qb);
+165:         }
+166: 
+167:         LinearLayout pr = a.row();
+168:         a.body.addView(pr, a.lp(-1, -2, 4));
+169:         pr.addView(a.smallButton("الفترة: " + period.label, a.accent, v -> choosePeriod(p -> show(o, p, showCancelled))), a.weight(46, 1, 2));
+170:         final CheckBox cancelled = new CheckBox(a);
+171:         cancelled.setText("إظهار الملغاة");
+172:         cancelled.setChecked(showCancelled);
+173:         cancelled.setOnCheckedChangeListener((x, ch) -> show(o, period, ch));
+174:         pr.addView(cancelled, new LinearLayout.LayoutParams(-2, -2));
+175: 

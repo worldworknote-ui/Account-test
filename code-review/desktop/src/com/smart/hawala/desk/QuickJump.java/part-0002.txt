@@ -1,0 +1,50 @@
+145:             if (!m.isEmpty()) list.setSelectedIndex(0);
+146:         };
+147:         final Runnable go = () -> {
+148:             Item it = list.getSelectedValue();
+149:             if (it == null) return;
+150:             d.dispose();
+151:             SwingUtilities.invokeLater(it.run);
+152:         };
+153:         q.getDocument().addDocumentListener(new DocumentListener() {
+154:             @Override public void insertUpdate(DocumentEvent e) { fill.run(); }
+155: 
+156:             @Override public void removeUpdate(DocumentEvent e) { fill.run(); }
+157: 
+158:             @Override public void changedUpdate(DocumentEvent e) { fill.run(); }
+159:         });
+160:         q.addKeyListener(new KeyAdapter() {
+161:             @Override public void keyPressed(KeyEvent e) {
+162:                 int n = m.getSize(), i = list.getSelectedIndex();
+163:                 if (e.getKeyCode() == KeyEvent.VK_DOWN && n > 0) list.setSelectedIndex(Math.min(n - 1, i + 1));
+164:                 else if (e.getKeyCode() == KeyEvent.VK_UP && n > 0) list.setSelectedIndex(Math.max(0, i - 1));
+165:                 else if (e.getKeyCode() == KeyEvent.VK_PAGE_DOWN && n > 0) list.setSelectedIndex(Math.min(n - 1, i + 8));
+166:                 else if (e.getKeyCode() == KeyEvent.VK_PAGE_UP && n > 0) list.setSelectedIndex(Math.max(0, i - 8));
+167:                 else if (e.getKeyCode() == KeyEvent.VK_ENTER) go.run();
+168:                 else if (e.getKeyCode() == KeyEvent.VK_ESCAPE) d.dispose();
+169:                 else return;
+170:                 list.ensureIndexIsVisible(list.getSelectedIndex());
+171:                 e.consume();
+172:             }
+173:         });
+174:         list.addMouseListener(new MouseAdapter() {
+175:             @Override public void mouseClicked(MouseEvent e) { go.run(); }
+176:         });
+177:         q.setText(initial == null ? "" : initial);
+178:         fill.run();
+179:         JPanel c = new JPanel(new BorderLayout(0, 8));
+180:         c.setBackground(Ui.surface);
+181:         c.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(Ui.primary, 2), new EmptyBorder(12, 12, 12, 12)));
+182:         c.add(q, BorderLayout.NORTH);
+183:         JScrollPane sp = new JScrollPane(list);
+184:         sp.setBorder(BorderFactory.createLineBorder(Ui.line));
+185:         sp.setPreferredSize(new Dimension(560, 340));
+186:         c.add(sp, BorderLayout.CENTER);
+187:         c.applyComponentOrientation(Ui.RTL);
+188:         d.setContentPane(c);
+189:         d.pack();
+190:         d.setLocationRelativeTo(App.frame);
+191:         d.setLocation(d.getX(), Math.max(App.frame.getY() + 90, d.getY() - 120));
+192:         d.setVisible(true);
+193:     }
+194: }

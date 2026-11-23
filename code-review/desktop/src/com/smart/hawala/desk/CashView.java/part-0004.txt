@@ -1,0 +1,155 @@
+450:         JComboBox<String> link = Ui.combo(cfg.strict ? new String[]{"لحساب مكتب", "لحساب عميل"} : new String[]{"لحساب مكتب", "لحساب عميل", "بدون حساب"});
+451:         List<Model.Office> offs = new ArrayList<>();
+452:         for (Model.Office o : db.offices()) if (o.active) offs.add(o);
+453:         String[] on = new String[offs.size()];
+454:         for (int i = 0; i < on.length; i++) on[i] = offs.get(i).name;
+455:         JComboBox<String> office = Ui.combo(on);
+456:         // 10.18: من صفحة المكتب يُفتح على المكتب نفسه
+457:         if (presetOffice != null) for (int i = 0; i < offs.size(); i++) if (offs.get(i).id == presetOffice) office.setSelectedIndex(i);
+458:         presetOffice = null;
+459:         List<ClientBook.Client> cls = new ArrayList<>();
+460:         for (ClientBook.Client k : db.clients()) if (k.active) cls.add(k);
+461:         String[] cn = new String[cls.size()];
+462:         for (int i = 0; i < cn.length; i++) cn[i] = cls.get(i).name;
+463:         JComboBox<String> client = Ui.combo(cn);
+464:         List<String> cats = in ? cfg.inCats : cfg.outCats;
+465:         JComboBox<String> cat = Ui.combo(cats.toArray(new String[0]));
+466:         JComboBox<String> cur = Ui.combo(cfg.currencies.toArray(new String[0]));
+467:         List<String> all = new ArrayList<>();
+468:         for (Model.Currency c : db.currencies(false)) all.add(c.code);
+469:         JComboBox<String> ccur = Ui.combo(all.toArray(new String[0]));
+470:         JCheckBox other = Ui.check(in ? "يُضاف إلى حسابه بعملة أخرى" : "يُخصم من حسابه بعملة أخرى", false);
+471:         Ui.Field amount = Ui.numeric("المبلغ"), camt = Ui.numeric("المبلغ على حسابه (بعملته)"), party = Ui.field(in ? "ممن استلمت؟" : "لمن سلّمت؟"), desc = Ui.field("البيان (اختياري)");
+472:         JComboBox<String> fee = Ui.combo(new String[]{"بدون أجور", "أجور لنا", "أجور علينا"});
+473:         Ui.Field feeAmt = Ui.numeric("مبلغ الأجور");
+474:         JComboBox<String> feeWhere = Ui.combo(new String[]{"على حساب المكتب", "نقدًا في الصندوق"});
+475:         Ui.DateField date = new Ui.DateField(Clock.now());
+476:         JPanel c = new JPanel(new GridLayout(0, 2, 12, 10));
+477:         c.setOpaque(false);
+478:         c.add(Ui.labeled("الحساب", link));
+479:         c.add(Ui.labeled("المكتب", office));
+480:         c.add(Ui.labeled("العميل", client));
+481:         c.add(Ui.labeled("البند (بدون حساب)", cat));
+482:         c.add(Ui.labeled("عملة النقد", cur));
+483:         c.add(Ui.labeled("المبلغ", amount));
+484:         c.add(Ui.labeled("حساب العميل", other));
+485:         c.add(Ui.labeled("عملة حسابه", ccur));
+486:         c.add(Ui.labeled("المبلغ على حسابه", camt));
+487:         c.add(Ui.labeled(in ? "ممن استلمت" : "لمن سلّمت", party));
+488:         c.add(Ui.labeled("البيان", desc));
+489:         c.add(Ui.labeled("التاريخ", date));
+490:         c.add(Ui.labeled("الأجور", fee));
+491:         c.add(Ui.labeled("مبلغ الأجور", feeAmt));
+492:         c.add(Ui.labeled("الأجور تُقيَّد", feeWhere));
+493:         Runnable sync = () -> {
+494:             int ls = link.getSelectedIndex();
+495:             office.setEnabled(ls == 0);
+496:             feeWhere.setEnabled(ls == 0);
+497:             client.setEnabled(ls == 1);
+498:             other.setEnabled(ls == 1);
+499:             ccur.setEnabled(ls == 1 && other.isSelected());
+500:             camt.setEnabled(ls == 1 && other.isSelected());
+501:             party.setEnabled(ls != 1);
+502:             cat.setEnabled(ls == 2);
+503:             feeAmt.setEnabled(fee.getSelectedIndex() > 0);
+504:         };
+505:         link.addActionListener(e -> sync.run());
+506:         other.addActionListener(e -> sync.run());
+507:         fee.addActionListener(e -> sync.run());
+508:         if (preset != null) {
+509:             link.setSelectedIndex(1);
+510:             for (int i = 0; i < cls.size(); i++) if (cls.get(i).id == preset.id) client.setSelectedIndex(i);
+511:         } else if (!cfg.strict) link.setSelectedIndex(2);
+512:         sync.run();
+513:         JPanel wrap = Ui.column();
+514:         wrap.add(Ui.para((in ? "يدخل الصندوق «" : "يخرج من الصندوق «") + cfg.name + "». لحساب مكتب: يُسجَّل على المكتب " + (in ? "«علينا»" : "«لنا»")
+515:                 + ". لحساب عميل: " + (in ? "«علينا له»" : "«لنا عليه»") + "، ولو بعملة غير عملة النقد (له 100 يورو فيأخذ دولارًا مثلًا).", 13, Ui.muted, 600));
+516:         wrap.add(Ui.gap(8));
+517:         wrap.add(c);
+518:         if (!Ui.form(this, in ? "استلام إلى الصندوق" : "تسليم من الصندوق", Ui.rtl(wrap), "مراجعة")) return;
+519:         try {
+520:             CashBox.Input x = new CashBox.Input();
+521:             x.kind = kind;
+522:             x.boxId = cfg.id;
+523:             int ls = link.getSelectedIndex();
+524:             if (ls == 0) {
+525:                 if (offs.isEmpty()) throw new IllegalArgumentException("لا توجد مكاتب نشطة");
+526:                 x.officeId = offs.get(office.getSelectedIndex()).id;
+527:             } else if (ls == 1) {
+528:                 if (cls.isEmpty()) throw new IllegalArgumentException("لا يوجد عملاء: أضفهم من «حسابات العملاء»");
+529:                 x.clientId = cls.get(client.getSelectedIndex()).id;
+530:             }
+531:             x.currency = (String) cur.getSelectedItem();
+532:             int d = db.decimals(x.currency);
+533:             x.amount = Db.minor(amount.val(), d);
+534:             if (x.clientId != null) {
+535:                 if (other.isSelected()) {
+536:                     x.clientCurrency = (String) ccur.getSelectedItem();
+537:                     if (x.clientCurrency.equals(x.currency)) throw new IllegalArgumentException("اختر عملة غير عملة النقد");
+538:                     x.clientAmount = Db.minor(camt.val(), db.decimals(x.clientCurrency));
+539:                 } else {
+540:                     x.clientCurrency = x.currency;
+541:                     x.clientAmount = x.amount;
+542:                 }
+543:             } else x.party = party.val();
+544:             x.description = desc.val();
+545:             if (ls == 2) x.category = (String) cat.getSelectedItem();
+546:             if (fee.getSelectedIndex() > 0) {
+547:                 x.fee = Db.minor(feeAmt.val(), d);
+548:                 x.feeSide = fee.getSelectedIndex() == 1 ? CashBox.FEE_US : CashBox.FEE_THEM;
+549:                 x.feeInCash = ls != 0 || feeWhere.getSelectedIndex() == 1;
+550:             }
+551:             x.when = when(date);
+552:             save(x);
+553:         } catch (Exception e) {
+554:             Ui.error(this, e);
+555:         }
+556:     }
+557: 
+558:     void expense() {
+559:         CashBox.Config cfg = db.cashConfig();
+560:         JComboBox<String> cat = Ui.combo(cfg.expenseCats.toArray(new String[0]));
+561:         JComboBox<String> cur = Ui.combo(cfg.currencies.toArray(new String[0]));
+562:         Ui.Field amount = Ui.numeric("المبلغ"), party = Ui.field("لمن؟ (اختياري)"), desc = Ui.field("البيان (مثل: راتب شهر 10)"), newCat = Ui.field("أو بند جديد");
+563:         Ui.DateField date = new Ui.DateField(Clock.now());
+564:         JPanel c = new JPanel(new GridLayout(0, 2, 12, 10));
+565:         c.setOpaque(false);
+566:         c.add(Ui.labeled("البند", cat));
+567:         c.add(Ui.labeled("بند جديد (اختياري)", newCat));
+568:         c.add(Ui.labeled("العملة", cur));
+569:         c.add(Ui.labeled("المبلغ", amount));
+570:         c.add(Ui.labeled("لمن", party));
+571:         c.add(Ui.labeled("البيان", desc));
+572:         c.add(Ui.labeled("التاريخ", date));
+573:         if (!Ui.form(this, "مصروف من الصندوق", Ui.rtl(c), "مراجعة")) return;
+574:         try {
+575:             CashBox.Input x = new CashBox.Input();
+576:             x.kind = CashBox.EXPENSE;
+577:             x.boxId = cfg.id;
+578:             x.category = newCat.val().isEmpty() ? (String) cat.getSelectedItem() : newCat.val();
+579:             if (!newCat.val().isEmpty()) db.addCashCategory(CashBox.EXPENSE, newCat.val());
+580:             x.currency = (String) cur.getSelectedItem();
+581:             x.amount = Db.minor(amount.val(), db.decimals(x.currency));
+582:             x.party = party.val();
+583:             x.description = desc.val();
+584:             x.when = when(date);
+585:             save(x);
+586:         } catch (Exception e) {
+587:             Ui.error(this, e);
+588:         }
+589:     }
+590: 
+591:     // ===================================================================================
+592:     // البيع والشراء
+593:     // ===================================================================================
+594: 
+595:     void trade(String side) {
+596:         CashBox.Config cfg = db.cashConfig();
+597:         if (cfg.currencies.size() < 2) {
+598:             Ui.info(this, "بيع وشراء", "أضف عملة ثانية للصندوق من إعداداته أولًا.");
+599:             return;
+600:         }
+601:         boolean buy = CashBox.BUY.equals(side);
+602:         String[] cs = cfg.currencies.toArray(new String[0]);
+603:         JComboBox<String> cur = Ui.combo(cs), counter = Ui.combo(cs);
+604:         counter.setSelectedIndex(1);

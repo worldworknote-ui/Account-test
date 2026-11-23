@@ -1,0 +1,136 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.Context;
+4: import java.io.File;
+5: import java.lang.reflect.Method;
+6: import javax.swing.SwingUtilities;
+7: import static com.smart.hawala.PhoneDrive.*;
+8: 
+9: /**
+10:  * 12.7 على النافذة الحقيقية (شاشة افتراضية، بيانات الاختبار D.sba): تفعيل نظام المستخدمين ← رسالة واضحة ← شاشة الدخول واسم
+11:  * المدير مكتوب فيها؛ ولصق عدة رسائل واتساب في «حركة جديدة» من داخل مكتب يثبّت المكتب نفسه لا آخر مكتب سُجّل له.
+12:  * وسائط: مجلد الصور، ملف .sba، ملف expect.json (كلمة مرور الاختبار).
+13:  */
+14: public final class Ui127Drive {
+15:     static void W(int ms) throws Exception { PhoneDrive.wait(ms); }
+16: 
+17:     static MainActivity act() { return com.smart.hawala.desk.PhoneWindow.activityForTests(); }
+18: 
+19:     public static void main(String[] a) throws Exception {
+20:         out = new File(a[0]);
+21:         out.mkdirs();
+22:         File home = java.nio.file.Files.createTempDirectory("sa-u127").toFile();
+23:         System.setProperty("sa.home", home.getAbsolutePath());
+24:         System.setProperty("sa.secrets", "file");
+25:         SecretStore.fallback(new File(home, "keys"));
+26:         Thread.setDefaultUncaughtExceptionHandler((t, e) -> { fails++; e.printStackTrace(System.out); });
+27:         Context ctx = new Context(home);
+28:         Crypto.init(ctx);
+29:         Db db = new Db(ctx);
+30:         SmartApp.db = db;
+31:         SmartApp.ctx = ctx;
+32:         License.load(ctx, db);
+33:         String pw = new org.json.JSONObject(new String(java.nio.file.Files.readAllBytes(new File(a[2]).toPath()), "UTF-8")).getJSONObject("D").getString("password");
+34:         BackupManager.Prepared p = BackupManager.prepareRestore(ctx, new File(a[1]), pw.toCharArray(), m -> { });
+35:         BackupManager.applyRestore(ctx, db, p, m -> { });
+36:         java.util.Map<String, String> gf = new java.util.HashMap<>();
+37:         gf.put("ft", "all");
+38:         gf.put("lid", "TEST-FULL");
+39:         gf.put("uu", "29991231");
+40:         java.lang.reflect.Constructor<LicenseToken.Grant> gc = LicenseToken.Grant.class.getDeclaredConstructor(java.util.Map.class);
+41:         gc.setAccessible(true);
+42:         License.current = Entitlements.of(gc.newInstance(gf), BuildInfo.BUILD_DATE);
+43:         SwingUtilities.invokeAndWait(() -> {
+44:             com.smart.hawala.desk.Main.lafForTests();
+45:             com.smart.hawala.desk.PhoneWindow.open(ctx, db);
+46:         });
+47:         robot = new java.awt.Robot();
+48:         robot.setAutoDelay(30);
+49:         W(1500);
+50:         if (findQuiet("لاحقًا")) clickText("لاحقًا");
+51:         W(400);
+52: 
+53:         System.out.println("== تفعيل نظام المستخدمين: مسار واضح بلا تعليق");
+54:         SwingUtilities.invokeAndWait(() -> act().usersScreen.showManager());
+55:         W(800);
+56:         clickText("تفعيل: إنشاء حساب المدير");
+57:         W(800);
+58:         clickHint("اسم المستخدم");
+59:         paste("مدير المكتب");
+60:         W(200);
+61:         clickHint("رمز المدير (6 إلى 8 أرقام)");
+62:         type("135790");
+63:         clickHint("أعد كتابة الرمز");
+64:         type("135790");
+65:         clickText("حفظ");
+66:         W(1200);
+67:         expect(findQuiet("رمز استرداد المدير"), "يظهر رمز الاسترداد أولًا");
+68:         clickText("كتبت الرمز وحفظته");
+69:         W(300);
+70:         clickText("تم");
+71:         W(1000);
+72:         shot("users-enabled-message");
+73:         expect(findQuiet("تم تفعيل نظام المستخدمين ✓") && findQuiet("الدخول باسمي"), "ثم رسالة واضحة: «ادخل الآن باسمك»");
+74:         clickText("الدخول باسمي");
+75:         W(1000);
+76:         shot("login-prefilled");
+77:         final String[] nameVal = {null};
+78:         SwingUtilities.invokeAndWait(() -> {
+79:             android.view.View v = PhoneDrive.findClass(android.app.WindowStack.roots().get(0).getView(), "EditText");
+80:             if (v instanceof android.widget.EditText) nameVal[0] = ((android.widget.EditText) v).getText().toString();
+81:         });
+82:         expect(findQuiet("تسجيل الدخول") && "مدير المكتب".equals(nameVal[0]), "شاشة الدخول واسم المدير مكتوب فيها («" + nameVal[0] + "»)");
+83:         clickHint("الرمز السري");
+84:         type("135790");
+85:         clickText("دخول");
+86:         W(1500);
+87:         expect(!findQuiet("تسجيل الدخول") && SmartApp.currentUser != null, "الدخول يعمل والتطبيق يستجيب");
+88:         clickTab(1, 6);
+89:         W(800);
+90:         expect(findQuiet("الأمل"), "التنقل يعمل بعد الدخول (المكاتب)");
+91: 
+92:         System.out.println("== لصق عدة رسائل من «حركة جديدة» داخل مكتب: المكتب نفسه");
+93:         Model.Office amal = null, other = null;
+94:         for (Model.Office o : db.offices()) {
+95:             if (o.name.equals("الأمل")) amal = o;
+96:             else if (o.active && other == null) other = o;
+97:         }
+98:         db.setSettingQuiet("last_office", "" + other.id);
+99:         WaPin.pin(db, other.id);   // آخر مكتب مثبّت لرسائل واتساب: غير الذي سندخل منه
+100:         final Model.Office target = amal;
+101:         SwingUtilities.invokeAndWait(() -> act().txScreen.showForOffice(target));
+102:         W(1000);
+103:         String msgs = "[18/11, 19:36] OA: 500 دولار لأحمد علي\n[18/11, 19:37] OA: 300 يورو لخالد\n[18/11, 19:38] OA: 200 دولار لسامر";
+104:         java.awt.Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new java.awt.datatransfer.StringSelection(msgs), null);
+105:         SwingUtilities.invokeAndWait(() -> {
+106:             try {
+107:                 Method m = TxScreen.class.getDeclaredMethod("pasteMessage");
+108:                 m.setAccessible(true);
+109:                 m.invoke(act().txScreen);
+110:             } catch (Exception e) {
+111:                 throw new RuntimeException(e);
+112:             }
+113:         });
+114:         W(900);
+115:         clickText("تسجيل كل رسالة وحدها");
+116:         W(1000);
+117:         shot("paste-office");
+118:         expect(findQuiet("📌 المكتب: " + amal.name), "قائمة الرسائل مثبّتة على «" + amal.name + "» (المكتب الذي دخلنا منه)");
+119:         expect(!findQuiet("📌 المكتب: " + other.name), "لا على آخر مكتب مثبّت «" + other.name + "»");
+120: 
+121:         System.out.println("== شاشة تحميل الانضمام (تُرسم، وتعرض الخطأ وزرّيه، والإلغاء يعود)");
+122:         SwingUtilities.invokeAndWait(() -> act().syncScreen.joinScreen());
+123:         W(2500);
+124:         shot("join-screen");
+125:         expect(findQuiet("الانضمام إلى المزامنة") && findQuiet("يمكنك ترك التطبيق أثناء التحميل"), "شاشة التحميل بشريط تقدم وشرح");
+126:         expect(findQuiet("تعذّر إكمال التحميل") && findQuiet("إعادة المحاولة") && findQuiet("إلغاء الانضمام"), "بلا انضمام جارٍ: رسالة واضحة وزرّا إعادة المحاولة والإلغاء");
+127:         clickText("إلغاء الانضمام");
+128:         W(600);
+129:         click("إلغاء الانضمام", true);   // زر نافذة التأكيد (العنوان بالنص نفسه أعلاها)
+130:         W(1200);
+131:         expect(!findQuiet("الانضمام إلى المزامنة"), "الإلغاء يعود للتطبيق");
+132: 
+133:         System.out.println(fails == 0 ? "UI127 OK" : "UI127 FAILED " + fails + " " + log);
+134:         System.exit(fails == 0 ? 0 : 1);
+135:     }
+136: }

@@ -1,0 +1,180 @@
+490:                 .setCancelable(false)
+491:                 .setPositiveButton("نسخ الرمز", (x, w) -> {
+492:                     ClipboardManager cm = (ClipboardManager) a.getSystemService(Context.CLIPBOARD_SERVICE);
+493:                     if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("رمز استرداد المزامنة", code));
+494:                     a.toast("نُسخ الرمز");
+495:                     show();
+496:                 }).setNegativeButton("حفظته", (x, w) -> show()).show();
+497:     }
+498: 
+499:     private void joinDialog() {
+500:         LinearLayout l = new LinearLayout(a);
+501:         l.setOrientation(LinearLayout.VERTICAL);
+502:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+503:         final EditText name = a.field("اسم هذا الجهاز (مثل: هاتف البيت)");
+504:         l.addView(name, a.lp(-1, 50, 3));
+505:         final Ui.Seg how = a.new Seg(new String[]{"كلمة السر", "رمز الاسترداد"}, null, 0, false);
+506:         l.addView(how.view, a.lp(-1, -2, 2));
+507:         final EditText pw = secret(l, "كلمة سر المزامنة أو رمز الاسترداد");
+508:         TextView warn = a.text("⚠ تُستبدل بيانات هذا الجهاز ببيانات المزامنة. إن كان فيه بيانات تحتاجها فاحفظ نسخة احتياطية أولًا.", 13, a.red, true);
+509:         l.addView(warn);
+510:         final AlertDialog d = new AlertDialog.Builder(a).setTitle("الانضمام إلى المزامنة").setView(l).setPositiveButton("انضمام", null).setNegativeButton("إلغاء", null).create();
+511:         d.setOnShowListener(x -> d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+512:             final String s = pw.getText().toString();
+513:             if (s.trim().isEmpty()) {
+514:                 pw.setError("مطلوبة");
+515:                 return;
+516:             }
+517:             d.dismiss();
+518:             final boolean rc = how.selected == 1;
+519:             final String dn = name.getText().toString();
+520:             // 12.7: كلمة السر تُفحص هنا فقط (لحظات)، ثم ينتقل الجهاز إلى شاشة التحميل بشريط تقدم
+521:             a.busy("جارٍ فتح الخزنة…", p -> {
+522:                 new SyncEngine(a.db, folder(a, a.db)).joinPrepare(s.toCharArray(), rc, dn);
+523:                 return null;
+524:             }, res -> joinScreen());
+525:         }));
+526:         d.show();
+527:     }
+528: 
+529:     // ===================================================================================
+530:     // 12.7: شاشة تحميل الانضمام: شريط تقدم، تكمل في الخلفية، وتُستأنف من تلقاء نفسها
+531:     // ===================================================================================
+532: 
+533:     private static volatile Thread joinThread;
+534: 
+535:     static boolean joinRunning() {
+536:         Thread t = joinThread;
+537:         return t != null && t.isAlive();
+538:     }
+539:     private static volatile int joinPct;
+540:     private static volatile String joinMsg = "", joinErr;
+541:     private static volatile boolean joinDone;
+542:     private final Runnable joinTick = new Runnable() {
+543:         @Override public void run() { refreshJoin(); }
+544:     };
+545:     private ProgressBar joinBar;
+546:     private TextView joinLine, joinErrView;
+547:     private LinearLayout joinErrBox;
+548:     private boolean joinShown;
+549: 
+550:     /** يبدأ التحميل (أو يكمله) ويعرض الشاشة. */
+551:     void joinScreen() {
+552:         joinShown = true;
+553:         a.base("الانضمام إلى المزامنة", null);
+554:         String name = SyncEngine.pendingName(a.db);
+555:         TextView t = a.text("انضم هذا الجهاز" + (name.isEmpty() ? "" : " («" + name + "»)") + " ✓\nجارٍ تحميل بيانات المكتب إليه.", 17, a.primaryInk, true);
+556:         t.setGravity(Gravity.CENTER);
+557:         a.add(t);
+558:         joinBar = new ProgressBar(a, null, android.R.attr.progressBarStyleHorizontal);
+559:         joinBar.setMax(100);
+560:         a.body.addView(joinBar, a.lp(-1, 18, 14));
+561:         joinLine = a.text("", 15, a.ink, false);
+562:         joinLine.setGravity(Gravity.CENTER);
+563:         a.add(joinLine);
+564:         joinErrBox = new LinearLayout(a);
+565:         joinErrBox.setOrientation(LinearLayout.VERTICAL);
+566:         joinErrView = a.text("", 14, a.red, true);
+567:         joinErrBox.addView(joinErrView);
+568:         joinErrBox.addView(a.smallButton("إعادة المحاولة", a.primary, v -> startJoin()), a.lp(-1, 46, 6));
+569:         joinErrBox.addView(a.smallButton("إلغاء الانضمام", Color.rgb(130, 130, 130), v -> cancelJoin()), a.lp(-1, 42, 4));
+570:         joinErrBox.setVisibility(android.view.View.GONE);
+571:         a.body.addView(joinErrBox);
+572:         a.hint("يمكنك ترك التطبيق أثناء التحميل: يكمل في الخلفية، وإن انقطع (إغلاق أو انقطاع شبكة) يكمل من تلقاء نفسه عند فتح التطبيق. "
+573:                 + "بيانات هذا الجهاز لا تُستبدل إلا بعد اكتمال تنزيل بيانات المكتب وصوره.");
+574:         startJoin();
+575:     }
+576: 
+577:     private void startJoin() {
+578:         if (joinThread != null && joinThread.isAlive()) {
+579:             refreshJoin();
+580:             return;
+581:         }
+582:         joinErr = null;
+583:         joinDone = false;
+584:         joinPct = 0;
+585:         joinMsg = "جارٍ البدء…";
+586:         final SyncFolder f = folder(a, a.db);
+587:         final Db db = a.db;
+588:         Thread th = new Thread(() -> {
+589:             Exception last = null;
+590:             for (int attempt = 0; attempt < 4; attempt++) {
+591:                 try {
+592:                     new SyncEngine(db, f).joinFinish((pc, m) -> {
+593:                         joinPct = pc;
+594:                         joinMsg = m;
+595:                     });
+596:                     last = null;
+597:                     break;
+598:                 } catch (Exception e) {
+599:                     last = e;
+600:                     if (!transientError(e) || attempt == 3) break;
+601:                     joinMsg = "انقطع الاتصال، إعادة المحاولة…";
+602:                     try {
+603:                         Thread.sleep(attempt == 0 ? 5000 : 15000);
+604:                     } catch (InterruptedException x) {
+605:                         break;
+606:                     }
+607:                 }
+608:             }
+609:             if (last != null) joinErr = Ui.friendly(last);
+610:             else joinDone = true;
+611:         }, "sync-join");
+612:         joinThread = th;
+613:         th.start();
+614:         refreshJoin();
+615:     }
+616: 
+617:     private void refreshJoin() {
+618:         handler.removeCallbacks(joinTick);
+619:         if (!joinShown) return;
+620:         if (joinBar != null) joinBar.setProgress(joinPct);
+621:         if (joinLine != null) joinLine.setText(joinPct + "% — " + joinMsg);
+622:         if (joinErr != null) {
+623:             joinErrView.setText("تعذّر إكمال التحميل: " + joinErr);
+624:             joinErrBox.setVisibility(android.view.View.VISIBLE);
+625:             return;
+626:         }
+627:         joinErrBox.setVisibility(android.view.View.GONE);
+628:         if (joinDone) {
+629:             joinShown = false;
+630:             joinDone = false;
+631:             Reliability.defer(15 * 60_000L);
+632:             a.toast("اكتمل تحميل بيانات المكتب ✓");
+633:             // 10.1: البيانات صارت بيانات المزامنة: إن كان فيها مستخدمون يدخل كل شخص بحسابه
+634:             SmartApp.currentUser = null;
+635:             Db.currentUserName = "المستخدم المحلي";
+636:             a.afterUnlock();
+637:             return;
+638:         }
+639:         handler.postDelayed(joinTick, 400);
+640:     }
+641: 
+642:     private void cancelJoin() {
+643:         a.confirm("إلغاء الانضمام", "يتوقف الانضمام ويبقى هذا الجهاز خارج المزامنة. يمكنك الانضمام لاحقًا بكلمة السر.", "إلغاء الانضمام", () -> {
+644:             SyncEngine.cancelPending(a.db);
+645:             joinShown = false;
+646:             joinErr = null;
+647:             a.afterUnlock();
+648:         });
+649:     }
+650: 
+651:     /** خرجت شاشة أخرى فوق شاشة التحميل (أو عاد التطبيق): يتوقف التحديث الدوري فقط؛ العمل نفسه مستمر. */
+652:     void leaveJoinScreen() {
+653:         joinShown = false;
+654:         handler.removeCallbacks(joinTick);
+655:     }
+656: 
+657:     // ===================================================================================
+658:     // 10.3: الشرح المفصّل لكل طريقة، والإصلاح
+659:     // ===================================================================================
+660: 
+661:     void help(final String kind, final Runnable back) {
+662:         a.here(() -> help(kind, back));
+663:         a.tabbedScreen("شرح المزامنة", back, "more");
+664:         SyncHelp.Guide g = "drive".equals(kind) ? SyncHelp.drive(true) : "server".equals(kind) ? SyncHelp.server() : SyncHelp.folder(true);
+665:         LinearLayout c = a.card();
+666:         c.addView(rtl(a.text("\u200F" + g.title, 18, a.primaryInk, true)));
+667:         c.addView(rtl(a.text(g.intro, 14, a.ink, false)));
+668:         a.section("الخطوات", null, null);
+669:         LinearLayout s = a.card();

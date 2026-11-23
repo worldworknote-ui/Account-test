@@ -1,0 +1,93 @@
+146:         A.addTx(tx(amal, true, 700000, "EUR", "رصيد يورو", t0), null);
+147:         String[] fx = A.addFxNet(amal, "EUR", 100000, "USD", 108000, "1.08", "قص أول", t0 + 5000);
+148:         Map<String, Long> before = new TreeMap<>(A.balances(amal));
+149:         check(before.get("EUR") == 600000 && before.get("USD") == 408000, "القص الأصلي: يورو −1000 ودولار +1080");
+150:         Model.Tx[] legs = A.fxLegsOf(Long.parseLong(fx[0]));
+151:         check(legs != null && "EUR".equals(legs[0].currency) && "USD".equals(legs[1].currency), "ساقا القص تُقرآن: المباعة EUR والمشتراة USD");
+152:         Map<String, long[]> pv = A.fxEditPreview(legs, "EUR", 200000, "TRY", 9000000);
+153:         check(pv.get("EUR")[0] == 700000 && pv.get("EUR")[1] == 500000 && pv.get("USD")[1] == 300000 && pv.get("TRY")[1] == 9000000, "معاينة التعديل تعكس القديم أولًا");
+154:         String[] nw = A.editFxNet(legs[1].id, "EUR", 200000, "TRY", 9000000, "45", "قص مصحّح", legs[0].createdAt, "السعر خطأ");
+155:         Map<String, Long> bal = A.balances(amal);
+156:         check(bal.get("EUR") == 500000 && bal.get("USD") == 300000 && bal.get("TRY") == 9000000, "بعد التعديل: الأرصدة كأن القص سُجّل بالقيم الجديدة");
+157:         Model.Tx o0 = A.tx(legs[0].id), n0 = A.tx(Long.parseLong(nw[0])), n1 = A.tx(Long.parseLong(nw[1]));
+158:         check(!o0.isActive() && !A.tx(legs[1].id).isActive() && n0.isActive() && n1.isActive(), "الساقان القديمتان ملغاتان والجديدتان نشطتان");
+159:         check(n0.replacesId != null && n1.replacesId != null && n0.pairUuid.equals(n1.pairUuid) && !n0.pairUuid.equals(o0.pairUuid) && n0.isFx(), "الجديدتان مرتبطتان معًا وكل منهما تحل محل نظيرتها");
+160:         check(n0.createdAt == legs[0].createdAt, "التاريخ الأصلي محفوظ");
+161:         check(throwsMsg(() -> A.editFxNet(legs[0].id, "EUR", 1, "USD", 1, "1", "", t0, ""), "ملغاة"), "تعديل عملية عُدّلت من قبل مرفوض");
+162:         check(throwsMsg(() -> A.editFxNet(Long.parseLong(nw[0]), "EUR", 5, "EUR", 5, "1", "", t0, ""), null), "العملة نفسها في الطرفين مرفوضة ولا يتغير شيء");
+163:         check(A.balances(amal).get("EUR") == 500000 && A.tx(Long.parseLong(nw[0])).isActive(), "فشل التعديل لا يترك نصف عملية (المعاملة تُلغى كاملة)");
+164:         A.cancelTx(Long.parseLong(nw[0]), "إلغاء");
+165:         check(A.balances(amal).get("EUR") == 700000 && A.balances(amal).getOrDefault("TRY", 0L) == 0, "إلغاء القص المصحّح يعيد الأرصدة");
+166:         long plain = A.addTx(tx(amal, true, 100, "USD", "عادية", t0), null);
+167:         check(A.fxLegsOf(plain) == null && throwsMsg(() -> A.editFxNet(plain, "EUR", 5, "USD", 5, "1", "", t0, ""), "ليست حركة قص"), "حركة عادية لا تُفتح كقص");
+168: 
+169:         System.out.println("== 6) المزامنة: الأمانات وتعديل القص وتوقيت المكتب");
+170:         File shared = Files.createTempDirectory("sa-1018-folder").toFile();
+171:         SyncEngine eA = new SyncEngine(A, new FileSyncFolder(shared));
+172:         eA.create("كلمة-سر-المزامنة".toCharArray(), "المحل");
+173:         Db B = new Db(new Context(Files.createTempDirectory("sa-1018-B").toFile()));
+174:         SyncEngine eB = new SyncEngine(B, new FileSyncFolder(shared));
+175:         eB.join("كلمة-سر-المزامنة".toCharArray(), false, "البيت");
+176:         syncAll(eA, eB);
+177:         check(B.holds(amal, true).size() == 1 && B.holds(amal, false).size() == 2, "الأمانات وصلت الجهاز الثاني (القائم والمفكوك)");
+178:         check("Asia/Damascus".equals(B.setting("office_tz", "")), "توقيت المكتب وصل الجهاز الثاني");
+179:         check(B.setting("clock_offset_ms", "").isEmpty() || B.settingLong("clock_offset_ms", 0) == 0, "فرق ساعة الجهاز لا ينتقل بين الأجهزة");
+180:         String[] fx2 = A.addFxNet(amal, "EUR", 100000, "USD", 110000, "1.1", "قص للمزامنة", Clock.now() - 5000);
+181:         syncAll(eA, eB);
+182:         check(new TreeMap<>(B.balances(amal)).equals(new TreeMap<>(A.balances(amal))), "قبل التعديل: الأرصدة متطابقة على الجهازين");
+183:         B.editFxNet(Long.parseLong(fx2[0]), "EUR", 150000, "USD", 165000, "1.1", "معدّل من البيت", Clock.now() - 5000, "المبلغ");
+184:         B.releaseHold(h1);
+185:         String h3 = B.addHold(nour, "EUR", Db.HOLD_TRUST, Db.SIDE_OURS, 4200, "من البيت");
+186:         syncAll(eA, eB);
+187:         check(new TreeMap<>(B.balances(amal)).equals(new TreeMap<>(A.balances(amal))) && A.balances(amal).get("EUR") == 550000, "تعديل القص على جهاز يصل الآخر والأرصدة متطابقة");
+188:         check(!A.tx(Long.parseLong(fx2[0])).isActive() && !A.tx(Long.parseLong(fx2[1])).isActive(), "الساقان القديمتان ملغاتان على الجهاز الآخر");
+189:         check(A.holds(amal, true).isEmpty() && A.holds(nour, true).size() == 1 && A.holds(nour, true).get(0).uuid.equals(h3), "فكّ أمانة وإضافة أخرى على جهاز يصلان الآخر");
+190:         boolean dupNotice = false;
+191:         for (String[] c : SyncEngine.conflicts(A)) if (c[2].equals("EDIT_LOST") || c[2].equals("EDIT")) dupNotice = true;
+192:         check(!dupNotice, "لا تعارض كاذب من تعديل القص أو الأمانات");
+193:         check(SyncEngine.noticeHistory(A, 100).size() >= SyncEngine.conflicts(A).size(), "سجل تنبيهات المزامنة يضم المفتوح وما تمّ");
+194:         SyncEngine.resolveAll(A);
+195:         check(SyncEngine.conflicts(A).isEmpty() == true && SyncEngine.noticeHistory(A, 100).size() >= 0, "«تمت للكل» لا تمسح السجل");
+196: 
+197:         System.out.println("== 6ب) جهاز «يخرج وحده» وانضمام «يعطي خطأ» (تعثّر القراءة من مكان المزامنة)");
+198:         SyncEngine.resolveAll(A);
+199:         // بطاقات الأجهزة لا تُقرأ في هذه الجولة (كما يحدث حين تُستبدل البطاقة على Google Drive لحظة القراءة)
+200:         final boolean[] hideCards = {true};
+201:         final boolean[] failAll = {false};
+202:         final SyncFolder realF = new FileSyncFolder(shared);
+203:         SyncFolder flaky = (SyncFolder) java.lang.reflect.Proxy.newProxyInstance(SyncFolder.class.getClassLoader(), new Class<?>[]{SyncFolder.class}, (px, m, args) -> {
+204:             try {
+205:                 if (failAll[0] && (m.getName().equals("write") || m.getName().equals("list"))) throw new java.io.IOException("انقطع الاتصال");
+206:                 if (hideCards[0] && m.getName().equals("read") && String.valueOf(args[0]).startsWith("m-")) return null;
+207:                 return m.invoke(realF, args);
+208:             } catch (java.lang.reflect.InvocationTargetException e) {
+209:                 throw e.getCause();
+210:             }
+211:         });
+212:         SyncEngine eAflaky = new SyncEngine(A, flaky);
+213:         int membersBefore = SyncEngine.status(A).members.size();
+214:         try {
+215:             eAflaky.sync();
+216:         } catch (Exception e) {
+217:             System.out.println("      جولة متعثرة: " + e.getMessage());
+218:         }
+219:         boolean goneNotice = false;
+220:         for (String[] c : SyncEngine.noticeHistory(A, 200)) if (c[2].equals("DEVICE_GONE") && Long.parseLong(c[1]) > Clock.now() - 60_000 && c[5].contains("البيت")) goneNotice = true;
+221:         check(!goneNotice, "بطاقة جهاز لم تُقرأ في جولة: لا تنبيه «خرج الجهاز من المزامنة»");
+222:         check(SyncEngine.status(A).members.size() == membersBefore && SyncEngine.enabled(A) && SyncEngine.enabled(B), "والجهاز يبقى في قائمة الأجهزة، ولا يخرج أحد من المزامنة");
+223:         check(nzs(eAflaky.clean(true)).isEmpty(), "ولا يُحذف شيء من الخزنة والبطاقات غير مكتملة");
+224:         hideCards[0] = false;
+225:         syncAll(eA, eB);
+226:         boolean joinedAgain = false;
+227:         for (String[] c : SyncEngine.conflicts(A)) if (c[2].equals("DEVICE_JOINED")) joinedAgain = true;
+228:         check(!joinedAgain && SyncEngine.status(A).members.size() == membersBefore, "بعد عودة القراءة: لا «دخل جهاز» كاذب والقائمة كما هي");
+229:         // انضمام يتعثر اتصاله بعد أن استُبدلت البيانات وسُجّل الجهاز: كان يظهر خطأ ثم يُرفض الانضمام ثانية «في مزامنة من قبل»
+230:         Db C = new Db(new Context(Files.createTempDirectory("sa-1018-C").toFile()));
+231:         final boolean[] armed = {false};
+232:         SyncFolder cut = (SyncFolder) java.lang.reflect.Proxy.newProxyInstance(SyncFolder.class.getClassLoader(), new Class<?>[]{SyncFolder.class}, (px, m, args) -> {
+233:             try {
+234:                 if (armed[0] && m.getName().equals("write")) throw new java.io.IOException("انقطع الاتصال");
+235:                 Object r = m.invoke(realF, args);
+236:                 // بعد قراءة اللقطة (s-) ينقطع الاتصال: التسجيل المحلي يتم، وكتابة البطاقة وأول جولة تفشلان
+237:                 if (m.getName().equals("read") && String.valueOf(args[0]).startsWith("s-")) armed[0] = true;
+238:                 return r;

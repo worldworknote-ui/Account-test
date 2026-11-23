@@ -1,0 +1,73 @@
+1: package android.view;
+2: 
+3: import android.graphics.Blur;
+4: import android.graphics.Canvas;
+5: import java.awt.*;
+6: import java.awt.geom.*;
+7: import java.awt.image.BufferedImage;
+8: import java.util.LinkedHashMap;
+9: import java.util.Map;
+10: 
+11: /** ظل الارتفاع (Material): ظل محيط خفيف + ظل منسدل للأسفل، من الشكل الخارجي للعنصر، مع ذاكرة للصور. */
+12: final class Shadows {
+13:     private Shadows() {}
+14: 
+15:     private static final Map<String, BufferedImage> cache = new LinkedHashMap<String, BufferedImage>(64, 0.75f, true) {
+16:         @Override protected boolean removeEldestEntry(Map.Entry<String, BufferedImage> e) { return size() > 160; }
+17:     };
+18: 
+19:     static void draw(Canvas c, View v, float z, float alpha) {
+20:         Shape s = v.outlineShape();
+21:         if (s == null) return;
+22:         Rectangle2D b = s.getBounds2D();
+23:         if (b.getWidth() < 1 || b.getHeight() < 1) return;
+24:         float blur = Math.min(40f, z * 0.9f + 1.5f);
+25:         float dy = Math.min(30f, z * 0.45f);
+26:         int pad = (int) Math.ceil(blur * 2) + 2;
+27:         String key = shapeKey(s, b) + "|" + Math.round(blur * 2);
+28:         BufferedImage im;
+29:         synchronized (cache) { im = cache.get(key); }
+30:         if (im == null) {
+31:             int w = (int) Math.ceil(b.getWidth()) + 2 * pad, h = (int) Math.ceil(b.getHeight()) + 2 * pad;
+32:             if ((long) w * h > 3_000_000L) return;
+33:             im = new BufferedImage(Math.max(1, w), Math.max(1, h), BufferedImage.TYPE_INT_ARGB);
+34:             Graphics2D g = im.createGraphics();
+35:             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+36:             g.translate(pad - b.getX(), pad - b.getY());
+37:             g.setColor(new Color(0, 0, 0, 255));
+38:             g.fill(s);
+39:             g.dispose();
+40:             Blur.box(im, Math.max(1, Math.round(blur / 2f)));
+41:             synchronized (cache) { cache.put(key, im); }
+42:         }
+43:         float a = alpha * c.alpha;
+44:         Graphics2D g = c.graphics();
+45:         Composite old = g.getComposite();
+46:         // ظل منسدل (أقوى) + ظل محيط (أخف)
+47:         float key1 = Math.min(0.30f, 0.12f + z * 0.006f) * a;
+48:         g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, Math.max(0, Math.min(1, key1))));
+49:         g.drawImage(im, (int) Math.round(b.getX() - pad), (int) Math.round(b.getY() - pad + dy), null);
+50:         float amb = Math.min(0.16f, 0.06f + z * 0.003f) * a;
+51:         g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, Math.max(0, Math.min(1, amb))));
+52:         g.drawImage(im, (int) Math.round(b.getX() - pad), (int) Math.round(b.getY() - pad + dy * 0.2), null);
+53:         g.setComposite(old);
+54:     }
+55: 
+56:     private static String shapeKey(Shape s, Rectangle2D b) {
+57:         String sz = Math.round(b.getWidth()) + "x" + Math.round(b.getHeight());
+58:         if (s instanceof RoundRectangle2D) return "rr" + sz + ":" + Math.round(((RoundRectangle2D) s).getArcWidth());
+59:         if (s instanceof Ellipse2D) return "e" + sz;
+60:         if (s instanceof Rectangle2D) return "r" + sz;
+61:         StringBuilder k = new StringBuilder("p" + sz + ":");
+62:         PathIterator it = s.getPathIterator(null);
+63:         float[] f = new float[6];
+64:         int n = 0;
+65:         while (!it.isDone() && n < 40) {
+66:             int t = it.currentSegment(f);
+67:             k.append(t).append(Math.round(f[0])).append(',').append(Math.round(f[1])).append(';');
+68:             it.next();
+69:             n++;
+70:         }
+71:         return k.toString();
+72:     }
+73: }

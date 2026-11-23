@@ -1,0 +1,160 @@
+694:             case "offices": c = night ? Color.rgb(45, 212, 191) : Color.rgb(13, 148, 136); break;
+695:             case "log": c = night ? Color.rgb(167, 139, 250) : Color.rgb(124, 58, 237); break;
+696:             case "more": c = night ? Color.rgb(251, 146, 60) : Color.rgb(234, 88, 12); break;
+697:             case "cash": c = night ? Color.rgb(233, 196, 106) : Color.rgb(176, 124, 16); break;
+698:             case "clients": c = night ? Color.rgb(244, 114, 182) : Color.rgb(219, 39, 119); break;
+699:             case "reports": c = night ? Color.rgb(129, 140, 248) : Color.rgb(79, 70, 229); break;
+700:             case "balances": c = night ? Color.rgb(34, 211, 238) : Color.rgb(8, 145, 178); break;
+701:             case "daily": c = night ? Color.rgb(251, 191, 36) : Color.rgb(217, 119, 6); break;
+702:             case "mine": c = night ? Color.rgb(61, 220, 151) : Color.rgb(22, 128, 82); break;
+703:             default: c = primary;
+704:         }
+705:         return c;
+706:     }
+707: 
+708:     /**
+709:      * 10.10: الشريط السفلي «جزيرة» رمادية عائمة بحواف مستديرة. التبويب الحالي داخل إطار بلونه، وكلمته ملوّنة؛
+710:      * عند الانتقال ينزلق الإطار من التبويب السابق إلى الجديد ويتبدل لونه. «تسجيل» زر بارز في الوسط.
+711:      */
+712:     void tabBar(String active) {
+713:         // 10.15: الشريط الزجاجي بتجويف (من «أموالي») هو الافتراضي؛ والجزيرة والدائرة باقيتان خيارين
+714:         if (NavPrefs.STYLE_NOTCH.equals(tabStyle())) {
+715:             notchBar(active);
+716:             return;
+717:         }
+718:         final FrameLayout tf = new FrameLayout(this);
+719:         tf.setClipChildren(false);
+720:         tf.setClipToPadding(false);
+721:         // 10.13: الجزيرة وإطارها وأزرارها في مجموعة واحدة، لتطوى معًا في نمط «الدائرة»
+722:         final FrameLayout grp = new FrameLayout(this);
+723:         grp.setClipChildren(false);
+724:         grp.setClipToPadding(false);
+725:         tf.addView(grp, new FrameLayout.LayoutParams(-1, -1));
+726:         // 10.12: أنحف وأنعم — كبسولة كاملة الاستدارة بتدرّج رمادي خفيف، وظل ناعم
+727:         int swDp = getResources().getConfiguration().screenWidthDp;
+728:         // 10.13: على الشاشة العريضة الجزيرة بعرض مريح في الوسط
+729:         final int islandH = dp(56), gapB = dp(10), side = swDp >= 720 ? dp(Math.max(16, (swDp - 620) / 2)) : dp(16);
+730:         int islandBg = night ? Color.rgb(28, 40, 35) : Color.rgb(232, 236, 234);
+731:         int islandTop = night ? Color.rgb(36, 50, 44) : Color.rgb(242, 245, 243);
+732:         int islandLine = night ? Color.rgb(46, 64, 56) : Color.rgb(214, 221, 218);
+733:         View island = new View(this);
+734:         GradientDrawable ig = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{islandTop, islandBg});
+735:         ig.setCornerRadius(islandH / 2f);
+736:         ig.setStroke(dp(1), islandLine);
+737:         island.setBackground(ig);
+738:         island.setElevation(dp(8));
+739:         FrameLayout.LayoutParams ip = new FrameLayout.LayoutParams(-1, islandH, Gravity.BOTTOM);
+740:         ip.setMargins(side, 0, side, gapB);
+741:         grp.addView(island, ip);
+742:         // الإطار المنزلق تحت التبويب الحالي
+743:         final View frameInd = new View(this);
+744:         frameInd.setElevation(dp(8));
+745:         frameInd.setVisibility(View.INVISIBLE);
+746:         grp.addView(frameInd, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.LEFT));
+747:         final LinearLayout items = row();
+748:         items.setClipChildren(false);
+749:         items.setGravity(Gravity.BOTTOM);
+750:         items.setPadding(side + dp(4), 0, side + dp(4), gapB);
+751:         items.setElevation(dp(9));
+752:         grp.addView(items, new FrameLayout.LayoutParams(-1, dp(TAB_FRAME_DP), Gravity.BOTTOM));
+753:         final java.util.List<String> keys = tabKeys();
+754:         final java.util.Map<String, View> cells = new java.util.HashMap<>();
+755:         final java.util.Map<String, TextView> labels = new java.util.HashMap<>();
+756:         for (int i = 0; i < keys.size(); i++) {
+757:             final String k = keys.get(i);
+758:             boolean on = k.equals(active);
+759:             LinearLayout cell = new LinearLayout(this);
+760:             cell.setOrientation(LinearLayout.VERTICAL);
+761:             cell.setClipChildren(false);
+762:             cell.setContentDescription(tabName(k));
+763:             if (k.equals("tx")) {
+764:                 cell.setGravity(Gravity.CENTER_HORIZONTAL | Gravity.BOTTOM);
+765:                 cell.setPadding(0, 0, 0, dp(5));
+766:                 FrameLayout fab = new FrameLayout(this);
+767:                 GradientDrawable g = new GradientDrawable();
+768:                 g.setShape(GradientDrawable.OVAL);
+769:                 g.setColors(new int[]{mix(primary, Color.WHITE, 0.18f), primary});
+770:                 g.setStroke(dp(3), islandTop);
+771:                 fab.setBackground(ripple(g, 30));
+772:                 fab.setElevation(dp(6));
+773:                 springy(fab, 0.88f);
+774:                 fab.addView(icon(R.drawable.ic_plus, onColor(primary), 24), new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
+775:                 cell.addView(fab, new LinearLayout.LayoutParams(dp(50), dp(50)));
+776:                 fab.setOnClickListener(v -> {
+777:                     tick(v);
+778:                     bubbleOpen = false;
+779:                     openTab(k);
+780:                 });
+781:                 TextView t = text(tabName(k), 10, ink, true);
+782:                 t.setGravity(Gravity.CENTER);
+783:                 t.setPadding(0, dp(1), 0, 0);
+784:                 cell.addView(t, new LinearLayout.LayoutParams(-2, -2));
+785:                 items.addView(cell, new LinearLayout.LayoutParams(0, -1, 1.15f));
+786:                 continue;
+787:             }
+788:             cell.setGravity(Gravity.CENTER);
+789:             if (k.equals("cash")) {
+790:                 // 10.13: الصندوق خزنة ملوّنة أكبر قليلًا (صورة بلا تلوين)
+791:                 ImageView safe = new ImageView(this);
+792:                 safe.setImageResource(R.drawable.ic_safe_color);
+793:                 safe.setScaleType(ImageView.ScaleType.FIT_CENTER);
+794:                 cell.addView(safe, new LinearLayout.LayoutParams(dp(27), dp(27)));
+795:             } else {
+796:                 ImageView ic = icon(tabIcon(k), on ? tabColor(k) : muted, 20);
+797:                 cell.addView(ic, new LinearLayout.LayoutParams(dp(20), dp(20)));
+798:             }
+799:             TextView t = text(tabName(k), 10, on ? tabColor(k) : muted, on);
+800:             t.setGravity(Gravity.CENTER);
+801:             t.setPadding(0, dp(2), 0, 0);
+802:             cell.addView(t, new LinearLayout.LayoutParams(-2, -2));
+803:             cell.setBackground(ripple(null, 18));
+804:             springy(cell, 0.9f);
+805:             cell.setOnClickListener(v -> {
+806:                 if (!k.equals(active) || !onHome) {
+807:                     tick(v);
+808:                     bubbleOpen = false;
+809:                     openTab(k);
+810:                 }
+811:             });
+812:             items.addView(cell, new LinearLayout.LayoutParams(0, islandH, 1f));
+813:             cells.put(k, cell);
+814:             labels.put(k, t);
+815:         }
+816:         final String from = lastTab;
+817:         lastTab = active;
+818:         // يُرسم الإطار بعد أول تخطيط: من التبويب السابق (إن وُجد) إلى الحالي بحركة مرنة وتبدّل لون
+819:         items.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+820:             boolean done;
+821: 
+822:             @Override public void onLayoutChange(View v, int l, int t, int r, int b, int ol, int ot, int or, int ob) {
+823:                 View to = cells.get(active);
+824:                 if (to == null || to.getWidth() == 0) {
+825:                     frameInd.setVisibility(View.INVISIBLE);
+826:                     return;
+827:                 }
+828:                 int w = to.getWidth() - dp(6), h = islandH - dp(12);
+829:                 ViewGroup.LayoutParams lp = frameInd.getLayoutParams();
+830:                 if (lp.width != w || lp.height != h) {
+831:                     lp.width = w;
+832:                     lp.height = h;
+833:                     frameInd.setLayoutParams(lp);
+834:                 }
+835:                 float tx = items.getLeft() + to.getLeft() + dp(3), ty = items.getTop() + to.getTop() + dp(6);
+836:                 final int cTo = tabColor(active);
+837:                 if (done) {
+838:                     frameInd.setTranslationX(tx);
+839:                     frameInd.setTranslationY(ty);
+840:                     return;
+841:                 }
+842:                 done = true;
+843:                 View prev = from == null ? null : cells.get(from);
+844:                 frameInd.setVisibility(View.VISIBLE);
+845:                 if (prev == null || prev == to || NO_MOTION) {
+846:                     frameInd.setBackground(frameDrawable(cTo, islandBg));
+847:                     frameInd.setTranslationX(tx);
+848:                     frameInd.setTranslationY(ty);
+849:                     if (prev == null && !NO_MOTION) {
+850:                         frameInd.setScaleX(0.7f);
+851:                         frameInd.setScaleY(0.7f);
+852:                         frameInd.setAlpha(0f);
+853:                         frameInd.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(420).setInterpolator(new android.view.animation.OvershootInterpolator(1.6f)).start();

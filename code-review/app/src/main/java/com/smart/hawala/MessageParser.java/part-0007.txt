@@ -1,0 +1,163 @@
+796:                 boolean nearCur = adj != null || adjOther != null || SYMBOLS.contains(first) || SYMBOLS.contains(prev);
+797:                 if (w.weak && !nearCur && lab == null) continue;
+798:                 int score = -1;
+799:                 if (lab != null) score += 6;
+800:                 if (lineCur || nearCur) score += 5;
+801:                 if (w.multiplier) score += 2;
+802:                 if (delivery) score += 1;
+803:                 if (l.nw.size() <= 3 + w.words) score += 1;
+804:                 if (fee) {
+805:                     if (r.fee.isEmpty()) r.fee = w.value.toPlainString();
+806:                     continue;
+807:                 }
+808:                 if (score > amountScore) {
+809:                     amountScore = score;
+810:                     r.amount = w.value.toPlainString();
+811:                     r.amountText = String.join(" ", l.ow.subList(w.start, Math.min(w.end, l.ow.size())));
+812:                     r.amountNote = "";
+813:                     amountTok = null;
+814:                     String[] c = adj != null ? adj : cur;
+815:                     amountLineCur = c == null ? null : c[0];
+816:                     amountWord = c != null ? c[1] : adjOther != null ? adjOther : other != null ? other : "";
+817:                     afterO = k < l.ow.size() ? l.ow.get(k) : "";
+818:                     afterN = first;
+819:                     l.used = true;
+820:                 }
+821:             }
+822:         }
+823:         if (amountLineCur != null) {
+824:             r.currency = amountLineCur;
+825:         } else {
+826:             String[] cur = currencyIn(allNorm, kws);
+827:             if (cur != null) {
+828:                 r.currency = cur[0];
+829:                 amountWord = cur[1];
+830:             } else if (amountWord.isEmpty()) {
+831:                 String w = anyCurrencyWord(allNorm, al);
+832:                 if (w != null) amountWord = w;
+833:             }
+834:             if (!amountWord.isEmpty() && r.currency == null && SYMBOLS.contains(amountWord)) {
+835:                 String[] c2 = currencyIn(amountWord, kws);
+836:                 if (c2 != null) r.currency = c2[0];
+837:             }
+838:         }
+839:         r.currencyWord = amountWord;
+840:         // 10.5 (AUDIT-031): بعملة بثلاث منازل (دينار كويتي، أردني…) «1.250» قد تعني ألفًا ومئتين وخمسين أو دينارًا وربعًا:
+841:         // لا يُخمَّن الرقم؛ يُترك المبلغ للمحاسب مع التفسيرين
+842:         if (amountTok != null && r.currency != null) {
+843:             int dec = -1;
+844:             for (Cur c : currencies) if (c.code.equals(r.currency)) dec = c.decimals;
+845:             if (dec == 3) {
+846:                 try {
+847:                     Amounts.normalize(amountTok.replaceAll("[.,]+$", ""), 3);
+848:                 } catch (NumberFormatException amb) {
+849:                     r.amountNote = "«" + amountTok + "» ملتبس بعملة " + r.currency + " (ثلاث منازل): قد يكون " + r.amount + " أو " + amountTok.replace(',', '.')
+850:                             + ". اكتب المبلغ بيدك.";
+851:                     r.amount = "";
+852:                 }
+853:             }
+854:         }
+855: 
+856:         // ---------------------------------------------------------------- المرسل والمدينة
+857:         for (Line l : lines) {
+858:             int sl = labelLen(l, SENDER_LABELS);
+859:             String s = sl > labelLen(l, PERSON_LABELS) ? afterLabel(l, SENDER_LABELS) : null;
+860:             if (s != null && !s.trim().isEmpty() && r.sender.isEmpty()) {
+861:                 // «from Khaled Omar to Rami Saleh 700 GBP»: المرسل حتى نهاية اسمه فقط
+862:                 int e = nameEnd(l.nw, l.brk, sl, kws, al);
+863:                 boolean more = e < l.nw.size() && e > sl;
+864:                 r.sender = more ? titleCase(String.join(" ", l.ow.subList(sl, e))) : cleanName(s);
+865:                 if (!more) l.used = true;
+866:             }
+867:             String c = afterLabel(l, CITY_LABELS);
+868:             if (c != null && !c.trim().isEmpty() && r.city.isEmpty() && !hasDigit(c)) {
+869:                 r.city = cleanName(c);
+870:                 l.used = true;
+871:             }
+872:         }
+873:         for (Line l : lines) {
+874:             if (l.used || hasDigit(l.orig)) continue;
+875:             if (isCity(l.norm)) {
+876:                 if (r.city.isEmpty()) r.city = cleanName(l.orig);
+877:                 l.used = true;
+878:             }
+879:         }
+880:         // في وسط السطر: «from Ahmad» للمرسل، و«to Syria»/«in Hama»/«din Alep»/«في حلب» للمدينة
+881:         for (Line l : lines) {
+882:             for (int k = 0; k < l.nw.size(); k++) {
+883:                 if (r.sender.isEmpty() && k > 0) {
+884:                     int sl = phraseAt(l.nw, k, SENDER_LABELS);
+885:                     if (sl > 0) {
+886:                         int e = nameEnd(l.nw, l.brk, k + sl, kws, al);
+887:                         if (e > k + sl) r.sender = titleCase(String.join(" ", l.ow.subList(k + sl, e)));
+888:                     }
+889:                 }
+890:                 // «لكم 5000 دولار من عبد العزيز»: «من» العربية وحدها شائعة جدًا («من فضلك»، «من حلب»)،
+891:                 // فنقبلها للمرسل فقط إن تبعها اسم من كلمتين على الأقل ليس مدينة.
+892:                 if (r.sender.isEmpty() && "من".equals(l.nw.get(k))) {
+893:                     int st = k + 1;
+894:                     if (st < l.nw.size() && FROM_FILLER.contains(l.nw.get(st))) st++;
+895:                     if (st < l.nw.size() && !FROM_BLOCK.contains(l.nw.get(st)) && cityAt(l.nw, st) == 0) {
+896:                         int e = nameEnd(l.nw, l.brk, st, kws, al);
+897:                         if (e - st >= 2) {
+898:                             r.sender = titleCase(String.join(" ", l.ow.subList(st, e)));
+899:                             if (k == 0 && e == l.nw.size()) l.used = true;
+900:                         }
+901:                     }
+902:                 }
+903:                 if (r.city.isEmpty() && CITY_PREPS.contains(l.nw.get(k)) && k + 1 < l.nw.size()) {
+904:                     int n = cityAt(l.nw, k + 1);
+905:                     if (n > 0) r.city = cityText(l.ow, l.nw, k + 1, n);
+906:                 }
+907:             }
+908:         }
+909: 
+910:         // ---------------------------------------------------------------- اسم المستفيد
+911:         String best = "";
+912:         int bestScore = 0;
+913:         for (int i = 0; i < lines.size(); i++) {
+914:             Line l = lines.get(i);
+915:             // 1) بعد تسمية صريحة في أول السطر: «الاسم: …»، «المستلم: …»، «للسيد …»، «Receiver: …»
+916:             boolean senderLine = labelLen(l, SENDER_LABELS) >= labelLen(l, PERSON_LABELS) && labelLen(l, SENDER_LABELS) > 0;
+917:             String lab = senderLine ? null : afterLabel(l, PERSON_LABELS);
+918:             if (lab != null) {
+919:                 String cand = cleanName(lab.replaceAll("[\\d+$€₺£₮].*$", ""));
+920:                 List<String> cw = words(norm(cand));
+921:                 if (cw.size() >= 1 && cw.size() <= 6 && nameWord(cw.get(0), kws, al)) {
+922:                     int sc = 10 + (cw.size() >= 2 ? 1 : 0);
+923:                     if (sc > bestScore) {
+924:                         bestScore = sc;
+925:                         best = titleCase(cand);
+926:                     }
+927:                     continue;
+928:                 }
+929:             }
+930:             // 1ب) في أي موضع من السطر: لقب («Mr Tony»، «domnului Ion»، «للسيد أحمد»)، أو تسمية، أو حرف جر («to Ahmad Ali»، «لـ أحمد»)
+931:             for (int k = 0; k < l.nw.size(); k++) {
+932:                 int hl = phraseAt(l.nw, k, HONORIFICS);
+933:                 int pl = hl == 0 ? phraseAt(l.nw, k, PREP_LABELS) : 0;
+934:                 int ll = hl == 0 && pl == 0 && k > 0 ? phraseAt(l.nw, k, PERSON_LABELS) : 0;
+935:                 int len = Math.max(hl, Math.max(pl, ll));
+936:                 if (len == 0) continue;
+937:                 int st = k + len;
+938:                 if (pl > 0 && phraseAt(l.nw, st, HONORIFICS) > 0) continue;   // «for Mr Tony»: اللقب يتولّاه
+939:                 int e = nameEnd(l.nw, l.brk, st, kws, al);
+940:                 int n = e - st;
+941:                 if (n == 0) continue;
+942:                 int sc = hl > 0 || ll > 0 ? 9 + (n >= 2 ? 1 : 0) : 6 + (n >= 2 ? 1 : 0);
+943:                 if (sc > bestScore) {
+944:                     bestScore = sc;
+945:                     best = titleCase(String.join(" ", l.ow.subList(st, e)));
+946:                 }
+947:             }
+948:             // 1ب2) لام الجر ملتصقة بالاسم بعد المبلغ أو العملة أو كلمة التسليم: «300 يورو لسامر علي»، «خمسمية لأحمد»
+949:             for (int k = 1; k < l.nw.size(); k++) {
+950:                 String w = l.nw.get(k);
+951:                 if (w.length() < 4 || w.charAt(0) != 'ل' || w.startsWith("لل") || NAME_STOP.contains(w)) continue;
+952:                 String prev = l.nw.get(k - 1);
+953:                 boolean ctx = hasDigit(prev) || SYMBOLS.contains(prev) || currencyIn(prev, kws) != null || anyCurrencyWord(prev, al) != null
+954:                         || NumberWords.isStrong(prev) || DELIVERY.contains(prev);
+955:                 String rem = w.substring(1);
+956:                 if (!ctx || !nameWord(rem, kws, al)) continue;
+957:                 int e = l.brk[k] ? k + 1 : nameEnd(l.nw, l.brk, k + 1, kws, al);
+958:                 if (e - k > 4) e = k + 4;

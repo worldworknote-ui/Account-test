@@ -1,0 +1,150 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.graphics.Color;
+5: import android.widget.LinearLayout;
+6: import android.widget.TextView;
+7: import java.util.ArrayList;
+8: import java.util.HashSet;
+9: import java.util.List;
+10: import java.util.Set;
+11: 
+12: /**
+13:  * 10.8: «فرز المكاتب بين المحاسبين» — لكل مكتب محاسب «يسجّل» حركاته ومطابقاته، ومحاسب آخر (أو أكثر) «يتحقق» منها ويؤكد سلامتها.
+14:  * محاسبان: كل منهما يتحقق من مكاتب الآخر. ثلاثة: كل اثنين يتحققان من مكاتب الثالث. القواعد في Db (setOfficeTeam، autoCheckers، verifyTx).
+15:  */
+16: final class TeamScreen {
+17:     private final MainActivity a;
+18: 
+19:     TeamScreen(MainActivity a) { this.a = a; }
+20: 
+21:     static final String CONCEPT = "لكل مكتب محاسب يسجّل حركاته ومطابقاته، ومحاسب آخر يتحقق منها ويؤكد سلامتها. "
+22:             + "محاسبان: كل منهما يتحقق من مكاتب الآخر. ثلاثة محاسبين: كل اثنين يتحققان من مكاتب الثالث. "
+23:             + "التحقق لا يغيّر رصيدًا؛ يثبت أن محاسبًا غير المسجّل راجع الحركة. ولا يتحقق أحد مما أدخله هو.";
+24: 
+25:     void show() {
+26:         if (!a.require(Auth.Perm.USERS)) return;
+27:         a.here(this::show);
+28:         a.tabbedScreen("فرز المكاتب بين المحاسبين", a.usersScreen::showManager, "more");
+29:         LinearLayout c = a.card();
+30:         c.addView(a.text("الفكرة", 16, a.primaryInk, true));
+31:         c.addView(a.text(CONCEPT, 13, a.dark, false));
+32:         List<Model.User> acc = a.db.accountants();
+33:         List<Db.Team> teams = a.db.teams();
+34:         int noOwner = 0, noCheck = 0;
+35:         for (Db.Team t : teams) {
+36:             if (t.owners.isEmpty()) noOwner++;
+37:             else if (t.checkers.isEmpty()) noCheck++;
+38:         }
+39:         if (acc.size() < 2) a.notice(R.drawable.ic_info, "يلزم محاسبان على الأقل (غير المدير) ليتحقق كل منهما من الآخر. أضفهما من «المستخدمون».", false, null, null);
+40:         if (noCheck > 0) a.notice(R.drawable.ic_warn, noCheck + " مكتب له من يسجّله ولا أحد يتحقق منه.", true, null, null);
+41:         if (noOwner > 0) a.hint(noOwner + " مكتب بلا محاسب يسجّله بعد. اضغط «تعديل» عند المكتب، أو حدّد مكاتب كل محاسب من «المستخدمون ← المكاتب».");
+42:         if (acc.size() >= 2) a.button("توزيع تلقائي…", a.primary, v -> autoPlan());
+43:         for (final Db.Team t : teams) {
+44:             LinearLayout x = a.card();
+45:             x.addView(a.text(t.office.name, 17, a.primaryInk, true));
+46:             x.addView(a.text("يسجّل: " + (t.owners.isEmpty() ? "— لم يُحدد" : names(t.owners)), 14, t.owners.isEmpty() ? a.muted : a.green, true));
+47:             boolean warn = !t.owners.isEmpty() && t.checkers.isEmpty();
+48:             x.addView(a.text("يتحقق: " + (t.checkers.isEmpty() ? (warn ? "⚠ لا أحد" : "—") : names(t.checkers)), 14, warn ? a.red : t.checkers.isEmpty() ? a.muted : a.primaryInk, true));
+49:             if (t.owners.size() > 1) x.addView(a.text("⚠ أكثر من محاسب يسجّل هذا المكتب", 12, a.warnInk, false));
+50:             int open = a.db.unverifiedCount(t.office.id, 60);
+51:             if (open > 0) x.addView(a.text(open + " حركة خلال 60 يومًا لم يتحقق منها أحد", 12, a.muted, false));
+52:             x.addView(a.smallButton("تعديل", a.accent, v -> edit(t)), a.lp(-1, 42, 3));
+53:         }
+54:     }
+55: 
+56:     static String names(List<Model.User> l) { return Db.names(l); }
+57: 
+58:     /** فريق مكتب واحد: لكل محاسب «—» أو «يسجّل» أو «يتحقق». */
+59:     void edit(final Db.Team t) {
+60:         final List<Model.User> acc = a.db.accountants();
+61:         if (acc.isEmpty()) {
+62:             a.toast("لا محاسبين بعد: أضفهم من «المستخدمون»");
+63:             return;
+64:         }
+65:         final Set<Long> own = new HashSet<>(), chk = new HashSet<>();
+66:         for (Model.User u : t.owners) own.add(u.id);
+67:         for (Model.User u : t.checkers) chk.add(u.id);
+68:         LinearLayout box = new LinearLayout(a);
+69:         box.setOrientation(LinearLayout.VERTICAL);
+70:         box.setPadding(a.dp(16), a.dp(6), a.dp(16), 0);
+71:         box.addView(a.text("لكل محاسب دور واحد في هذا المكتب. من يسجّل لا يتحقق من المكتب نفسه.", 13, a.muted, false));
+72:         int gray = Color.rgb(120, 120, 120);
+73:         for (final Model.User u : acc) {
+74:             box.addView(a.text(u.name, 15, a.ink, true));
+75:             final boolean canCheck = Auth.can(u, Auth.Perm.VERIFY);
+76:             final Ui.Seg s = a.new Seg(new String[]{"—", "يسجّل", canCheck ? "يتحقق" : "يتحقق (بلا صلاحية)"}, new int[]{gray, a.green, a.primary},
+77:                     own.contains(u.id) ? 1 : chk.contains(u.id) ? 2 : 0, false);
+78:             s.listener = i -> {
+79:                 own.remove(u.id);
+80:                 chk.remove(u.id);
+81:                 if (i == 1) own.add(u.id);
+82:                 if (i == 2) {
+83:                     if (!canCheck) {
+84:                         a.toast("«" + u.name + "» ليست لديه صلاحية «التحقق من الحركات»: أضفها من «الصلاحيات والتعديل»");
+85:                         s.set(0, false);
+86:                         return;
+87:                     }
+88:                     chk.add(u.id);
+89:                 }
+90:             };
+91:             box.addView(s.view, a.lp(-1, -2, 2));
+92:         }
+93:         android.widget.ScrollView sv = new android.widget.ScrollView(a);
+94:         sv.addView(box);
+95:         new AlertDialog.Builder(a).setTitle("فريق «" + t.office.name + "»").setView(sv).setPositiveButton("حفظ", (d, w) -> {
+96:             final Runnable save = () -> {
+97:                 try {
+98:                     a.db.setOfficeTeam(t.office.id, own, chk);
+99:                     a.toast("حُفظ فريق «" + t.office.name + "»");
+100:                     show();
+101:                 } catch (Exception e) {
+102:                     a.error(e);
+103:                 }
+104:             };
+105:             List<String> warn = new ArrayList<>();
+106:             if (own.size() > 1) warn.add("أكثر من محاسب يسجّل هذا المكتب (" + own.size() + "): يجوز، لكن كل منهم يراه في «مكاتبي».");
+107:             if (!own.isEmpty() && chk.isEmpty()) warn.add("لا أحد يتحقق من هذا المكتب: حركاته تبقى بلا تحقق.");
+108:             if (warn.isEmpty()) save.run();
+109:             else new AlertDialog.Builder(a).setTitle("تنبيه").setMessage(Model.join(warn, "\n")).setPositiveButton("حفظ رغم ذلك", (x, y) -> save.run())
+110:                     .setNegativeButton("رجوع", null).show();
+111:         }).setNegativeButton("إلغاء", null).show();
+112:     }
+113: 
+114:     static String rolesLine(Db db, long userId) { return db.rolesLine(userId); }
+115: 
+116:     /** وصف قصير لمن يتحقق من مكتب (لـ«مكاتبي»). */
+117:     static TextView checkersLine(MainActivity a, Db.Team t) {
+118:         return a.text(t == null || t.checkers.isEmpty() ? "⚠ لا أحد يتحقق من هذا المكتب بعد" : "يتحقق منه: " + names(t.checkers), 13,
+119:                 t == null || t.checkers.isEmpty() ? a.red : a.primaryInk, false);
+120:     }
+121: 
+122:     /**
+123:      * 10.18: التوزيع التلقائي على مرحلتين: (1) المكاتب غير الموزّعة تُوزَّع بالتساوي بعد معاينة واحدة؛
+124:      * (2) المكاتب الموزّعة من قبل يُسأل عنها واحدًا واحدًا: اعتماد المقترح، أو إبقاؤها، أو إيقاف.
+125:      */
+126:     void autoPlan() {
+127:         try {
+128:             final List<Db.TeamPlan> fresh = new ArrayList<>(), old = new ArrayList<>();
+129:             for (Db.TeamPlan p : a.db.autoTeamPlan()) {
+130:                 if (p.owners.isEmpty() || p.same()) continue;
+131:                 (p.assigned ? old : fresh).add(p);
+132:             }
+133:             if (fresh.isEmpty() && old.isEmpty()) {
+134:                 a.toast("لا شيء يتغير: كل المكاتب موزّعة والتحقق موزّع");
+135:                 return;
+136:             }
+137:             final int[] done = {0};
+138:             if (fresh.isEmpty()) {
+139:                 askOld(old, 0, done);
+140:                 return;
+141:             }
+142:             StringBuilder b = new StringBuilder(fresh.size() + " مكتب غير موزّع — تُوزَّع بالتساوي هكذا:\n\n");
+143:             java.util.Map<String, List<String>> by = new java.util.LinkedHashMap<>();
+144:             for (Db.TeamPlan p : fresh) {
+145:                 String k = names(p.owners);
+146:                 if (!by.containsKey(k)) by.put(k, new ArrayList<String>());
+147:                 by.get(k).add(p.office.name);
+148:             }
+149:             for (java.util.Map.Entry<String, List<String>> en : by.entrySet())
+150:                 b.append("• ").append(en.getKey()).append(" يسجّل (").append(en.getValue().size()).append("): ").append(Model.join(en.getValue(), "، ")).append("\n");

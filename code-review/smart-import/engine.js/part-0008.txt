@@ -1,0 +1,190 @@
+1205:     }
+1206:     return out;
+1207:   }
+1208: 
+1209:   /**
+1210:    * جدول أرصدة محسوب من الحركات (ملخص بمعادلات، أو قيم تطابق نتيجة الحركات): لا يُنقل حتى لا تتضاعف الأرصدة،
+1211:    * بل يُقارن كل رصيد فيه برصيد المكتب نفسه بعد النقل. الإشارة (الموجب = لنا أو علينا) تُعرف من المطابقة نفسها.
+1212:    */
+1213:   function compareSummary(a, model, cfg, t) {
+1214:     var sub = newModel();
+1215:     var rows = balanceRows(sub, Object.assign({}, cfg, { positiveIs: {} }), t, t.roles, { rows: 0, imported: 0, excluded: 0, empty: 0, filled: 0, totals: 0, balanceOnly: 0 });
+1216:     function score(s) {
+1217:       var ok = 0, n = 0, list = [];
+1218:       rows.forEach(function (x) {
+1219:         var k0 = officeKeyFor(cfg, x.acc);
+1220:         Object.keys(x.nets).forEach(function (code) {
+1221:           var file = s * x.nets[code];
+1222:           var ours = model.direct[k0 + "|" + code] || 0n;
+1223:           n++;
+1224:           if (file === ours) ok++;
+1225:           list.push({ row: x.r + 1, account: clean(x.acc), key: k0 + "|" + code, code: code, file: file, ours: ours, ok: file === ours, known: model.officeIndex[k0] !== undefined });
+1226:         });
+1227:       });
+1228:       return { ok: ok, n: n, list: list };
+1229:     }
+1230:     var forced = cfg.positiveIs && cfg.positiveIs[t.id];
+1231:     var p = score(1n), m = score(-1n);
+1232:     var best = forced ? (forced === "D" ? p : m) : (m.ok > p.ok ? m : p);
+1233:     return { tid: t.id, table: t.label, sign: forced ? forced : (best === p ? "D" : "C"), forced: !!forced, n: best.n, ok: best.ok, rows: best.list,
+1234:       nonzero: best.list.filter(function (x) { return x.file !== 0n; }).length };
+1235:   }
+1236: 
+1237:   function summaryChecks(a, model, cfg) {
+1238:     model.summaryChecks = [];
+1239:     a.tables.forEach(function (t) {
+1240:       if (t.kind !== "summary") return;
+1241:       if (cfg.use && cfg.use[t.id]) return;
+1242:       var res = compareSummary(a, model, cfg, t);
+1243:       model.summaryChecks.push(res);
+1244:       res.rows.forEach(function (x) { if (!model.lastBalance[x.key] && x.known) model.lastBalance[x.key] = { minor: x.file, src: "summary" }; });
+1245:     });
+1246:   }
+1247: 
+1248:   /**
+1249:    * اتجاه عمود الأجرة يُعرف من عمود الرصيد في الجدول نفسه: يُجرَّب «لنا» و«علينا» و«لا تُحسب»،
+1250:    * ويُعتمد الذي تطابق به أرصدة الملف سطرًا بسطر (90% فأكثر وأفضل من غيره). بلا عمود رصيد: «لنا» كأداة النقل، ويمكن تغييره.
+1251:    */
+1252:   function detectFeeDirs(a, cfg, serialToDate) {
+1253:     var out = {};
+1254:     a.tables.forEach(function (t) {
+1255:       if (!t.use || t.kind === "balances" || t.kind === "summary" || t.roles.fee === undefined || t.roles.balance === undefined) return;
+1256:       if (cfg.feeDir && cfg.feeDir[t.id]) return;
+1257:       var best = null;
+1258:       ["D", "C", "X"].forEach(function (h) {
+1259:         var c2 = Object.assign({}, cfg, { feeDir: Object.assign({}, cfg.feeDir || {}), inferOpening: true });
+1260:         c2.feeDir[t.id] = h;
+1261:         var sub = newModel();
+1262:         buildJournal(sub, c2, t, t.roles, serialToDate);
+1263:         resolveBalances(sub, c2);
+1264:         var ch = sub.balanceChecks[0];
+1265:         var score = ch && ch.rows && ch.how !== "book" ? ch.ok / ch.rows : 0;
+1266:         var implied = ch ? ch.implied : 0;
+1267:         // التساوي يُحسم بالأبسط: الاحتمال الذي لا يحتاج رصيدًا سابقًا مستنتجًا
+1268:         if (!best || score > best.score || (score === best.score && implied < best.implied)) best = { h: h, score: score, implied: implied, tie: false };
+1269:         else if (score === best.score && implied === best.implied) best.tie = true;
+1270:       });
+1271:       if (best && best.score >= 0.9 && !best.tie) {
+1272:         cfg.feeDir = cfg.feeDir || {};
+1273:         cfg.feeDir[t.id] = best.h;
+1274:         t.feeDetected = best.h;
+1275:         out[t.id] = best.h;
+1276:       }
+1277:     });
+1278:     return out;
+1279:   }
+1280: 
+1281:   /**
+1282:    * بعد التحليل: جدول أرصدة في ملف فيه سجل حركات — إن طابقت قيمه نتيجة الحركات (90% فأكثر) فهو ملخص لها لا أرصدة سابقة.
+1283:    * (جداول الأرصدة بمعادلات صُنّفت ملخصًا من قبل.)
+1284:    */
+1285:   function detectSummaries(a, cfg, serialToDate) {
+1286:     var journals = a.tables.filter(function (t) { return t.use && t.kind !== "balances" && t.kind !== "summary"; });
+1287:     var bal = a.tables.filter(function (t) { return t.kind === "balances" && t.use; });
+1288:     if (!journals.length || !bal.length) return [];
+1289:     var c2 = Object.assign({}, cfg, { use: {} });
+1290:     a.tables.forEach(function (t) { c2.use[t.id] = journals.indexOf(t) >= 0; });
+1291:     var m = build(a, Object.assign(c2, { listedAccounts: false }), serialToDate);
+1292:     var found = [];
+1293:     bal.forEach(function (t) {
+1294:       var res = compareSummary(a, m, cfg, t);
+1295:       var nz = res.rows.filter(function (x) { return x.file !== 0n; });
+1296:       var hit = nz.filter(function (x) { return x.ok; }).length;
+1297:       if (nz.length >= 3 && hit >= nz.length * 0.9) {
+1298:         t.kind = "summary";
+1299:         t.use = false;
+1300:         t.summaryWhy = "values";
+1301:         found.push(t.id);
+1302:       }
+1303:     });
+1304:     return found;
+1305:   }
+1306: 
+1307:   function validDate(row, c, order, serialToDate) {
+1308:     var cell = (row || [])[c];
+1309:     if (!cell) return null;
+1310:     var d = C.parseDate(cell, order, serialToDate);
+1311:     return d && d.y >= 1990 ? d : null;
+1312:   }
+1313: 
+1314:   function sample(t, c) {
+1315:     var out = [];
+1316:     if (c === undefined) return out;
+1317:     for (var r = t.first; r <= t.last && out.length < 500; r++) { var x = (t.rows[r] || [])[c]; if (x) out.push(x); }
+1318:     return out;
+1319:   }
+1320: 
+1321:   /** منازل عشرية مقترحة لكل عملة: الأكبر بين المعتاد وما في الملف (لا تقريب أبدًا). */
+1322:   function suggestDecimals(a, cfg) {
+1323:     var dec = {};
+1324:     a.tables.forEach(function (t) {
+1325:       if (!t.use) return;
+1326:       (t.roles.wide || []).forEach(function (w) {
+1327:         var code = (cfg.curMap && cfg.curMap[key(w.h)]) || w.code;
+1328:         if (!code || code === "__skip") return;
+1329:         for (var r = t.first; r <= t.last; r++) {
+1330:           var p = C.parseAmount((t.rows[r] || [])[w.c]);
+1331:           if (p.ok) dec[code] = Math.max(dec[code] || 0, p.frac.length);
+1332:         }
+1333:       });
+1334:       if (t.roles.currency === undefined) {
+1335:         var fc = (cfg.fixedCurrency && cfg.fixedCurrency[t.id]) || t.sheetCurrency || cfg.defaultCurrency || "USD";
+1336:         [t.roles.amount, t.roles.debit, t.roles.credit].forEach(function (c) {
+1337:           if (c === undefined) return;
+1338:           for (var r = t.first; r <= t.last; r++) {
+1339:             var p = C.parseAmount((t.rows[r] || [])[c]);
+1340:             if (p.ok) dec[fc] = Math.max(dec[fc] || 0, p.frac.length);
+1341:           }
+1342:         });
+1343:         return;
+1344:       }
+1345:       var am = [t.roles.amount, t.roles.debit, t.roles.credit].filter(function (x) { return x !== undefined; });
+1346:       for (var r = t.first; r <= t.last; r++) {
+1347:         var row = t.rows[r] || [];
+1348:         var curT = text(row[t.roles.currency]);
+1349:         if (!curT) continue;
+1350:         var code = (cfg.curMap && cfg.curMap[key(curT)]) || guessCur(curT);
+1351:         if (!code || code === "__skip") continue;
+1352:         am.forEach(function (c) {
+1353:           var p = C.parseAmount(row[c]);
+1354:           if (p.ok) dec[code] = Math.max(dec[code] || 0, p.frac.length);
+1355:         });
+1356:       }
+1357:     });
+1358:     return dec;
+1359:   }
+1360: 
+1361:   // ===================================================================================
+1362:   // التحقق من معادلات الملف نفسه: SUMIFS / SUMIF على جداوله، تُحسب من الصفوف وتقارَن بالقيم المحفوظة
+1363:   // ===================================================================================
+1364: 
+1365:   function splitArgs(s) {
+1366:     var out = [], depth = 0, q = false, cur = "";
+1367:     for (var i = 0; i < s.length; i++) {
+1368:       var ch = s.charAt(i);
+1369:       if (ch === '"') { q = !q; cur += ch; continue; }
+1370:       if (!q && ch === "(") depth++;
+1371:       if (!q && ch === ")") depth--;
+1372:       if (!q && depth === 0 && (ch === "," || ch === ";")) { out.push(cur.trim()); cur = ""; continue; }
+1373:       cur += ch;
+1374:     }
+1375:     out.push(cur.trim());
+1376:     return out;
+1377:   }
+1378: 
+1379:   /** «SUMIFS(…)-SUMIFS(…)» ليست استدعاءً واحدًا: يجب ألا يُغلق القوس الأول قبل النهاية. */
+1380:   function wholeCall(inner) {
+1381:     var depth = 0, q = false;
+1382:     for (var i = 0; i < inner.length; i++) {
+1383:       var ch = inner.charAt(i);
+1384:       if (ch === '"') q = !q;
+1385:       else if (!q && ch === "(") depth++;
+1386:       else if (!q && ch === ")") { depth--; if (depth < 0) return false; }
+1387:     }
+1388:     return depth === 0 && !q;
+1389:   }
+1390: 
+1391:   function resolveColumn(a, sheet, ref) {
+1392:     // مرجع منظّم: Table4[Ammount] أو Table4[[#Data],[Ammount]]
+1393:     var m = ref.match(/^([A-Za-z_؀-ۿ][\w.؀-ۿ]*)\[(?:\[#[^\]]+\],)?\[?([^\]]+)\]?\]$/);
+1394:     if (m) {

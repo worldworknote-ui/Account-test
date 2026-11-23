@@ -1,0 +1,57 @@
+1: package android.graphics;
+2: 
+3: import java.awt.image.BufferedImage;
+4: import java.awt.image.DataBufferInt;
+5: 
+6: /** طمس صندوقي ثلاثي التمرير (قريب من الطمس الغاوسي) للظلال والتوهج. */
+7: public final class Blur {
+8:     private Blur() {}
+9: 
+10:     public static void box(BufferedImage im, int r) {
+11:         if (r < 1) return;
+12:         int w = im.getWidth(), h = im.getHeight();
+13:         int[] px = ((DataBufferInt) im.getRaster().getDataBuffer()).getData();
+14:         int[] tmp = new int[px.length];
+15:         for (int pass = 0; pass < 3; pass++) {
+16:             blurH(px, tmp, w, h, r);
+17:             blurV(tmp, px, w, h, r);
+18:         }
+19:     }
+20: 
+21:     private static void blurH(int[] in, int[] out, int w, int h, int r) {
+22:         int div = 2 * r + 1;
+23:         for (int y = 0; y < h; y++) {
+24:             int row = y * w;
+25:             long sa = 0, sr = 0, sg = 0, sb = 0;
+26:             for (int i = -r; i <= r; i++) {
+27:                 int c = in[row + clamp(i, w)];
+28:                 sa += c >>> 24; sr += (c >> 16) & 255; sg += (c >> 8) & 255; sb += c & 255;
+29:             }
+30:             for (int x = 0; x < w; x++) {
+31:                 out[row + x] = (int) ((sa / div) << 24 | (sr / div) << 16 | (sg / div) << 8 | (sb / div));
+32:                 int a = in[row + clamp(x - r, w)], b = in[row + clamp(x + r + 1, w)];
+33:                 sa += (b >>> 24) - (a >>> 24); sr += ((b >> 16) & 255) - ((a >> 16) & 255);
+34:                 sg += ((b >> 8) & 255) - ((a >> 8) & 255); sb += (b & 255) - (a & 255);
+35:             }
+36:         }
+37:     }
+38: 
+39:     private static void blurV(int[] in, int[] out, int w, int h, int r) {
+40:         int div = 2 * r + 1;
+41:         for (int x = 0; x < w; x++) {
+42:             long sa = 0, sr = 0, sg = 0, sb = 0;
+43:             for (int i = -r; i <= r; i++) {
+44:                 int c = in[clamp(i, h) * w + x];
+45:                 sa += c >>> 24; sr += (c >> 16) & 255; sg += (c >> 8) & 255; sb += c & 255;
+46:             }
+47:             for (int y = 0; y < h; y++) {
+48:                 out[y * w + x] = (int) ((sa / div) << 24 | (sr / div) << 16 | (sg / div) << 8 | (sb / div));
+49:                 int a = in[clamp(y - r, h) * w + x], b = in[clamp(y + r + 1, h) * w + x];
+50:                 sa += (b >>> 24) - (a >>> 24); sr += ((b >> 16) & 255) - ((a >> 16) & 255);
+51:                 sg += ((b >> 8) & 255) - ((a >> 8) & 255); sb += (b & 255) - (a & 255);
+52:             }
+53:         }
+54:     }
+55: 
+56:     private static int clamp(int v, int n) { return v < 0 ? 0 : v >= n ? n - 1 : v; }
+57: }

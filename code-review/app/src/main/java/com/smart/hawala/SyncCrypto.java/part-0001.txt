@@ -1,0 +1,177 @@
+1: package com.smart.hawala;
+2: 
+3: import java.io.ByteArrayInputStream;
+4: import java.io.ByteArrayOutputStream;
+5: import java.io.IOException;
+6: import java.nio.ByteBuffer;
+7: import java.nio.charset.StandardCharsets;
+8: import java.security.GeneralSecurityException;
+9: import java.security.MessageDigest;
+10: import java.security.SecureRandom;
+11: import java.util.zip.GZIPInputStream;
+12: import java.util.zip.GZIPOutputStream;
+13: import javax.crypto.Cipher;
+14: import javax.crypto.Mac;
+15: import javax.crypto.SecretKeyFactory;
+16: import javax.crypto.spec.GCMParameterSpec;
+17: import javax.crypto.spec.PBEKeySpec;
+18: import javax.crypto.spec.SecretKeySpec;
+19: 
+20: /**
+21:  * 10.0: تشفير المزامنة (منطق بحت مشترك: الهاتف والماك والويندوز).
+22:  *
+23:  * <p>القرارات:
+24:  * <ul>
+25:  *   <li>مفتاح الخزنة (Vault Key) عشوائي 32 بايت، لا يخرج من الأجهزة إلا مغلّفًا: بمفتاح مشتق من كلمة سر المزامنة
+26:  *       (PBKDF2-HMAC-SHA256، 600 ألف دورة، ملح 16 بايت) وبرمز استرداد عشوائي. تغيير كلمة السر يعيد التغليف فقط.
+27:  *       (Argon2id غير متاح مدمجًا في Java/Android 9 دون مكتبة خارجية؛ PBKDF2 بهذا العدد هو توصية OWASP البديلة.)</li>
+28:  *   <li>من مفتاح الخزنة تُشتق بـ HKDF-SHA256 مفاتيح فرعية: للتشفير، ولتعمية أسماء الملفات.</li>
+29:  *   <li>كل ملف: AES-256-GCM، ورقم Nonce عشوائي 96 بت لكل ملف (لا عدّاد: استعادة نسخة قديمة للجهاز قد تعيد العدّاد فيتكرر
+30:  *       الرقم مع المفتاح نفسه وهو خطأ قاتل في GCM؛ العشوائي آمن حتى مليارات الملفات). البيانات الإضافية (AAD) تربط
+31:  *       الملف بالخزنة ونوعه واسمه فلا يُنقل ملف مكان آخر.</li>
+32:  *   <li>المحتوى يُضغط ثم يُحشى ليكون حجم الملف مضاعفًا لـ 4KB فلا يكشف الحجم عدد الحركات.</li>
+33:  *   <li>كل الأجهزة أعضاء موثوقون في الخزنة نفسها (أجهزة المكتب الواحد)، فالتوثيق بـ GCM بمفتاح الخزنة؛ وسلسلة التجزئة بين
+34:  *       حزم كل جهاز تكشف الحذف وإعادة الترتيب.</li>
+35:  * </ul>
+36:  */
+37: public final class SyncCrypto {
+38:     private SyncCrypto() {}
+39: 
+40:     public static final int KDF_ITER = 600_000;
+41:     /** 11.5: حدود عدد الدورات وطول الملح المقبولة من رأس الخزنة. */
+42:     public static final int KDF_MIN = 100_000, KDF_MAX = 5_000_000;
+43: 
+44:     /** خطأ في الرأس نفسه (لا كلمة سر خاطئة): يُعرض نصه كما هو. */
+45:     public static void checkKdf(int iter, byte[] salt) {
+46:         if (iter < KDF_MIN || iter > KDF_MAX) throw new IllegalStateException("رأس خزنة المزامنة غير صالح (عدد دورات الاشتقاق " + iter + " خارج الحدود). اضغط «إصلاح» من جهاز منضم.");
+47:         if (salt == null || salt.length < 16 || salt.length > 64) throw new IllegalStateException("رأس خزنة المزامنة غير صالح (طول الملح). اضغط «إصلاح» من جهاز منضم.");
+48:     }
+49:     static final int PAD = 4096;
+50:     private static final SecureRandom RNG = new SecureRandom();
+51: 
+52:     public static byte[] random(int n) {
+53:         byte[] b = new byte[n];
+54:         RNG.nextBytes(b);
+55:         return b;
+56:     }
+57: 
+58:     public static String hex(byte[] b) { return BackupFormat.hex(b); }
+59: 
+60:     public static byte[] unhex(String s) {
+61:         byte[] out = new byte[s.length() / 2];
+62:         for (int i = 0; i < out.length; i++) out[i] = (byte) Integer.parseInt(s.substring(2 * i, 2 * i + 2), 16);
+63:         return out;
+64:     }
+65: 
+66:     public static byte[] sha256(byte[] b) {
+67:         try {
+68:             return MessageDigest.getInstance("SHA-256").digest(b);
+69:         } catch (GeneralSecurityException e) {
+70:             throw new IllegalStateException(e);
+71:         }
+72:     }
+73: 
+74:     public static byte[] hmac(byte[] key, byte[] data) {
+75:         try {
+76:             Mac m = Mac.getInstance("HmacSHA256");
+77:             m.init(new SecretKeySpec(key, "HmacSHA256"));
+78:             return m.doFinal(data);
+79:         } catch (GeneralSecurityException e) {
+80:             throw new IllegalStateException(e);
+81:         }
+82:     }
+83: 
+84:     /** HKDF-SHA256 (RFC 5869) بطول 32 بايت. */
+85:     public static byte[] hkdf(byte[] ikm, byte[] salt, String info) {
+86:         byte[] prk = hmac(salt == null ? new byte[32] : salt, ikm);
+87:         byte[] in = (info + "\u0001").getBytes(StandardCharsets.UTF_8);
+88:         return hmac(prk, in);
+89:     }
+90: 
+91:     public static byte[] pbkdf2(char[] password, byte[] salt, int iter) {
+92:         try {
+93:             PBEKeySpec spec = new PBEKeySpec(password, salt, iter, 256);
+94:             try {
+95:                 return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();
+96:             } finally {
+97:                 spec.clearPassword();
+98:             }
+99:         } catch (GeneralSecurityException e) {
+100:             throw new IllegalStateException(e);
+101:         }
+102:     }
+103: 
+104:     /** AES-256-GCM: nonce(12) || ciphertext+tag. */
+105:     public static byte[] seal(byte[] key, byte[] plain, byte[] aad) {
+106:         try {
+107:             byte[] nonce = random(12);
+108:             Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+109:             c.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, nonce));
+110:             if (aad != null) c.updateAAD(aad);
+111:             byte[] ct = c.doFinal(plain);
+112:             return ByteBuffer.allocate(12 + ct.length).put(nonce).put(ct).array();
+113:         } catch (GeneralSecurityException e) {
+114:             throw new IllegalStateException(e);
+115:         }
+116:     }
+117: 
+118:     /** يفك ويتحقق؛ أي تغيير ولو بايت واحد (أو مفتاح/AAD خاطئ) = استثناء. */
+119:     public static byte[] open(byte[] key, byte[] sealed, byte[] aad) throws GeneralSecurityException {
+120:         if (sealed == null || sealed.length < 28) throw new GeneralSecurityException("ملف قصير أو تالف");
+121:         Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+122:         c.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, sealed, 0, 12));
+123:         if (aad != null) c.updateAAD(aad);
+124:         return c.doFinal(sealed, 12, sealed.length - 12);
+125:     }
+126: 
+127:     // ===================================================================================
+128:     // مفاتيح الخزنة
+129:     // ===================================================================================
+130: 
+131:     /** مفاتيح الخزنة المشتقة. */
+132:     public static final class Keys {
+133:         public final byte[] vault, enc, name;
+134:         public final String vaultId;
+135: 
+136:         public Keys(String vaultId, byte[] vault) {
+137:             this.vaultId = vaultId;
+138:             this.vault = vault;
+139:             byte[] salt = vaultId.getBytes(StandardCharsets.UTF_8);
+140:             this.enc = hkdf(vault, salt, "sa-sync-enc-v1");
+141:             this.name = hkdf(vault, salt, "sa-sync-name-v1");
+142:         }
+143: 
+144:         /** 10.2: رمز الكتابة على خادم المزامنة (مشتق من مفتاح الخزنة؛ الخادم يحفظ بصمته فقط ولا يرى المفتاح). */
+145:         public String serverToken() { return hex(hkdf(vault, vaultId.getBytes(StandardCharsets.UTF_8), "sa-sync-server-v1")); }
+146: 
+147:         /** اسم ملف معتم ثابت: البادئة + أول 32 حرفًا من HMAC. */
+148:         public String fileName(String prefix, String label) {
+149:             return prefix + hex(hmac(name, label.getBytes(StandardCharsets.UTF_8))).substring(0, 32) + ".sab";
+150:         }
+151: 
+152:         byte[] aad(String kind, String fileName) {
+153:             return ("SA10|" + vaultId + "|" + kind + "|" + fileName).getBytes(StandardCharsets.UTF_8);
+154:         }
+155: 
+156:         /** ملف مزامنة: ضغط ثم حشو لمضاعفات 4KB ثم AES-GCM مربوط باسمه ونوعه. */
+157:         public byte[] sealFile(String kind, String fileName, byte[] json) {
+158:             return SyncCrypto.seal(enc, pad(gzip(json)), aad(kind, fileName));
+159:         }
+160: 
+161:         public byte[] openFile(String kind, String fileName, byte[] sealed) throws GeneralSecurityException, IOException {
+162:             return gunzip(unpad(SyncCrypto.open(enc, sealed, aad(kind, fileName))));
+163:         }
+164:     }
+165: 
+166:     /** تغليف مفتاح الخزنة بمفتاح (من كلمة السر أو رمز الاسترداد). */
+167:     public static String wrap(byte[] kek, byte[] vaultKey, String vaultId) {
+168:         return hex(seal(kek, vaultKey, ("SA10-wrap|" + vaultId).getBytes(StandardCharsets.UTF_8)));
+169:     }
+170: 
+171:     public static byte[] unwrap(byte[] kek, String wrapped, String vaultId) throws GeneralSecurityException {
+172:         return open(kek, unhex(wrapped), ("SA10-wrap|" + vaultId).getBytes(StandardCharsets.UTF_8));
+173:     }
+174: 
+175:     /** رمز استرداد: 24 حرفًا من أبجدية بلا التباس (O/0، I/1) في 6 مجموعات، ≈ 120 بت. */
+176:     public static String newRecoveryCode() {
+177:         final String abc = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";

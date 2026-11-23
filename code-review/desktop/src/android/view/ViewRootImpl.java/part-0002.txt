@@ -1,0 +1,137 @@
+207:         @Override public void mousePressed(MouseEvent e) {
+208:             // 11.5: زر «رجوع» الجانبي في الفأرة
+209:             if (e.getButton() == 4 && swipeBack != null && android.app.WindowStack.roots().size() == 1) { swipeBack.run(); return; }
+210:             if (!SwingUtilities.isLeftMouseButton(e)) return;
+211:             if (!pane.hasFocus() && TextOverlay.active(ViewRootImpl.this) == null) pane.requestFocusInWindow();
+212:             downTime = android.os.SystemClock.uptimeMillis();
+213:             down = true;
+214:             View before = focused;
+215:             boolean r = view.dispatchTouchEvent(ev(MotionEvent.ACTION_DOWN, e));
+216:             if (!r && onOutsideTouch != null) onOutsideTouch.run();
+217:         }
+218:         @Override public void mouseDragged(MouseEvent e) {
+219:             if (!down) return;
+220:             view.dispatchTouchEvent(ev(MotionEvent.ACTION_MOVE, e));
+221:             hover(e);
+222:         }
+223:         @Override public void mouseReleased(MouseEvent e) {
+224:             if (!down) return;
+225:             down = false;
+226:             final MotionEvent up = ev(MotionEvent.ACTION_UP, e);
+227:             View tapped = hoveredEditor(e);
+228:             view.dispatchTouchEvent(up);
+229:             // نقرة على خانة كتابة: التركيز ثم وضع المؤشر عند النقرة
+230:             if (tapped != null && tapped.isEnabled()) {
+231:                 float[] p = local(tapped, lx(e), ly(e));
+232:                 if (focused != tapped) setFocused(tapped);
+233:                 TextOverlay.show(ViewRootImpl.this, tapped, p[0], p[1]);
+234:             } else if (focused != null && focused.onCheckIsTextEditor()) {
+235:                 // نقرة خارج الخانة: يبقى التركيز كما في أندرويد
+236:             }
+237:         }
+238:         @Override public void mouseMoved(MouseEvent e) { hover(e); }
+239:         @Override public void mouseExited(MouseEvent e) { setHover(null); }
+240:         @Override public void mouseWheelMoved(MouseWheelEvent e) {
+241:             View v = deepest(lx(e), ly(e));
+242:             double amt = e.getPreciseWheelRotation();
+243:             boolean horiz = e.isShiftDown();
+244:             float d = (float) (amt * (Math.abs(amt) < 1 ? 40 : 48));
+245:             while (v != null) {
+246:                 if (v.wheel(horiz ? d : 0, horiz ? 0 : d)) return;
+247:                 v = v.parent instanceof View ? (View) v.parent : null;
+248:             }
+249:             // 11.5: سحب أفقي بإصبعين (لوحة اللمس) لم يستهلكه شيء = رجوع للصفحة السابقة
+250:             if (horiz) swipe(d);
+251:         }
+252:         @Override public void keyPressed(KeyEvent e) { key(e); }
+253:         @Override public void keyReleased(KeyEvent e) {}
+254:         @Override public void keyTyped(KeyEvent e) {}
+255:     }
+256: 
+257:     /** 11.5: ما يفعله السحب الأفقي وزر «رجوع» في الفأرة (الرجوع للصفحة السابقة). */
+258:     public static Runnable swipeBack;
+259:     private static float swipeSum;
+260:     private static long swipeAt, swipeDone;
+261: 
+262:     static void swipe(float d) {
+263:         long now = System.currentTimeMillis();
+264:         if (now - swipeAt > 350) swipeSum = 0;
+265:         swipeAt = now;
+266:         swipeSum += d;
+267:         if (Math.abs(swipeSum) > 260 && now - swipeDone > 900 && swipeBack != null && android.app.WindowStack.top() != null && android.app.WindowStack.roots().size() == 1) {
+268:             swipeDone = now;
+269:             swipeSum = 0;
+270:             swipeBack.run();
+271:         }
+272:     }
+273: 
+274:     /** مفتاح من النافذة أو من خانة الكتابة؛ true إن استُهلك. */
+275:     public boolean key(KeyEvent e) {
+276:         if (keyHook != null && keyHook.test(e)) { e.consume(); return true; }
+277:         if (e.getKeyCode() == KeyEvent.VK_ESCAPE) {
+278:             if (onBack != null) onBack.run();
+279:             e.consume();
+280:             return true;
+281:         }
+282:         if (e.getKeyCode() == KeyEvent.VK_TAB) {
+283:             moveFocus(!e.isShiftDown());
+284:             e.consume();
+285:             return true;
+286:         }
+287:         return false;
+288:     }
+289: 
+290:     private MotionEvent ev(int action, MouseEvent e) {
+291:         MotionEvent m = MotionEvent.raw(downTime, android.os.SystemClock.uptimeMillis(), action, lx(e), ly(e),
+292:                 (e.getXOnScreen() - e.getX()) + lx(e), (e.getYOnScreen() - e.getY()) + ly(e));
+293:         return m;
+294:     }
+295: 
+296:     View deepest(float x, float y) {
+297:         if (view instanceof ViewGroup) return ((ViewGroup) view).deepestAt(x, y);
+298:         return view;
+299:     }
+300: 
+301:     private View hoveredEditor(MouseEvent e) {
+302:         View v = deepest(lx(e), ly(e));
+303:         while (v != null) {
+304:             if (v.onCheckIsTextEditor()) return v;
+305:             if (v.isClickable()) return null;
+306:             v = v.parent instanceof View ? (View) v.parent : null;
+307:         }
+308:         return null;
+309:     }
+310: 
+311:     static float[] local(View v, float x, float y) {
+312:         float[] o = {0, 0};
+313:         v.mapToRoot(o);
+314:         return new float[]{x - o[0], y - o[1]};
+315:     }
+316: 
+317:     private void hover(MouseEvent e) {
+318:         View v = deepest(lx(e), ly(e));
+319:         View target = null;
+320:         boolean text = false;
+321:         while (v != null) {
+322:             if (v.onCheckIsTextEditor() && v.isEnabled()) { text = true; break; }
+323:             if ((v.isClickable() || v.isLongClickable()) && v.isEnabled()) { target = v; break; }
+324:             v = v.parent instanceof View ? (View) v.parent : null;
+325:         }
+326:         setHover(target);
+327:         pane.setCursor(text ? Cursor.getPredefinedCursor(Cursor.TEXT_CURSOR) : target != null ? Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) : Cursor.getDefaultCursor());
+328:         View tip = deepest(lx(e), ly(e));
+329:         String t = null;
+330:         while (tip != null && t == null) {
+331:             if (tip.getTooltipText() != null) t = tip.getTooltipText().toString();
+332:             tip = tip.parent instanceof View ? (View) tip.parent : null;
+333:         }
+334:         pane.setToolTipText(t);
+335:     }
+336: 
+337:     private void setHover(View v) {
+338:         if (hovered == v) return;
+339:         if (hovered != null) hovered.setHovered(false);
+340:         hovered = v;
+341:         if (v != null) v.setHovered(true);
+342:     }
+343: }

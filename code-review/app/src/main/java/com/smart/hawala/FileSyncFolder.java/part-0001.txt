@@ -1,0 +1,64 @@
+1: package com.smart.hawala;
+2: 
+3: import java.io.File;
+4: import java.io.FileOutputStream;
+5: import java.io.IOException;
+6: import java.nio.file.Files;
+7: import java.nio.file.StandardCopyOption;
+8: import java.util.ArrayList;
+9: import java.util.List;
+10: 
+11: /** 10.0: مجلد مزامنة عادي على القرص (الماك والويندوز والاختبارات). */
+12: public final class FileSyncFolder implements SyncFolder {
+13:     private final File dir;
+14: 
+15:     public FileSyncFolder(File dir) { this.dir = dir; }
+16: 
+17:     @Override public List<String> list(String prefix) throws IOException {
+18:         List<String> out = new ArrayList<>();
+19:         String[] names = dir.list();
+20:         if (names == null) throw new IOException("مجلد المزامنة غير متاح: " + dir);
+21:         for (String n : names) if (n.startsWith(prefix) && n.endsWith(".sab") || n.startsWith(prefix) && n.endsWith(".json")) out.add(n);
+22:         return out;
+23:     }
+24: 
+25:     @Override public boolean exists(String name) { return new File(dir, name).isFile(); }
+26: 
+27:     @Override public byte[] read(String name) throws IOException {
+28:         File f = new File(dir, name);
+29:         if (!f.isFile()) return null;
+30:         return Files.readAllBytes(f.toPath());
+31:     }
+32: 
+33:     @Override public void write(String name, byte[] data) throws IOException {
+34:         if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("تعذر إنشاء مجلد المزامنة: " + dir);
+35:         File tmp = new File(dir, ".tmp-" + name + "-" + System.nanoTime());
+36:         try (FileOutputStream o = new FileOutputStream(tmp)) {
+37:             o.write(data);
+38:             o.getFD().sync();
+39:         }
+40:         try {
+41:             Files.move(tmp.toPath(), new File(dir, name).toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+42:         } catch (IOException e) {
+43:             Files.move(tmp.toPath(), new File(dir, name).toPath(), StandardCopyOption.REPLACE_EXISTING);
+44:         }
+45:     }
+46: 
+47:     @Override public String describe() { return dir.getAbsolutePath(); }
+48: 
+49:     @Override public boolean canDelete() { return true; }
+50: 
+51:     @Override public void delete(String name) throws IOException {
+52:         File f = new File(dir, name);
+53:         if (f.isFile() && !f.delete()) throw new IOException("تعذر حذف " + name);
+54:     }
+55: 
+56:     @Override public java.util.Map<String, long[]> stat(String prefix) throws IOException {
+57:         java.util.Map<String, long[]> out = new java.util.HashMap<>();
+58:         for (String n : list(prefix)) {
+59:             File f = new File(dir, n);
+60:             out.put(n, new long[]{f.length(), f.lastModified()});
+61:         }
+62:         return out;
+63:     }
+64: }

@@ -1,0 +1,70 @@
+1: package android.widget;
+2: 
+3: import android.content.Context;
+4: import android.view.Gravity;
+5: import android.view.View;
+6: 
+7: /** اختيار الوقت: الساعة والدقيقة بأزرار زيادة/نقصان (أو الكتابة). */
+8: public class TimePicker extends LinearLayout {
+9:     public interface OnTimeChangedListener { void onTimeChanged(TimePicker v, int h, int m); }
+10:     private int hour, minute;
+11:     private boolean is24 = true;
+12:     private final EditText he, me;
+13: 
+14:     public TimePicker(Context c) {
+15:         super(c);
+16:         setOrientation(HORIZONTAL);
+17:         setGravity(Gravity.CENTER);
+18:         setLayoutDirection(LAYOUT_DIRECTION_LTR);
+19:         float d = c.getResources().getDisplayMetrics().density;
+20:         setPadding(Math.round(24 * d), Math.round(16 * d), Math.round(24 * d), Math.round(8 * d));
+21:         he = field(c);
+22:         me = field(c);
+23:         addView(column(c, he, 23), new LayoutParams(Math.round(90 * d), -2));
+24:         TextView colon = new TextView(c);
+25:         colon.setText(":");
+26:         colon.setTextSize(34);
+27:         colon.setGravity(Gravity.CENTER);
+28:         addView(colon, new LayoutParams(-2, -2));
+29:         addView(column(c, me, 59), new LayoutParams(Math.round(90 * d), -2));
+30:         java.util.Calendar k = java.util.Calendar.getInstance();
+31:         setHour(k.get(java.util.Calendar.HOUR_OF_DAY));
+32:         setMinute(k.get(java.util.Calendar.MINUTE));
+33:     }
+34:     private EditText field(Context c) {
+35:         EditText e = new EditText(c);
+36:         e.setTextSize(34);
+37:         e.setGravity(Gravity.CENTER);
+38:         e.setSingleLine(true);
+39:         e.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+40:         e.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(2)});
+41:         return e;
+42:     }
+43:     private View column(Context c, final EditText e, final int max) {
+44:         LinearLayout col = new LinearLayout(c);
+45:         col.setOrientation(VERTICAL);
+46:         col.setGravity(Gravity.CENTER_HORIZONTAL);
+47:         TextView up = new TextView(c), down = new TextView(c);
+48:         up.setText("▲"); down.setText("▼");
+49:         for (TextView t : new TextView[]{up, down}) { t.setTextSize(16); t.setGravity(Gravity.CENTER); t.setClickable(true); t.setPadding(0, 8, 0, 8); }
+50:         up.setOnClickListener(v -> step(e, max, 1));
+51:         down.setOnClickListener(v -> step(e, max, -1));
+52:         col.addView(up, new LayoutParams(-1, -2));
+53:         col.addView(e, new LayoutParams(-1, -2));
+54:         col.addView(down, new LayoutParams(-1, -2));
+55:         return col;
+56:     }
+57:     private void step(EditText e, int max, int d) {
+58:         int v = val(e) + d;
+59:         if (v < 0) v = max;
+60:         if (v > max) v = 0;
+61:         e.setText(String.format(java.util.Locale.US, "%02d", v));
+62:     }
+63:     private static int val(EditText e) { try { return Integer.parseInt(e.getText().toString().trim()); } catch (Exception x) { return 0; } }
+64:     public void setHour(int h) { hour = h; he.setText(String.format(java.util.Locale.US, "%02d", h)); }
+65:     public void setMinute(int m) { minute = m; me.setText(String.format(java.util.Locale.US, "%02d", m)); }
+66:     public int getHour() { return Math.max(0, Math.min(23, val(he))); }
+67:     public int getMinute() { return Math.max(0, Math.min(59, val(me))); }
+68:     public void setIs24HourView(Boolean b) { is24 = b; }
+69:     public void setOnTimeChangedListener(OnTimeChangedListener l) {}
+70: }

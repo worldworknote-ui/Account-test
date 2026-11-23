@@ -1,0 +1,162 @@
+2147:                 if (d.update("tx_checks", v, "uuid=?", new String[]{key}) == 0) {
+2148:                     v.put("uuid", key);
+2149:                     d.insertOrThrow("tx_checks", null, v);
+2150:                 }
+2151:                 added++;
+2152:             }
+2153:             if (added > 0) audit(d, "VERIFY_TX", "tx", txId, me.name + (legs.size() > 1 ? " — عملية مترابطة (" + legs.size() + " ساق)" : ""));
+2154:             d.setTransactionSuccessful();
+2155:         } finally {
+2156:             d.endTransaction();
+2157:         }
+2158:     }
+2159: 
+2160:     /**
+2161:      * 10.16: التحقق من عدة حركات دفعة واحدة («تحديد الكل»). كل حركة تمر بالقواعد نفسها في verifyTx (الصلاحية، الفرز، وألا تكون
+2162:      * حركتي)؛ ما يُرفض منها يُتجاوز ويُعاد سببه، والباقي يُسجَّل. يرجع {عدد ما سُجّل، أسباب الرفض}.
+2163:      */
+2164:     public Object[] verifyTxs(java.util.Collection<Long> ids) {
+2165:         require(Auth.Perm.VERIFY);
+2166:         int ok = 0;
+2167:         List<String> refused = new ArrayList<>();
+2168:         // كل حركة بمعاملتها (كما في verifyTx): رفض واحدة لا يُلغي ما سُجّل قبلها ولا ما بعدها
+2169:         for (Long id : ids) {
+2170:             try {
+2171:                 verifyTx(id);
+2172:                 ok++;
+2173:             } catch (SecurityException | IllegalStateException | IllegalArgumentException e) {
+2174:                 refused.add("#" + id + ": " + e.getMessage());
+2175:             }
+2176:         }
+2177:         return new Object[]{ok, refused};
+2178:     }
+2179: 
+2180:     /** هل تحقق منها مستخدم آخر غير من أدخلها؟ (تحقق صاحبها لا يُحتسب أصلًا) */
+2181:     public boolean verified(Model.Tx t) {
+2182:         for (TxCheck c : checks(t.id)) if (c.valid() && (t.userId == null || c.userId != t.userId)) return true;
+2183:         return false;
+2184:     }
+2185: 
+2186:     /**
+2187:      * «بانتظار تحققي»: حركات نافذة في المكاتب التي أتحقق منها (10.8: بالفرز؛ وقبله مكاتبي أو كل المكاتب) خلال آخر days يومًا، أدخلها غيري،
+2188:      * ولم أتحقق منها بعد. الأحدث أولًا.
+2189:      */
+2190:     public List<Model.Tx> awaitingMyCheck(int days, int limit) {
+2191:         Model.User me = actor();
+2192:         List<Model.Tx> out = new ArrayList<>();
+2193:         if (me == null || !Auth.can(me, Auth.Perm.VERIFY)) return out;
+2194:         SQLiteDatabase d = getReadableDatabase();
+2195:         Set<Long> mine = checkScope(d, me);
+2196:         if (mine != null && mine.isEmpty()) return out;
+2197:         StringBuilder w = new StringBuilder(" WHERE status='ACTIVE' AND created_at>=" + (Clock.now() - days * 86_400_000L)
+2198:                 + " AND (user_id IS NULL OR user_id<>" + me.id + ")"
+2199:                 + " AND NOT EXISTS(SELECT 1 FROM tx_checks k WHERE k.tx_id=tx.id AND k.user_id=" + me.id + " AND k.status='VALID')");
+2200:         if (mine != null) {
+2201:             w.append(" AND office_id IN (");
+2202:             boolean first = true;
+2203:             for (Long o : mine) {
+2204:                 if (!first) w.append(',');
+2205:                 w.append(o.longValue());
+2206:                 first = false;
+2207:             }
+2208:             w.append(')');
+2209:         }
+2210:         try (Cursor c = d.rawQuery("SELECT " + TX_COLS + " FROM tx" + w + " ORDER BY created_at DESC,id DESC LIMIT " + Math.max(1, limit), null)) {
+2211:             while (c.moveToNext()) {
+2212:                 Model.Tx t = readTx(c);
+2213:                 if (!enteredBy(t, me)) out.add(t);
+2214:             }
+2215:         }
+2216:         return out;
+2217:     }
+2218: 
+2219:     // ===================================================================================
+2220:     // 10.8: فرز المكاتب بين المحاسبين — لكل مكتب من «يسجّل» حركاته ومطابقاته، ومن «يتحقق» منها
+2221:     // ===================================================================================
+2222: 
+2223:     /** دور المحاسب في المكتب: يسجّل حركاته ومطابقاته (المسؤول عنه)، أو يتحقق منها. محاسب واحد لا يجمع الدورين في مكتب واحد. */
+2224:     public static final String ROLE_OWN = "OWN", ROLE_CHECK = "CHECK";
+2225: 
+2226:     /** كل مكاتب المستخدم بأي دور (فارغة = لم تُخصص له مكاتب). */
+2227:     public Set<Long> userOffices(long userId) { return userOffices(getReadableDatabase(), userId); }
+2228: 
+2229:     private static Set<Long> userOffices(SQLiteDatabase d, long userId) {
+2230:         Set<Long> out = new java.util.LinkedHashSet<>();
+2231:         try (Cursor c = d.rawQuery("SELECT office_id FROM user_offices WHERE user_id=" + userId + " ORDER BY office_id", null)) {
+2232:             while (c.moveToNext()) out.add(c.getLong(0));
+2233:         }
+2234:         return out;
+2235:     }
+2236: 
+2237:     /** دور المستخدم في كل مكتب من مكاتبه: ROLE_OWN أو ROLE_CHECK. */
+2238:     public Map<Long, String> officeRoles(long userId) { return officeRoles(getReadableDatabase(), userId); }
+2239: 
+2240:     private static Map<Long, String> officeRoles(SQLiteDatabase d, long userId) {
+2241:         Map<Long, String> out = new LinkedHashMap<>();
+2242:         try (Cursor c = d.rawQuery("SELECT office_id,COALESCE(role,'OWN') FROM user_offices WHERE user_id=" + userId + " ORDER BY office_id", null)) {
+2243:             while (c.moveToNext()) out.put(c.getLong(0), ROLE_CHECK.equals(c.getString(1)) ? ROLE_CHECK : ROLE_OWN);
+2244:         }
+2245:         return out;
+2246:     }
+2247: 
+2248:     private List<Model.Office> myOfficesWith(String role) {
+2249:         List<Model.Office> out = new ArrayList<>();
+2250:         Model.User me = actor();
+2251:         if (me == null) return out;
+2252:         for (Map.Entry<Long, String> e : officeRoles(me.id).entrySet()) {
+2253:             if (!role.equals(e.getValue())) continue;
+2254:             Model.Office o = office(e.getKey());
+2255:             if (o != null) out.add(o);
+2256:         }
+2257:         return out;
+2258:     }
+2259: 
+2260:     /** «مكاتبي»: المكاتب التي يسجّل المستخدم الحالي حركاتها ومطابقاتها. */
+2261:     public List<Model.Office> myOffices() { return myOfficesWith(ROLE_OWN); }
+2262: 
+2263:     /** المكاتب التي يتحقق المستخدم الحالي من حركاتها ومطابقاتها. */
+2264:     public List<Model.Office> myCheckOffices() { return myOfficesWith(ROLE_CHECK); }
+2265: 
+2266:     /** نظام الفرز مفعّل: لمكتب واحد على الأقل محاسب «يتحقق». قبل ذلك يبقى سلوك 10.5 (يتحقق من مكاتبه أو من الكل). */
+2267:     private static boolean teamMode(SQLiteDatabase d) {
+2268:         try (Cursor c = d.rawQuery("SELECT 1 FROM user_offices uo JOIN users u ON u.id=uo.user_id WHERE uo.role='CHECK' AND u.active=1 LIMIT 1", null)) {
+2269:             return c.moveToFirst();
+2270:         }
+2271:     }
+2272: 
+2273:     public boolean teamMode() { return teamMode(getReadableDatabase()); }
+2274: 
+2275:     /** المكاتب التي يتحقق منها المستخدم: null = كل المكاتب (المدير، أو بلا فرز ولا مكاتب). */
+2276:     private static Set<Long> checkScope(SQLiteDatabase d, Model.User me) {
+2277:         if (Auth.isAdmin(me)) return null;
+2278:         if (teamMode(d)) {
+2279:             Set<Long> out = new java.util.LinkedHashSet<>();
+2280:             for (Map.Entry<Long, String> e : officeRoles(d, me.id).entrySet()) if (ROLE_CHECK.equals(e.getValue())) out.add(e.getKey());
+2281:             return out;
+2282:         }
+2283:         Set<Long> mine = userOffices(d, me.id);
+2284:         return mine.isEmpty() ? null : mine;
+2285:     }
+2286: 
+2287:     /** أسماء من يتحقق من مكتب (للرسائل). */
+2288:     private static List<String> checkerNames(SQLiteDatabase d, long office) {
+2289:         List<String> out = new ArrayList<>();
+2290:         try (Cursor c = d.rawQuery("SELECT u.name FROM user_offices uo JOIN users u ON u.id=uo.user_id WHERE uo.office_id=" + office
+2291:                 + " AND uo.role='CHECK' AND u.active=1 ORDER BY u.name", null)) {
+2292:             while (c.moveToNext()) out.add(c.getString(0));
+2293:         }
+2294:         return out;
+2295:     }
+2296: 
+2297:     private static String checkRefusal(SQLiteDatabase d, Model.User me, long office) {
+2298:         List<String> who = checkerNames(d, office);
+2299:         String rest = who.isEmpty() ? "لم يُحدَّد له محاسب يتحقق منه بعد (المستخدمون ← فرز المكاتب)." : "يتحقق منه: " + Model.join(who, "، ") + ".";
+2300:         if (ROLE_OWN.equals(officeRoles(d, me.id).get(office))) return "أنت من يسجّل حركات هذا المكتب، والتحقق يكون من محاسب آخر. " + rest;
+2301:         return "هذا المكتب ليس من المكاتب التي تتحقق منها. " + rest;
+2302:     }
+2303: 
+2304:     /**
+2305:      * 10.7: لكل مكتب أسماء المستخدمين النشطين الذين يسجّلون له (عدا exceptUser). مكتب عند مسجّلَين مسموح، والواجهة تنبّه قبل الحفظ.
+2306:      */
+2307:     public Map<Long, List<String>> officeHolders(long exceptUser) {
+2308:         Map<Long, List<String>> out = new HashMap<>();

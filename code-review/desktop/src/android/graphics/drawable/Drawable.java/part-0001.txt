@@ -1,0 +1,110 @@
+1: package android.graphics.drawable;
+2: 
+3: import android.content.res.ColorStateList;
+4: import android.graphics.*;
+5: 
+6: public abstract class Drawable {
+7:     public interface Callback {
+8:         void invalidateDrawable(Drawable who);
+9:         void scheduleDrawable(Drawable who, Runnable what, long when);
+10:         void unscheduleDrawable(Drawable who, Runnable what);
+11:     }
+12: 
+13:     private final Rect bounds = new Rect();
+14:     private int[] state = new int[0];
+15:     private int level;
+16:     private java.lang.ref.WeakReference<Callback> cb;
+17:     protected ColorStateList tint;
+18:     protected ColorFilter colorFilter;
+19:     protected boolean visible = true;
+20: 
+21:     public abstract void draw(Canvas c);
+22:     public void setAlpha(int a) {}
+23:     public int getAlpha() { return 255; }
+24:     public void setColorFilter(ColorFilter f) { colorFilter = f; invalidateSelf(); }
+25:     public void setColorFilter(int color, PorterDuff.Mode m) { setColorFilter(new PorterDuffColorFilter(color, m)); }
+26:     public ColorFilter getColorFilter() { return colorFilter; }
+27:     public void clearColorFilter() { setColorFilter(null); }
+28:     public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+29: 
+30:     public void setTint(int c) { setTintList(ColorStateList.valueOf(c)); }
+31:     public void setTintList(ColorStateList t) { tint = t; invalidateSelf(); }
+32:     public void setTintMode(PorterDuff.Mode m) {}
+33:     /** لون التلوين الحالي (0 = بلا تلوين). */
+34:     protected int tintColor() {
+35:         if (colorFilter != null && colorFilter.tint() != 0) return colorFilter.tint();
+36:         return tint == null ? 0 : tint.getColorForState(state, tint.getDefaultColor()) | 0;
+37:     }
+38:     protected boolean hasTint() { return (colorFilter != null && colorFilter.tint() != 0) || tint != null; }
+39: 
+40:     public final void setBounds(int l, int t, int r, int b) {
+41:         if (bounds.left != l || bounds.top != t || bounds.right != r || bounds.bottom != b) {
+42:             bounds.set(l, t, r, b);
+43:             onBoundsChange(bounds);
+44:         }
+45:     }
+46:     public final void setBounds(Rect r) { setBounds(r.left, r.top, r.right, r.bottom); }
+47:     public final Rect getBounds() { return bounds; }
+48:     public final Rect copyBounds() { return new Rect(bounds); }
+49:     public final void copyBounds(Rect r) { r.set(bounds); }
+50:     protected void onBoundsChange(Rect b) {}
+51: 
+52:     public boolean setState(int[] s) {
+53:         if (s == null) s = new int[0];
+54:         if (java.util.Arrays.equals(state, s)) return false;
+55:         state = s.clone();
+56:         return onStateChange(state);
+57:     }
+58:     public int[] getState() { return state; }
+59:     protected boolean onStateChange(int[] s) { return false; }
+60:     public boolean isStateful() { return false; }
+61:     public void jumpToCurrentState() {}
+62: 
+63:     public final boolean setLevel(int l) {
+64:         if (level == l) return false;
+65:         level = l;
+66:         boolean r = onLevelChange(l);
+67:         invalidateSelf();
+68:         return r;
+69:     }
+70:     public final int getLevel() { return level; }
+71:     protected boolean onLevelChange(int l) { return true; }
+72: 
+73:     public boolean setVisible(boolean v, boolean restart) { boolean c = visible != v; visible = v; return c; }
+74:     public final boolean isVisible() { return visible; }
+75: 
+76:     public int getIntrinsicWidth() { return -1; }
+77:     public int getIntrinsicHeight() { return -1; }
+78:     public int getMinimumWidth() { return Math.max(0, getIntrinsicWidth()); }
+79:     public int getMinimumHeight() { return Math.max(0, getIntrinsicHeight()); }
+80:     public boolean getPadding(Rect p) { p.set(0, 0, 0, 0); return false; }
+81:     public Drawable mutate() { return this; }
+82:     public ConstantState getConstantState() { return null; }
+83:     public void setDither(boolean d) {}
+84:     public void setFilterBitmap(boolean f) {}
+85:     public void setAutoMirrored(boolean m) {}
+86:     public void setHotspot(float x, float y) {}
+87:     public void setHotspotBounds(int l, int t, int r, int b) {}
+88:     public int getLayoutDirection() { return 0; }
+89:     public boolean setLayoutDirection(int d) { return false; }
+90: 
+91:     /** الشكل الخارجي لظل الارتفاع (null = المستطيل). */
+92:     public java.awt.Shape outline() { return null; }
+93: 
+94:     public final void setCallback(Callback c) { cb = c == null ? null : new java.lang.ref.WeakReference<>(c); }
+95:     public Callback getCallback() { return cb == null ? null : cb.get(); }
+96:     public void invalidateSelf() { Callback c = getCallback(); if (c != null) c.invalidateDrawable(this); }
+97:     public void scheduleSelf(Runnable r, long when) { Callback c = getCallback(); if (c != null) c.scheduleDrawable(this, r, when); }
+98:     public void unscheduleSelf(Runnable r) { Callback c = getCallback(); if (c != null) c.unscheduleDrawable(this, r); }
+99: 
+100:     public static abstract class ConstantState {
+101:         public abstract Drawable newDrawable();
+102:         public Drawable newDrawable(android.content.res.Resources r) { return newDrawable(); }
+103:         public int getChangingConfigurations() { return 0; }
+104:     }
+105: 
+106:     static boolean has(int[] state, int s) {
+107:         for (int x : state) if (x == s) return true;
+108:         return false;
+109:     }
+110: }

@@ -1,0 +1,134 @@
+789:                     .setMessage("«قص» لنص فيه عدة رسائل ملزوقة ببعض.\n\n1. حدّد الرسائل في واتساب وانسخها.\n2. اضغط «قص الرسائل».\n"
+790:                             + "3. اضغط الخط المنقّط بين سطرين ليبدأ من هناك رسالة جديدة، ثم «متابعة».")
+791:                     .setPositiveButton("حسنًا", null).show();
+792:             return;
+793:         }
+794:         a.beforeScreenChange();
+795:         a.waMove.cutScreen(text);
+796:     }
+797: 
+798:     /** شرح خطوات نسخ رسالة أو عدة رسائل من واتساب ولصقها. */
+799:     void waHelp() {
+800:         LinearLayout l = new LinearLayout(a);
+801:         l.setOrientation(LinearLayout.VERTICAL);
+802:         l.setPadding(a.dp(18), a.dp(6), a.dp(18), a.dp(6));
+803:         String[][] steps = {
+804:                 {"1", "في محادثة واتساب اضغط مطولًا على رسالة الحوالة حتى تتلوّن."},
+805:                 {"2", "لعدة رسائل: اضغط ضغطة عادية على كل رسالة أخرى تريدها فتُحدَّد كلها."},
+806:                 {"3", "اضغط زر «نسخ» في الشريط العلوي لواتساب (مربعان فوق بعض)."},
+807:                 {"4", "افتح المحاسب الذكي واضغط «لصق رسائل واتساب» في الرئيسية، أو زر اللصق في نموذج التسجيل."},
+808:                 {"5", "رسالة واحدة: يُفتح نموذج التسجيل مع المعلومات المستخرجة. عدة رسائل: تظهر قائمتها، تحدّد ما تريد، ثم تسجّل كل رسالة وتضغط «تسجيل والتالية»."}
+809:         };
+810:         // 12.1: طرق إضافية: الالتقاط من الشاشة على الكمبيوتر، والتجميع على كل الأجهزة
+811:         List<String[]> all = new ArrayList<>(java.util.Arrays.asList(steps));
+812:         if (WaMove.desktop()) {
+813:             all.add(new String[]{"6", "على ويندوز وماك: «التقاط من الشاشة» (Ctrl/⌘+G) ثم «حدد النافذة» واضغط على واتساب: يظهر رقم على كل رسالة، اضغط الرقم لنقلها. مرّر في واتساب والإطار يقرأ وحده."});
+814:             all.add(new String[]{"7", "«وضع التجميع»: انسخ الرسائل من واتساب واحدة تلو الأخرى فتظهر مرقّمة في نافذة صغيرة، ثم «نقل»."});
+815:         } else if (a.waMove.showCollect()) {
+816:             all.add(new String[]{"6", "«وضع التجميع»: انسخ رسالة في واتساب وارجع للتطبيق، وكرّر لكل رسالة، ثم «نقل»."});
+817:         }
+818:         if (a.waMove.showCut())
+819:             all.add(new String[]{String.valueOf(all.size() + 1), "«قص الرسائل»: إن نُسخت عدة رسائل ملزوقة ببعض، اضغطه ثم اضغط الخط المنقّط بين سطرين ليبدأ من هناك رسالة جديدة."});
+820:         for (String[] s : all) {
+821:             LinearLayout r = a.row();
+822:             r.setGravity(Gravity.TOP);
+823:             TextView n = a.text(s[0], 14, Color.WHITE, true);
+824:             n.setGravity(Gravity.CENTER);
+825:             n.setPadding(0, 0, 0, 0);
+826:             android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
+827:             g.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+828:             g.setColor(a.primary);
+829:             n.setBackground(g);
+830:             LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(a.dp(26), a.dp(26));
+831:             np.setMargins(0, a.dp(6), 0, 0);
+832:             r.addView(n, np);
+833:             r.addView(a.text(s[1], 14, a.ink, false), new LinearLayout.LayoutParams(0, -2, 1));
+834:             l.addView(r);
+835:         }
+836:         l.addView(a.text("ملاحظة: واتساب لا يتيح «مشاركة» الرسائل النصية مع التطبيقات الأخرى (يتيح فقط إعادة توجيهها لمحادثة)، لذلك النسخ ثم اللصق هو الطريق. لا يُسجَّل شيء دون تأكيدك.", 12, a.muted, false));
+837:         android.widget.ScrollView sv = new android.widget.ScrollView(a);
+838:         sv.addView(l);
+839:         new AlertDialog.Builder(a).setTitle("تسجيل رسائل واتساب").setView(sv)
+840:                 .setPositiveButton("الصق الآن", (d, w) -> pasteFromClipboard()).setNegativeButton("إغلاق", null).show();
+841:     }
+842: 
+843:     /** يقرأ الحافظة: رسالة واحدة ← نموذج تسجيل، عدة رسائل ← دفعة واتساب. لا يُسجَّل شيء دون تأكيد المحاسب. */
+844:     void pasteFromClipboard() {
+845:         if (!a.require(Auth.Perm.TX_ADD)) return;
+846:         // 12.1: الحافظة بكل صيغها (رؤوس واتساب، فقاعات HTML من ويندوز والمتصفح، أسطر الوقت)، و«القص» إن بقي النص ملزوقًا
+847:         WaClip.Read clip = WaClip.read(a);
+848:         String text = clip.text;
+849:         if (text == null || text.trim().isEmpty()) {
+850:             new AlertDialog.Builder(a).setTitle("الحافظة فارغة")
+851:                     .setMessage("انسخ رسالة الحوالة من واتساب أولًا: اضغط عليها مطولًا ثم زر «نسخ». لعدة رسائل حدّدها كلها ثم «نسخ».")
+852:                     .setPositiveButton("الخطوات بالتفصيل", (d, w) -> waHelp())
+853:                     .setNeutralButton("نموذج فارغ", (d, w) -> a.txScreen.showNew())
+854:                     .setNegativeButton("حسنًا", null).show();
+855:             return;
+856:         }
+857:         a.waMove.route(WaClip.messages(text, clip.html), text);
+858:     }
+859: 
+860:     // ===================================================================================
+861:     // الاختصارات (ترتيبها وإخفاؤها وألوانها من «المظهر»)
+862:     // ===================================================================================
+863: 
+864:     private void shortcuts() {
+865:         Map<String, String> names = MainActivity.homeNames();
+866:         Set<String> hidden = MainActivity.parseSet(a.db.setting("home_hidden", ""));
+867:         Map<String, String> colors = MainActivity.parseColors(a.db.setting("btn_colors", ""));
+868:         List<String> keys = new ArrayList<>();
+869:         for (String k : MainActivity.parseOrder(a.db.setting("home_order", Db.DEFAULT_ORDER))) {
+870:             if (hidden.contains(k)) continue;
+871:             Auth.Perm p = a.permFor(k);
+872:             if (p != null && !a.can(p)) continue;
+873:             if (k.equals("mine") && !a.mineScreen.available()) continue;
+874:             keys.add(k);
+875:         }
+876:         if (keys.isEmpty()) return;
+877:         a.section("اختصارات", null, null);
+878:         LinearLayout r = null;
+879:         for (int i = 0; i < keys.size(); i++) {
+880:             if (i % 3 == 0) {
+881:                 r = a.row();
+882:                 r.setGravity(Gravity.TOP);
+883:                 a.body.addView(r, new LinearLayout.LayoutParams(-1, -2));
+884:             }
+885:             final String k = keys.get(i);
+886:             int col = Ui.parseColor(colors.get(k), a.primaryInk);
+887:             LinearLayout t = new LinearLayout(a);
+888:             t.setOrientation(LinearLayout.VERTICAL);
+889:             t.setGravity(Gravity.CENTER);
+890:             t.setPadding(a.dp(4), a.dp(12), a.dp(4), a.dp(10));
+891:             t.setBackground(a.ripple(a.round(a.surface, a.line, 16), 16));
+892:             FrameLayout ib = new FrameLayout(a);
+893:             ib.setBackground(a.round(Ui.mix(a.surface, col, a.night ? 0.25f : 0.1f), Ui.mix(a.surface, col, a.night ? 0.25f : 0.1f), 12));
+894:             ib.addView(a.icon(iconFor(k), a.readable(col), 22), new FrameLayout.LayoutParams(a.dp(22), a.dp(22), Gravity.CENTER));
+895:             t.addView(ib, new LinearLayout.LayoutParams(a.dp(40), a.dp(40)));
+896:             TextView l = a.text(names.get(k), 12, a.ink, true);
+897:             l.setGravity(Gravity.CENTER);
+898:             l.setMaxLines(2);
+899:             t.addView(l, new LinearLayout.LayoutParams(-1, -2));
+900:             t.setOnClickListener(v -> a.openHome(k));
+901:             r.addView(t, a.weight(-2, 1, 4));
+902:         }
+903:         if (keys.size() % 3 != 0) for (int i = keys.size() % 3; i < 3; i++) r.addView(new View(a), a.weight(-2, 1, 4));
+904:     }
+905: 
+906:     // ===================================================================================
+907:     // أسعار الصرف
+908:     // ===================================================================================
+909: 
+910:     private void rates() {
+911:         if (!a.can(Auth.Perm.VIEW)) return;
+912:         Map<String, Db.Rate> rates = a.db.rates();
+913:         Set<String> only = chosenCurrencies("hw_rates_curs");
+914:         a.section("أسعار الصرف مقابل الدولار", "تعديل", v -> a.officesScreen.showRates(a::showHome));
+915:         LinearLayout g = a.group();
+916:         for (Map.Entry<String, Db.Rate> e : rates.entrySet()) {
+917:             if ("USD".equals(e.getKey())) continue;
+918:             if (!only.isEmpty() && !only.contains(e.getKey())) continue;
+919:             Db.Rate r = e.getValue();
+920:             a.groupRow(g, R.drawable.ic_rates, a.primaryInk, "1 USD = " + OfficesScreen.unitsPerUsd(r.usd) + " " + e.getKey(),
+921:                     r.source + (r.at > 0 ? " • " + Model.date(r.at) : ""), null, null);
+922:         }

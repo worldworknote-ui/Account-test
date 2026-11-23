@@ -1,0 +1,155 @@
+271:             add(nc);
+272:             space(12);
+273:         }
+274: 
+275:         // 10.16: مصدر أسعار الصرف من الإنترنت (كان على الهاتف وحده)
+276:         if (can(Auth.Perm.SETTINGS)) {
+277:             Ui.Card xc = Ui.card();
+278:             xc.add(Ui.heading("مصدر أسعار الصرف"));
+279:             xc.add(Ui.para("رابط خدمة الأسعار (اتركه فارغًا للمصدر الافتراضي). الأسعار للتقويم التقريبي بالدولار فقط ولا تغيّر أي رصيد.", 13.5f, Ui.muted, w));
+280:             Ui.Field ru = Ui.field("https://…");
+281:             ru.setText(db.setting("rates_url", ""));
+282:             xc.add(Ui.row(ru, Ui.ghost("حفظ", e -> {
+283:                 String url = ru.val();
+284:                 if (!url.isEmpty() && !url.startsWith("https://")) {
+285:                     Ui.toast("الرابط يجب أن يبدأ بـ https://");
+286:                     return;
+287:                 }
+288:                 if (url.isEmpty()) db.deleteSetting("rates_url");
+289:                 else db.setSetting("rates_url", url);
+290:                 Ui.toast("حُفظ مصدر الأسعار");
+291:             }), Ui.ghost("تحديث الأسعار الآن", e -> Ui.busy(this, "جارٍ تحديث الأسعار…", p -> ExchangeRates.refresh(db), r -> Ui.toast("حُدّثت الأسعار ✓")))));
+292:             add(xc);
+293:             space(12);
+294:         }
+295: 
+296:         // رسالة المطابقة
+297:         if (can(Auth.Perm.DESIGN) || can(Auth.Perm.SETTINGS)) {
+298:             Ui.Card rc = Ui.card();
+299:             rc.add(Ui.heading("رسالة مطابقة الرصيد (واتساب)"));
+300:             Reconcile.Template tp = Reconcile.Template.from(db.settings(Reconcile.Template.KEYS));
+301:             rc.add(Ui.para("النص الذي يُرسل للمكتب في واتساب: التحية والعنوان والخاتمة، شكل سطر كل عملة (المبلغ قبل العملة أو بعدها…)، "
+302:                     + "الأصفار العشرية، السطر الفارغ بين العملات، العلامات والخطوط الفاصلة.", 13.5f, Ui.muted, w));
+303:             JTextArea pv = Ui.area(8);
+304:             pv.setEditable(false);
+305:             pv.setText(Reconcile.text(tp, "كاش شام", db.setting("office_name", ""), Clock.now(), Reconcile.sampleRows()));
+306:             pv.setCaretPosition(0);
+307:             JScrollPane pvs = Ui.areaBox(pv);
+308:             pvs.setAlignmentX(Component.RIGHT_ALIGNMENT);
+309:             pvs.setMaximumSize(new Dimension(460, 230));
+310:             rc.add(pvs);
+311:             rc.add(Ui.flow(Ui.primary("تصميم الرسالة…", e -> ReconDesign.open(this, db, this::refresh))));
+312:             add(rc);
+313:             space(12);
+314:         }
+315: 
+316:         // الذكاء الاصطناعي
+317:         if (can(Auth.Perm.SETTINGS)) {
+318:             Ui.Card ai = Ui.card();
+319:             ai.add(Ui.heading(AiExtract.NAME + " (اختياري)"));
+320:             ai.add(Ui.para(AiExtract.EXPLAIN, 13, Ui.muted, w));
+321:             if (!License.current.ai()) {
+322:                 ai.add(Ui.para("من ميزات النسخة المدفوعة. المحرك المدمج لاستخراج معلومات رسائل واتساب (ومنها «راجع») مجاني ويعمل دائمًا دون إنترنت.", 13.5f, Ui.muted, w));
+323:             } else {
+324:                 JCheckBox on = Ui.check("تفعيل زر «" + AiExtract.BUTTON + "» في تسجيل الحركة", "1".equals(db.setting("ai_on", "0")));
+325:                 JComboBox<String> prov = Ui.combo(AiExtract.PROVIDER_NAMES);
+326:                 prov.setSelectedIndex(AiExtract.providerIndex(db.setting("ai_provider", AiExtract.CLAUDE)));
+327:                 JPasswordField key = Ui.password();
+328:                 Ui.Field model = Ui.field("اسم النموذج (اختياري لـ Claude)"), url = Ui.field("عنوان الخدمة (لـ OpenAI وGemini اختياري، ولـ «مخصّص» مطلوب)");
+329:                 model.setText(db.setting("ai_model", ""));
+330:                 url.setText(db.setting("ai_url", ""));
+331:                 ai.add(on);
+332:                 JPanel g = new JPanel(new GridLayout(0, 2, 12, 8));
+333:                 g.setOpaque(false);
+334:                 g.setAlignmentX(Component.RIGHT_ALIGNMENT);
+335:                 g.add(Ui.labeled("الخدمة", prov));
+336:                 g.add(Ui.labeled("مفتاح الخدمة (يُحفظ مشفّرًا؛ فارغ = يبقى كما هو)", key));
+337:                 g.add(Ui.labeled("النموذج", model));
+338:                 g.add(Ui.labeled("العنوان", url));
+339:                 ai.add(g);
+340:                 ai.add(Ui.flow(Ui.primary("حفظ", e -> {
+341:                     db.setSetting("ai_on", on.isSelected() ? "1" : "0");
+342:                     db.setSetting("ai_provider", AiExtract.PROVIDERS[Math.max(0, prov.getSelectedIndex())]);
+343:                     String k = new String(key.getPassword()).trim();
+344:                     if (!k.isEmpty()) db.setSettingQuiet("ai_key", Crypto.enc(k));
+345:                     db.setSetting("ai_model", model.val());
+346:                     db.setSetting("ai_url", url.val());
+347:                     Ui.toast("حُفظ");
+348:                 })));
+349:             }
+350:             add(ai);
+351:         }
+352:         // 10.4: إعادة التعيين
+353:         if (DeskReset.allowed(db)) {
+354:             space(14);
+355:             Ui.Card rc = Ui.card();
+356:             rc.add(Ui.heading("إعادة تعيين البرنامج"));
+357:             rc.add(Ui.para("يصبح البرنامج على هذا الجهاز كأنه مثبت للتو: تُحذف البيانات مع إبقاء الرخصة أو بدونها. الأجهزة الأخرى في المزامنة لا تتأثر.", 13, Ui.muted, textWidth() - 40));
+358:             rc.add(Ui.flow(Ui.danger("إعادة تعيين البرنامج…", e -> DeskReset.start(app, this))));
+359:             add(rc);
+360:         }
+361:         done();
+362:     }
+363: 
+364:     Ui.Btn colorBtn(String label, String key, Color cur) {
+365:         Ui.Btn b = Ui.button(label, cur, null);
+366:         b.addActionListener(e -> {
+367:             Color c = JColorChooser.showDialog(this, label, cur);
+368:             if (c == null) return;
+369:             db.setSetting(key, Ui.hex(c));
+370:             app.reloadAll();
+371:             app.go("settings");
+372:         });
+373:         return b;
+374:     }
+375: 
+376:     void currency(Model.Currency old) {
+377:         if (!require(Auth.Perm.CURRENCIES)) return;
+378:         JPanel c = Ui.column();
+379:         Ui.Field code = Ui.field("مثل USD أو USDT"), name = Ui.field("الاسم بالعربية");
+380:         JComboBox<Integer> dec = Ui.combo(new Integer[]{0, 1, 2, 3, 4, 6, 8});
+381:         JCheckBox active = Ui.check("مفعّلة", old == null || old.active);
+382:         if (old != null) {
+383:             code.setText(old.code);
+384:             code.setEditable(false);
+385:             name.setText(old.name);
+386:             dec.setSelectedItem(old.decimals);
+387:         } else dec.setSelectedItem(2);
+388:         c.add(Ui.labeled("الرمز", code));
+389:         c.add(Ui.gap(6));
+390:         c.add(Ui.labeled("الاسم", name));
+391:         c.add(Ui.gap(6));
+392:         c.add(Ui.labeled("المنازل العشرية", dec));
+393:         c.add(active);
+394:         if (old != null && db.currencyUsed(old.code)) c.add(Ui.para("العملة مستعملة في حركات أو في الصندوق؛ لا تتغير منازلها العشرية (المبالغ محفوظة بأصغر وحدة، فتغييرها يغيّر قيمتها).", 12, Ui.muted, 340));
+395:         c.setPreferredSize(new Dimension(380, c.getPreferredSize().height));
+396:         while (Ui.form(this, old == null ? "عملة جديدة" : "تعديل " + old.code, Ui.rtl(c), "حفظ")) {
+397:             try {
+398:                 String k = code.val().toUpperCase(Locale.US);
+399:                 if (!k.matches("[A-Z0-9]{2,10}")) throw new IllegalArgumentException("الرمز من 2 إلى 10 أحرف لاتينية أو أرقام");
+400:                 if (name.val().isEmpty()) throw new IllegalArgumentException("اكتب اسم العملة");
+401:                 if (old != null && db.currencyUsed(old.code) && (Integer) dec.getSelectedItem() != old.decimals)
+402:                     throw new IllegalArgumentException("لا يمكن تغيير المنازل العشرية لعملة عليها حركات (تتغير قيمة المبالغ).");
+403:                 db.saveCurrency(k, name.val(), (Integer) dec.getSelectedItem(), active.isSelected());
+404:                 refresh();
+405:                 return;
+406:             } catch (Exception e) {
+407:                 Ui.error(this, e);
+408:             }
+409:         }
+410:     }
+411: 
+412:     void rate(String code) {
+413:         String v = Ui.input(this, "سعر الصرف: " + code, "كم دولارًا تساوي 1 " + code + "؟ (مثال لليورو: 1.08) — فارغ = حذف السعر اليدوي", "");
+414:         if (v == null) return;
+415:         try {
+416:             // 10.5 (AUDIT-021): «1.085» لليورو = واحد وخمسة وثمانون من ألف، لا 1085
+417:             BigDecimal r = v.trim().isEmpty() ? null : CashBox.rateDecimal(v);
+418:             if (!v.trim().isEmpty() && r == null) throw new IllegalArgumentException("السعر غير مفهوم: اكتبه مثل 1.085");
+419:             db.setManualRate(code, r);
+420:             refresh();
+421:         } catch (Exception e) {
+422:             Ui.error(this, e);
+423:         }
+424:     }
+425: 

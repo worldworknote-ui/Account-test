@@ -1,0 +1,146 @@
+1: package com.smart.hawala;
+2: 
+3: import java.awt.*;
+4: import java.awt.image.BufferedImage;
+5: import java.nio.charset.StandardCharsets;
+6: import java.util.*;
+7: import java.util.List;
+8: 
+9: /**
+10:  * 12.2: «إطار الالتقاط»: الرسالة كلها رقم واحد من شكل الفقاعة في الصورة (واتساب فاتح وداكن، تلغرام بخلفية متدرجة،
+11:  * شاشة Retina)، وتجميع أسطر القراءة فيها، وبصمة القراءة التلقائية. صور مصطنعة ونصوص مصطنعة.
+12:  */
+13: public class Capture122Test {
+14:     static int fails, passes;
+15: 
+16:     static void check(boolean c, String m) {
+17:         if (c) passes++;
+18:         else fails++;
+19:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+20:     }
+21: 
+22:     static String b64(String s) { return Base64.getEncoder().encodeToString(s.getBytes(StandardCharsets.UTF_8)); }
+23: 
+24:     /** خلفية فيها زخارف (كخلفية واتساب)، ثم فقاعات بنص (خطوط داكنة قصيرة تشبه الكلمات). */
+25:     static BufferedImage chat(int w, int h, Color wall, Color doodle, boolean gradient, int k) {
+26:         BufferedImage im = new BufferedImage(w * k, h * k, BufferedImage.TYPE_INT_RGB);
+27:         Graphics2D g = im.createGraphics();
+28:         g.scale(k, k);
+29:         if (gradient) g.setPaint(new GradientPaint(0, 0, wall, w, h, wall.darker()));
+30:         else g.setColor(wall);
+31:         g.fillRect(0, 0, w, h);
+32:         Random rnd = new Random(7);
+33:         g.setColor(doodle);
+34:         g.setStroke(new BasicStroke(1.3f));
+35:         for (int i = 0; i < 260; i++) {
+36:             int x = rnd.nextInt(w), y = rnd.nextInt(h);
+37:             if (rnd.nextBoolean()) g.drawOval(x, y, 8 + rnd.nextInt(14), 8 + rnd.nextInt(14));
+38:             else g.drawLine(x, y, x + rnd.nextInt(20) - 10, y + rnd.nextInt(20) - 10);
+39:         }
+40:         g.dispose();
+41:         return im;
+42:     }
+43: 
+44:     static void bubble(BufferedImage im, int k, int x, int y, int w, int h, Color fill, Color ink, int lines) {
+45:         Graphics2D g = im.createGraphics();
+46:         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+47:         g.scale(k, k);
+48:         g.setColor(fill);
+49:         g.fillRoundRect(x, y, w, h, 14, 14);
+50:         g.setColor(ink);
+51:         Random rnd = new Random(x * 31 + y);
+52:         for (int l = 0; l < lines; l++) {
+53:             int cx = x + 10, ly = y + 10 + l * 18;
+54:             while (cx < x + w - 40) {
+55:                 int ww = 8 + rnd.nextInt(26);
+56:                 g.fillRect(cx, ly, Math.min(ww, x + w - 12 - cx), 9);
+57:                 cx += ww + 5;
+58:             }
+59:         }
+60:         // الوقت في الزاوية السفلية
+61:         g.fillRect(x + w - 40, y + h - 14, 28, 7);
+62:         g.dispose();
+63:     }
+64: 
+65:     static int[] px(BufferedImage im) { return im.getRGB(0, 0, im.getWidth(), im.getHeight(), null, 0, im.getWidth()); }
+66: 
+67:     static boolean near(BubbleShapes.Box b, int x, int y, int w, int h, int tol) {
+68:         return Math.abs(b.x - x) <= tol && Math.abs(b.y - y) <= tol && Math.abs(b.w - w) <= tol * 2 && Math.abs(b.h - h) <= tol * 2;
+69:     }
+70: 
+71:     public static void main(String[] args) throws Exception {
+72:         System.out.println("== واتساب فاتح: خلفية بزخارف، فقاعة واردة بيضاء وصادرة خضراء وفاصل يوم");
+73:         Color wall = new Color(0xEF, 0xEA, 0xE2), doodle = new Color(0xDD, 0xD6, 0xCC);
+74:         BufferedImage im = chat(500, 420, wall, doodle, false, 1);
+75:         bubble(im, 1, 200, 8, 90, 22, Color.WHITE, Color.WHITE, 0);
+76:         bubble(im, 1, 20, 50, 260, 80, Color.WHITE, new Color(0x11, 0x1B, 0x21), 3);
+77:         bubble(im, 1, 210, 150, 270, 46, new Color(0xD9, 0xFD, 0xD3), new Color(0x11, 0x1B, 0x21), 1);
+78:         bubble(im, 1, 20, 220, 300, 120, Color.WHITE, new Color(0x11, 0x1B, 0x21), 5);
+79:         // اقتباس رد داخل الفقاعة الأخيرة (لون أغمق)
+80:         Graphics2D g = im.createGraphics();
+81:         g.setColor(new Color(0xF0, 0xF0, 0xF0));
+82:         g.fillRoundRect(28, 228, 284, 34, 8, 8);
+83:         g.dispose();
+84:         List<BubbleShapes.Box> l = BubbleShapes.find(px(im), im.getWidth(), im.getHeight(), 1);
+85:         System.out.println("    " + l);
+86:         check(l.size() == 4, "أربعة أشكال: الفاصل وثلاث فقاعات (" + l.size() + ")");
+87:         boolean a = false, b = false, c = false;
+88:         for (BubbleShapes.Box x : l) {
+89:             a |= near(x, 20, 50, 260, 80, 3);
+90:             b |= near(x, 210, 150, 270, 46, 3);
+91:             c |= near(x, 20, 220, 300, 120, 3);
+92:         }
+93:         check(a && b && c, "حدود الفقاعات الثلاث مضبوطة، والاقتباس داخل الأخيرة لا يصير فقاعة");
+94: 
+95:         System.out.println("== شاشة Retina (ضعف البكسلات)");
+96:         BufferedImage r2 = chat(500, 300, wall, doodle, false, 2);
+97:         bubble(r2, 2, 20, 40, 260, 80, Color.WHITE, Color.DARK_GRAY, 3);
+98:         bubble(r2, 2, 220, 150, 260, 46, new Color(0xD9, 0xFD, 0xD3), Color.DARK_GRAY, 1);
+99:         List<BubbleShapes.Box> l2 = BubbleShapes.find(px(r2), r2.getWidth(), r2.getHeight(), 2);
+100:         check(l2.size() == 2 && near(l2.get(0), 40, 80, 520, 160, 6), "فقاعتان بإحداثيات الصورة الكبيرة (" + l2 + ")");
+101: 
+102:         System.out.println("== واتساب داكن");
+103:         BufferedImage dk = chat(500, 300, new Color(0x0B, 0x14, 0x1A), new Color(0x16, 0x20, 0x26), false, 1);
+104:         bubble(dk, 1, 20, 40, 260, 62, new Color(0x20, 0x2C, 0x33), new Color(0xE9, 0xED, 0xEF), 2);
+105:         bubble(dk, 1, 220, 140, 260, 46, new Color(0x00, 0x5C, 0x4B), new Color(0xE9, 0xED, 0xEF), 1);
+106:         List<BubbleShapes.Box> l3 = BubbleShapes.find(px(dk), dk.getWidth(), dk.getHeight(), 1);
+107:         check(l3.size() == 2, "فقاعتان في الوضع الداكن (" + l3 + ")");
+108: 
+109:         System.out.println("== تلغرام: خلفية خضراء متدرجة وفقاعة ملف بأيقونة دائرية");
+110:         BufferedImage tg = chat(560, 360, new Color(0xB8, 0xC9, 0x8F), new Color(0xA8, 0xBA, 0x80), true, 1);
+111:         bubble(tg, 1, 10, 30, 420, 80, Color.WHITE, new Color(0x22, 0x22, 0x22), 2);
+112:         Graphics2D g2 = tg.createGraphics();
+113:         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+114:         g2.setColor(new Color(0x4F, 0xAE, 0x4E));
+115:         g2.fillOval(20, 40, 56, 56);
+116:         g2.dispose();
+117:         bubble(tg, 1, 380, 140, 160, 40, new Color(0xEF, 0xFE, 0xDD), new Color(0x22, 0x22, 0x22), 0);
+118:         bubble(tg, 1, 10, 200, 430, 80, Color.WHITE, new Color(0x22, 0x22, 0x22), 2);
+119:         List<BubbleShapes.Box> l4 = BubbleShapes.find(px(tg), tg.getWidth(), tg.getHeight(), 1);
+120:         check(l4.size() == 3, "ثلاث فقاعات، والأيقونة الخضراء داخل الأولى لا تصير فقاعة (" + l4 + ")");
+121: 
+122:         System.out.println("== أسطر القراءة داخل الأشكال ← رسالة واحدة لكل فقاعة");
+123:         // كما في صورة المستخدم: اسم الملف، والحجم، والوقت، كل منها سطر قراءة منفصل؛ وفاصل «Today»
+124:         StringBuilder sb = new StringBuilder();
+125:         sb.append("W\t0\t0\t600\t400\t").append(b64("Telegram")).append('\n');
+126:         sb.append("B\t10\t30\t420\t80\t\n");
+127:         sb.append("B\t380\t140\t160\t40\t\n");
+128:         sb.append("B\t10\t200\t430\t80\t\n");
+129:         sb.append("B\t230\t160\t80\t22\t\n");
+130:         sb.append("L\t90\t42\t300\t20\t").append(b64("SmartAccountant...ppleSilicon (1).zip")).append('\n');
+131:         sb.append("L\t90\t66\t200\t18\t").append(b64("29.1 MB - Show in Finder")).append('\n');
+132:         sb.append("L\t370\t90\t50\t14\t").append(b64("12:07")).append('\n');
+133:         sb.append("L\t480\t150\t50\t16\t").append(b64("0 12:10")).append('\n');
+134:         sb.append("L\t240\t163\t60\t16\t").append(b64("Today")).append('\n');
+135:         sb.append("L\t30\t212\t300\t20\t").append(b64("ابو عمر 10250.")).append('\n');
+136:         sb.append("L\t30\t236\t200\t20\t").append(b64("استلمت")).append('\n');
+137:         sb.append("L\t380\t262\t50\t14\t").append(b64("22:16")).append('\n');
+138:         // كلمة خارج كل فقاعة (فوق الخلفية) لا تُرقّم
+139:         sb.append("L\t470\t320\t60\t16\t").append(b64("ف")).append('\n');
+140:         Bubbles.Result res = Bubbles.build(Bubbles.parse(sb.toString()), new int[]{0, 0, 600, 400});
+141:         for (Bubbles.Bubble x : res.bubbles) System.out.println("    " + x.number + ": " + x.text.replace('\n', '|') + " [" + x.time + "]");
+142:         check(res.bubbles.size() == 3, "ثلاث رسائل فقط: لا رقم لكل كلمة، ولا للفاصل «Today» ولا لنص خارج الفقاعات (" + res.bubbles.size() + ")");
+143:         if (res.bubbles.size() == 3) {
+144:             check(res.bubbles.get(0).text.equals("SmartAccountant...ppleSilicon (1).zip") && res.bubbles.get(0).time.equals("12:07"),
+145:                     "الأولى: اسم الملف رسالة واحدة ووقتها 12:07، وسطر «29.1 MB - Show in Finder» حُذف (12.3)");
+146:             check(res.bubbles.get(1).text.equals("0") && res.bubbles.get(1).time.equals("12:10"), "الثانية: نص قصير ووقته على السطر نفسه");

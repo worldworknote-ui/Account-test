@@ -1,0 +1,129 @@
+695:                     .setNeutralButton("مشاركة / إرسال", (d, w) -> shareBackup(c.file))
+696:                     .setNegativeButton("لاحقًا", (d, w) -> {
+697:                         a.toast("النسخة محفوظة داخل التطبيق؛ يمكنك حفظها لاحقًا من شاشة النسخ الاحتياطي.");
+698:                         if (!a.onHome) show();
+699:                     }).show();
+700:         });
+701:     }
+702: 
+703:     private void saveBackupTo(File f) {
+704:         a.db.setSettingQuiet("pending_backup_file", f.getAbsolutePath());
+705:         Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+706:         i.addCategory(Intent.CATEGORY_OPENABLE);
+707:         i.setType("application/octet-stream");
+708:         i.putExtra(Intent.EXTRA_TITLE, f.getName());
+709:         a.startForResult(i, MainActivity.CREATE_BACKUP);
+710:     }
+711: 
+712:     private void shareBackup(File f) {
+713:         try {
+714:             File out = new File(a.sharedDir(), f.getName());
+715:             Db.copyFile(f, out);
+716:             a.db.recordBackup("SHARE", "تمت المشاركة", f.getName(), f.length(), a.db.counts(), false, "يرجى التأكد من وصول الملف كاملًا إلى الوجهة");
+717:             a.markBackupDone("shared");
+718:             a.shareFiles(Collections.singletonList(out), "application/octet-stream", "نسخة احتياطية - المحاسب الذكي");
+719:         } catch (Exception e) {
+720:             a.error(e);
+721:         }
+722:     }
+723: 
+724:     // ===================================================================================
+725:     // الاستعادة
+726:     // ===================================================================================
+727: 
+728:     private void restorePasswordDialog(final File file, final boolean temporary) {
+729:         if (!a.require(Auth.Perm.RESTORE)) return;
+730:         final EditText p = new EditText(a);
+731:         p.setHint("كلمة مرور النسخة أو رمز استرداد النسخ");
+732:         Ui.secret(p, false);
+733:         LinearLayout l = new LinearLayout(a);
+734:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), a.dp(4));
+735:         l.addView(p, new LinearLayout.LayoutParams(-1, -2));
+736:         new AlertDialog.Builder(a).setTitle("كلمة مرور النسخة").setMessage("سيتم فك النسخة وفحصها كاملة وعرض محتواها قبل أي تغيير على بياناتك.")
+737:                 .setView(l).setPositiveButton("فك وفحص", (d, w) -> {
+738:                     Editable e = p.getText();
+739:                     final char[] pw = new char[e.length()];
+740:                     e.getChars(0, e.length(), pw, 0);
+741:                     p.setText("");
+742:                     a.busy("جارٍ فك النسخة وفحصها…", pr -> {
+743:                         try {
+744:                             return BackupManager.prepareRestore(a, file, pw, pr);
+745:                         } finally {
+746:                             Arrays.fill(pw, '\0');
+747:                         }
+748:                     }, res -> restorePreview(file, temporary, (BackupManager.Prepared) res));
+749:                 })
+750:                 .setNegativeButton("إلغاء", (d, w) -> {
+751:                     if (temporary) file.delete();
+752:                 }).show();
+753:     }
+754: 
+755:     /** ملف من أداة النقل: الافتراضي إضافته إلى البيانات الحالية؛ الاستبدال خيار صريح. */
+756:     private void restorePreview(final File file, final boolean temporary, final BackupManager.Prepared prep) {
+757:         if (!"migration".equals(prep.parsed.manifest.optString("source"))) {
+758:             replacePreview(file, temporary, prep);
+759:             return;
+760:         }
+761:         BackupFormat.Report r = prep.report;
+762:         new AlertDialog.Builder(a).setTitle("ملف من أداة النقل").setCancelable(false)
+763:                 .setMessage("في الملف " + r.offices + " مكتب و " + r.txActive + " حركة.\n\nكيف تريد استخدامه؟\n\n"
+764:                         + "• إضافة إلى بياناتي الحالية (موصى به): تبقى كل مكاتبك وحركاتك كما هي، وتُضاف أرصدة الملف وحركاته. "
+765:                         + "المكتب الموجود بالاسم نفسه تُضاف إليه، والباقي مكاتب جديدة. تظهر المعاينة قبل أي تغيير.\n\n"
+766:                         + "• استبدال كل بياناتي: تُحذف بيانات التطبيق كلها ويحل محلها محتوى الملف فقط.")
+767:                 .setPositiveButton("إضافة إلى بياناتي", (d, w) -> mergePlan(file, temporary, prep))
+768:                 .setNeutralButton("استبدال الكل", (d, w) -> new AlertDialog.Builder(a).setTitle("⚠ استبدال كل البيانات؟")
+769:                         .setMessage("ستُحذف كل مكاتبك وحركاتك الحالية (" + a.db.officeCount() + " مكتب، " + a.db.txCount() + " حركة) ويبقى محتوى الملف فقط. "
+770:                                 + "تُحفظ نسخة أمان يمكن التراجع إليها. هل أنت متأكد؟")
+771:                         .setPositiveButton("نعم، استبدل", (d2, w2) -> replacePreview(file, temporary, prep))
+772:                         .setNegativeButton("رجوع", (d2, w2) -> restorePreview(file, temporary, prep)).show())
+773:                 .setNegativeButton("إلغاء", (d, w) -> {
+774:                     BackupManager.clearStaging(a);
+775:                     if (temporary) file.delete();
+776:                     a.restoreInput = null;
+777:                 }).show();
+778:     }
+779: 
+780:     private void mergePlan(final File file, final boolean temporary, final BackupManager.Prepared prep) {
+781:         a.busy("جارٍ مطابقة المكاتب وحساب الأرصدة…", p -> MergePlan.build(prep.parsed.tables, prep.parsed.manifest, a.db.mergeExisting()),
+782:                 res -> mergePreview(file, temporary, prep, (MergePlan) res));
+783:     }
+784: 
+785:     private void mergePreview(final File file, final boolean temporary, final BackupManager.Prepared prep, final MergePlan plan) {
+786:         final Runnable cancel = () -> {
+787:             BackupManager.clearStaging(a);
+788:             if (temporary) file.delete();
+789:             a.restoreInput = null;
+790:             show();
+791:         };
+792:         a.base("إضافة ملف النقل", cancel);
+793:         LinearLayout c = a.card();
+794:         c.addView(a.text("تُضاف أرصدة الملف وحركاته إلى بياناتك الحالية. لا يُحذف شيء.", 15, a.ink, true));
+795:         c.addView(a.text("المكاتب: " + plan.matchedOffices + " موجود تُضاف إليه، و " + plan.newOffices + " جديد"
+796:                 + "\nالحركات: " + plan.txs.size() + "   •   الأرصدة السابقة: " + plan.openings.size()
+797:                 + (plan.newCurrencies.isEmpty() ? "" : "\nعملات جديدة: " + newCodes(plan)), 14, a.dark, false));
+798:         for (String e : plan.errors) a.notice(R.drawable.ic_warn, e, true, null, null);
+799:         for (String w : plan.warnings) a.notice(R.drawable.ic_warn, w, false, null, null);
+800:         // 9.0: النسخة المجانية: إن تجاوزت المكاتب الجديدة الحد يختار المستخدم ما يُضاف منها
+801:         final long maxOff = License.current.maxOffices();
+802:         final long live = a.db.officeCount();
+803:         final boolean over = maxOff != Entitlements.UNLIMITED && live + plan.newOffices > maxOff;
+804:         if (over) {
+805:             a.notice(R.drawable.ic_warn, "الملف يضيف " + plan.newOffices + " مكتبًا جديدًا وعندك " + live + "، والنسخة المجانية تتسع لـ " + maxOff
+806:                     + ". اختر المكاتب الجديدة التي تُضاف (حتى " + Math.max(0, maxOff - live) + ")، أو فعّل النسخة الكاملة.", true, "اختيار المكاتب",
+807:                     v -> pickNew(file, temporary, prep, plan, (int) Math.max(0, maxOff - live)));
+808:         } else if (plan.droppedOffices > 0) {
+809:             a.notice(R.drawable.ic_info, "استُبعد " + plan.droppedOffices + " مكتبًا جديدًا باختيارك؛ لا تُضاف حركاتها.", false, "إعادة الاختيار",
+810:                     v -> mergePlan(file, temporary, prep));
+811:         }
+812:         // 10.16: اعتماد رصيد الملف كما هو بدل جمعه مع الرصيد الحالي
+813:         if (plan.ok() && plan.adoptable() > 0) {
+814:             final android.widget.CheckBox ad = new android.widget.CheckBox(a);
+815:             ad.setText("اعتماد رصيد الملف كما هو (بدون جمعه مع الرصيد الحالي)");
+816:             ad.setChecked(plan.adopt);
+817:             ad.setOnCheckedChangeListener((b, on) -> {
+818:                 plan.setAdopt(on);
+819:                 mergePreview(file, temporary, prep, plan);
+820:             });
+821:             LinearLayout ac = a.card();
+822:             ac.addView(ad);
+823:             ac.addView(a.text(plan.adopt ? "للمكاتب الموجودة: يُلغى رصيدها الحالي بقيد تسوية ظاهر في الكشف، ثم يُكتب رصيد الملف، فيصبح الرصيد = رصيد الملف تمامًا. لا تُحذف أي حركة."

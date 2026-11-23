@@ -1,0 +1,136 @@
+184:             refresh();
+185:         }
+186:     }
+187: 
+188:     /**
+189:      * 11.5: استبدال آمن لملف موجود: النسخة الجديدة تُكتب كاملة في ملف مؤقت وتُقرأ للتحقق، ثم يُنحّى القديم باسم «.old-…»
+190:      * ويأخذ الجديد اسمه، ثم يُحذف القديم. (كان يُكتب فوق القديم مباشرة، فانقطاع الكتابة يترك ملفًا تالفًا بلا نسخة سليمة.)
+191:      * انقطاع بين الخطوتين يترك «.old-…» سليمًا تستعيده القراءة التالية. مزوّد لا يدعم إعادة التسمية: الكتابة فوقه بعد التحقق.
+192:      */
+193:     private void replaceSafely(Uri existing, String name, byte[] data) throws IOException {
+194:         Uri parent = DocumentsContract.buildDocumentUriUsingTree(tree, treeDoc);
+195:         long t = System.nanoTime();
+196:         Uri tmp = DocumentsContract.createDocument(cr, parent, "application/octet-stream", ".tmp-" + t + "-" + name);
+197:         if (tmp == null) throw new IOException("تعذر إنشاء ملف في مجلد المزامنة");
+198:         try (OutputStream o = cr.openOutputStream(tmp, "w")) {
+199:             if (o == null) throw new IOException("تعذر الكتابة في مجلد المزامنة");
+200:             o.write(data);
+201:         }
+202:         if (!sameLength(tmp, data.length)) {
+203:             try { DocumentsContract.deleteDocument(cr, tmp); } catch (Exception ignored) { /* يبقى مؤقتًا */ }
+204:             throw new IOException("لم تكتمل كتابة " + name + " في مجلد المزامنة (بقيت النسخة السابقة كما هي)");
+205:         }
+206:         Uri aside = null;
+207:         try {
+208:             aside = DocumentsContract.renameDocument(cr, existing, ".old-" + t + "-" + name);
+209:         } catch (Exception ignored) {
+210:             // لا يدعم إعادة التسمية
+211:         }
+212:         if (aside != null) {
+213:             Uri done = null;
+214:             try {
+215:                 done = DocumentsContract.renameDocument(cr, tmp, name);
+216:             } catch (Exception ignored) {
+217:                 // نعيد القديم
+218:             }
+219:             if (done != null) {
+220:                 try { DocumentsContract.deleteDocument(cr, aside); } catch (Exception ignored) { /* يُنظَّف لاحقًا */ }
+221:                 ids.put(name, DocumentsContract.getDocumentId(done));
+222:                 info.put(name, new long[]{data.length, Clock.now()});
+223:                 return;
+224:             }
+225:             try { DocumentsContract.renameDocument(cr, aside, name); } catch (Exception ignored) { /* تستعيده القراءة */ }
+226:         }
+227:         // مزوّد بلا إعادة تسمية: الكتابة فوق القديم (المحتوى الجديد تُحقق من اكتماله أعلاه)
+228:         try { DocumentsContract.deleteDocument(cr, tmp); } catch (Exception ignored) { /* مؤقت */ }
+229:         try (OutputStream o = cr.openOutputStream(existing, "wt")) {
+230:             if (o == null) throw new IOException("تعذر الكتابة في مجلد المزامنة");
+231:             o.write(data);
+232:         }
+233:     }
+234: 
+235:     private boolean sameLength(Uri u, int n) {
+236:         try (InputStream in = cr.openInputStream(u)) {
+237:             if (in == null) return false;
+238:             long total = 0;
+239:             byte[] buf = new byte[16384];
+240:             int r;
+241:             while ((r = in.read(buf)) > 0) total += r;
+242:             return total == n;
+243:         } catch (Exception e) {
+244:             return false;
+245:         }
+246:     }
+247: 
+248:     /** 11.5: ملف غاب اسمه بين خطوتي الاستبدال: تُستعاد نسخته السابقة السليمة «.old-…-الاسم». */
+249:     private String recover(String name) {
+250:         String best = null;
+251:         for (String k : ids.keySet()) if (k.startsWith(".old-") && k.endsWith("-" + name) && (best == null || k.compareTo(best) > 0)) best = k;
+252:         if (best == null) return null;
+253:         try {
+254:             Uri r = DocumentsContract.renameDocument(cr, DocumentsContract.buildDocumentUriUsingTree(tree, ids.get(best)), name);
+255:             if (r == null) return null;
+256:             String id = DocumentsContract.getDocumentId(r);
+257:             ids.remove(best);
+258:             ids.put(name, id);
+259:             return id;
+260:         } catch (Exception e) {
+261:             return null;
+262:         }
+263:     }
+264: 
+265:     @Override public boolean canDelete() { return true; }
+266: 
+267:     @Override public void delete(String name) throws IOException {
+268:         if (!listedOnce) refresh();
+269:         String id = ids.get(name);
+270:         if (id == null) return;
+271:         try {
+272:             DocumentsContract.deleteDocument(cr, DocumentsContract.buildDocumentUriUsingTree(tree, id));
+273:         } catch (java.io.FileNotFoundException e) {
+274:             // حُذف من قبل
+275:         } catch (Exception e) {
+276:             throw new IOException("تعذر حذف ملف من مجلد المزامنة: " + e.getMessage());
+277:         }
+278:         ids.remove(name);
+279:         info.remove(name);
+280:     }
+281: 
+282:     @Override public Map<String, long[]> stat(String prefix) throws IOException {
+283:         refresh();
+284:         Map<String, long[]> out = new HashMap<>();
+285:         for (Map.Entry<String, long[]> e : info.entrySet()) if (e.getKey().startsWith(prefix)) out.put(e.getKey(), e.getValue());
+286:         return out;
+287:     }
+288: 
+289:     @Override public String describe() {
+290:         String name = null;
+291:         try (Cursor c = cr.query(DocumentsContract.buildDocumentUriUsingTree(tree, treeDoc), new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null)) {
+292:             if (c != null && c.moveToFirst()) name = c.getString(0);
+293:         } catch (Throwable ignored) {
+294:             // يبقى الاسم من الرابط
+295:         }
+296:         if (name == null) {
+297:             String d = Uri.decode(tree.getLastPathSegment() == null ? tree.toString() : tree.getLastPathSegment());
+298:             return d.replace("primary:", "ذاكرة الهاتف/");
+299:         }
+300:         return provider() + " / " + name;
+301:     }
+302: 
+303:     /** اسم مزوّد المجلد للمستخدم. */
+304:     String provider() {
+305:         String a = tree.getAuthority() == null ? "" : tree.getAuthority();
+306:         if (a.contains("google.android.apps.docs")) return "Google Drive";
+307:         if (a.contains("externalstorage")) return "ذاكرة الهاتف";
+308:         if (a.contains("onedrive")) return "OneDrive";
+309:         if (a.contains("dropbox")) return "Dropbox";
+310:         return a;
+311:     }
+312: 
+313:     boolean cloudDrive() { return tree.getAuthority() != null && tree.getAuthority().contains("google.android.apps.docs"); }
+314: 
+315:     @Override public String note() {
+316:         if (stillLoading) return provider() + " ما زال يحدّث قائمة ملفات المجلد؛ قد تصل بعض التغييرات في الجولة التالية.";
+317:         return "";
+318:     }
+319: }

@@ -1,0 +1,175 @@
+361:         String office = db.setting("office_name", "").trim();
+362:         JLabel off = Ui.label(Ui.cut(office.isEmpty() ? Ui.forOs() : office, 26), 12, Ui.sidebarMuted, false);
+363:         nm.add(off);
+364:         head.add(nm, BorderLayout.CENTER);
+365:         head.setBorder(new EmptyBorder(0, 18, 10, 18));
+366:         // 10.18: خانة بحث ظاهرة أعلى القائمة: تفتح «الانتقال السريع» (أقسام، مكاتب، إعدادات، إجراءات)
+367:         final Ui.Field sq = Ui.field("بحث…  (" + (Ui.MAC ? "Cmd" : "Ctrl") + "+K)");
+368:         sq.setFont(Ui.font(13, false));
+369:         sq.setToolTipText("اكتب اسم قسم أو مكتب أو إعداد أو إجراء");
+370:         sq.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+371:             void go() {
+372:                 final String t = sq.getText();
+373:                 if (t.isEmpty()) return;
+374:                 SwingUtilities.invokeLater(() -> {
+375:                     sq.setText("");
+376:                     QuickJump.open(App.this, t);
+377:                 });
+378:             }
+379: 
+380:             @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { go(); }
+381: 
+382:             @Override public void removeUpdate(javax.swing.event.DocumentEvent e) {}
+383: 
+384:             @Override public void changedUpdate(javax.swing.event.DocumentEvent e) {}
+385:         });
+386:         sq.addMouseListener(new MouseAdapter() {
+387:             @Override public void mouseClicked(MouseEvent e) { QuickJump.open(App.this, ""); }
+388:         });
+389:         JPanel sqBox = new JPanel(new BorderLayout());
+390:         sqBox.setOpaque(false);
+391:         sqBox.setBorder(new EmptyBorder(0, 14, 10, 14));
+392:         sqBox.add(sq);
+393:         JPanel north = new JPanel(new BorderLayout());
+394:         north.setOpaque(false);
+395:         north.add(head, BorderLayout.NORTH);
+396:         north.add(sqBox, BorderLayout.SOUTH);
+397:         side.add(north, BorderLayout.NORTH);
+398:         // الأقسام في مجموعات (تتمرر إن صغرت النافذة)
+399:         JPanel list = new JPanel() {
+400:             @Override protected void paintComponent(Graphics g) {
+401:                 super.paintComponent(g);
+402:                 // 10.10: إطار العنصر المحدد (ينزلق من السابق إلى الجديد ويتبدل لونه)
+403:                 if (navY < 0 || navColorNow == null) return;
+404:                 Graphics2D g2 = (Graphics2D) g.create();
+405:                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+406:                 RoundRectangle2D r = new RoundRectangle2D.Double(10, navY + 1, getWidth() - 20, 36, 14, 14);
+407:                 g2.setColor(new Color(navColorNow.getRed(), navColorNow.getGreen(), navColorNow.getBlue(), 34));
+408:                 g2.fill(r);
+409:                 g2.setStroke(new BasicStroke(1.8f));
+410:                 g2.setColor(navColorNow);
+411:                 g2.draw(r);
+412:                 g2.dispose();
+413:             }
+414:         };
+415:         navList = list;
+416:         list.setOpaque(false);
+417:         list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
+418:         nav.clear();
+419:         String pendingGroup = null;
+420:         for (String[] s : SECTIONS) {
+421:             if ("-".equals(s[0])) {
+422:                 pendingGroup = s[1];
+423:                 continue;
+424:             }
+425:             if (!navAllowed(s[0])) continue;
+426:             if (pendingGroup != null) {
+427:                 JLabel g = Ui.label(pendingGroup, 11.5f, Ui.sidebarMuted, true);
+428:                 g.setBorder(new EmptyBorder(list.getComponentCount() == 0 ? 2 : 14, 0, 4, 26));
+429:                 g.setAlignmentX(Component.RIGHT_ALIGNMENT);
+430:                 g.setMaximumSize(new Dimension(Integer.MAX_VALUE, 40));
+431:                 list.add(g);
+432:                 pendingGroup = null;
+433:             }
+434:             NavItem n = new NavItem(s[0], s[1]);
+435:             nav.put(s[0], n);
+436:             list.add(n);
+437:         }
+438:         JScrollPane ls = new JScrollPane(list, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED, ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+439:         ls.setBorder(BorderFactory.createEmptyBorder());
+440:         ls.setOpaque(false);
+441:         ls.getViewport().setOpaque(false);
+442:         ls.getVerticalScrollBar().setUnitIncrement(16);
+443:         ls.getVerticalScrollBar().setPreferredSize(new Dimension(6, 10));
+444:         ls.getVerticalScrollBar().setOpaque(false);
+445:         side.add(ls, BorderLayout.CENTER);
+446:         navY = -1;
+447:         SwingUtilities.invokeLater(this::slideNav);
+448:         // التذييل: مزامنة سريعة، والوضع الليلي، وبطاقة المستخدم
+449:         JPanel foot = new JPanel();
+450:         foot.setOpaque(false);
+451:         foot.setLayout(new BoxLayout(foot, BoxLayout.Y_AXIS));
+452:         foot.setBorder(new EmptyBorder(10, 16, 0, 16));
+453:         JPanel btns = new JPanel(new GridLayout(1, 0, 8, 0));
+454:         btns.setOpaque(false);
+455:         btns.setAlignmentX(Component.RIGHT_ALIGNMENT);
+456:         btns.setMaximumSize(new Dimension(Integer.MAX_VALUE, 40));
+457:         if (SyncEngine.enabled(db) && License.current.sync() && !locked) btns.add(sideButton("مزامنة", "sync", e -> SyncView.now(this)));
+458:         btns.add(sideButton(Ui.dark ? "نهاري" : "ليلي", Ui.dark ? "sun" : "moon", e -> {
+459:             Ui.switchTheme(db, !Ui.dark);
+460:             reloadAll();
+461:         }));
+462:         // 10.12: ألوان كل مستخدم له وحده (كالوضع الليلي) — متاحة لكل مستخدم
+463:         if (!locked) btns.add(sideButton("مظهري", "settings", e -> myColors()));
+464:         foot.add(btns);
+465:         foot.add(Box.createVerticalStrut(10));
+466:         JPanel userCard = new JPanel(new BorderLayout(10, 0)) {
+467:             @Override protected void paintComponent(Graphics g) {
+468:                 Graphics2D g2 = (Graphics2D) g.create();
+469:                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+470:                 g2.setColor(new Color(255, 255, 255, 14));
+471:                 g2.fill(new RoundRectangle2D.Float(0, 0, getWidth(), getHeight(), 14, 14));
+472:                 g2.dispose();
+473:             }
+474:         };
+475:         userCard.setOpaque(false);
+476:         userCard.setBorder(new EmptyBorder(9, 12, 9, 12));
+477:         userCard.setAlignmentX(Component.RIGHT_ALIGNMENT);
+478:         userCard.setMaximumSize(new Dimension(Integer.MAX_VALUE, 64));
+479:         Model.User u = SmartApp.currentUser;
+480:         String initial = u != null && !u.name.isEmpty() ? u.name.substring(0, 1) : "م";
+481:         userCard.add(avatar(initial), BorderLayout.LINE_START);
+482:         JPanel txt = new JPanel();
+483:         txt.setOpaque(false);
+484:         txt.setLayout(new BoxLayout(txt, BoxLayout.Y_AXIS));
+485:         who.setForeground(Color.WHITE);
+486:         who.setFont(Ui.font(13, true));
+487:         badge.setForeground(Ui.sidebarMuted);
+488:         badge.setFont(Ui.font(11.5f, false));
+489:         txt.add(who);
+490:         txt.add(badge);
+491:         userCard.add(txt, BorderLayout.CENTER);
+492:         foot.add(userCard);
+493:         side.add(foot, BorderLayout.SOUTH);
+494:         updateFoot();
+495:         side.applyComponentOrientation(Ui.RTL);
+496:         side.revalidate();
+497:         side.repaint();
+498:     }
+499: 
+500:     /** زر صغير شفاف في تذييل الشريط الجانبي. */
+501:     /** 10.12: ألوان المظهر لهذا المستخدم وحده (لا تتغيّر عند غيره). */
+502:     void myColors() {
+503:         JPanel c = Ui.column();
+504:         if (db.usersEnabled() && SmartApp.currentUser != null)
+505:             c.add(Ui.para("هذه الألوان والوضع الليلي خاصة بك وحدك: لا تتغيّر عند غيرك من المستخدمين.", 13, Ui.muted, 380));
+506:         String[][] keys = {{"primary_color", "اللون الأساسي"}, {"accent_color", "لون التمييز"}, {"bg_color", "لون الخلفية"}};
+507:         Color[] cur = {Ui.primary, Ui.accent, Ui.bg};
+508:         JDialog[] dlg = {null};
+509:         JPanel row = Ui.flow();
+510:         for (int i = 0; i < keys.length; i++) {
+511:             final String k = keys[i][0], label = keys[i][1];
+512:             final Color now = cur[i];
+513:             row.add(Ui.button(label, now, e -> {
+514:                 Color picked = JColorChooser.showDialog(frame, label, now);
+515:                 if (picked == null) return;
+516:                 db.setSettingQuiet(k, Ui.hex(picked));
+517:                 if (dlg[0] != null) dlg[0].dispose();
+518:                 reloadAll();
+519:             }));
+520:         }
+521:         row.add(Ui.ghost("الألوان الافتراضية", e -> {
+522:             for (String[] k : keys) db.deleteSetting(k[0]);
+523:             if (dlg[0] != null) dlg[0].dispose();
+524:             reloadAll();
+525:         }));
+526:         c.add(row);
+527:         // 10.17: اسمي الظاهر لبقية المحاسبين
+528:         if (db.usersEnabled() && SmartApp.currentUser != null) {
+529:             c.add(Ui.gap(10));
+530:             c.add(Ui.flow(Ui.ghost("اسمي الظاهر للآخرين…", e -> UsersView.ownNick(frame, db))));
+531:         }
+532:         // 10.16: الخط، لون الشريط الجانبي، حجم الأزرار، إطارات البطاقات (إعدادات هذا الجهاز)
+533:         c.add(Ui.gap(10));
+534:         java.util.List<String[]> fonts = new java.util.ArrayList<>();
+535:         for (String[] f : Ui.FONTS) if (Ui.hasFont(f[0])) fonts.add(f);

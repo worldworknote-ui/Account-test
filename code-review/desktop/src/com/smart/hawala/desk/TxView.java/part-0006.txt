@@ -1,0 +1,204 @@
+929:     boolean saving;
+930: 
+931:     void save() {
+932:         if (saving) return;
+933:         if (!require(editing == null ? Auth.Perm.TX_ADD : Auth.Perm.TX_EDIT)) return;
+934:         // 10.5 (§5): رسالة واتساب: جلسة جديدة تؤكد المكتب أولًا، وتغيير المكتب المثبّت يمر بالتحذير المطلوب
+935:         Model.Office chosen = (Model.Office) office.getSelectedItem();
+936:         if (fromWa() && chosen != null) {
+937:             WaPin.Need need = WaPin.before(db, chosen.id);
+938:             if (need == WaPin.Need.CONFIRM_SESSION) {
+939:                 if (!Ui.confirm(this, "تأكيد المكتب: «" + chosen.name + "»", WaPin.sessionQuestion(chosen.name), "نعم، ثبّته")) return;
+940:                 WaPin.pin(db, chosen.id);
+941:             } else if (need == WaPin.Need.CONFIRM_CHANGE) {
+942:                 Model.Office was = WaPin.current(db);
+943:                 int r = Ui.choose(this, "تغيير المكتب", WaPin.changeWarning(was.name, chosen.name),
+944:                         new String[]{"تغيير إلى «" + chosen.name + "»", "إبقاء «" + was.name + "»"});
+945:                 if (r != 0) {
+946:                     if (r == 1) selectOffice(was.id);
+947:                     return;
+948:                 }
+949:                 WaPin.pin(db, chosen.id);
+950:             }
+951:             updatePin();
+952:         }
+953:         final Db.TxInput in;
+954:         try {
+955:             in = input(true);
+956:         } catch (Exception e) {
+957:             Ui.error(this, e);
+958:             return;
+959:         }
+960:         Model.Tx dup = editing == null ? duplicateOf(in.description) : null;
+961:         List<String> warns = sanity(in);
+962:         String warnText = warns.isEmpty() ? "" : "! " + Model.join(warns, "\n! ") + "\n\n";
+963:         // 10.5 (§11): نافذة تأكيد بالأرصدة من طبقة البيانات (المكتب بالأحمر، الرصيد الحالي وبعد الحركة)، تُحدَّث وهي مفتوحة
+964:         final Long replacing = editing == null ? null : editing.id;
+965:         java.util.function.Supplier<TxConfirm.View> view = () -> TxConfirm.build(db, in, replacing);
+966:         boolean ask = dup != null || !warns.isEmpty() || "1".equals(db.setting("confirm_tx", "1")) || editing != null;
+967:         if (ask) {
+968:             String title, yes, prefix = warnText.trim();
+969:             if (dup != null) {
+970:                 title = "! هذه الرسالة مسجّلة سابقًا";
+971:                 yes = "نعم، سجّلها";
+972:                 prefix = "يوجد حركة بالبيان نفسه: " + dupText(dup) + ". هل هي حوالة جديدة فعلًا؟" + (prefix.isEmpty() ? "" : "\n" + prefix);
+973:             } else if (!warns.isEmpty()) {
+974:                 title = "راجع قبل التسجيل";
+975:                 yes = "تسجيل رغم ذلك";
+976:             } else if (approving && editing != null) {
+977:                 title = "تأكيد التصحيح والاعتماد";
+978:                 yes = "اعتماد";
+979:             } else {
+980:                 title = editing == null ? "تأكيد تسجيل الحركة" : "تأكيد التعديل";
+981:                 yes = editing == null ? "تسجيل" : "حفظ";
+982:             }
+983:             while (true) {
+984:                 TxConfirm.View ok = Ui.confirmTx(this, title, prefix, view, yes);
+985:                 if (ok == null) return;
+986:                 if (!TxConfirm.changed(db, ok, java.util.Collections.singletonList(in), replacing)) break;
+987:                 prefix = "! تغيّر الرصيد لحظة الضغط. راجع الأرقام الجديدة ثم أكّد." + (warnText.isEmpty() ? "" : "\n" + warnText.trim());
+988:             }
+989:         }
+990:         if (saving) return;
+991:         String reason = "";
+992:         if (editing != null && !approving) {
+993:             reason = Ui.input(this, "سبب التعديل", "اكتب سبب التعديل (يظهر في سجل العمليات)", "");
+994:             if (reason == null) return;
+995:             if (reason.trim().isEmpty()) {
+996:                 Ui.toast("سبب التعديل مطلوب");
+997:                 return;
+998:             }
+999:         }
+1000:         final String why = reason;
+1001:         final Model.Tx old = editing;
+1002:         final List<byte[]> imgs = new ArrayList<>(imageData);
+1003:         final boolean approve = approving && old != null;
+1004:         saving = true;
+1005:         final boolean fromWaSave = fromWa();
+1006:         Ui.busy(this, "جارٍ الحفظ…", p -> {
+1007:             try {
+1008:                 if (old == null) return db.addTx(in, imgs);
+1009:                 if (approve) {
+1010:                     db.approveEdited(old.id, in, imgs, new HashSet<>());
+1011:                     return old.id;
+1012:                 }
+1013:                 return db.editTx(old.id, in, imgs, new HashSet<>(), why);
+1014:             } finally {
+1015:                 saving = false;
+1016:             }
+1017:         }, id -> {
+1018:             Model.Tx t = db.tx(id);
+1019:             if (fromWaSave) WaPin.touch(db);
+1020:             db.setSettingQuiet("last_office", "" + in.office);
+1021:             rememberOffice(in.office);
+1022:             rememberRate();
+1023:             db.setSettingQuiet("fee_per_last", "" + per());
+1024:             db.deleteSetting("draft_tx_mac");
+1025:             prints = null;
+1026:             app.changed();
+1027:             boolean pending = t != null && t.isPending();
+1028:             if (old != null) {
+1029:                 editing = null;
+1030:                 approving = false;
+1031:                 Ui.toast(approve ? "صُحّحت الحركة واعتُمدت ✓" : "حُفظ التعديل: أُلغي الأصل بقيد عكسي وسُجّل البديل");
+1032:                 reset(false);
+1033:                 app.go("log");
+1034:                 return;
+1035:             }
+1036:             Ui.toast(pending ? "سُجّلت بانتظار اعتماد المحاسب (لا تدخل الأرصدة قبل الاعتماد)" : "✓ سُجّلت الحركة");
+1037:             if (queue.size() > 1 && queueAt + 1 < queue.size()) {
+1038:                 queueAt++;
+1039:                 reset(false);
+1040:                 desc.setText(queue.get(queueAt).body);
+1041:                 updateQueue();
+1042:             } else {
+1043:                 queue.clear();
+1044:                 reset(false);
+1045:                 updateQueue();
+1046:             }
+1047:             subtitle.setText(quotaText());
+1048:         });
+1049:     }
+1050: 
+1051:     void reset(boolean full) {
+1052:         building = true;
+1053:         type.set(-1);
+1054:         type.setBorder(null);
+1055:         amount.setText("");
+1056:         feeMode.set(0);
+1057:         feeSide.set(0);
+1058:         feeKind.set(0);
+1059:         fee.setText("");
+1060:         rate.setText("");
+1061:         person.setText("");
+1062:         desc.setText("");
+1063:         notes.setText("");
+1064:         dest.setText("");
+1065:         service.getEditor().setItem("");
+1066:         date.set(0);
+1067:         imageData.clear();
+1068:         renderImages();
+1069:         parsed = null;
+1070:         filled = false;
+1071:         duplicate = null;
+1072:         parseBox.removeAll();
+1073:         if (full) {
+1074:             queue.clear();
+1075:             updateQueue();
+1076:             db.deleteSetting("draft_tx_mac");
+1077:         }
+1078:         building = false;
+1079:         applyFee();
+1080:         updateSummary();
+1081:         parseBox.revalidate();
+1082:         parseBox.repaint();
+1083:     }
+1084: 
+1085:     void fillEdit(Model.Tx t) {
+1086:         editing = t;
+1087:         building = true;
+1088:         titleLabel.setText("تعديل حركة");
+1089:         subtitle.setText("التعديل يُلغي الأصل بقيد عكسي ويسجّل البديل؛ يبقى الأثر في سجل العمليات.");
+1090:         loadOffices(t.officeId);
+1091:         Model.Office o = db.office(t.officeId);
+1092:         if (office.getSelectedItem() == null && o != null) {
+1093:             ((DefaultComboBoxModel<Model.Office>) office.getModel()).addElement(o);
+1094:             office.setSelectedItem(o);
+1095:         }
+1096:         loadServices();
+1097:         building = false;
+1098:         officeChanged();
+1099:         building = true;
+1100:         type.set(Model.TYPE_DEBIT.equals(t.type) ? 0 : 1);
+1101:         currency.setSelectedItem(t.currency);
+1102:         amount.setText(Model.plain(t.amount, db.decimals(t.currency)));
+1103:         if (t.hasFee()) {
+1104:             feeMode.set(1);
+1105:             feeSide.set(Model.FEE_US.equals(t.feeType) ? 0 : 1);
+1106:             feeKind.set(0);
+1107:             feeCur.setSelectedItem(t.feeCurrency);
+1108:             fee.setText(Model.plain(t.fee, db.decimals(t.feeCurrency)));
+1109:         } else feeMode.set(0);
+1110:         person.setText(Model.nz(t.person));
+1111:         desc.setText(Model.nz(t.description));
+1112:         notes.setText(Model.nz(t.notes));
+1113:         service.getEditor().setItem(Model.nz(t.service));
+1114:         dest.setText(Model.nz(t.dest));
+1115:         date.set(t.createdAt);
+1116:         imageData.clear();
+1117:         renderImages();
+1118:         building = false;
+1119:         applyFee();
+1120:         parseBox.removeAll();
+1121:         save.setText("حفظ التعديل");
+1122:         updateSummary();
+1123:     }
+1124: 
+1125:     void saveDraft() {
+1126:         if (editing != null) return;
+1127:         String t = desc.getText();
+1128:         if (t.length() > 8000) return;
+1129:         db.setSecretSetting("draft_tx_mac", t);
+1130:     }
+1131: 
+1132:     void restoreDraft() {

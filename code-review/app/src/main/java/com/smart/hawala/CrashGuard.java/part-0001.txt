@@ -1,0 +1,83 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.Context;
+4: import android.os.Build;
+5: import java.io.File;
+6: import java.io.FileOutputStream;
+7: import java.io.PrintWriter;
+8: import java.io.StringWriter;
+9: import java.nio.charset.StandardCharsets;
+10: import java.text.SimpleDateFormat;
+11: import java.util.Date;
+12: import java.util.Locale;
+13: 
+14: /**
+15:  * يحفظ تفاصيل أي انهيار مفاجئ في ملف داخلي، ويعرضها التطبيق عند الفتح التالي
+16:  * مع زر مشاركة، ليسهل إصلاح المشكلة بدون كمبيوتر.
+17:  */
+18: public final class CrashGuard {
+19:     private static final String FILE = "last_crash.txt";
+20:     public static volatile String version = "";
+21: 
+22:     private CrashGuard() {}
+23: 
+24:     public static void install(final Context ctx) {
+25:         final Context app = ctx.getApplicationContext();
+26:         final Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
+27:         Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
+28:             try {
+29:                 save(app, stack(error));
+30:             } catch (Throwable ignored) {
+31:                 // لا نريد أن يفشل تسجيل الخطأ نفسه
+32:             }
+33:             if (previous != null) {
+34:                 previous.uncaughtException(thread, error);
+35:             } else {
+36:                 android.os.Process.killProcess(android.os.Process.myPid());
+37:                 System.exit(10);
+38:             }
+39:         });
+40:     }
+41: 
+42:     public static String stack(Throwable t) {
+43:         StringWriter w = new StringWriter();
+44:         PrintWriter p = new PrintWriter(w);
+45:         t.printStackTrace(p);
+46:         p.flush();
+47:         return w.toString();
+48:     }
+49: 
+50:     public static String header() {
+51:         return "المحاسب الذكي لمكاتب الحوالات " + version + "\n"
+52:                 + "الوقت: " + Model.sdf(new SimpleDateFormat("yyyy/MM/dd HH:mm:ss", Locale.US)).format(new Date()) + "\n"
+53:                 + "الجهاز: " + Build.MANUFACTURER + " " + Build.MODEL
+54:                 + " | أندرويد " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")\n\n";
+55:     }
+56: 
+57:     public static void save(Context ctx, String trace) {
+58:         try (FileOutputStream o = new FileOutputStream(new File(ctx.getFilesDir(), FILE))) {
+59:             o.write((header() + trace).getBytes(StandardCharsets.UTF_8));
+60:         } catch (Throwable ignored) {
+61:             // تجاهل
+62:         }
+63:     }
+64: 
+65:     /** يرجع نص آخر انهيار محفوظ، أو null إن لم يوجد. */
+66:     public static String read(Context ctx) {
+67:         try {
+68:             File f = new File(ctx.getFilesDir(), FILE);
+69:             if (!f.exists() || f.length() == 0) return null;
+70:             return new String(Db.readAll(f), StandardCharsets.UTF_8);
+71:         } catch (Throwable t) {
+72:             return null;
+73:         }
+74:     }
+75: 
+76:     public static void clear(Context ctx) {
+77:         try {
+78:             new File(ctx.getFilesDir(), FILE).delete();
+79:         } catch (Throwable ignored) {
+80:             // تجاهل
+81:         }
+82:     }
+83: }

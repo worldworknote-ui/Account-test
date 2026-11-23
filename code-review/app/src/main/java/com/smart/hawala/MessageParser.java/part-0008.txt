@@ -1,0 +1,165 @@
+959:                 int sc = 6 + (e - k >= 2 ? 1 : 0);
+960:                 if (sc > bestScore) {
+961:                     bestScore = sc;
+962:                     String first = l.ow.get(k).substring(1);
+963:                     best = titleCase((first + " " + String.join(" ", l.ow.subList(k + 1, e))).trim());
+964:                 }
+965:             }
+966:             // 1ج) بعد الاسم (التركية): «Ahmet Yılmaz için»، «Ahmet Bey'e»، «Mehmet Kaya'ya»
+967:             for (int k = 1; k < l.nw.size(); k++) {
+968:                 if (!POST_LABELS.contains(l.nw.get(k))) continue;
+969:                 int s0 = nameStart(l.nw, l.brk, k, kws, al);
+970:                 if (k - s0 == 0) continue;
+971:                 boolean honor = !l.nw.get(k).startsWith("icin") && !l.nw.get(k).startsWith("adina");
+972:                 int sc = (honor ? 9 : 7) + (k - s0 >= 2 ? 1 : 0);
+973:                 if (sc > bestScore) {
+974:                     bestScore = sc;
+975:                     best = titleCase(String.join(" ", l.ow.subList(s0, k)));
+976:                 }
+977:             }
+978:             Matcher dat = TR_DATIVE.matcher(l.orig);
+979:             while (dat.find()) {
+980:                 List<String> dn = words(norm(dat.group(1))), dor = words(dat.group(1));
+981:                 if (dn.size() != dor.size()) continue;
+982:                 int e = dn.size();
+983:                 while (e > 0 && POST_LABELS.contains(dn.get(e - 1))) e--;
+984:                 int s0 = nameStart(dn, null, e, kws, al);
+985:                 if (e - s0 == 0) continue;
+986:                 int sc = 8 + (e - s0 >= 2 ? 1 : 0);
+987:                 if (sc > bestScore) {
+988:                     bestScore = sc;
+989:                     best = titleCase(String.join(" ", dor.subList(s0, e)));
+990:                 }
+991:             }
+992:             // 2) في سطر التسليم نفسه: «يرجى تسليم حمدي احمد محمد مبلغ 500»
+993:             for (String d : DELIVERY) {
+994:                 List<String> dw = words(d);
+995:                 int at = indexOf(l.nw, dw);
+996:                 if (at < 0) continue;
+997:                 List<String> restN = l.nw.subList(at + dw.size(), l.nw.size());
+998:                 List<String> restO = l.ow.subList(Math.min(at + dw.size(), l.ow.size()), l.ow.size());
+999:                 int stop = 0;
+1000:                 while (stop < restN.size() && nameWord(restN.get(stop), kws, al)) stop++;
+1001:                 if (stop >= 2 && stop <= 6) {
+1002:                     int sc = 7;
+1003:                     if (sc > bestScore) {
+1004:                         bestScore = sc;
+1005:                         best = titleCase(String.join(" ", restO.subList(0, Math.min(stop, restO.size()))));
+1006:                     }
+1007:                 }
+1008:             }
+1009:             // 3) سطر مستقل يشبه الاسم (بعد حذف رقم الهاتف منه إن وُجد)
+1010:             if (l.used || senderLine) continue;
+1011:             String candO = r.phone.isEmpty() ? l.orig : clean(l.orig.replace(r.phone, " "));
+1012:             String candN = norm(candO);
+1013:             List<String> candW = words(candN);
+1014:             if (containsAny(candN, GREETINGS) || containsAny(candN, BLESSINGS) || isCity(candN)) continue;
+1015:             if (!nameLike(candW)) continue;
+1016:             if (currencyIn(candN, kws) != null || anyCurrencyWord(candN, al) != null) continue;
+1017:             int sc = 3;
+1018:             if (i > 0 && isDeliveryOnly(lines.get(i - 1))) sc += 3;
+1019:             if (candW.size() >= 3 && candW.size() <= 4) sc += 1;
+1020:             int god = candW.indexOf("الله");
+1021:             if (god >= 0 && (god == 0 || !candW.get(god - 1).equals("عبد"))) sc -= 2;
+1022:             if (sc > bestScore) {
+1023:                 bestScore = sc;
+1024:                 best = titleCase(candO);
+1025:             }
+1026:         }
+1027:         r.person = cleanName(best);
+1028: 
+1029:         // ---------------------------------------------------------------- مدينة مذكورة في أي مكان
+1030:         if (r.city.isEmpty()) {
+1031:             List<String> pn = words(norm(r.person)), sn = words(norm(r.sender));
+1032:             for (Line l : lines) {
+1033:                 for (int k = 0; k < l.nw.size() && r.city.isEmpty(); k++) {
+1034:                     if (pn.contains(l.nw.get(k)) || sn.contains(l.nw.get(k))) continue;
+1035:                     int n = cityAt(l.nw, k);
+1036:                     if (n > 0 && !(k > 0 && FROM_WORDS.contains(l.nw.get(k - 1)))) r.city = cityText(l.ow, l.nw, k, n);
+1037:                 }
+1038:             }
+1039:         }
+1040: 
+1041:         // ---------------------------------------------------------------- كلمة عملة مجهولة
+1042:         if (r.currency == null && r.currencyWord.isEmpty() && !r.amount.isEmpty() && unknownCandidate(afterN)
+1043:                 && !words(norm(r.person)).contains(afterN) && !words(norm(r.city)).contains(afterN)) {
+1044:             r.unknownWord = afterO;
+1045:         }
+1046:         // 12.5: المعادن الثمينة: الحساب بعياره، والوزن بوحدة الحساب
+1047:         Metals.apply(r, text, currencies);
+1048:         if (Metals.isMetal(r.currency) || (r.currency == null && Metals.baseIn(text) != null)) {
+1049:             r.unknownWord = "";
+1050:             // وحدة الوزن («غرام»، «كيلو») ليست اسم مستفيد
+1051:             if (Metals.weightIn(r.person) != null || Metals.baseIn(r.person) != null) r.person = "";
+1052:         }
+1053:         return r;
+1054:     }
+1055: 
+1056:     /** كلمات بين الرقم والعملة لا معنى لها هنا: «cinci sute de lei»، «five hundred of…». */
+1057:     private static final Set<String> FILLER = set("de", "of", "d");
+1058: 
+1059:     /** الاسم التركي قبل لاحقة الجر بعد الفاصلة العليا: «Mehmet Kaya'ya»، «Ahmet Bey'e». */
+1060:     private static final Pattern TR_DATIVE = Pattern.compile("([\\p{L}]+(?:[ ]+[\\p{L}]+){0,4})['’`](?:ya|ye|a|e|na|ne)(?![\\p{L}])");
+1061: 
+1062:     /** كلمات لا تكون جزءًا من اسم شخص: وظيفية، تحية، تسليم، تسميات، ألقاب… («عبد» و«الله» مستثناتان لأسماء مثل «عبد الله»). */
+1063:     private static final Set<String> NAME_STOP = new HashSet<>();
+1064: 
+1065:     static {
+1066:         NAME_STOP.addAll(NOT_NAME);
+1067:         for (List<String> l : Arrays.asList(GREETINGS, BLESSINGS, DELIVERY, HONORIFICS, PREP_LABELS, SENDER_LABELS, PHONE_LABELS, AMOUNT_LABELS,
+1068:                 CITY_LABELS, FEE_WORDS, NET_WORDS, PERSON_LABELS)) {
+1069:             for (String p : l) if (words(p).size() == 1) NAME_STOP.add(p);
+1070:         }
+1071:         NAME_STOP.addAll(POST_LABELS);
+1072:         // كلمات تحية هي أيضًا أسماء شائعة: «Salam Hamdan»، «سلام»
+1073:         for (String w : new String[]{"الله", "عبد", "salam", "salaam", "selam", "سلام"}) NAME_STOP.remove(norm(w));
+1074:     }
+1075: 
+1076:     /** هل تصلح الكلمة (مطبّعة) جزءًا من اسم شخص؟ */
+1077:     private static boolean nameWord(String w, Map<String, List<Kw>> kws, Map<String, List<String>> al) {
+1078:         if (w.length() < 2) return false;
+1079:         if (!isLetters(w) || NAME_STOP.contains(w) || CITIES.contains(w) || prefixedCity(w) || NumberWords.isStrong(w)) return false;
+1080:         return currencyIn(w, kws) == null && anyCurrencyWord(w, al) == null;
+1081:     }
+1082: 
+1083:     /** نهاية الاسم ابتداءً من st (حتى 5 كلمات). */
+1084:     private static int nameEnd(List<String> nw, boolean[] brk, int st, Map<String, List<Kw>> kws, Map<String, List<String>> al) {
+1085:         int e = st;
+1086:         while (e < nw.size() && e - st < 5 && nameWord(nw.get(e), kws, al)) {
+1087:             if (e > st && cityAt(nw, e) > 0) break;   // «Ion Popescu Deir Ezzor»: المدينة ليست من الاسم
+1088:             e++;
+1089:             if (brk != null && brk[e - 1]) break;
+1090:         }
+1091:         return e;
+1092:     }
+1093: 
+1094:     /** بداية الاسم الذي ينتهي قبل end (حتى 4 كلمات للخلف). */
+1095:     private static int nameStart(List<String> nw, boolean[] brk, int end, Map<String, List<Kw>> kws, Map<String, List<String>> al) {
+1096:         int s0 = end;
+1097:         while (s0 > 0 && end - s0 < 4 && nameWord(nw.get(s0 - 1), kws, al)) {
+1098:             if (brk != null && s0 < end && brk[s0 - 1]) break;
+1099:             s0--;
+1100:         }
+1101:         return s0;
+1102:     }
+1103: 
+1104:     /** طول أطول عبارة من القائمة تبدأ عند k، أو 0. */
+1105:     private static int phraseAt(List<String> nw, int k, List<String> phrases) {
+1106:         int best = 0;
+1107:         for (String p : phrases) {
+1108:             List<String> pw = words(p);
+1109:             if (pw.size() > best && k + pw.size() <= nw.size() && startsWithPhrase(nw.subList(k, nw.size()), pw)) best = pw.size();
+1110:         }
+1111:         return best;
+1112:     }
+1113: 
+1114:     /** مدينة من كلمة أو كلمتين أو ثلاث تبدأ عند k: عدد كلماتها، أو 0. */
+1115:     private static int cityAt(List<String> nw, int k) {
+1116:         for (int n = Math.min(3, nw.size() - k); n >= 1; n--) {
+1117:             if (CITIES.contains(String.join(" ", nw.subList(k, k + n)))) return n;
+1118:         }
+1119:         return prefixedCity(nw.get(k)) ? 1 : 0;
+1120:     }
+1121: 
+1122:     /** «بحلب»، «لدمشق»، «وحمص»: مدينة ملتصق بها حرف جر أو عطف. */
+1123:     private static boolean prefixedCity(String w) {

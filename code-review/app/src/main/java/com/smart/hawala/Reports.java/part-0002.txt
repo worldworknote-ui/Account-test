@@ -1,0 +1,141 @@
+164:                 if (feeThem > 0) s.kv("منها أجور علينا", new Report.Money(feeThem, dec), false);
+165:                 s.kv(in.selectedOnly ? "صافي البنود المحددة" : "الرصيد في نهاية الفترة", new Report.Bal(closing, dec), true);
+166:                 if (hasOpening || in.selectedOnly) s.kv("الرصيد الحالي الكامل للحساب", new Report.Bal(full, dec), false);
+167:             }
+168:             boolean running = st.showRunning && !in.selectedOnly;
+169:             s.col("التاريخ", 1.15f, Report.DATE).col("البيان", 3.3f, Report.TEXT).col("لنا", 1.15f, Report.MONEY).col("علينا", 1.15f, Report.MONEY);
+170:             if (running) s.col("الرصيد", 1.45f, Report.BAL);
+171: 
+172:             List<Report.Row> data = new ArrayList<>();
+173:             long run = opening;
+174:             boolean shade = false;
+175:             for (Model.Line l : lines) {
+176:                 run += l.debit - l.credit;
+177:                 List<Object> cells = new ArrayList<>();
+178:                 cells.add(new Report.DateV(l.createdAt));
+179:                 cells.add(describe(l, st));
+180:                 cells.add(l.debit > 0 ? new Report.Money(l.debit, dec) : "");
+181:                 cells.add(l.credit > 0 ? new Report.Money(l.credit, dec) : "");
+182:                 if (running) cells.add(new Report.Bal(run, dec));
+183:                 Report.Row row = new Report.Row(l.cancelledTx() ? Report.MUTED : (shade ? Report.SHADED : Report.NORMAL), cells.toArray());
+184:                 if (in.attachments != null && "PRINCIPAL".equals(l.kind) && l.txId != null) {
+185:                     List<Long> ids = in.attachments.get(l.txId);
+186:                     if (ids != null && !ids.isEmpty()) row.images = ids;
+187:                 }
+188:                 data.add(row);
+189:                 shade = !shade;
+190:             }
+191:             Report.Row openRow = null;
+192:             if (hasOpening) {
+193:                 List<Object> cells = new ArrayList<>();
+194:                 cells.add("");
+195:                 cells.add(in.openingLabel);
+196:                 cells.add(opening > 0 ? new Report.Money(opening, dec) : "");
+197:                 cells.add(opening < 0 ? new Report.Money(-opening, dec) : "");
+198:                 if (running) cells.add(new Report.Bal(opening, dec));
+199:                 openRow = new Report.Row(Report.SHADED, cells.toArray());
+200:             }
+201:             if (st.newestFirst) Collections.reverse(data);
+202:             if (openRow != null && !st.newestFirst) s.rows.add(openRow);
+203:             s.rows.addAll(data);
+204:             if (openRow != null && st.newestFirst) s.rows.add(openRow);
+205:             if (lines.isEmpty()) {
+206:                 List<Object> cells = new ArrayList<>();
+207:                 cells.add("");
+208:                 cells.add("لا توجد حركات بهذه العملة في الفترة");
+209:                 cells.add("");
+210:                 cells.add("");
+211:                 if (running) cells.add("");
+212:                 s.row(Report.MUTED, cells.toArray());
+213:             }
+214:             List<Object> tot = new ArrayList<>();
+215:             tot.add("");
+216:             tot.add(in.selectedOnly ? "مجموع المحدد" : "المجموع والرصيد الختامي");
+217:             tot.add(new Report.Money(sumUs, dec));
+218:             tot.add(new Report.Money(sumThem, dec));
+219:             if (running) tot.add(new Report.Bal(closing, dec));
+220:             s.row(Report.TOTAL, tot.toArray());
+221:         }
+222:         if (codes.isEmpty()) {
+223:             Report.Section s = r.section("لا توجد بيانات", "كشف");
+224:             s.note = in.selectedOnly ? "الحركات المحددة لا تحتوي على أسطر قيود." : "لا توجد حركات ولا أرصدة لهذا المكتب في هذه الفترة.";
+225:         }
+226:         return r;
+227:     }
+228: 
+229:     // ===================================================================================
+230:     // أرصدة كل المكاتب
+231:     // ===================================================================================
+232: 
+233:     public static Report balances(List<Model.OfficeTotals> offices, Map<String, Integer> decimals, Map<String, String> names,
+234:                                   boolean includeZero, String issuer, long generatedAt) {
+235:         Report r = new Report();
+236:         r.title = "أرصدة كل المكاتب";
+237:         if (issuer != null && !issuer.trim().isEmpty()) r.headerLines.add("صادر عن: " + issuer.trim());
+238:         r.headerLines.add("تاريخ الإصدار: " + Model.date(generatedAt));
+239:         r.fileBase = "أرصدة-المكاتب";
+240: 
+241:         Map<Long, Map<String, Long>> net = new LinkedHashMap<>();
+242:         for (Model.OfficeTotals o : offices) {
+243:             Map<String, Long> m = new TreeMap<>();
+244:             for (Map.Entry<String, long[]> e : o.perCurrency.entrySet()) m.put(e.getKey(), e.getValue()[2]);
+245:             net.put(o.officeId, m);
+246:         }
+247:         Map<String, Ledger.CurrencyTotal> totals = Ledger.totals(net);
+248:         Report.Section g = r.section("الإجمالي حسب العملة (بدون تقاصّ بين المكاتب)", "الإجمالي");
+249:         g.col("العملة", 1.4f, Report.TEXT).col("مجموع ما لنا على المكاتب", 1.6f, Report.MONEY).col("مجموع ما علينا للمكاتب", 1.6f, Report.MONEY)
+250:                 .col("الصافي", 1.5f, Report.BAL).col("مكاتب لنا", 0.9f, Report.INT).col("مكاتب علينا", 0.9f, Report.INT);
+251:         for (Ledger.CurrencyTotal t : totals.values()) {
+252:             if (t.receivable == 0 && t.payable == 0) continue;
+253:             int d = dec(decimals, t.code);
+254:             g.row(Report.NORMAL, t.code + (names.get(t.code) == null ? "" : " — " + names.get(t.code)), new Report.Money(t.receivable, d),
+255:                     new Report.Money(t.payable, d), new Report.Bal(t.net(), d), (long) t.officesReceivable, (long) t.officesPayable);
+256:         }
+257:         if (g.rows.isEmpty()) g.note = "لا توجد أرصدة.";
+258: 
+259:         Report.Section s = r.section("رصيد كل مكتب: كل ما لنا، كل ما علينا، ثم الرصيد", "المكاتب");
+260:         s.col("المكتب", 2.2f, Report.TEXT).col("العملة", 0.9f, Report.TEXT).col("كل ما لنا", 1.4f, Report.MONEY)
+261:                 .col("كل ما علينا", 1.4f, Report.MONEY).col("الرصيد", 1.6f, Report.BAL);
+262:         boolean shade = false;
+263:         for (Model.OfficeTotals o : offices) {
+264:             boolean first = true;
+265:             for (Map.Entry<String, long[]> e : o.perCurrency.entrySet()) {
+266:                 long[] v = e.getValue();
+267:                 if (!includeZero && v[0] == 0 && v[1] == 0 && v[2] == 0) continue;
+268:                 int d = dec(decimals, e.getKey());
+269:                 s.row(shade ? Report.SHADED : Report.NORMAL, first ? o.name + (o.active ? "" : " (موقوف)") : "", e.getKey(),
+270:                         new Report.Money(v[0], d), new Report.Money(v[1], d), new Report.Bal(v[2], d));
+271:                 first = false;
+272:             }
+273:             if (!first) shade = !shade;
+274:         }
+275:         if (s.rows.isEmpty()) s.note = "لا توجد مكاتب بأرصدة.";
+276:         return r;
+277:     }
+278: 
+279:     // ===================================================================================
+280:     // التقرير اليومي
+281:     // ===================================================================================
+282: 
+283:     /** stats: العملة ← {لنا، علينا، أجور لنا، أجور علينا، عدد الحركات} */
+284:     public static Report daily(String dayLabel, Map<String, long[]> stats, List<Model.Tx> txs, Map<Long, String> officeNames,
+285:                                Map<String, Integer> decimals, String issuer, long generatedAt) {
+286:         return daily(dayLabel, stats, txs, officeNames, decimals, issuer, generatedAt, null);
+287:     }
+288: 
+289:     public static Report daily(String dayLabel, Map<String, long[]> stats, List<Model.Tx> txs, Map<Long, String> officeNames,
+290:                                Map<String, Integer> decimals, String issuer, long generatedAt, Map<Long, List<Long>> attachments) {
+291:         Report r = new Report();
+292:         r.title = "التقرير اليومي: " + dayLabel;
+293:         if (issuer != null && !issuer.trim().isEmpty()) r.headerLines.add("صادر عن: " + issuer.trim());
+294:         r.headerLines.add("تاريخ الإصدار: " + Model.date(generatedAt) + "   •   الحركات الملغاة غير محسوبة");
+295:         r.fileBase = "تقرير-يومي-" + dayLabel.replace('/', '-');
+296:         Report.Section s = r.section("المجاميع حسب العملة", "المجاميع");
+297:         s.col("العملة", 1f, Report.TEXT).col("حركات لنا", 1.3f, Report.MONEY).col("حركات علينا", 1.3f, Report.MONEY)
+298:                 .col("أجور لنا", 1.1f, Report.MONEY).col("أجور علينا", 1.1f, Report.MONEY).col("صافي اليوم", 1.4f, Report.BAL).col("العدد", 0.7f, Report.INT);
+299:         for (Map.Entry<String, long[]> e : new TreeMap<>(stats).entrySet()) {
+300:             long[] v = e.getValue();
+301:             int d = dec(decimals, e.getKey());
+302:             s.row(Report.NORMAL, e.getKey(), new Report.Money(v[0], d), new Report.Money(v[1], d), new Report.Money(v[2], d),
+303:                     new Report.Money(v[3], d), new Report.Bal(v[0] - v[1] + v[2] - v[3], d), v[4]);
+304:         }

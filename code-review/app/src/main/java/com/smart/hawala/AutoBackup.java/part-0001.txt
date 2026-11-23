@@ -1,0 +1,174 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.Notification;
+4: import android.app.NotificationChannel;
+5: import android.app.NotificationManager;
+6: import android.app.PendingIntent;
+7: import android.app.job.JobInfo;
+8: import android.app.job.JobScheduler;
+9: import android.content.ComponentName;
+10: import android.content.ContentResolver;
+11: import android.content.Context;
+12: import android.content.Intent;
+13: import android.database.Cursor;
+14: import android.net.Uri;
+15: import android.provider.DocumentsContract;
+16: import java.util.ArrayList;
+17: import java.util.Arrays;
+18: import java.util.Collections;
+19: import java.util.List;
+20: 
+21: /**
+22:  * نسخ احتياطي تلقائي مجدول إلى مجلد يختاره المستخدم مرة واحدة (ذاكرة الهاتف، بطاقة الذاكرة...)
+23:  * و/أو إلى ملف واحد في Google Drive يُحدَّث بآخر نسخة.
+24:  * كلمة مرور النسخ التلقائي محفوظة مشفّرة بمفتاح الهاتف (Keystore). يعمل في الخلفية عبر JobScheduler،
+25:  * وعند فتح التطبيق إن تأخر موعده. عند الفشل يظهر إشعار وسبب الفشل في شاشة النسخ.
+26:  */
+27: public final class AutoBackup {
+28:     public static final int JOB_ID = 5101;
+29:     private static final String CHANNEL = "backup";
+30:     /**
+31:      * بادئة ملفات النسخ التلقائي. الإصدار 5 يبقى «smart-accountant-auto-»، وأي حزمة أخرى (مثل v6 المثبتة بجانبه)
+32:      * تضيف اسمها، حتى لا يحذف أحدهما نسخ الآخر عند تنظيف المجلد نفسه.
+33:      */
+34:     static String prefix(Context c) {
+35:         String p = c.getPackageName();
+36:         String tail = p.substring(p.lastIndexOf('.') + 1);
+37:         return "v5".equals(tail) ? "smart-accountant-auto-" : "smart-accountant-" + tail + "-auto-";
+38:     }
+39: 
+40:     private AutoBackup() {}
+41: 
+42:     /** مجلد على الهاتف/بطاقة الذاكرة/أي مزوّد يدعم المجلدات: يحتفظ بعدة نسخ مؤرّخة. */
+43:     public static boolean hasFolder(Db db) {
+44:         return !db.setting("auto_backup_tree", "").isEmpty();
+45:     }
+46: 
+47:     /**
+48:      * ملف واحد في Google Drive (أو أي خدمة سحابية): Google Drive لا يسمح للتطبيقات باختيار مجلد كامل،
+49:      * فيختار المستخدم مكان ملف واحد ويُستبدل محتواه بآخر نسخة في كل مرة (ويحتفظ Drive بإصداراته السابقة).
+50:      */
+51:     public static boolean hasDrive(Db db) {
+52:         return !db.setting("drive_backup_uri", "").isEmpty();
+53:     }
+54: 
+55:     public static boolean configured(Db db) {
+56:         return (hasFolder(db) || hasDrive(db)) && !db.setting("auto_backup_pw", "").isEmpty();
+57:     }
+58: 
+59:     public static boolean enabled(Db db) {
+60:         return "1".equals(db.setting("auto_backup_on", "0")) && configured(db);
+61:     }
+62: 
+63:     /** الاسم المقترح لملف Drive؛ يختلف عن بادئة النسخ المؤرخة حتى لا يحذفه تنظيف المجلد. */
+64:     static String driveFileName(Context c) {
+65:         return prefix(c).replace("-auto-", "-drive-") + "latest.sba";
+66:     }
+67: 
+68:     /** الفاصل الفعلي بالساعات حسب الإعداد وحد النسخة (المجانية يوميًا على الأكثر، الكاملة حتى كل 6 ساعات). */
+69:     public static long intervalHours(Db db) {
+70:         return BackupPolicy.intervalHours(db.settingLong("auto_backup_hours", 0), db.settingLong("auto_backup_days", 1), License.current.autoBackupMinHours());
+71:     }
+72: 
+73:     /** عدد الحركات منذ آخر نسخة الذي يستدعي نسخة جديدة (0 = لا). */
+74:     public static int everyTx(Db db) {
+75:         return BackupPolicy.everyTx(db.settingLong("auto_backup_every_tx", -1), License.current.autoBackupEveryTx());
+76:     }
+77: 
+78:     public static boolean due(Db db) {
+79:         if (!enabled(db)) return false;
+80:         long last = db.settingLong("last_auto_backup", 0);
+81:         int every = everyTx(db);
+82:         long since = every > 0 ? db.txCount() - db.settingLong("last_backup_tx", 0) : 0;
+83:         return BackupPolicy.due(Clock.now(), last, intervalHours(db), since, every);
+84:     }
+85: 
+86:     public static void schedule(Context c) {
+87:         JobScheduler js = (JobScheduler) c.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+88:         if (js == null || js.getPendingJob(JOB_ID) != null) return;
+89:         JobInfo job = new JobInfo.Builder(JOB_ID, new ComponentName(c, AutoBackupJob.class))
+90:                 .setPeriodic(6L * 3600000L)
+91:                 .setPersisted(true)
+92:                 .setRequiresStorageNotLow(true)
+93:                 .build();
+94:         js.schedule(job);
+95:     }
+96: 
+97:     public static void cancel(Context c) {
+98:         JobScheduler js = (JobScheduler) c.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+99:         if (js != null) js.cancel(JOB_ID);
+100:     }
+101: 
+102:     /** يشغّل النسخة إن حان موعدها، في خيط خلفي. */
+103:     public static void runIfDueAsync(final Context ctx) {
+104:         final Context app = ctx.getApplicationContext();
+105:         new Thread(new Runnable() {
+106:             @Override public void run() {
+107:                 Db db = SmartApp.db;
+108:                 if (db == null) return;
+109:                 try {
+110:                     if (!due(db)) return;
+111:                     // محاولة واحدة كل نصف ساعة من هذا المسار (بعد الحركات أو عند الفتح)، فلا تتكرر إشعارات الفشل مع كل حركة
+112:                     long now = Clock.now();
+113:                     long tried = db.settingLong("auto_backup_try", 0);
+114:                     if (now - tried >= 0 && now - tried < 30 * 60000L) return;
+115:                     db.setSettingQuiet("auto_backup_try", "" + now);
+116:                     runNow(app, db);
+117:                 } catch (Throwable ignored) {
+118:                     // runNow يسجّل الخطأ ويرسل إشعارًا
+119:                 }
+120:             }
+121:         }, "auto-backup").start();
+122:     }
+123: 
+124:     /** خطأ نهائي بعد تسجيل كل وجهة على حدة؛ لا يُسجَّل مرة ثانية. */
+125:     private static final class AllFailed extends Exception {
+126:         AllFailed(String m) { super(m); }
+127:     }
+128: 
+129:     /**
+130:      * ينشئ نسخة مشفّرة ويتحقق منها داخل التطبيق، ثم يرسلها إلى كل وجهة مفعّلة (المجلد و/أو ملف Google Drive)
+131:      * ويعيد قراءتها من هناك للمطابقة. فشل وجهة لا يمنع الأخرى، ولكل وجهة سجل خطئها الخاص.
+132:      */
+133:     public static synchronized String runNow(Context ctx, Db db) throws Exception {
+134:         char[] pw = null;
+135:         try {
+136:             // 8.0: لا نسخ بمفتاح مفقود: النسخة ستحمل نصوصًا بديلة وتحل محل السليمة
+137:             if (!Crypto.healthy(ctx) || Db.lockedAside != null) throw new IllegalStateException("مفتاح التشفير غير متاح على هذا الهاتف؛ أُوقف النسخ التلقائي حتى لا تُستبدل النسخ السليمة. استعد آخر نسخة احتياطية.");
+138:             String enc = db.setting("auto_backup_pw", "");
+139:             if (enc.isEmpty()) throw new IllegalStateException("لم تُحدَّد كلمة مرور للنسخ التلقائي");
+140:             if (!hasFolder(db) && !hasDrive(db)) throw new IllegalStateException("لم تُحدَّد وجهة للنسخ التلقائي (مجلد أو ملف Google Drive).");
+141:             pw = Crypto.decStrict(enc).toCharArray();
+142:             String version = "";
+143:             try {
+144:                 version = ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), 0).versionName;
+145:             } catch (Exception ignored) {
+146:                 // غير مهم
+147:             }
+148:             BackupManager.Created created;
+149:             try {
+150:                 created = BackupManager.createLocal(ctx, db, pw, version, new BackupManager.Progress() {
+151:                     @Override public void update(String message) {}
+152:                 });
+153:             } catch (BackupManager.BackupException first) {
+154:                 // قد تتغير البيانات أثناء النسخ في الخلفية فيفشل التحقق؛ نعيد المحاولة مرة واحدة
+155:                 Thread.sleep(4000);
+156:                 created = BackupManager.createLocal(ctx, db, pw, version, new BackupManager.Progress() {
+157:                     @Override public void update(String message) {}
+158:                 });
+159:             }
+160:             Arrays.fill(pw, '\0');
+161:             pw = null;
+162: 
+163:             ContentResolver cr = ctx.getContentResolver();
+164:             List<String> saved = new ArrayList<>();
+165:             List<String> failed = new ArrayList<>();
+166:             boolean allVerified = true;
+167:             long now = Clock.now();
+168: 
+169:             if (hasFolder(db)) {
+170:                 try {
+171:                     Uri tree = Uri.parse(db.setting("auto_backup_tree", ""));
+172:                     String treeDoc = DocumentsContract.getTreeDocumentId(tree);
+173:                     Uri parent = DocumentsContract.buildDocumentUriUsingTree(tree, treeDoc);
+174:                     String name = prefix(ctx) + created.file.getName().replace("smart-accountant-", "");

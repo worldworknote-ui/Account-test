@@ -1,0 +1,167 @@
+475:     public void setScaleX(float v) { if (sx != v) { sx = v; invalidateParent(); moved(); } }
+476:     public float getScaleY() { return sy; }
+477:     public void setScaleY(float v) { if (sy != v) { sy = v; invalidateParent(); moved(); } }
+478:     public float getRotation() { return rot; }
+479:     public void setRotation(float v) { if (rot != v) { rot = v; invalidateParent(); } }
+480:     public float getRotationX() { return rotX; }
+481:     public void setRotationX(float v) { rotX = v; invalidateParent(); }
+482:     public float getRotationY() { return rotY; }
+483:     public void setRotationY(float v) { rotY = v; invalidateParent(); }
+484:     public float getPivotX() { return Float.isNaN(px) ? getWidth() / 2f : px; }
+485:     public void setPivotX(float v) { px = v; invalidateParent(); }
+486:     public float getPivotY() { return Float.isNaN(py) ? getHeight() / 2f : py; }
+487:     public void setPivotY(float v) { py = v; invalidateParent(); }
+488:     public void resetPivot() { px = py = Float.NaN; }
+489:     public float getElevation() { return elevation; }
+490:     public void setElevation(float e) { if (elevation != e) { elevation = e; invalidateParent(); } }
+491:     public float getZ() { return elevation + tz; }
+492:     public void setZ(float z) { setTranslationZ(z - elevation); }
+493:     public float getX() { return mLeft + tx; }
+494:     public void setX(float x) { setTranslationX(x - mLeft); }
+495:     public float getY() { return mTop + ty; }
+496:     public void setY(float y) { setTranslationY(y - mTop); }
+497:     public void setCameraDistance(float d) {}
+498:     public boolean hasIdentityTransform() { return sx == 1f && sy == 1f && rot == 0f; }
+499:     public Matrix getMatrix() {
+500:         Matrix m = new Matrix();
+501:         m.postTranslate(-getPivotX(), -getPivotY());
+502:         m.postScale(sx, sy);
+503:         m.postRotate(rot);
+504:         m.postTranslate(getPivotX() + tx, getPivotY() + ty);
+505:         return m;
+506:     }
+507:     private void moved() { if (attachInfo != null) attachInfo.root.overlaysDirty(); }
+508: 
+509:     public ViewPropertyAnimator animate() {
+510:         if (animator == null) animator = new ViewPropertyAnimator(this);
+511:         return animator;
+512:     }
+513:     public void clearAnimation() { if (animator != null) animator.cancel(); }
+514:     public void startAnimation(android.view.animation.Animation a) { if (a != null) a.start(this); }
+515:     public android.view.animation.Animation getAnimation() { return null; }
+516:     public void setAnimation(android.view.animation.Animation a) {}
+517:     public StateListAnimator getStateListAnimator() { return stateAnimator; }
+518:     public void setStateListAnimator(StateListAnimator s) {
+519:         if (stateAnimator != null) stateAnimator.setTarget(null);
+520:         stateAnimator = s;
+521:         if (s != null) { s.setTarget(this); s.setState(getDrawableState()); }
+522:     }
+523:     public boolean hasOverlappingRendering() { return true; }
+524: 
+525:     // ------------------------------------------------------------------ الاتجاه
+526:     public void setLayoutDirection(int d) { if (layoutDir != d) { layoutDir = d; padStart = padStart; requestLayout(); invalidate(); } }
+527:     public int getRawLayoutDirection() { return layoutDir; }
+528:     public int getLayoutDirection() {
+529:         if (layoutDir == LAYOUT_DIRECTION_LTR || layoutDir == LAYOUT_DIRECTION_RTL) return layoutDir;
+530:         if (layoutDir == LAYOUT_DIRECTION_LOCALE) return AttachInfo.localeRtl ? LAYOUT_DIRECTION_RTL : LAYOUT_DIRECTION_LTR;
+531:         if (parent instanceof View) return ((View) parent).getLayoutDirection();
+532:         return AttachInfo.localeRtl ? LAYOUT_DIRECTION_RTL : LAYOUT_DIRECTION_LTR;
+533:     }
+534:     public boolean isLayoutRtl() { return getLayoutDirection() == LAYOUT_DIRECTION_RTL; }
+535:     protected boolean isRtl() { return getLayoutDirection() == LAYOUT_DIRECTION_RTL; }
+536:     public void setTextDirection(int d) { textDir = d; requestLayout(); invalidate(); }
+537:     public int getTextDirection() {
+538:         if (textDir != TEXT_DIRECTION_INHERIT) return textDir;
+539:         if (parent instanceof View) return ((View) parent).getTextDirection();
+540:         return TEXT_DIRECTION_FIRST_STRONG;
+541:     }
+542:     public int getRawTextDirection() { return textDir; }
+543:     public void setTextAlignment(int a) { textAlign = a; requestLayout(); invalidate(); }
+544:     public int getTextAlignment() { return textAlign; }
+545: 
+546:     // ------------------------------------------------------------------ الشكل الخارجي
+547:     public void setClipToOutline(boolean c) { clipToOutline = c; invalidate(); }
+548:     public boolean getClipToOutline() { return clipToOutline; }
+549:     public void setOutlineProvider(ViewOutlineProvider p) { outlineProvider = p; invalidate(); }
+550:     public ViewOutlineProvider getOutlineProvider() { return outlineProvider; }
+551:     public void invalidateOutline() { invalidate(); }
+552:     public void setOutlineAmbientShadowColor(int c) {}
+553:     public void setOutlineSpotShadowColor(int c) {}
+554:     /** الشكل الخارجي بإحداثيات العنصر (للقص وللظل)، أو null. */
+555:     public java.awt.Shape outlineShape() {
+556:         if (outlineProvider == null) return null;
+557:         if (outlineProvider == ViewOutlineProvider.BACKGROUND) {
+558:             if (background == null) return null;
+559:             java.awt.Shape s = background.outline();
+560:             return s != null ? s : new java.awt.geom.Rectangle2D.Float(0, 0, getWidth(), getHeight());
+561:         }
+562:         Outline o = new Outline();
+563:         outlineProvider.getOutline(this, o);
+564:         return o.shape();
+565:     }
+566:     public void setClipBounds(Rect r) { clipBounds = r == null ? null : new Rect(r); invalidate(); }
+567:     public Rect getClipBounds() { return clipBounds == null ? null : new Rect(clipBounds); }
+568: 
+569:     // ------------------------------------------------------------------ الرسم
+570:     public void setWillNotDraw(boolean w) { willNotDraw = w; }
+571:     public boolean willNotDraw() { return willNotDraw; }
+572:     public void setLayerType(int type, Paint p) {}
+573:     public int getLayerType() { return LAYER_TYPE_NONE; }
+574:     public void setLayerPaint(Paint p) {}
+575:     public void setDrawingCacheEnabled(boolean e) {}
+576:     public void buildDrawingCache() {}
+577:     public void destroyDrawingCache() {}
+578: 
+579:     public void invalidate() { if (attachInfo != null) attachInfo.root.invalidate(); }
+580:     public void invalidate(Rect r) { invalidate(); }
+581:     public void invalidate(int l, int t, int r, int b) { invalidate(); }
+582:     protected void invalidateParent() { invalidate(); }
+583: 
+584:     /** يرسم العنصر كاملًا بإحداثياته (0,0 = أعلى يساره). */
+585:     public void draw(Canvas c) {
+586:         drawBackground(c);
+587:         c.save();
+588:         if (clipToOutline) {
+589:             java.awt.Shape o = outlineShape();
+590:             if (o != null) c.graphics().clip(o);
+591:         }
+592:         if (clipBounds != null) c.clipRect(clipBounds);
+593:         if (mScrollX != 0 || mScrollY != 0) c.translate(-mScrollX, -mScrollY);
+594:         onDraw(c);
+595:         dispatchDraw(c);
+596:         c.restore();
+597:         onDrawForeground(c);
+598:     }
+599:     protected void drawBackground(Canvas c) {
+600:         if (background == null) return;
+601:         if (background.getBounds().width() != getWidth() || background.getBounds().height() != getHeight()) background.setBounds(0, 0, getWidth(), getHeight());
+602:         background.draw(c);
+603:     }
+604:     protected void onDraw(Canvas c) {}
+605:     protected void dispatchDraw(Canvas c) {}
+606:     public void onDrawForeground(Canvas c) {
+607:         if (foreground != null) {
+608:             foreground.setBounds(0, 0, getWidth(), getHeight());
+609:             foreground.draw(c);
+610:         }
+611:     }
+612: 
+613:     // ------------------------------------------------------------------ التمرير
+614:     public final int getScrollX() { return mScrollX; }
+615:     public final int getScrollY() { return mScrollY; }
+616:     public void scrollTo(int x, int y) {
+617:         if (x != mScrollX || y != mScrollY) {
+618:             int ox = mScrollX, oy = mScrollY;
+619:             mScrollX = x;
+620:             mScrollY = y;
+621:             onScrollChanged(x, y, ox, oy);
+622:             if (onScrollChange != null) onScrollChange.onScrollChange(this, x, y, ox, oy);
+623:             if (attachInfo != null) { attachInfo.observer.dispatchScrollChanged(); attachInfo.root.overlaysDirty(); }
+624:             invalidate();
+625:         }
+626:     }
+627:     public void scrollBy(int dx, int dy) { scrollTo(mScrollX + dx, mScrollY + dy); }
+628:     public void setScrollX(int x) { scrollTo(x, mScrollY); }
+629:     public void setScrollY(int y) { scrollTo(mScrollX, y); }
+630:     protected void onScrollChanged(int l, int t, int ol, int ot) {}
+631:     public void setOnScrollChangeListener(OnScrollChangeListener l) { onScrollChange = l; }
+632:     /** عجلة الفأرة: true إن مرّر العنصر. */
+633:     public boolean wheel(float dx, float dy) { return false; }
+634:     public boolean canScrollVertically(int dir) { return false; }
+635:     public boolean canScrollHorizontally(int dir) { return false; }
+636:     public void setVerticalScrollBarEnabled(boolean e) { verticalScrollBar = e; }
+637:     public void setHorizontalScrollBarEnabled(boolean e) { horizontalScrollBar = e; }
+638:     public boolean isVerticalScrollBarEnabled() { return verticalScrollBar; }
+639:     public boolean isHorizontalScrollBarEnabled() { return horizontalScrollBar; }
+640:     public void setScrollBarStyle(int s) {}
+641:     public void setScrollbarFadingEnabled(boolean f) {}

@@ -1,0 +1,194 @@
+2108:                 sb.setSpan(new android.text.style.ForegroundColorSpan(red), s0, sb.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+2109:                 t = text("", 17, ink, true);
+2110:                 t.setText(sb);
+2111:                 t.setPadding(0, dp(8), 0, dp(2));
+2112:             } else if (r.kind == TxConfirm.AFTER) t = text("   " + r, 15, primaryInk, true);
+2113:             else if (r.kind == TxConfirm.BALANCE) t = text("   " + r, 14, ink, false);
+2114:             else if (r.kind == TxConfirm.NOTE) t = text(r.toString(), 13, goldInk, false);
+2115:             else t = text(r.toString(), 14, ink, false);
+2116:             box.addView(t);
+2117:         }
+2118:     }
+2119: 
+2120:     /**
+2121:      * 10.5 (§11): نافذة تأكيد الحركة بالأرصدة من طبقة البيانات. تُحدَّث كل ثانيتين وهي مفتوحة؛ إن تغيّر الرصيد يظهر تنبيه
+2122:      * بالأرقام الجديدة، وعند الضغط يُتحقق مرة أخيرة (إن تغيّر لا يُحفظ حتى يراجع المستخدم ويضغط من جديد). الضغطة الثانية لا تحفظ مرتين.
+2123:      */
+2124:     void confirmTx(String title, String prefix, final java.util.function.Supplier<TxConfirm.View> build, String yes, final Runnable onYes) {
+2125:         final TxConfirm.View[] shown = {build.get()};
+2126:         LinearLayout l = new LinearLayout(this);
+2127:         l.setOrientation(LinearLayout.VERTICAL);
+2128:         l.setPadding(dp(20), dp(8), dp(20), dp(4));
+2129:         if (prefix != null && !prefix.trim().isEmpty()) l.addView(text(prefix.trim(), 14, red, true));
+2130:         final TextView changed = text("", 14, red, true);
+2131:         l.addView(changed);
+2132:         final LinearLayout rows = new LinearLayout(this);
+2133:         rows.setOrientation(LinearLayout.VERTICAL);
+2134:         l.addView(rows);
+2135:         fillConfirm(rows, shown[0]);
+2136:         ScrollView sv = new ScrollView(this);
+2137:         sv.addView(l);
+2138:         final AlertDialog dlg = new AlertDialog.Builder(this).setTitle(title).setView(sv).setPositiveButton(yes, null).setNegativeButton("رجوع", null).create();
+2139:         final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+2140:         final boolean[] done = {false};
+2141:         final Runnable tick = new Runnable() {
+2142:             @Override public void run() {
+2143:                 if (done[0] || !dlg.isShowing()) return;
+2144:                 try {
+2145:                     TxConfirm.View now = build.get();
+2146:                     if (!now.fingerprint.equals(shown[0].fingerprint)) {
+2147:                         shown[0] = now;
+2148:                         fillConfirm(rows, now);
+2149:                         changed.setText("⚠ تغيّر الرصيد أثناء العرض (وصلت حركة أخرى). راجع الأرقام الجديدة.");
+2150:                     }
+2151:                 } catch (Exception ignored) {
+2152:                     // يبقى العرض السابق
+2153:                 }
+2154:                 h.postDelayed(this, 2000);
+2155:             }
+2156:         };
+2157:         dlg.setOnShowListener(d -> {
+2158:             h.postDelayed(tick, 2000);
+2159:             dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+2160:                 if (done[0]) return;
+2161:                 TxConfirm.View now = build.get();
+2162:                 if (!now.fingerprint.equals(shown[0].fingerprint)) {
+2163:                     shown[0] = now;
+2164:                     fillConfirm(rows, now);
+2165:                     changed.setText("⚠ تغيّر الرصيد لحظة الضغط. راجع الأرقام الجديدة ثم اضغط «" + yes + "» من جديد.");
+2166:                     return;
+2167:                 }
+2168:                 done[0] = true;
+2169:                 v.setEnabled(false);
+2170:                 dlg.dismiss();
+2171:                 onYes.run();
+2172:             });
+2173:         });
+2174:         dlg.setOnDismissListener(d -> done[0] = true);
+2175:         dlg.show();
+2176:     }
+2177: 
+2178:     // ===================================================================================
+2179:     // فتح شاشات أخرى ومشاركة الملفات
+2180:     // ===================================================================================
+2181: 
+2182:     void startForResult(Intent i, int code) {
+2183:         try {
+2184:             markOwn();
+2185:             startActivityForResult(i, code);
+2186:         } catch (ActivityNotFoundException e) {
+2187:             ownActivity = false;
+2188:             error(new Exception("لا يوجد تطبيق على الهاتف يدعم هذه العملية."));
+2189:         }
+2190:     }
+2191: 
+2192:     boolean startOwn(Intent i) {
+2193:         try {
+2194:             markOwn();
+2195:             startActivity(i);
+2196:             return true;
+2197:         } catch (ActivityNotFoundException e) {
+2198:             ownActivity = false;
+2199:             return false;
+2200:         }
+2201:     }
+2202: 
+2203:     File sharedDir() {
+2204:         File d = new File(getCacheDir(), "shared");
+2205:         if (!d.exists()) d.mkdirs();
+2206:         return d;
+2207:     }
+2208: 
+2209:     static String safeName(String s) {
+2210:         String n = (s == null ? "" : s).replaceAll("[^\\p{L}\\p{N}._-]", "_");
+2211:         return n.length() > 60 ? n.substring(0, 60) : n;
+2212:     }
+2213: 
+2214:     Intent shareIntent(List<File> files, String mime, String subject) {
+2215:         ArrayList<Uri> uris = new ArrayList<>();
+2216:         for (File f : files) uris.add(EvidenceProvider.uriFor(this, f));
+2217:         Intent i;
+2218:         if (uris.size() == 1) {
+2219:             i = new Intent(Intent.ACTION_SEND);
+2220:             i.putExtra(Intent.EXTRA_STREAM, uris.get(0));
+2221:         } else {
+2222:             i = new Intent(Intent.ACTION_SEND_MULTIPLE);
+2223:             i.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+2224:         }
+2225:         i.setType(mime);
+2226:         i.putExtra(Intent.EXTRA_SUBJECT, subject);
+2227:         ClipData clip = ClipData.newRawUri(files.get(0).getName(), uris.get(0));
+2228:         for (int k = 1; k < uris.size(); k++) clip.addItem(new ClipData.Item(uris.get(k)));
+2229:         i.setClipData(clip);
+2230:         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+2231:         return i;
+2232:     }
+2233: 
+2234:     void shareFiles(List<File> files, String mime, String subject) {
+2235:         if (files.isEmpty()) return;
+2236:         if (!startOwn(Intent.createChooser(shareIntent(files, mime, subject), "مشاركة أو حفظ"))) error(new Exception("لا يوجد تطبيق للمشاركة."));
+2237:     }
+2238: 
+2239:     // ===================================================================================
+2240:     // صورة الواجهة (شعار قابل للتغيير)
+2241:     // ===================================================================================
+2242: 
+2243:     private static String logoKey;
+2244:     private static Bitmap logoCache;
+2245: 
+2246:     Bitmap homeLogo() {
+2247:         String mode = db.setting("home_logo_mode", "default");
+2248:         if ("none".equals(mode)) return null;
+2249:         if ("custom".equals(mode)) {
+2250:             try {
+2251:                 String raw = db.setting("home_logo", "");
+2252:                 if (!raw.isEmpty() && raw.equals(logoKey) && logoCache != null && !logoCache.isRecycled()) return logoCache;
+2253:                 byte[] b = android.util.Base64.decode(raw, android.util.Base64.NO_WRAP);
+2254:                 Bitmap bm = BitmapFactory.decodeByteArray(b, 0, b.length);
+2255:                 if (bm != null) {
+2256:                     logoKey = raw;
+2257:                     logoCache = bm;
+2258:                     return bm;
+2259:                 }
+2260:             } catch (Exception ignored) {
+2261:                 // نرجع للافتراضي
+2262:             }
+2263:         }
+2264:         return drawableBitmap(R.drawable.ic_logo, 320);
+2265:     }
+2266: 
+2267:     Bitmap drawableBitmap(int res, int size) {
+2268:         Drawable d = getDrawable(res);
+2269:         if (d == null) return null;
+2270:         Bitmap bm = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+2271:         Canvas c = new Canvas(bm);
+2272:         d.setBounds(0, 0, size, size);
+2273:         d.draw(c);
+2274:         return bm;
+2275:     }
+2276: 
+2277:     static String date(long t) { return Model.date(t); }
+2278: 
+2279:     static String day(long t) { return Model.day(t); }
+2280: 
+2281:     String bal(long v, int dec) { return Model.bal(v, dec); }
+2282: 
+2283:     /** حاوية تلتف عناصرها على أسطر (للرقائق)، من اليمين لليسار. */
+2284:     static final class Flow extends ViewGroup {
+2285:         final int gapH, gapV;
+2286: 
+2287:         Flow(android.content.Context c, int gapH, int gapV) {
+2288:             super(c);
+2289:             this.gapH = gapH;
+2290:             this.gapV = gapV;
+2291:         }
+2292: 
+2293:         @Override protected void onMeasure(int ws, int hs) {
+2294:             int max = MeasureSpec.getSize(ws) - getPaddingLeft() - getPaddingRight();
+2295:             if (MeasureSpec.getMode(ws) == MeasureSpec.UNSPECIFIED) max = Integer.MAX_VALUE;
+2296:             int x = 0, y = 0, lineH = 0, widest = 0;
+2297:             for (int i = 0; i < getChildCount(); i++) {
+2298:                 View c = getChildAt(i);
+2299:                 if (c.getVisibility() == GONE) continue;
+2300:                 c.measure(MeasureSpec.makeMeasureSpec(Math.max(0, max), MeasureSpec.AT_MOST), MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+2301:                 int w = c.getMeasuredWidth(), h = c.getMeasuredHeight();

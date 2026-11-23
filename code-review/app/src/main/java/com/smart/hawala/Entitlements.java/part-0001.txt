@@ -1,0 +1,148 @@
+1: package com.smart.hawala;
+2: 
+3: /**
+4:  * ما يحق لهذه النسخة: المجانية أو المرخّصة. منطق بحت يُبنى عند الإقلاع من رمز الترخيص الموقّع.
+5:  * قيم متعددة بدل قيمة منطقية واحدة isPro، فلا يفتح تعديل موضع واحد كل شيء.
+6:  *
+7:  * القاعدة الثابتة: لا شيء يحجز بيانات المستخدم. العرض والبحث والكشوف والتقارير والنسخ اليدوي والاستعادة
+8:  * وتصحيح الحركات القائمة مجانية دائمًا، ويتوقف عند السقف ما يضيف فقط.
+9:  */
+10: public final class Entitlements {
+11:     /**
+12:      * سقوف المجاني (12.6): 15 مكتبًا (حذف مكتب يعيد مكانه فارغًا)، و1500 حركة جديدة لكل مكتب (التصحيحات لا تُحتسب)،
+13:      * واستخراج معلومات رسائل واتساب لـ 20 رسالة يوميًا (ومعها الالتقاط والتجميع والقص) ثم الإدخال اليدوي العادي،
+14:      * وصندوق واحد، و25 عميلًا، ومستخدم واحد (المالك). (9.0–12.5: 9 مكاتب و700 حركة.)
+15:      */
+16:     public static final int FREE_OFFICES = 15;
+17:     public static final int FREE_TX_PER_OFFICE = 1500;
+18:     public static final int FREE_WA_PER_DAY = 20;
+19:     public static final int FREE_CASH_BOXES = 1;
+20:     public static final int FREE_CLIENTS = 25;
+21: 
+22:     /**
+23:      * 12.6: حقول الرمز الرقمية (يكتبها البائع لكل زبون كما يشاء، 0 أو غيابها = بلا حد إن كانت الميزة مفعّلة):
+24:      * mo المكاتب، mt الحركات لكل مكتب، mu المستخدمون، mb الصناديق، mc العملاء، mw رسائل واتساب يوميًا،
+25:      * bh أقل ساعات بين النسخ التلقائي، bn نسخة بعد كل كم حركة، ex آخر يوم للاشتراك (yyyymmdd، اختياري).
+26:      */
+27:     public static final String K_OFFICES = "mo", K_TX = "mt", K_USERS = "mu", K_BOXES = "mb", K_CLIENTS = "mc", K_WA = "mw",
+28:             K_BACKUP_HOURS = "bh", K_BACKUP_TX = "bn", K_EXPIRES = "ex";
+29:     public static final long UNLIMITED = Long.MAX_VALUE;
+30: 
+31:     /** الميزات المدفوعة كما تُكتب في الرمز (ft). */
+32:     public static final String F_OFFICES = "offices", F_TX = "tx", F_USERS = "users", F_AI = "ai", F_EXPORT = "export", F_BACKUP = "backup";
+33:     /** 10.0: المزامنة بين الأجهزة والمنصات. */
+34:     public static final String F_SYNC = "sync";
+35:     /** 12.6: الصناديق المتعددة والعملاء (مفتوحة لكل رخصة مدفوعة ما لم يحدد البائع رقمًا). */
+36:     public static final String F_BOXES = "boxes", F_CLIENTS = "clients";
+37: 
+38:     public final boolean pro;
+39:     public final String lid;
+40:     /** سبب العمل بالمجاني رغم وجود رمز (انتهت التحديثات، رمز لهاتف آخر…)، أو فارغ. */
+41:     public final String note;
+42:     private final LicenseToken.Grant grant;
+43: 
+44:     private Entitlements(boolean pro, String lid, String note, LicenseToken.Grant grant) {
+45:         this.pro = pro;
+46:         this.lid = lid == null ? "" : lid;
+47:         this.note = note == null ? "" : note;
+48:         this.grant = grant;
+49:     }
+50: 
+51:     public static Entitlements free(String note) { return new Entitlements(false, "", note, null); }
+52: 
+53:     /** من رمز تحقق منه LicenseToken.verify. البناء خارج فترة التحديثات يعمل بالمجاني ويقول لماذا. */
+54:     public static Entitlements of(LicenseToken.Grant g, int buildDate) { return of(g, buildDate, 0); }
+55: 
+56:     /**
+57:      * 12.6: ومعه اليوم (yyyymmdd، لا يرجع للوراء: أكبر يوم رآه التطبيق) لاشتراك بتاريخ انتهاء. بعد الانتهاء يعمل بالمجاني
+58:      * ولا يُقفل أي شيء من البيانات؛ تتوقف الإضافة عند سقوف المجاني فقط.
+59:      */
+60:     public static Entitlements of(LicenseToken.Grant g, int buildDate, long today) {
+61:         if (g == null) return free("");
+62:         long ex = g.num(K_EXPIRES);
+63:         if (ex > 0 && today > ex) {
+64:             return free("انتهى اشتراك رخصتك (" + g.lid() + ") في " + fmtDate(ex) + ". جدّده من البائع؛ بياناتك كلها متاحة، والإضافة عند حدود المجاني فقط.");
+65:         }
+66:         if (!g.coversBuild(buildDate)) {
+67:             return free("رخصتك (" + g.lid() + ") تشمل التحديثات حتى " + fmtDate(g.num("uu")) + "، وهذا الإصدار أحدث منها. "
+68:                     + "ارجع إلى آخر إصدار مشمول أو جدّد التحديثات؛ بياناتك كلها متاحة.");
+69:         }
+70:         return new Entitlements(true, g.lid(), "", g);
+71:     }
+72: 
+73:     private boolean feature(String f) { return pro && grant != null && grant.has(f); }
+74: 
+75:     /**
+76:      * 12.6: الحد من الرمز: رقم يكتبه البائع (أكبر من صفر) هو الحد؛ وإلا بلا حد إن كانت الميزة مفعّلة (أو الرخصة مدفوعة للحدود
+77:      * التي كانت مفتوحة للجميع قبل 12.6: الصناديق والعملاء)؛ وإلا حد المجاني.
+78:      */
+79:     private long limit(String key, String flag, boolean openWhenPro, long free) {
+80:         if (!pro || grant == null) return free;
+81:         long n = grant.num(key);
+82:         if (n > 0) return n;
+83:         if ((flag != null && grant.has(flag)) || openWhenPro) return UNLIMITED;
+84:         return free;
+85:     }
+86: 
+87:     public long maxOffices() { return limit(K_OFFICES, F_OFFICES, false, FREE_OFFICES); }
+88: 
+89:     public long maxTxPerOffice() { return limit(K_TX, F_TX, false, FREE_TX_PER_OFFICE); }
+90: 
+91:     /** المجاني: المالك وحده (مدير واحد يحمي التطبيق برمزه)؛ المدفوع: مستخدمون بأدوار (بعدد يحدده البائع أو بلا حد). */
+92:     public long maxUsers() { return limit(K_USERS, F_USERS, false, 1); }
+93: 
+94:     /** 12.6: الصناديق (المجاني صندوق واحد). */
+95:     public long maxCashBoxes() { return limit(K_BOXES, F_BOXES, true, FREE_CASH_BOXES); }
+96: 
+97:     /** 12.6: حسابات العملاء (المجاني 25). */
+98:     public long maxClients() { return limit(K_CLIENTS, F_CLIENTS, true, FREE_CLIENTS); }
+99: 
+100:     /** 12.6: آخر يوم للاشتراك أو فارغ (دائمة). */
+101:     public String expires() { return grant == null || grant.num(K_EXPIRES) <= 0 ? "" : fmtDate(grant.num(K_EXPIRES)); }
+102: 
+103:     public boolean ai() { return feature(F_AI); }
+104: 
+105:     /** 10.0: المزامنة بين الأجهزة (ميزة مدفوعة، يفعّلها المستخدم أو يتركها). */
+106:     public boolean sync() { return feature(F_SYNC); }
+107: 
+108:     /** رسائل واتساب التي تُستخرج معلوماتها في اليوم (المجاني 20، الكاملة بلا حد). */
+109:     public long waPerDay() { return limit(K_WA, null, true, FREE_WA_PER_DAY); }
+110: 
+111:     /** المجاني يصدّر كل شيء مع سطر «نسخة مجانية» ظاهر؛ المدفوع بلا علامة وببصمة رقم الرخصة في الملف. */
+112:     public boolean watermark() { return !feature(F_EXPORT); }
+113: 
+114:     /** النسخ التلقائي: المجاني حتى مرة يوميًا، والمدفوع كل 6 ساعات أو بعد كل 25 حركة. */
+115:     public int autoBackupMinHours() {
+116:         long n = pro && grant != null ? grant.num(K_BACKUP_HOURS) : 0;
+117:         if (n > 0) return (int) Math.max(1, Math.min(24, n));
+118:         return feature(F_BACKUP) ? 6 : 24;
+119:     }
+120: 
+121:     public int autoBackupEveryTx() {
+122:         long n = pro && grant != null ? grant.num(K_BACKUP_TX) : 0;
+123:         if (n > 0) return (int) Math.max(5, Math.min(1000, n));
+124:         return feature(F_BACKUP) ? 25 : 0;
+125:     }
+126: 
+127:     public String updatesUntil() { return grant == null ? "" : fmtDate(grant.num("uu")); }
+128: 
+129:     public String edition() {
+130:         if (!pro) return "النسخة المجانية";
+131:         String ed = grant.get("ed");
+132:         return ed.isEmpty() || "pro".equals(ed) ? "النسخة الكاملة" : ed.replace('_', ' ');   // 12.6: اسم القالب من أداة البائع
+133:     }
+134: 
+135:     static String fmtDate(long yyyymmdd) {
+136:         if (yyyymmdd <= 0) return "—";
+137:         String s = String.valueOf(yyyymmdd);
+138:         return s.length() == 8 ? s.substring(0, 4) + "/" + s.substring(4, 6) + "/" + s.substring(6) : s;
+139:     }
+140: 
+141:     /** رفض بسبب حدود النسخة المجانية (تعرض الواجهة معه زر «الترخيص»). لا يمس أي بيانات قائمة. */
+142:     public static final class LimitReached extends IllegalStateException {
+143:         public LimitReached(String m) { super(m); }
+144:     }
+145: 
+146:     /** نص الرفض عند السقف: يقول ما يتوقف وما يبقى متاحًا. */
+147:     public static String officeLimitMessage(long max) {
+148:         return (max == FREE_OFFICES ? "النسخة المجانية تتسع لـ " : "رخصتك تتسع لـ ") + max + " مكتبًا. احذف مكتبًا لا تحتاجه فيعود مكانه فارغًا، أو فعّل الرخصة من «المزيد ← الترخيص» لإضافة المزيد. "

@@ -1,0 +1,158 @@
+153:             JSONArray m = new JSONArray(nz(SyncStore.meta(d, "members_cache")).isEmpty() ? "[]" : SyncStore.meta(d, "members_cache"));
+154:             for (int i = 0; i < m.length(); i++) s.members.add(m.getJSONObject(i));
+155:         } catch (Exception ignored) {
+156:             // لا قائمة بعد
+157:         }
+158:         try {
+159:             String pj = SyncStore.meta(d, "peers");
+160:             JSONArray pa = new JSONArray(pj == null ? "[]" : pj);
+161:             for (int i = 0; i < pa.length(); i++) s.peers.put(pa.getJSONObject(i).optString("dev"), pa.getJSONObject(i));
+162:         } catch (Exception ignored) {
+163:             // لا تشخيص بعد
+164:         }
+165:         s.note = nz(SyncStore.meta(d, "folder_note"));
+166:         s.founder = SyncStore.founder(d);
+167:         s.founderDev = nz(SyncStore.meta(d, "founder"));
+168:         long now = Clock.now();
+169:         for (JSONObject m : s.members) if (!m.optString("dev").equals(s.device) && m.optLong("at") > 0 && now - m.optLong("at") > STALE_MS) s.stale.add(m);
+170:         s.lastClean = nz(SyncStore.meta(d, "gc_note"));
+171:         s.paused = paused(db);
+172:         return s;
+173:     }
+174: 
+175:     static String nz(String s) { return s == null ? "" : s; }
+176: 
+177:     /** 10.4: المزامنة التلقائية موقوفة مؤقتًا على هذا الجهاز (اليدوية تعمل). */
+178:     public static boolean paused(Db db) { return "1".equals(db.setting("sync_paused", "0")); }
+179: 
+180:     /** 10.4: كل كم ثانية تجري المزامنة التلقائية والتطبيق مفتوح. */
+181:     public static int everySeconds(Db db) {
+182:         try {
+183:             int v = Integer.parseInt(db.setting("sync_every", "90"));
+184:             return Math.max(20, Math.min(3600, v));
+185:         } catch (Exception e) {
+186:             return 90;
+187:         }
+188:     }
+189: 
+190:     static long lng(String s) {
+191:         try {
+192:             return s == null ? 0 : Long.parseLong(s);
+193:         } catch (Exception e) {
+194:             return 0;
+195:         }
+196:     }
+197: 
+198:     public static List<String[]> conflicts(Db db) { return SyncStore.openConflicts(db.getReadableDatabase()); }
+199: 
+200:     /** 10.18: سجل تنبيهات المزامنة كله (لا يُحذف عند «تمت»): {id، الوقت، النوع، الجدول، الصف، التفاصيل، الجهاز، تمت؟}. */
+201:     public static List<String[]> noticeHistory(Db db, int limit) { return SyncStore.allConflicts(db.getReadableDatabase(), limit); }
+202: 
+203:     /** 10.16: «تمت» لكل المفتوح للمراجعة دفعة واحدة (غير الحركات المكررة، فلها قرارها). */
+204:     public static void resolveAll(Db db) {
+205:         db.getWritableDatabase().execSQL("UPDATE sync_conflicts SET resolved=1 WHERE resolved=0 AND kind<>'DUPLICATE'");
+206:     }
+207: 
+208:     /**
+209:      * 10.16: ما يجب أن يراه المستخدم في الصفحة الرئيسية عن المزامنة (كان لا يظهر إلا في شاشة المزامنة): {النص، خطير؟ "1"/"0"}.
+210:      * تعارضات وتنبيهات مفتوحة، مزامنة متعثرة، تغييرات لم تُرسل منذ يوم، ساعة غير مضبوطة، بصمة دفتر مختلفة.
+211:      */
+212:     public static List<String[]> homeAlerts(Db db) {
+213:         List<String[]> out = new ArrayList<>();
+214:         Status s = status(db);
+215:         if (!s.enabled) {
+216:             if (!s.leftReason.isEmpty()) out.add(new String[]{"خرج هذا الجهاز من المزامنة: " + s.leftReason, "1"});
+217:             return out;
+218:         }
+219:         // 10.18: ساعة هذا الجهاز بعيدة عن الوقت الصحيح (البرنامج يصحّح، لكن الأفضل ضبطها)
+220:         if (Db.clockOff()) out.add(new String[]{db.clockLines().get(1) + " يُستحسن ضبط ساعة الجهاز على «تلقائي».", "0"});
+221:         if (s.review > 0) {
+222:             List<String[]> cs = conflicts(db);
+223:             String first = cs.isEmpty() ? "" : ": " + SyncStore.kindName(cs.get(0)[2]) + (cs.size() > 1 ? " و" + (cs.size() - 1) + " غيره" : "");
+224:             boolean onlyNotices = true;
+225:             for (String[] c : cs) if (!SyncStore.isNotice(c[2])) onlyNotices = false;
+226:             out.add(new String[]{(onlyNotices ? s.review + " تنبيه من المزامنة" : s.review + " تعارض/تنبيه من المزامنة بحاجة لمراجعتك") + first, onlyNotices ? "0" : "1"});
+227:         }
+228:         if (!s.digestAlert.isEmpty()) out.add(new String[]{s.digestAlert, "1"});
+229:         long now = Clock.now();
+230:         boolean waiting = s.pending + s.unsent > 0;
+231:         if (!s.movedTo.isEmpty()) out.add(new String[]{"نُقلت المزامنة إلى مكان آخر: " + s.movedTo, "1"});
+232:         else if (!s.lastError.isEmpty()) out.add(new String[]{"آخر مزامنة فشلت" + (waiting ? " وعلى هذا الجهاز " + (s.pending + s.unsent) + " تغييرًا لم يصل للأجهزة الأخرى" : "")
+233:                 + ": " + (s.lastError.length() > 140 ? s.lastError.substring(0, 140) + "…" : s.lastError), "1"});
+234:         else if (waiting && s.lastSync > 0 && now - s.lastSync > UNSENT_WARN_MS) out.add(new String[]{"على هذا الجهاز " + (s.pending + s.unsent)
+235:                 + " تغييرًا لم يُرسل للأجهزة الأخرى منذ " + Math.max(1, (now - s.lastSync) / 3600000L) + " ساعة. افتح «المزامنة» واضغط «مزامنة الآن».", "1"});
+236:         if (!s.clockWarn.isEmpty()) out.add(new String[]{s.clockWarn, "0"});
+237:         return out;
+238:     }
+239: 
+240:     /** تغييرات لم تُرسل منذ هذه المدة تُنبَّه في الرئيسية. */
+241:     static final long UNSENT_WARN_MS = 24L * 3600 * 1000;
+242: 
+243:     /** 10.2: اسم الجهاز الذي أنشأ الصف (من بادئة رقمه)، أو فارغ. */
+244:     public static String deviceOf(Db db, long id) {
+245:         long p = id >> 32;
+246:         if (p == 0) return "";
+247:         for (JSONObject m : status(db).members) if (m.optLong("prefix") == p) return m.optString("name");
+248:         return "";
+249:     }
+250: 
+251:     /** 10.2: حركتان متشابهتان من جهازين (تكرار محتمل) بانتظار قرار. */
+252:     public static final class Dup {
+253:         public long conflictId;
+254:         public Model.Tx a, b;
+255:     }
+256: 
+257:     /** التكرارات المحتملة المفتوحة؛ ما حُسم (أُلغيت إحداهما أو قيل «ليستا مكررتين» من أي جهاز) يُغلق تلقائيًا. */
+258:     public static List<Dup> duplicates(Db db) {
+259:         List<Dup> out = new ArrayList<>();
+260:         SQLiteDatabase d = db.getWritableDatabase();
+261:         List<Object[]> rows = new ArrayList<>();
+262:         try (Cursor c = d.rawQuery("SELECT id,rid FROM sync_conflicts WHERE kind='DUPLICATE' AND resolved=0 ORDER BY created_at DESC LIMIT 200", null)) {
+263:             while (c.moveToNext()) rows.add(new Object[]{c.getLong(0), c.getString(1)});
+264:         }
+265:         for (Object[] r : rows) {
+266:             String[] p = ((String) r[1]).split("\\|");
+267:             Dup x = new Dup();
+268:             x.conflictId = (Long) r[0];
+269:             try {
+270:                 x.a = db.tx(Long.parseLong(p[0]));
+271:                 x.b = db.tx(Long.parseLong(p[1]));
+272:             } catch (Exception e) {
+273:                 x.a = null;
+274:             }
+275:             boolean open = x.a != null && x.b != null && (x.a.isActive() || x.a.isPending()) && (x.b.isActive() || x.b.isPending())
+276:                     && !SyncStore.dupOk(d, Math.min(x.a.id, x.b.id), Math.max(x.a.id, x.b.id));
+277:             if (!open) d.execSQL("UPDATE sync_conflicts SET resolved=1 WHERE id=" + x.conflictId);
+278:             else out.add(x);
+279:         }
+280:         return out;
+281:     }
+282: 
+283:     /** «ليستا مكررتين»: قرار يصل للأجهزة الأخرى فلا تسأل عنه. */
+284:     public static void keepBoth(Db db, Dup x) {
+285:         db.setSetting("dupok_" + Math.min(x.a.id, x.b.id) + "_" + Math.max(x.a.id, x.b.id), "1");
+286:         db.audit("DUPLICATE_KEEP", "tx", x.a.id, "أُبقيت الحركتان " + x.a.id + " و" + x.b.id);
+287:         resolveConflict(db, x.conflictId);
+288:     }
+289: 
+290:     /** يلغي إحدى الحركتين (قيد عكسي، أو رفض إن كانت معلّقة) ويغلق المراجعة. */
+291:     public static void dropDuplicate(Db db, Dup x, Model.Tx drop) {
+292:         String why = "حركة مكررة (سُجّلت من جهازين): بقيت " + (drop.id == x.a.id ? x.b.id : x.a.id);
+293:         if (drop.isPending()) db.rejectTx(drop.id, why);
+294:         else db.cancelTx(drop.id, why);
+295:         resolveConflict(db, x.conflictId);
+296:     }
+297: 
+298:     public static void resolveConflict(Db db, long id) {
+299:         db.getWritableDatabase().execSQL("UPDATE sync_conflicts SET resolved=1 WHERE id=" + id);
+300:     }
+301: 
+302:     // ===================================================================================
+303:     // المفاتيح
+304:     // ===================================================================================
+305: 
+306:     JSONObject header() throws IOException {
+307:         byte[] b = folder.read(HEADER);
+308:         if (b == null) return null;
+309:         try {
+310:             JSONObject h = new JSONObject(new String(b, StandardCharsets.UTF_8));

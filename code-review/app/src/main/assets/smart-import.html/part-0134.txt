@@ -1,0 +1,179 @@
+2852:       } else if (roles.amount !== undefined) {
+2853:         var pa = C.parseAmount(row[roles.amount]);
+2854:         if (!pa.empty && !(pa.ok && pa.zero)) {
+2855:           if (!pa.ok) bad = "badAmount";
+2856:           else if (roles.direction !== undefined) {
+2857:             var dT = text(row[roles.direction]);
+2858:             var dm = dT ? (cfg.dirMap && cfg.dirMap[key(dT)]) || guessDir(dT) : null;
+2859:             if (dm === "X") bad = "excludedDir";
+2860:             else if (dm !== "D" && dm !== "C") bad = dT ? "badDir" : "noDir";
+2861:             else parts.push({ dir: pa.neg ? (dm === "D" ? "C" : "D") : dm, p: pa });
+2862:           } else parts.push({ dir: pa.neg ? (pos === "D" ? "C" : "D") : pos, p: pa });
+2863:         }
+2864:       }
+2865:       if (!parts.length && !bad) { stat.empty++; continue; }
+2866:       stat.rows++;
+2867:       model.rowsRead++;
+2868:       if (bad) { issue(model, bad, t, r, row); stat.excluded++; continue; }
+2869:       if (!clean(acc)) { issue(model, "noAccount", t, r, row); stat.excluded++; continue; }
+2870:       var rowCode = null;
+2871:       if (!roles.wide) {
+2872:         if (roles.currency !== undefined) {
+2873:           var curT = text(row[roles.currency]);
+2874:           if (!curT) { issue(model, "noCurrency", t, r, row); stat.excluded++; continue; }
+2875:           rowCode = (cfg.curMap && cfg.curMap[key(curT)]) || guessCur(curT);
+2876:           if (rowCode === "__skip") { issue(model, "excludedCur", t, r, row); stat.excluded++; continue; }
+2877:           if (!rowCode) { issue(model, "badCurrency", t, r, row); stat.excluded++; continue; }
+2878:         } else rowCode = (cfg.fixedCurrency && cfg.fixedCurrency[t.id]) || cfg.defaultCurrency || "USD";
+2879:       }
+2880:       var nets = {}, okDec = true;
+2881:       parts.forEach(function (x) {
+2882:         var code = x.code || rowCode;
+2883:         if (!code || code === "__skip") return;
+2884:         var m = C.toMinor(x.p, curDef(cfg, code).dec);
+2885:         if (m === null) { okDec = false; return; }
+2886:         nets[code] = (nets[code] || 0n) + (x.dir === "D" ? m : -m);
+2887:       });
+2888:       if (!okDec) { issue(model, "decimals", t, r, row); stat.excluded++; continue; }
+2889:       out.push({ r: r, acc: acc, nets: nets, phone: roles.phone !== undefined ? text(row[roles.phone]) : "" });
+2890:       stat.imported++;
+2891:     }
+2892:     return out;
+2893:   }
+2894: 
+2895:   /**
+2896:    * جدول أرصدة محسوب من الحركات (ملخص بمعادلات، أو قيم تطابق نتيجة الحركات): لا يُنقل حتى لا تتضاعف الأرصدة،
+2897:    * بل يُقارن كل رصيد فيه برصيد المكتب نفسه بعد النقل. الإشارة (الموجب = لنا أو علينا) تُعرف من المطابقة نفسها.
+2898:    */
+2899:   function compareSummary(a, model, cfg, t) {
+2900:     var sub = newModel();
+2901:     var rows = balanceRows(sub, Object.assign({}, cfg, { positiveIs: {} }), t, t.roles, { rows: 0, imported: 0, excluded: 0, empty: 0, filled: 0, totals: 0, balanceOnly: 0 });
+2902:     function score(s) {
+2903:       var ok = 0, n = 0, list = [];
+2904:       rows.forEach(function (x) {
+2905:         var k0 = officeKeyFor(cfg, x.acc);
+2906:         Object.keys(x.nets).forEach(function (code) {
+2907:           var file = s * x.nets[code];
+2908:           var ours = model.direct[k0 + "|" + code] || 0n;
+2909:           n++;
+2910:           if (file === ours) ok++;
+2911:           list.push({ row: x.r + 1, account: clean(x.acc), key: k0 + "|" + code, code: code, file: file, ours: ours, ok: file === ours, known: model.officeIndex[k0] !== undefined });
+2912:         });
+2913:       });
+2914:       return { ok: ok, n: n, list: list };
+2915:     }
+2916:     var forced = cfg.positiveIs && cfg.positiveIs[t.id];
+2917:     var p = score(1n), m = score(-1n);
+2918:     var best = forced ? (forced === "D" ? p : m) : (m.ok > p.ok ? m : p);
+2919:     return { tid: t.id, table: t.label, sign: forced ? forced : (best === p ? "D" : "C"), forced: !!forced, n: best.n, ok: best.ok, rows: best.list,
+2920:       nonzero: best.list.filter(function (x) { return x.file !== 0n; }).length };
+2921:   }
+2922: 
+2923:   function summaryChecks(a, model, cfg) {
+2924:     model.summaryChecks = [];
+2925:     a.tables.forEach(function (t) {
+2926:       if (t.kind !== "summary") return;
+2927:       if (cfg.use && cfg.use[t.id]) return;
+2928:       var res = compareSummary(a, model, cfg, t);
+2929:       model.summaryChecks.push(res);
+2930:       res.rows.forEach(function (x) { if (!model.lastBalance[x.key] && x.known) model.lastBalance[x.key] = { minor: x.file, src: "summary" }; });
+2931:     });
+2932:   }
+2933: 
+2934:   /**
+2935:    * اتجاه عمود الأجرة يُعرف من عمود الرصيد في الجدول نفسه: يُجرَّب «لنا» و«علينا» و«لا تُحسب»،
+2936:    * ويُعتمد الذي تطابق به أرصدة الملف سطرًا بسطر (90% فأكثر وأفضل من غيره). بلا عمود رصيد: «لنا» كأداة النقل، ويمكن تغييره.
+2937:    */
+2938:   function detectFeeDirs(a, cfg, serialToDate) {
+2939:     var out = {};
+2940:     a.tables.forEach(function (t) {
+2941:       if (!t.use || t.kind === "balances" || t.kind === "summary" || t.roles.fee === undefined || t.roles.balance === undefined) return;
+2942:       if (cfg.feeDir && cfg.feeDir[t.id]) return;
+2943:       var best = null;
+2944:       ["D", "C", "X"].forEach(function (h) {
+2945:         var c2 = Object.assign({}, cfg, { feeDir: Object.assign({}, cfg.feeDir || {}), inferOpening: true });
+2946:         c2.feeDir[t.id] = h;
+2947:         var sub = newModel();
+2948:         buildJournal(sub, c2, t, t.roles, serialToDate);
+2949:         resolveBalances(sub, c2);
+2950:         var ch = sub.balanceChecks[0];
+2951:         var score = ch && ch.rows && ch.how !== "book" ? ch.ok / ch.rows : 0;
+2952:         var implied = ch ? ch.implied : 0;
+2953:         // التساوي يُحسم بالأبسط: الاحتمال الذي لا يحتاج رصيدًا سابقًا مستنتجًا
+2954:         if (!best || score > best.score || (score === best.score && implied < best.implied)) best = { h: h, score: score, implied: implied, tie: false };
+2955:         else if (score === best.score && implied === best.implied) best.tie = true;
+2956:       });
+2957:       if (best && best.score >= 0.9 && !best.tie) {
+2958:         cfg.feeDir = cfg.feeDir || {};
+2959:         cfg.feeDir[t.id] = best.h;
+2960:         t.feeDetected = best.h;
+2961:         out[t.id] = best.h;
+2962:       }
+2963:     });
+2964:     return out;
+2965:   }
+2966: 
+2967:   /**
+2968:    * بعد التحليل: جدول أرصدة في ملف فيه سجل حركات — إن طابقت قيمه نتيجة الحركات (90% فأكثر) فهو ملخص لها لا أرصدة سابقة.
+2969:    * (جداول الأرصدة بمعادلات صُنّفت ملخصًا من قبل.)
+2970:    */
+2971:   function detectSummaries(a, cfg, serialToDate) {
+2972:     var journals = a.tables.filter(function (t) { return t.use && t.kind !== "balances" && t.kind !== "summary"; });
+2973:     var bal = a.tables.filter(function (t) { return t.kind === "balances" && t.use; });
+2974:     if (!journals.length || !bal.length) return [];
+2975:     var c2 = Object.assign({}, cfg, { use: {} });
+2976:     a.tables.forEach(function (t) { c2.use[t.id] = journals.indexOf(t) >= 0; });
+2977:     var m = build(a, Object.assign(c2, { listedAccounts: false }), serialToDate);
+2978:     var found = [];
+2979:     bal.forEach(function (t) {
+2980:       var res = compareSummary(a, m, cfg, t);
+2981:       var nz = res.rows.filter(function (x) { return x.file !== 0n; });
+2982:       var hit = nz.filter(function (x) { return x.ok; }).length;
+2983:       if (nz.length >= 3 && hit >= nz.length * 0.9) {
+2984:         t.kind = "summary";
+2985:         t.use = false;
+2986:         t.summaryWhy = "values";
+2987:         found.push(t.id);
+2988:       }
+2989:     });
+2990:     return found;
+2991:   }
+2992: 
+2993:   function validDate(row, c, order, serialToDate) {
+2994:     var cell = (row || [])[c];
+2995:     if (!cell) return null;
+2996:     var d = C.parseDate(cell, order, serialToDate);
+2997:     return d && d.y >= 1990 ? d : null;
+2998:   }
+2999: 
+3000:   function sample(t, c) {
+3001:     var out = [];
+3002:     if (c === undefined) return out;
+3003:     for (var r = t.first; r <= t.last && out.length < 500; r++) { var x = (t.rows[r] || [])[c]; if (x) out.push(x); }
+3004:     return out;
+3005:   }
+3006: 
+3007:   /** منازل عشرية مقترحة لكل عملة: الأكبر بين المعتاد وما في الملف (لا تقريب أبدًا). */
+3008:   function suggestDecimals(a, cfg) {
+3009:     var dec = {};
+3010:     a.tables.forEach(function (t) {
+3011:       if (!t.use) return;
+3012:       (t.roles.wide || []).forEach(function (w) {
+3013:         var code = (cfg.curMap && cfg.curMap[key(w.h)]) || w.code;
+3014:         if (!code || code === "__skip") return;
+3015:         for (var r = t.first; r <= t.last; r++) {
+3016:           var p = C.parseAmount((t.rows[r] || [])[w.c]);
+3017:           if (p.ok) dec[code] = Math.max(dec[code] || 0, p.frac.length);
+3018:         }
+3019:       });
+3020:       if (t.roles.currency === undefined) {
+3021:         var fc = (cfg.fixedCurrency && cfg.fixedCurrency[t.id]) || t.sheetCurrency || cfg.defaultCurrency || "USD";
+3022:         [t.roles.amount, t.roles.debit, t.roles.credit].forEach(function (c) {
+3023:           if (c === undefined) return;
+3024:           for (var r = t.first; r <= t.last; r++) {
+3025:             var p = C.parseAmount((t.rows[r] || [])[c]);
+3026:             if (p.ok) dec[fc] = Math.max(dec[fc] || 0, p.frac.length);
+3027:           }
+3028:         });
+3029:         return;
+3030:       }

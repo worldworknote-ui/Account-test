@@ -1,0 +1,105 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.List;
+5: import java.util.Map;
+6: 
+7: /**
+8:  * 10.5 (§11): محتوى نافذة تأكيد الحركة — مشترك بين الهاتف والكمبيوتر. الأرصدة من {@link Db#preview} (قواعد الترحيل نفسها)،
+9:  * فلا تحسب الواجهة رصيدًا بنفسها. يشمل: الحركة العادية، والتعديل (الفرق الصحيح)، والتبديل (عملتان)، والتحويل (مكتبان)،
+10:  * والحركة التي تحتاج اعتمادًا («الرصيد المتوقع بعد اعتماد الحركة»).
+11:  */
+12: public final class TxConfirm {
+13:     private TxConfirm() {}
+14: 
+15:     /** نوع السطر: المكتب يُعرض بالأحمر مع كلمة «المكتب:» (لا يعتمد على اللون وحده). */
+16:     public static final int OFFICE = 1, NORMAL = 0, BALANCE = 2, AFTER = 3, NOTE = 4;
+17: 
+18:     public static final class Row {
+19:         public final int kind;
+20:         public final String label, value;
+21: 
+22:         Row(int kind, String label, String value) {
+23:             this.kind = kind;
+24:             this.label = label;
+25:             this.value = value;
+26:         }
+27: 
+28:         @Override public String toString() { return label.isEmpty() ? value : label + ": " + value; }
+29:     }
+30: 
+31:     /** ما يُعرض، وبصمة الأرصدة التي بُني عليها (للتحقق قبل الحفظ أنها لم تتغير). */
+32:     public static final class View {
+33:         public final List<Row> rows = new ArrayList<>();
+34:         public String fingerprint = "";
+35:         public boolean pending;
+36: 
+37:         public String text() {
+38:             StringBuilder b = new StringBuilder();
+39:             for (Row r : rows) {
+40:                 if (b.length() > 0) b.append('\n');
+41:                 b.append(r.kind == OFFICE ? "■ " : r.kind == BALANCE || r.kind == AFTER ? "   " : "").append(r);
+42:             }
+43:             return b.toString();
+44:         }
+45:     }
+46: 
+47:     /**
+48:      * يبني التأكيد لساق أو أكثر. replacing: رقم الحركة التي تُستبدل عند التعديل (أو null). rateText: سعر التبديل للعرض (أو null).
+49:      */
+50:     public static View build(Db db, List<Db.TxInput> legs, Long replacing, String rateText) {
+51:         View v = new View();
+52:         List<Db.Preview> pv = db.preview(legs, replacing);
+53:         StringBuilder fp = new StringBuilder();
+54:         boolean transfer = legs.size() == 2 && legs.get(0).office != legs.get(1).office;
+55:         boolean fx = legs.size() == 2 && !transfer;
+56:         if (transfer) v.rows.add(new Row(NORMAL, "العملية", "تحويل بين مكتبين — ساقان تُسجَّلان وتُلغيان وتُعتمدان معًا"));
+57:         else if (fx) v.rows.add(new Row(NORMAL, "العملية", "تبديل عملة مع المكتب — ساقان مرتبطتان"));
+58:         else if (replacing != null) v.rows.add(new Row(NORMAL, "العملية", "تعديل: يُلغى الأصل بقيد عكسي ويُسجَّل البديل"));
+59:         for (Db.Preview p : pv) {
+60:             v.pending |= p.pending;
+61:             v.rows.add(new Row(OFFICE, "المكتب", "«" + p.officeName + "»"));
+62:             for (Db.TxInput x : legs) {
+63:                 if (x.office != p.office) continue;
+64:                 boolean us = Model.TYPE_DEBIT.equals(x.type);
+65:                 int d = db.decimals(x.currency);
+66:                 v.rows.add(new Row(NORMAL, "النوع", us ? "لنا (مدين)" : "علينا (دائن)"));
+67:                 // 12.6: المعدن بوزنه ووحدته («1.500 غ ذهب عيار 21») لا برمزه
+68:                 if (Metals.isMetal(x.currency)) v.rows.add(new Row(NORMAL, "الوزن", Model.fmt(x.amount, d) + " " + Metals.unitText(x.currency)));
+69:                 else v.rows.add(new Row(NORMAL, "المبلغ", "\u2066" + Model.fmt(x.amount, d) + " " + x.currency + "\u2069"));
+70:                 if (!Model.FEE_NONE.equals(x.feeType) && x.fee > 0)
+71:                     v.rows.add(new Row(NORMAL, x.feeType, Metals.isMetal(x.feeCurrency) ? Model.fmt(x.fee, db.decimals(x.feeCurrency)) + " " + Metals.unitText(x.feeCurrency)
+72:                             : "\u2066" + Model.fmt(x.fee, db.decimals(x.feeCurrency)) + " " + x.feeCurrency + "\u2069"));
+73:                 else v.rows.add(new Row(NORMAL, "الأجرة", "بدون أجرة"));
+74:                 if (!Model.nz(x.person).isEmpty()) v.rows.add(new Row(NORMAL, "المستفيد", x.person));
+75:             }
+76:             for (Map.Entry<String, Long> e : p.before.entrySet()) {
+77:                 String cur = e.getKey();
+78:                 int d = db.decimals(cur);
+79:                 long b = e.getValue(), a = p.after.get(cur);
+80:                 v.rows.add(new Row(BALANCE, "الرصيد الحالي (" + cur + ")", Model.bal(b, d)));
+81:                 v.rows.add(new Row(AFTER, (p.pending ? "الرصيد المتوقع بعد اعتماد الحركة" : "الرصيد بعد هذه الحركة سيصبح") + " (" + cur + ")", Model.bal(a, d)));
+82:                 if (replacing != null) v.rows.add(new Row(NOTE, "فرق التعديل (" + cur + ")", (a - b >= 0 ? "+" : "−") + Model.fmt(Math.abs(a - b), d)));
+83:                 fp.append(p.office).append(':').append(cur).append('=').append(b).append(';');
+84:             }
+85:         }
+86:         if (rateText != null && !rateText.isEmpty()) v.rows.add(new Row(NORMAL, "السعر", rateText));
+87:         if (v.pending) v.rows.add(new Row(NOTE, "", "تحتاج هذه الحركة اعتماد المحاسب: لا يتغير الرصيد قبل اعتمادها."));
+88:         Db.TxInput first = legs.get(0);
+89:         if (first.when > 0 && Model.day(first.when).compareTo(Model.day(Clock.now())) != 0)
+90:             v.rows.add(new Row(NOTE, "التاريخ", Model.day(first.when)));
+91:         v.fingerprint = fp.toString();
+92:         return v;
+93:     }
+94: 
+95:     public static View build(Db db, Db.TxInput in, Long replacing) {
+96:         List<Db.TxInput> l = new ArrayList<>();
+97:         l.add(in);
+98:         return build(db, l, replacing, null);
+99:     }
+100: 
+101:     /** هل تغيّرت الأرصدة منذ بُني التأكيد؟ (حركة وصلت بالمزامنة أو من شاشة أخرى) */
+102:     public static boolean changed(Db db, View shown, List<Db.TxInput> legs, Long replacing) {
+103:         return !build(db, legs, replacing, null).fingerprint.equals(shown.fingerprint);
+104:     }
+105: }

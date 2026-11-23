@@ -1,0 +1,171 @@
+3074:                 + "LEFT JOIN journal_entries e ON e.id=o.entry_id", null)) {
+3075:             while (c.moveToNext()) {
+3076:                 long amt = c.getLong(3);
+3077:                 l.add(new OwnerReports.Opening(c.getLong(0), c.getString(1), "لنا".equals(c.getString(2)) ? amt : -amt, c.getLong(4)));
+3078:             }
+3079:         }
+3080:         return l;
+3081:     }
+3082: 
+3083:     /** خدمات استُعملت من قبل (الأكثر أولًا) لاقتراحها في النموذج. */
+3084:     public List<String> usedServices(int limit) {
+3085:         List<String> l = new ArrayList<>();
+3086:         try (Cursor c = getReadableDatabase().rawQuery("SELECT service,COUNT(*) n FROM tx WHERE service IS NOT NULL AND service<>'' AND status='ACTIVE' GROUP BY service ORDER BY n DESC LIMIT " + limit, null)) {
+3087:             while (c.moveToNext()) l.add(c.getString(0));
+3088:         }
+3089:         return l;
+3090:     }
+3091: 
+3092:     /** قيد مزدوج: سطر المكتب + سطر الحساب المقابل بقيمة معاكسة. */
+3093:     private long postEntry(SQLiteDatabase d, Long tx, String kind, long office, String cur, long officeDebit, long officeCredit, long when) {
+3094:         ContentValues e = new ContentValues();
+3095:         if (tx != null) e.put("tx_id", tx);
+3096:         e.put("kind", kind);
+3097:         e.put("created_at", when);
+3098:         long eid = ins(d, "journal_entries", e);
+3099:         line(d, eid, "OFFICE", office, cur, officeDebit, officeCredit);
+3100:         String contra = kind.equals("FEE") ? (officeDebit > 0 ? "FEE_REVENUE" : "FEE_EXPENSE") : (kind.equals("OPENING") ? "OPENING" : "SETTLEMENT");
+3101:         line(d, eid, contra, 0, cur, officeCredit, officeDebit);
+3102:         return eid;
+3103:     }
+3104: 
+3105:     private void line(SQLiteDatabase d, long eid, String acc, long office, String cur, long debit, long credit) {
+3106:         if (debit < 0 || credit < 0 || debit == credit) throw new IllegalArgumentException("قيد غير صالح");
+3107:         ContentValues l = new ContentValues();
+3108:         l.put("entry_id", eid);
+3109:         l.put("account", acc);
+3110:         if (office > 0) l.put("office_id", office);
+3111:         l.put("currency", cur);
+3112:         l.put("debit_minor", debit);
+3113:         l.put("credit_minor", credit);
+3114:         ins(d, "journal_lines", l);
+3115:     }
+3116: 
+3117:     private static void checkLock(SQLiteDatabase d, long when, String message) {
+3118:         long lock = lockBefore(d);
+3119:         if (lock > 0 && when < lock) throw new IllegalStateException(message + ". فك الإقفال من الإعدادات أولًا إن كان ذلك ضروريًا.");
+3120:     }
+3121: 
+3122:     /** يعكس كل قيود الحركة (نفس الحساب والعملة والقيمة المعاكسة) ويجعلها ملغاة. */
+3123:     private void reverseTx(SQLiteDatabase d, long id, long now) {
+3124:         String st = null;
+3125:         long created = 0;
+3126:         try (Cursor q = d.rawQuery("SELECT status,created_at FROM tx WHERE id=" + id, null)) {
+3127:             if (q.moveToFirst()) {
+3128:                 st = q.getString(0);
+3129:                 created = q.getLong(1);
+3130:             }
+3131:         }
+3132:         if (st == null) throw new IllegalStateException("الحركة غير موجودة");
+3133:         if (Model.STATUS_PENDING.equals(st)) throw new IllegalStateException("الحركة بانتظار الاعتماد: اعتمدها أو ارفضها أولًا");
+3134:         if (Model.STATUS_SPECIAL.equals(st)) throw new IllegalStateException("حركة خاصة لا تُحسب في الرصيد: حوّلها إلى حركة عادية أو ألغها من «الأمانات والخاصة»");
+3135:         if (!"ACTIVE".equals(st)) throw new IllegalStateException("هذه الحركة ملغاة أو معدّلة أو مرفوضة");
+3136:         checkLock(d, created, "الحركة ضمن فترة محاسبية مقفلة");
+3137:         List<Long> olds = new ArrayList<>();
+3138:         try (Cursor c = d.rawQuery("SELECT id FROM journal_entries WHERE tx_id=" + id
+3139:                 + " AND COALESCE(status,'POSTED')='POSTED' AND COALESCE(kind,'')<>'REVERSAL'", null)) {
+3140:             while (c.moveToNext()) olds.add(c.getLong(0));
+3141:         }
+3142:         for (long old : olds) {
+3143:             ContentValues e = new ContentValues();
+3144:             e.put("tx_id", id);
+3145:             e.put("kind", "REVERSAL");
+3146:             e.put("created_at", now);
+3147:             e.put("reverses_id", old);
+3148:             long ne = ins(d, "journal_entries", e);
+3149:             // 10.0: سطرًا سطرًا (لا INSERT…SELECT) ليأخذ كل سطر رقمه من نطاق الجهاز
+3150:             List<ContentValues> rev = new ArrayList<>();
+3151:             try (Cursor lc = d.rawQuery("SELECT account,office_id,currency,credit_minor,debit_minor FROM journal_lines WHERE entry_id=" + old + " ORDER BY id", null)) {
+3152:                 while (lc.moveToNext()) {
+3153:                     ContentValues l = new ContentValues();
+3154:                     l.put("entry_id", ne);
+3155:                     l.put("account", lc.getString(0));
+3156:                     if (!lc.isNull(1)) l.put("office_id", lc.getLong(1));
+3157:                     l.put("currency", lc.getString(2));
+3158:                     l.put("debit_minor", lc.getLong(3));
+3159:                     l.put("credit_minor", lc.getLong(4));
+3160:                     rev.add(l);
+3161:                 }
+3162:             }
+3163:             for (ContentValues l : rev) ins(d, "journal_lines", l);
+3164:         }
+3165:         ContentValues v = new ContentValues();
+3166:         v.put("status", "CANCELLED");
+3167:         d.update("tx", v, "id=" + id, null);
+3168:     }
+3169: 
+3170:     public void cancelTx(long id, String reason) {
+3171:         Model.Tx sp = tx(id);
+3172:         if (sp != null && sp.isUnposted()) {   // 12.4: لا قيد لها ليُعكس
+3173:             voidSpecial(id, reason);
+3174:             return;
+3175:         }
+3176:         require(Auth.Perm.TX_CANCEL);
+3177:         SQLiteDatabase d = getWritableDatabase();
+3178:         d.beginTransaction();
+3179:         try {
+3180:             long now = Clock.now();
+3181:             reverseTx(d, id, now);
+3182:             // ساقا تبديل العملة تُلغيان معًا: لا يبقى نصف عملية في الأرصدة
+3183:             String pair = null;
+3184:             try (Cursor c = d.rawQuery("SELECT pair_uuid FROM tx WHERE id=" + id, null)) {
+3185:                 if (c.moveToFirst() && !c.isNull(0) && !c.getString(0).isEmpty()) pair = c.getString(0);
+3186:             }
+3187:             List<Long> legs = new ArrayList<>();
+3188:             if (pair != null) {
+3189:                 try (Cursor c = d.rawQuery("SELECT id FROM tx WHERE pair_uuid=? AND status='ACTIVE' AND id<>" + id, new String[]{pair})) {
+3190:                     while (c.moveToNext()) legs.add(c.getLong(0));
+3191:                 }
+3192:                 for (long leg : legs) reverseTx(d, leg, now);
+3193:             }
+3194:             // 9.0: حركة الصندوق المرتبطة تُلغى معها (لا يبقى نقد محسوب لحركة مكتب ملغاة) — 10.5: ولكل ساقات العملية
+3195:             ContentValues cv = new ContentValues();
+3196:             cv.put("status", CashBox.CANCELLED);
+3197:             cv.put("cancel_reason", Crypto.enc("أُلغيت حركة المكتب: " + Model.nz(reason)));
+3198:             cv.put("cancelled_at", now);
+3199:             d.update("cash_moves", cv, "tx_id=" + id + " AND status='ACTIVE'", null);
+3200:             for (long leg : legs) d.update("cash_moves", cv, "tx_id=" + leg + " AND status='ACTIVE'", null);
+3201:             audit(d, "CANCEL_TRANSACTION", "tx", id, reason);
+3202:             d.setTransactionSuccessful();
+3203:         } finally {
+3204:             d.endTransaction();
+3205:         }
+3206:     }
+3207: 
+3208:     private static long lockBefore(SQLiteDatabase d) {
+3209:         try {
+3210:             String v = rawSetting(d, "lock_before");
+3211:             return v == null ? 0 : Long.parseLong(v);
+3212:         } catch (Exception e) {
+3213:             return 0;
+3214:         }
+3215:     }
+3216: 
+3217:     private static final String TX_COLS = "id,uuid,office_id,type,person,amount_minor,currency,fee_type,fee_minor,fee_currency,description,notes,created_at,status,replaces_id,user_name,service,dest,pair_uuid,fx_rate,user_id,approved_by,approved_at,special,special_bal";
+3218: 
+3219:     private Model.Tx readTx(Cursor c) {
+3220:         Model.Tx t = readTxRaw(c);
+3221:         t.userName = shown(t.userReal);
+3222:         return t;
+3223:     }
+3224: 
+3225:     /** بلا «الاسم الظاهر» (لعمليات النظام والمزامنة التي لا مستخدم لها). */
+3226:     private static Model.Tx readTxRaw(Cursor c) {
+3227:         Model.Tx t = new Model.Tx();
+3228:         t.id = c.getLong(0);
+3229:         t.uuid = c.getString(1);
+3230:         t.officeId = c.getLong(2);
+3231:         t.type = c.getString(3);
+3232:         t.person = Model.nz(Crypto.dec(c.getString(4)));
+3233:         t.amount = c.getLong(5);
+3234:         t.currency = c.getString(6);
+3235:         t.feeType = c.getString(7);
+3236:         t.fee = c.getLong(8);
+3237:         t.feeCurrency = c.getString(9);
+3238:         t.description = Model.nz(Crypto.dec(c.getString(10)));
+3239:         t.notes = Model.nz(Crypto.dec(c.getString(11)));
+3240:         t.createdAt = c.getLong(12);
+3241:         t.status = c.getString(13);
+3242:         t.replacesId = c.isNull(14) ? null : c.getLong(14);
+3243:         t.userReal = Model.nz(Crypto.dec(c.getString(15)));
+3244:         t.userName = t.userReal;

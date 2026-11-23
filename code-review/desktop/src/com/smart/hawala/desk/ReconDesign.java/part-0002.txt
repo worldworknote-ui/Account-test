@@ -1,0 +1,62 @@
+149:                 String ln = Reconcile.line(t, r);
+150:                 int at = txt.indexOf(ln);
+151:                 if (at < 0) continue;
+152:                 javax.swing.text.SimpleAttributeSet cs = new javax.swing.text.SimpleAttributeSet();
+153:                 javax.swing.text.StyleConstants.setForeground(cs, new Color(t.color(r.sign()) & 0xFFFFFF));
+154:                 javax.swing.text.StyleConstants.setBold(cs, true);
+155:                 doc.setCharacterAttributes(at, ln.length(), cs, false);
+156:             }
+157:             preview.setCaretPosition(0);
+158:         };
+159:         DocumentListener dl = new DocumentListener() {
+160:             @Override public void insertUpdate(DocumentEvent e) { upd.run(); }
+161: 
+162:             @Override public void removeUpdate(DocumentEvent e) { upd.run(); }
+163: 
+164:             @Override public void changedUpdate(DocumentEvent e) { upd.run(); }
+165:         };
+166:         for (Ui.Field x : new Ui.Field[]{greet, ttl, orn, sal, hon, foot, plus, minus, zeroWord, line, mPlus, mMinus, mZero, dateLabel, officeMark, sep, empty})
+167:             x.getDocument().addDocumentListener(dl);
+168:         for (JCheckBox c : cks) c.addActionListener(e -> upd.run());
+169:         pos.addActionListener(e -> line.setText(Reconcile.withWordPos(line.getText(), pos.getSelectedIndex())));
+170:         cPlus.addActionListener(e -> mPlus.setText(Reconcile.COLORS[cPlus.getSelectedIndex()][2]));
+171:         cMinus.addActionListener(e -> mMinus.setText(Reconcile.COLORS[cMinus.getSelectedIndex()][2]));
+172:         preset.addActionListener(e -> {
+173:             int i = preset.getSelectedIndex();
+174:             if (i > 0) line.setText(Reconcile.LINE_PRESETS[i - 1][1]);
+175:         });
+176:         upd.run();
+177: 
+178:         JPanel all = new JPanel(new BorderLayout(16, 0));
+179:         all.setOpaque(false);
+180:         all.add(left, BorderLayout.CENTER);
+181:         all.add(right, BorderLayout.LINE_END);
+182:         JOptionPane p = new JOptionPane(Ui.rtl(all), JOptionPane.PLAIN_MESSAGE, JOptionPane.DEFAULT_OPTION, null, new Object[]{"حفظ", "القالب الافتراضي", "إلغاء"}, "حفظ");
+183:         Ui.show(parent, p, "تصميم رسالة مطابقة الرصيد");
+184:         Object v = p.getValue();
+185:         if ("حفظ".equals(v)) {
+186:             read.run();
+187:             if (!line.getText().contains("{مبلغ}")) Ui.info(parent, "شكل السطر", "شكل السطر لا يحوي الخانة {مبلغ}؛ حُفظ بالشكل الافتراضي (المبلغ ثم العملة).");
+188:             save(db, t);
+189:             Ui.toast("حُفظ تصميم الرسالة");
+190:         } else if ("القالب الافتراضي".equals(v)) {
+191:             if (!Ui.confirm(parent, "القالب الافتراضي", "يعود نص الرسالة وشكلها إلى الصيغة الافتراضية.", "استعادة")) return;
+192:             save(db, new Reconcile.Template());
+193:             Ui.toast("عاد القالب الافتراضي");
+194:         } else return;
+195:         if (after != null) after.run();
+196:     }
+197: 
+198:     private static void save(Db db, Reconcile.Template t) {
+199:         for (Map.Entry<String, String> x : t.toMap().entrySet()) db.setSettingQuiet(x.getKey(), x.getValue());
+200:         db.audit("SETTING", "settings", 0, "recon_template");
+201:     }
+202: 
+203:     private static Ui.Field f(String v) {
+204:         Ui.Field x = Ui.field("");
+205:         // خط النظام المنطقي: يعرض الرموز التعبيرية (🟢 🌹) التي لا يحويها خط البرنامج
+206:         x.setFont(new Font(Font.DIALOG, Font.PLAIN, 14));
+207:         x.setText(v);
+208:         return x;
+209:     }
+210: }

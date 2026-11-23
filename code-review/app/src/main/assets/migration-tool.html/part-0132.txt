@@ -1,0 +1,157 @@
+2280:   }
+2281: 
+2282:   function stat(n, label, err) { return '<div class="stat' + (err ? " err" : "") + '"><b>' + n + "</b><span>" + label + "</span></div>"; }
+2283:   function bw(m, dec) { return m === 0n ? "0" : (m > 0n ? "لنا " : "علينا ") + C.fmtMinor(m > 0n ? m : -m, dec); }
+2284:   function balCell(m, dec) {
+2285:     if (m === 0n) return '<span class="hint">0</span>';
+2286:     return '<span class="chip ' + (m > 0n ? "us" : "them") + '">' + (m > 0n ? "لنا" : "علينا") + '</span> <span class="ltr ' + (m > 0n ? "us" : "them") + '">' + C.fmtMinor(m > 0n ? m : -m, dec) + "</span>";
+2287:   }
+2288: 
+2289:   // ===================================================================================
+2290:   // 5. الإنشاء
+2291:   // ===================================================================================
+2292: 
+2293:   function updateMake() {
+2294:     var r = S.result;
+2295:     var ok = !!r && (r.T.tx.length + r.T.opening_balances.length + r.T.offices.length) > 0;
+2296:     var hasErr = ok && r.model.errors.length > 0;
+2297:     $("forceBox").classList.toggle("hidden", !hasErr);
+2298:     var pw1 = $("pw1").value, pw2 = $("pw2").value;
+2299:     var can = ok && $("confirmed").checked && pw1.length >= 6 && pw1 === pw2 && (!hasErr || $("force").checked);
+2300:     $("make").disabled = !can;
+2301:     $("csv").disabled = !ok;
+2302:     $("print").disabled = !ok;
+2303:     var m = $("makeMsg");
+2304:     if (!ok) m.innerHTML = "";
+2305:     else if (pw1 && pw2 && pw1 !== pw2) m.innerHTML = '<div class="msg err">كلمتا السر غير متطابقتين.</div>';
+2306:     else if (pw1 && pw1.length < 6) m.innerHTML = '<div class="msg warn">كلمة السر قصيرة: 6 أحرف على الأقل.</div>';
+2307:     else if (m.dataset.done !== "1") m.innerHTML = "";
+2308:   }
+2309: 
+2310:   function download(bytes, name, type) {
+2311:     var blob = new Blob([bytes], { type: type || "application/octet-stream" });
+2312:     var a = document.createElement("a");
+2313:     a.href = URL.createObjectURL(blob);
+2314:     a.download = name;
+2315:     document.body.appendChild(a);
+2316:     a.click();
+2317:     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+2318:   }
+2319: 
+2320:   function stamp() {
+2321:     var d = new Date();
+2322:     function p(n) { return (n < 10 ? "0" : "") + n; }
+2323:     return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes());
+2324:   }
+2325: 
+2326:   function make() {
+2327:     var r = S.result;
+2328:     if (!r) return;
+2329:     var m = $("makeMsg");
+2330:     $("make").disabled = true;
+2331:     m.dataset.done = "";
+2332:     m.innerHTML = '<div class="msg info">جارٍ إنشاء الملف وتشفيره… (قد يستغرق بضع ثوانٍ)</div>';
+2333:     // اسم مكتبك قد يتغير بعد التحليل
+2334:     r.cfg.officeName = $("myOffice").value.trim();
+2335:     r.cfg.now = Date.now();
+2336:     var T = C.tables(r.model, r.cfg, rand);
+2337:     C.makeBackup(T, r.cfg, $("pw1").value, crypto.subtle, rand).then(function (bytes) {
+2338:       var name = "نقل-المحاسب-الذكي-" + stamp() + ".sba";
+2339:       download(bytes, name);
+2340:       m.dataset.done = "1";
+2341:       m.innerHTML = '<div class="msg ok"><b>✓ تم إنشاء الملف «' + esc(name) + "»</b> (" + Math.ceil(bytes.length / 1024) + " ك.ب) — " + T.offices.length + " مكتب، " + T.tx.length + " حركة، " +
+2342:         T.opening_balances.length + " رصيد سابق.<ul><li>انقله إلى الهاتف (واتساب لنفسك، أو البريد، أو كابل).</li><li>في التطبيق: المزيد ← مساعد النقل من برنامج آخر ← استورد الملف، واكتب كلمة السر، ثم اختر «إضافة إلى بياناتي» حتى لا يُحذف شيء من بياناتك الحالية.</li>" +
+2343:         "<li>بعد الاستيراد قارن أرصدة المكاتب في التطبيق بهذا التقرير (احفظه بزر «تنزيل تقرير المطابقة»).</li><li>لا تنسَ كلمة السر: لا يمكن فتح الملف بدونها.</li></ul></div>";
+2344:       updateMake();
+2345:     }).catch(function (e) {
+2346:       m.innerHTML = '<div class="msg err">تعذر إنشاء الملف: ' + esc(e.message || e) + "</div>";
+2347:       updateMake();
+2348:     });
+2349:   }
+2350: 
+2351:   // ===================================================================================
+2352:   // الأحداث
+2353:   // ===================================================================================
+2354: 
+2355:   var timer = null;
+2356:   function later() { clearTimeout(timer); timer = setTimeout(function () { renderMap(); analyze(); }, 250); }
+2357:   function renderAll() {
+2358:     if (S.mode === "statements") { renderStmt(); renderMap(); analyze(); return; }
+2359:     renderOpen(); renderTx(); renderMap(); analyze();
+2360:   }
+2361: 
+2362:   function newCode(sel) {
+2363:     var c = (prompt("رمز العملة بالإنجليزية (مثل GOLD أو SILVER أو USDT):") || "").trim().toUpperCase();
+2364:     if (!/^[A-Z0-9]{2,10}$/.test(c)) { if (c) alert("الرمز يجب أن يكون من 2 إلى 10 أحرف إنجليزية أو أرقام."); return null; }
+2365:     var name = (prompt("اسم العملة بالعربية:", c) || c).trim();
+2366:     S.currencyDefs[c] = { name: name || c, dec: 2 };
+2367:     return c;
+2368:   }
+2369: 
+2370:   document.addEventListener("change", function (e) {
+2371:     var t = e.target, d = t.dataset;
+2372:     if (t.id === "file" && t.files.length) { var fl = Array.prototype.slice.call(t.files); t.value = ""; readFiles(fl, false); return; }
+2373:     if (t.id === "moreFiles" && t.files.length) { var ml = Array.prototype.slice.call(t.files); t.value = ""; readFiles(ml, true); return; }
+2374:     if (t.id === "mergeCom") { S.st.mergeCom = t.checked; analyze(); return; }
+2375:     if (t.type === "radio" && t.name === "stwhat") { S.st.balancesOnly = t.value === "bal"; renderStmt(); analyze(); return; }
+2376:     if (t.id === "openOn") { S.open.enabled = t.checked; renderAll(); return; }
+2377:     if (t.id === "txOn") { S.tx.enabled = t.checked; renderAll(); return; }
+2378:     if (t.id === "mergeSimilar") { S.mergeSimilar = t.checked; later(); return; }
+2379:     if (t.id === "reverse") { S.reverse = t.checked; analyze(); return; }
+2380:     if (t.id === "confirmed" || t.id === "force") { updateMake(); return; }
+2381:     var val = t.value;
+2382:     if (t.tagName === "SELECT" && val === "__new") {
+2383:       var c = newCode(t);
+2384:       if (!c) { renderAll(); return; }
+2385:       val = c;
+2386:     }
+2387:     if (d.o) {
+2388:       if (d.o === "sheet") { S.open.sheet = val; guessOpen(true); }
+2389:       else if (d.o === "headerRow") { S.open.headerRow = Math.max(0, (+val || 1) - 1); guessOpen(false); }
+2390:       else S.open[d.o] = val;
+2391:       renderOpen(); later(); return;
+2392:     }
+2393:     if (d.oc) { S.open.cols[d.oc] = num(val); renderOpen(); later(); return; }
+2394:     if (d.wide !== undefined) {
+2395:       var col = +d.wide;
+2396:       S.open.wide = S.open.wide.filter(function (w) { return w.col !== col; });
+2397:       if (val) S.open.wide.push({ col: col, code: val });
+2398:       renderOpen(); later(); return;
+2399:     }
+2400:     if (d.t) {
+2401:       if (d.t === "headerRow") { S.tx.headerRow = Math.max(0, (+val || 1) - 1); guessTx(false); }
+2402:       else S.tx[d.t] = val;
+2403:       renderTx(); later(); return;
+2404:     }
+2405:     if (d.tb) { S.tx[d.tb] = t.checked; later(); return; }
+2406:     if (d.tc) { S.tx.cols[d.tc] = num(val); renderTx(); later(); return; }
+2407:     if (d.desc !== undefined) { S.tx.descCols[+d.desc] = num(val); later(); return; }
+2408:     if (d.sheet !== undefined) {
+2409:       var n = d.sheet;
+2410:       S.tx.sheets = S.sheets.filter(function (x) { return x === n ? t.checked : S.tx.sheets.indexOf(x) >= 0; });
+2411:       if (S.tx.sheets.length > 1 && S.tx.cols.office === undefined) S.tx.officeFrom = "sheet";
+2412:       if (S.tx.sheets.length === 1 && t.checked) guessTx(true);
+2413:       renderTx(); later(); return;
+2414:     }
+2415:     if (d.curmap !== undefined) { S.currencyMap[d.curmap] = val; renderMap(); analyze(); return; }
+2416:     if (d.typemap !== undefined) { S.typeMap[d.typemap] = val; analyze(); return; }
+2417:     if (d.curname) { S.currencyDefs[d.curname].name = val; later(); return; }
+2418:     if (d.curdec) { S.currencyDefs[d.curdec].dec = +val; later(); return; }
+2419:     if (d.rename !== undefined) { S.rename[d.rename] = val; later(); return; }
+2420:     if (t.type === "radio") {
+2421:       var map = { olayout: ["open", "layout"], ocurfrom: ["open", "currencyFrom"], opos: ["open", "positiveIs"], tofrom: ["tx", "officeFrom"], tlayout: ["tx", "layout"],
+2422:         tcurfrom: ["tx", "currencyFrom"], tpos: ["tx", "positiveIs"], tfeedir: ["tx", "feeDir"], tbalpos: ["tx", "balancePositiveIs"] };
+2423:       var m = map[t.name];
+2424:       if (m) { S[m[0]][m[1]] = val; if (m[0] === "open") renderOpen(); else renderTx(); later(); }
+2425:     }
+2426:   });
+2427:   ["pw1", "pw2"].forEach(function (id) { $(id).addEventListener("input", updateMake); });
+2428:   $("make").addEventListener("click", make);
+2429:   $("csv").addEventListener("click", function () {
+2430:     var r = S.result;
+2431:     if (!r) return;
+2432:     download(C.reportCsv(r.rep, r.model), "تقرير-المطابقة-" + stamp() + ".csv", "text/csv;charset=utf-8");
+2433:   });
+2434:   $("print").addEventListener("click", function () { window.print(); });
+2435:   var drop = $("drop");
+2436:   ["dragenter", "dragover"].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("over"); }); });

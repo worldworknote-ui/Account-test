@@ -1,0 +1,155 @@
+7049:         return new Check(n == 0, title, n == 0 ? "" : (label + ": " + n + " — أمثلة: " + bad));
+7050:     }
+7051: 
+7052:     // ===================================================================================
+7053:     // سجل التدقيق
+7054:     // ===================================================================================
+7055: 
+7056:     /** سطر تدقيق خارج العمليات المالية (إعدادات، تصدير…): فشله لا يوقف العمل. */
+7057:     public void audit(String ac, String en, long id, String r) {
+7058:         try {
+7059:             SQLiteDatabase d = getWritableDatabase();
+7060:             d.beginTransaction();
+7061:             try {
+7062:                 audit(d, ac, en, id, r);
+7063:                 d.setTransactionSuccessful();
+7064:             } finally {
+7065:                 d.endTransaction();
+7066:             }
+7067:         } catch (Exception ignored) {
+7068:             // لا يوقف العمل
+7069:         }
+7070:     }
+7071: 
+7072:     /**
+7073:      * 8.0: سطر تدقيق داخل معاملة العملية نفسها، متسلسل ببصمة السطر الذي قبله. إن تعذّرت كتابته تفشل العملية كلها
+7074:      * (لا حركة مالية بلا أثر في السجل). آخر بصمة تُحفظ في إعدادات الهاتف فيُكشف حذف أسطر من نهاية السجل.
+7075:      */
+7076:     /** 10.1: يُستدعى بعد كل عملية مسجّلة والمزامنة مفعّلة (الواجهة تجدول مزامنة قريبة). */
+7077:     public static volatile Runnable onLocalChange;
+7078: 
+7079:     private void audit(SQLiteDatabase d, String ac, String en, long id, String r) {
+7080:         Runnable hook = onLocalChange;
+7081:         if (hook != null && syncPrefix > 0 && !ac.startsWith("SYNC") && !ac.startsWith("LOGIN")) {
+7082:             try {
+7083:                 hook.run();
+7084:             } catch (Throwable ignored) {
+7085:                 // الواجهة فقط
+7086:             }
+7087:         }
+7088:         String reason = r == null ? "" : r;
+7089:         String user = currentUserName == null ? "" : currentUserName;
+7090:         long now = Clock.now();
+7091:         String prev = "";
+7092:         try (Cursor c = d.rawQuery("SELECT row_hash FROM audit_logs ORDER BY id DESC LIMIT 1", null)) {
+7093:             if (c.moveToFirst() && !c.isNull(0)) prev = c.getString(0);
+7094:         }
+7095:         String hash = AuditChain.hash(prev, ac, en, id, user, reason, now);
+7096:         ContentValues v = new ContentValues();
+7097:         v.put("action", ac);
+7098:         v.put("entity", en);
+7099:         v.put("entity_id", id);
+7100:         v.put("user_name", Crypto.enc(user));
+7101:         v.put("reason", Crypto.enc(reason));
+7102:         v.put("created_at", now);
+7103:         v.put("prev_hash", prev);
+7104:         v.put("row_hash", hash);
+7105:         d.insertOrThrow("audit_logs", null, v);
+7106:         d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('audit_head',?)", new Object[]{hash});
+7107:         // 10.16: نسخة في السجل المشترك (تنتقل بالمزامنة). جولة المزامنة نفسها لا تُنسخ، وإلا ولّدت كل جولة جولة بعدها.
+7108:         if (syncPrefix > 0 && !ac.equals("SYNC") && !ac.equals("SYNC_UPGRADE")) {
+7109:             ContentValues f = new ContentValues();
+7110:             f.put("uuid", java.util.UUID.randomUUID().toString());
+7111:             f.put("created_at", now);
+7112:             f.put("action", ac);
+7113:             f.put("entity", en);
+7114:             f.put("entity_id", id);
+7115:             f.put("user_name", Crypto.enc(user));
+7116:             f.put("reason", Crypto.enc(reason));
+7117:             f.put("dev", SyncStore.meta(d, "device"));
+7118:             f.put("dev_name", SyncStore.meta(d, "device_name"));
+7119:             d.insertOrThrow("audit_feed", null, f);
+7120:         }
+7121:     }
+7122: 
+7123:     /** كل أسطر السجل بنصوصها الأصلية لفحص التسلسل. */
+7124:     public List<AuditChain.Row> auditChainRows() { return auditChainRows(0); }
+7125: 
+7126:     /** 12.7: الأسطر بعد رقم معيّن (للفحص اليومي المتتابع). */
+7127:     public List<AuditChain.Row> auditChainRows(long afterId) {
+7128:         List<AuditChain.Row> a = new ArrayList<>();
+7129:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id,action,entity,entity_id,user_name,reason,created_at,prev_hash,row_hash FROM audit_logs WHERE id>" + afterId + " ORDER BY id", null)) {
+7130:             while (c.moveToNext()) {
+7131:                 AuditChain.Row r = new AuditChain.Row();
+7132:                 r.id = c.getLong(0);
+7133:                 r.action = c.getString(1);
+7134:                 r.entity = c.getString(2);
+7135:                 r.entityId = c.isNull(3) ? 0 : c.getLong(3);
+7136:                 r.user = Model.nz(Crypto.dec(c.getString(4)));
+7137:                 r.reason = Model.nz(Crypto.dec(c.getString(5)));
+7138:                 r.createdAt = c.isNull(6) ? 0 : c.getLong(6);
+7139:                 r.prev = c.getString(7);
+7140:                 r.hash = c.getString(8);
+7141:                 a.add(r);
+7142:             }
+7143:         }
+7144:         return a;
+7145:     }
+7146: 
+7147:     public AuditChain.Result verifyAudit() {
+7148:         return AuditChain.verify(auditChainRows(), setting("audit_head", ""));
+7149:     }
+7150: 
+7151:     static final String AUDIT_OK = "sync_audit_ok";
+7152: 
+7153:     /**
+7154:      * 12.7: الفحص التلقائي اليومي: من آخر نقطة سليمة فقط (الفحص الكامل من «الفحص» يقرأ السجل كله).
+7155:      * النقطة (رقم السطر وبصمته) إعداد خاص بهذا الجهاز؛ إن لم يعد سطرها بالبصمة نفسها يُفحص السجل كله.
+7156:      */
+7157:     public AuditChain.Result verifyAuditSince() {
+7158:         String cp = setting(AUDIT_OK, "");
+7159:         long after = 0;
+7160:         String prev = null;
+7161:         int idx = cp.indexOf('|');
+7162:         if (idx > 0) {
+7163:             try {
+7164:                 long id = Long.parseLong(cp.substring(0, idx));
+7165:                 String h = cp.substring(idx + 1);
+7166:                 try (Cursor c = getReadableDatabase().rawQuery("SELECT row_hash FROM audit_logs WHERE id=" + id, null)) {
+7167:                     if (c.moveToFirst() && h.equals(c.getString(0))) {
+7168:                         after = id;
+7169:                         prev = h;
+7170:                     }
+7171:                 }
+7172:             } catch (Exception ignored) {
+7173:                 // نقطة تالفة: فحص كامل
+7174:             }
+7175:         }
+7176:         List<AuditChain.Row> rows = auditChainRows(after);
+7177:         AuditChain.Result r = AuditChain.verify(rows, setting("audit_head", ""), prev);
+7178:         if (r.intact()) {
+7179:             AuditChain.Row lastRow = rows.isEmpty() ? null : rows.get(rows.size() - 1);
+7180:             if (lastRow != null && lastRow.hash != null && !lastRow.hash.isEmpty()) setSettingQuiet(AUDIT_OK, lastRow.id + "|" + lastRow.hash);
+7181:         }
+7182:         return r;
+7183:     }
+7184: 
+7185:     public void checkpoint() {
+7186:         try (Cursor c = getWritableDatabase().rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null)) {
+7187:             c.moveToFirst();
+7188:         } catch (Exception ignored) {
+7189:             // ليس حرجًا
+7190:         }
+7191:     }
+7192: 
+7193:     public static class Opening {
+7194:         public String code, type;
+7195:         public long amount;
+7196: 
+7197:         public Opening(String c, String t, long a) {
+7198:             code = c;
+7199:             type = t;
+7200:             amount = a;
+7201:         }
+7202:     }
+7203: }

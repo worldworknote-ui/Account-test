@@ -1,0 +1,18 @@
+249:   files.push(["MB", rB, "pass-B", [["كاش شام", "USD", 90000], ["الأمين", "USD", -10000]]]);
+250: }
+251: 
+252: // ------------------------------------------------------------------------------------------------ ملفات ‎.sba
+253: (async () => {
+254:   console.log("== backup files for the app (MigrationTest)");
+255:   const expect = {};
+256:   for (const [name, r, pw, bal] of files) {
+257:     const bytes = await C.makeBackup(r.T, r.tc, pw, webcrypto.subtle, rand);
+258:     fs.writeFileSync(path.join(OUT, name + ".sba"), bytes);
+259:     expect[name] = { password: pw, offices: r.T.offices.length, tx: r.T.tx.length, openings: r.T.opening_balances.length,
+260:       entries: r.T.journal_entries.length, lines: r.T.journal_lines.length, balances: bal };
+261:     check(name + ".sba written", Buffer.from(bytes.slice(0, 8)).toString() === "SMARTBK5");
+262:   }
+263:   fs.writeFileSync(path.join(OUT, "expect.json"), JSON.stringify(expect, null, 1));
+264:   console.log(fails === 0 ? "ALL SMART IMPORT TESTS PASSED" : fails + " FAILED");
+265:   process.exit(fails === 0 ? 0 : 1);
+266: })();

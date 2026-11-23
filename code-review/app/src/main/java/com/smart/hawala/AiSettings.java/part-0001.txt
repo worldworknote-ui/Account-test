@@ -1,0 +1,136 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.graphics.Color;
+5: import android.text.InputType;
+6: import android.view.View;
+7: import android.widget.CheckBox;
+8: import android.widget.EditText;
+9: import android.widget.LinearLayout;
+10: import android.widget.TextView;
+11: import java.util.ArrayList;
+12: import java.util.List;
+13: 
+14: /**
+15:  * إعدادات «القراءة الذكية السحابية المدفوعة الخاصة» (12.7؛ كانت «الفهم بالذكاء الاصطناعي») — اختيارية ومطفأة افتراضيًا.
+16:  * أي خدمة ذكاء اصطناعي حالية أو مستقبلية: Claude بصيغته، وغيرها بصيغة OpenAI (OpenAI وGemini قالبان جاهزان، و«مخصّص» لأي خدمة).
+17:  * كل الإعدادات خاصة بهذا الهاتف ولا تُنقل مع النسخة الاحتياطية؛ المفتاح محفوظ مشفّرًا بمفتاح الهاتف.
+18:  */
+19: final class AiSettings {
+20:     private AiSettings() {}
+21: 
+22:     /** 8.0: ميزة في النسخة الكاملة؛ المحرك المدمج لفهم الرسائل مجاني دائمًا. */
+23:     static boolean on(Db db) { return License.current.ai() && "1".equals(db.setting("ai_on", "0")); }
+24: 
+25:     static boolean auto(Db db) { return on(db) && "1".equals(db.setting("ai_auto", "0")); }
+26: 
+27:     static AiExtract.Config config(Db db) { return AiPrefs.config(db); }
+28: 
+29:     static String providerName(AiExtract.Config c) { return AiExtract.PROVIDER_NAMES[AiExtract.providerIndex(c.provider)]; }
+30: 
+31:     static void screen(final MainActivity a, final Runnable back) {
+32:         if (!a.require(Auth.Perm.SETTINGS)) return;
+33:         a.here(() -> screen(a, back));
+34:         a.tabbedScreen(AiExtract.NAME, back, "more");
+35:         if (!License.current.ai()) {
+36:             a.notice(R.drawable.ic_sparkle, AiExtract.NAME + " من ميزات النسخة المدفوعة. المحرك المدمج في التطبيق يفهم معظم رسائل واتساب وحده دون إنترنت، وهو مجاني ويعمل دائمًا.",
+37:                     false, "الترخيص", v -> a.licenseScreen.show());
+38:         }
+39:         final AiExtract.Config cur = config(a.db);
+40:         a.hint(AiExtract.EXPLAIN + " اختيارية ومطفأة افتراضيًا. عند تفعيلها يظهر زر «" + AiExtract.BUTTON + "» في بطاقة المعلومات المستخرجة، "
+41:                 + "فتُقرأ الرسالة بأي لغة وأي صيغة للمبلغ والاسم. النتيجة تظهر في البطاقة نفسها ولا تُكتب في الحقول إلا بزر «إضافة المعلومات للحقول».");
+42:         LinearLayout info = a.card();
+43:         info.setBackground(a.round(Color.rgb(255, 248, 230), Color.rgb(232, 205, 140), 12));
+44:         info.addView(a.text("ما الذي يُرسل؟", 15, a.dark, true));
+45:         info.addView(a.text("نص رسالة الحوالة فقط ورموز عملات المكتب، إلى الخدمة التي تختارها وبمفتاحك أنت. لا تُرسل أرصدة ولا بيانات مكاتب ولا حركات.", 13, a.dark, false));
+46:         info.addView(a.text("التكلفة", 15, a.dark, true));
+47:         info.addView(a.text("تدفعها للخدمة التي تختارها مباشرة، حسب أسعارها.", 13, a.dark, false));
+48:         info.addView(a.text("الخدمات", 15, a.dark, true));
+49:         info.addView(a.text("تعمل مع أي خدمة ذكاء اصطناعي حالية أو مستقبلية: Claude، أو OpenAI، أو Gemini، أو «مخصّص» لأي خدمة تقبل صيغة OpenAI (عنوانها ومفتاحها واسم نموذجها). "
+50:                 + "إن لم تتوفر خدمة في بلدك فاختر غيرها.", 13, a.dark, false));
+51: 
+52:         final CheckBox on = new CheckBox(a);
+53:         on.setText("تفعيل زر «" + AiExtract.BUTTON + "»");
+54:         on.setChecked(on(a.db));
+55:         a.body.addView(on);
+56:         final CheckBox auto = new CheckBox(a);
+57:         auto.setText("تشغيله تلقائيًا بعد لصق رسالة لم يستخرج المحرك المدمج كل معلوماتها");
+58:         auto.setChecked("1".equals(a.db.setting("ai_auto", "0")));
+59:         a.body.addView(auto);
+60: 
+61:         a.add(a.label("الخدمة"));
+62:         final Ui.Seg prov = a.new Seg(AiExtract.PROVIDER_NAMES, null, AiExtract.providerIndex(cur.provider), false);
+63:         a.body.addView(prov.view, a.lp(-1, -2, 2));
+64: 
+65:         a.add(a.label("مفتاح الخدمة (API key)"));
+66:         final EditText key = a.field(cur.key.isEmpty() ? "الصق المفتاح هنا" : "مفتاح محفوظ ✓ — الصق مفتاحًا جديدًا لتغييره");
+67:         Ui.secret(key, false);
+68:         a.body.addView(key, a.lp(-1, 52, 4));
+69: 
+70:         final TextView modelLabel = a.add(a.label("النموذج"));
+71:         final EditText model = a.field("");
+72:         model.setText(a.db.setting("ai_model", ""));
+73:         a.body.addView(model, a.lp(-1, 52, 4));
+74:         final TextView urlLabel = a.add(a.label("عنوان الخدمة"));
+75:         final EditText url = a.field("https://api.openai.com/v1");
+76:         url.setText(a.db.setting("ai_url", ""));
+77:         url.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+78:         a.body.addView(url, a.lp(-1, 52, 4));
+79:         final TextView provHint = a.hint("");
+80:         final Runnable refresh = () -> {
+81:             String p = AiExtract.PROVIDERS[Math.max(0, prov.selected)];
+82:             boolean claude = AiExtract.CLAUDE.equals(p);
+83:             model.setHint(claude ? AiExtract.CLAUDE_MODEL + " (افتراضي)" : "اسم النموذج كما في موقع الخدمة");
+84:             boolean custom = AiExtract.CUSTOM.equals(p);
+85:             urlLabel.setVisibility(claude ? View.GONE : View.VISIBLE);
+86:             url.setVisibility(claude ? View.GONE : View.VISIBLE);
+87:             url.setHint(AiExtract.GEMINI.equals(p) ? AiExtract.GEMINI_URL + " (افتراضي)" : custom ? "https://…/v1 (مطلوب)" : AiExtract.OPENAI_URL + " (افتراضي)");
+88:             provHint.setText(claude
+89:                     ? "مفتاح Claude: أنشئ حسابًا في platform.claude.com واشحن رصيدًا، ثم أنشئ مفتاح API (يبدأ بـ sk-ant-)."
+90:                     : AiExtract.GEMINI.equals(p) ? "مفتاح Gemini من Google AI Studio، واسم النموذج كما في موقعها. العنوان الافتراضي جاهز."
+91:                     : custom ? "أي خدمة حالية أو مستقبلية تقبل صيغة OpenAI (chat/completions): اكتب عنوانها ومفتاحها واسم النموذج كما في موقعها."
+92:                     : "مفتاح OpenAI من موقعها، واسم النموذج كما في موقعها. العنوان الافتراضي جاهز.");
+93:         };
+94:         prov.listener = i -> refresh.run();
+95:         refresh.run();
+96: 
+97:         a.button("حفظ الإعدادات", a.primary, v -> {
+98:             save(a, on.isChecked(), auto.isChecked(), AiExtract.PROVIDERS[Math.max(0, prov.selected)], key.getText().toString(), model.getText().toString(), url.getText().toString());
+99:             a.toast(on.isChecked() ? (config(a.db).problem() == null ? "حُفظت. الزر مفعّل في «تسجيل حركة»." : config(a.db).problem()) : "حُفظت. الميزة متوقفة.");
+100:             screen(a, back);
+101:         });
+102:         a.button("اختبار الاتصال", a.accent, v -> {
+103:             save(a, on.isChecked(), auto.isChecked(), AiExtract.PROVIDERS[Math.max(0, prov.selected)], key.getText().toString(), model.getText().toString(), url.getText().toString());
+104:             test(a);
+105:         });
+106:         if (!cur.key.isEmpty()) {
+107:             a.button("حذف المفتاح من هذا الهاتف", a.red, v -> new AlertDialog.Builder(a).setTitle("حذف المفتاح")
+108:                     .setMessage("ستتوقف «" + AiExtract.NAME + "» حتى تضيف مفتاحًا جديدًا.")
+109:                     .setPositiveButton("حذف", (d, w) -> {
+110:                         a.db.deleteSetting("ai_key");
+111:                         a.db.setSetting("ai_on", "0");
+112:                         screen(a, back);
+113:                     }).setNegativeButton("إلغاء", null).show());
+114:         }
+115:         a.hint("المفتاح والإعدادات خاصة بهذا الهاتف ومحفوظة مشفّرة، ولا تُنقل مع النسخة الاحتياطية.");
+116:     }
+117: 
+118:     private static void save(MainActivity a, boolean on, boolean auto, String provider, String key, String model, String url) {
+119:         a.db.setSetting("ai_on", on ? "1" : "0");
+120:         a.db.setSetting("ai_auto", auto ? "1" : "0");
+121:         a.db.setSetting("ai_provider", provider);
+122:         String k = key.trim();
+123:         if (!k.isEmpty()) a.db.setSettingQuiet("ai_key", Crypto.enc(k));   // لا يُكتب المفتاح في سجل العمليات
+124:         a.db.setSetting("ai_model", model.trim());
+125:         a.db.setSetting("ai_url", url.trim());
+126:     }
+127: 
+128:     private static void test(final MainActivity a) {
+129:         final AiExtract.Config c = config(a.db);
+130:         String p = c.problem();
+131:         if (p != null) {
+132:             a.toast(p);
+133:             return;
+134:         }
+135:         final List<MessageParser.Cur> curs = new ArrayList<>();
+136:         for (Model.Currency x : a.db.currencies(false)) curs.add(new MessageParser.Cur(x.code, x.name));

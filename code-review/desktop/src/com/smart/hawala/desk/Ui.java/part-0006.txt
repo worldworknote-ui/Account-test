@@ -1,0 +1,206 @@
+968:         box.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(primary, 2), new EmptyBorder(8, 8, 8, 8)));
+969:         box.add(q, BorderLayout.NORTH);
+970:         JScrollPane sp = new JScrollPane(list);
+971:         sp.setBorder(BorderFactory.createLineBorder(line));
+972:         int rows = Math.min(12, Math.max(4, n));
+973:         int wd = Math.max(340, c.getWidth());
+974:         sp.setPreferredSize(new Dimension(wd, rows * 32 + 4));
+975:         box.add(sp, BorderLayout.CENTER);
+976:         box.add(label(n + " خيارًا — اكتب جزءًا من الاسم، ↑ ↓ ثم Enter", 11.5f, muted, false), BorderLayout.SOUTH);
+977:         box.applyComponentOrientation(RTL);
+978:         d.setContentPane(box);
+979:         d.pack();
+980:         try {
+981:             Point at = c.getLocationOnScreen();
+982:             Rectangle scr = c.getGraphicsConfiguration().getBounds();
+983:             int x = Math.max(scr.x + 4, Math.min(at.x + c.getWidth() - d.getWidth(), scr.x + scr.width - d.getWidth() - 4));
+984:             int y = at.y + c.getHeight() + 2;
+985:             if (y + d.getHeight() > scr.y + scr.height - 40) y = Math.max(scr.y + 4, at.y - d.getHeight() - 2);
+986:             d.setLocation(x, y);
+987:         } catch (Exception e) {
+988:             d.setLocationRelativeTo(c);
+989:         }
+990:         q.setText(initial == null ? "" : initial);
+991:         fill.run();
+992:         d.setVisible(true);
+993:         SwingUtilities.invokeLater(() -> {
+994:             q.requestFocusInWindow();
+995:             q.setCaretPosition(q.getText().length());
+996:         });
+997:     }
+998: 
+999:     static <T> JComboBox<T> combo(T[] items) {
+1000:         JComboBox<T> c = pickCombo();
+1001:         c.setModel(new DefaultComboBoxModel<>(items));
+1002:         c.setFont(font(14, false));
+1003:         c.setComponentOrientation(RTL);
+1004:         c.setAlignmentX(Component.RIGHT_ALIGNMENT);
+1005:         c.setMaximumSize(new Dimension(Integer.MAX_VALUE, 40));
+1006:         if (c.getRenderer() instanceof JLabel) ((JLabel) c.getRenderer()).setHorizontalAlignment(SwingConstants.RIGHT);
+1007:         return c;
+1008:     }
+1009: 
+1010:     static JCheckBox check(String text, boolean on) {
+1011:         JCheckBox c = new JCheckBox(text, on);
+1012:         c.setFont(font(13.5f, false));
+1013:         c.setOpaque(false);
+1014:         c.setComponentOrientation(RTL);
+1015:         c.setHorizontalAlignment(SwingConstants.RIGHT);
+1016:         c.setAlignmentX(Component.RIGHT_ALIGNMENT);
+1017:         return c;
+1018:     }
+1019: 
+1020:     /** عنوان صغير فوق حقل. */
+1021:     static JComponent labeled(String label, JComponent field) {
+1022:         JPanel p = column();
+1023:         p.add(label(label, 12.5f, muted, true));
+1024:         p.add(gap(5));
+1025:         p.add(field);
+1026:         return p;
+1027:     }
+1028: 
+1029:     static final class RoundBorder implements Border {
+1030:         final Color c;
+1031:         final int r;
+1032: 
+1033:         RoundBorder(Color c, int r) {
+1034:             this.c = c;
+1035:             this.r = r;
+1036:         }
+1037: 
+1038:         @Override public void paintBorder(Component comp, Graphics g, int x, int y, int w, int h) {
+1039:             Graphics2D g2 = (Graphics2D) g.create();
+1040:             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+1041:             g2.setColor(comp.isFocusOwner() ? primary : c);
+1042:             g2.draw(new RoundRectangle2D.Float(x + 0.5f, y + 0.5f, w - 1, h - 1, r, r));
+1043:             g2.dispose();
+1044:         }
+1045: 
+1046:         @Override public Insets getBorderInsets(Component c) { return new Insets(2, 2, 2, 2); }
+1047: 
+1048:         @Override public boolean isBorderOpaque() { return false; }
+1049:     }
+1050: 
+1051:     // ===================================================================================
+1052:     // الجداول
+1053:     // ===================================================================================
+1054: 
+1055:     static JTable table(javax.swing.table.TableModel m) {
+1056:         JTable t = new JTable(m) {
+1057:             @Override public Component prepareRenderer(TableCellRenderer r, int row, int col) {
+1058:                 Component c = super.prepareRenderer(r, row, col);
+1059:                 if (!isRowSelected(row)) c.setBackground(row % 2 == 0 ? surface : stripe);
+1060:                 return c;
+1061:             }
+1062:         };
+1063:         t.setFont(font(13.5f, false));
+1064:         t.setRowHeight(34);
+1065:         t.setShowVerticalLines(false);
+1066:         t.setShowHorizontalLines(true);
+1067:         t.setIntercellSpacing(new Dimension(0, 1));
+1068:         t.setGridColor(dark ? line : new Color(238, 242, 240));
+1069:         t.setSelectionBackground(mix(surface, primary, dark ? 0.32f : 0.14f));
+1070:         t.setSelectionForeground(ink);
+1071:         t.setFillsViewportHeight(true);
+1072:         t.setAutoCreateRowSorter(true);
+1073:         t.setComponentOrientation(RTL);
+1074:         JTableHeader h = t.getTableHeader();
+1075:         h.setFont(font(12.5f, true));
+1076:         h.setBackground(tableHead);
+1077:         h.setForeground(muted);
+1078:         h.setReorderingAllowed(false);
+1079:         ((DefaultTableCellRenderer) h.getDefaultRenderer()).setHorizontalAlignment(SwingConstants.CENTER);
+1080:         DefaultTableCellRenderer right = new DefaultTableCellRenderer();
+1081:         right.setHorizontalAlignment(SwingConstants.RIGHT);
+1082:         right.setBorder(new EmptyBorder(0, 8, 0, 8));
+1083:         t.setDefaultRenderer(Object.class, new Cell(SwingConstants.RIGHT));
+1084:         t.setDefaultRenderer(String.class, new Cell(SwingConstants.RIGHT));
+1085:         t.setDefaultRenderer(Long.class, new Cell(SwingConstants.CENTER));
+1086:         t.setDefaultRenderer(Integer.class, new Cell(SwingConstants.CENTER));
+1087:         return t;
+1088:     }
+1089: 
+1090:     /** خلية: نص من اليمين، والأرقام في الوسط؛ «علينا» بالأحمر و«لنا» بالأخضر. */
+1091:     static class Cell extends DefaultTableCellRenderer {
+1092:         final int align;
+1093: 
+1094:         Cell(int align) {
+1095:             this.align = align;
+1096:             setBorder(new EmptyBorder(0, 8, 0, 8));
+1097:         }
+1098: 
+1099:         @Override public Component getTableCellRendererComponent(JTable t, Object v, boolean sel, boolean focus, int row, int col) {
+1100:             Component c = super.getTableCellRendererComponent(t, v, sel, false, row, col);
+1101:             setBorder(new EmptyBorder(0, 8, 0, 8));
+1102:             setHorizontalAlignment(v instanceof Money || v instanceof Number ? SwingConstants.CENTER : align);
+1103:             setForeground(ink);
+1104:             setFont(t.getFont());
+1105:             if (v instanceof Money) {
+1106:                 Money m = (Money) v;
+1107:                 if (m.balance && m.v < 0) setForeground(red);
+1108:                 else if (m.balance && m.v > 0) setForeground(green);
+1109:                 setFont(font(13.5f, true));
+1110:             }
+1111:             return c;
+1112:         }
+1113:     }
+1114: 
+1115:     /** مبلغ في جدول: يُعرض منسّقًا ويُرتَّب رقميًا. */
+1116:     static final class Money implements Comparable<Money> {
+1117:         final long v;
+1118:         final int dec;
+1119:         final boolean balance;
+1120: 
+1121:         Money(long v, int dec, boolean balance) {
+1122:             this.v = v;
+1123:             this.dec = dec;
+1124:             this.balance = balance;
+1125:         }
+1126: 
+1127:         @Override public String toString() { return balance ? Model.bal(v, dec) : v == 0 ? "" : Model.fmt(v, dec); }
+1128: 
+1129:         @Override public int compareTo(Money o) { return Long.compare(v, o.v); }
+1130:     }
+1131: 
+1132:     static void widths(JTable t, int... w) {
+1133:         for (int i = 0; i < w.length && i < t.getColumnCount(); i++) {
+1134:             TableColumn c = t.getColumnModel().getColumn(i);
+1135:             c.setPreferredWidth(w[i]);
+1136:         }
+1137:     }
+1138: 
+1139:     /** 10.18: جدول داخل صفحة تتمرر: عجلة الفأرة فوقه تمرّر الصفحة (لا تتوقف عنده). */
+1140:     static void passWheel(final JScrollPane sp) {
+1141:         sp.setWheelScrollingEnabled(false);
+1142:         sp.addMouseWheelListener(e -> {
+1143:             Container p = sp.getParent();
+1144:             while (p != null && !(p instanceof JScrollPane)) p = p.getParent();
+1145:             if (p != null) p.dispatchEvent(SwingUtilities.convertMouseEvent(sp, e, p));
+1146:         });
+1147:     }
+1148: 
+1149:     static JScrollPane tableBox(JTable t) {
+1150:         JScrollPane sp = new JScrollPane(t);
+1151:         sp.setBorder(new RoundBorder(line, 12));
+1152:         sp.getViewport().setBackground(surface);
+1153:         sp.setComponentOrientation(RTL);
+1154:         sp.setAlignmentX(Component.RIGHT_ALIGNMENT);
+1155:         return sp;
+1156:     }
+1157: 
+1158:     // ===================================================================================
+1159:     // الحوارات
+1160:     // ===================================================================================
+1161: 
+1162:     static Window win(Component c) {
+1163:         if (c == null) return App.frame;
+1164:         return c instanceof Window ? (Window) c : SwingUtilities.getWindowAncestor(c);
+1165:     }
+1166: 
+1167:     static void info(Component parent, String title, String msg) { message(parent, title, msg, JOptionPane.INFORMATION_MESSAGE); }
+1168: 
+1169:     static void message(Component parent, String title, String msg, int type) {
+1170:         JOptionPane p = new JOptionPane(para(msg, 14, ink, 440), type, JOptionPane.DEFAULT_OPTION, null, new Object[]{"حسنًا"});
+1171:         show(parent, p, title);
+1172:     }
+1173: 

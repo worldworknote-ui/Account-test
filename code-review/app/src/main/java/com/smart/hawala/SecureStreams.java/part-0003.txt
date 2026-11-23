@@ -1,0 +1,129 @@
+361:                     byte[] rsalt = new byte[rsl];
+362:                     in.readFully(rsalt);
+363:                     int riter = in.readInt();
+364:                     if (riter < MIN_ITERATIONS || riter > MAX_ITERATIONS) throw new CorruptBackupException("معلمات حماية النسخة غير صالحة");
+365:                     d.writeInt(rsl);
+366:                     d.write(rsalt);
+367:                     d.writeInt(riter);
+368:                     d.flush();
+369:                     byte[] base = h.toByteArray();
+370:                     int wpl = in.readInt();
+371:                     if (wpl != 32 + TAG_BYTES) throw new CorruptBackupException("بنية النسخة غير صالحة");
+372:                     byte[] wp = new byte[wpl];
+373:                     in.readFully(wp);
+374:                     int wrl = in.readInt();
+375:                     if (wrl != 32 + TAG_BYTES) throw new CorruptBackupException("بنية النسخة غير صالحة");
+376:                     byte[] wr = new byte[wrl];
+377:                     in.readFully(wr);
+378:                     d.writeInt(wpl);
+379:                     d.write(wp);
+380:                     d.writeInt(wrl);
+381:                     d.write(wr);
+382:                     byte[] dk = null;
+383:                     try {
+384:                         dk = gcm(Cipher.DECRYPT_MODE, deriveKey(password, salt, iterations), iv(prefix, 0xFFFFFFFE), base, wp, 0, wp.length);
+385:                     } catch (AEADBadTagException bad) {
+386:                         if (looksLikeCode(password)) {
+387:                             try {
+388:                                 dk = gcm(Cipher.DECRYPT_MODE, RecoveryKey.derive(new String(password), rsalt, riter).key, iv(prefix, 0xFFFFFFFD), base, wr, 0, wr.length);
+389:                             } catch (AEADBadTagException bad2) {
+390:                                 dk = null;
+391:                             } catch (GeneralSecurityException e2) {
+392:                                 throw new CorruptBackupException("تعذر فك النسخة: " + e2.getMessage(), e2);
+393:                             }
+394:                         }
+395:                     } catch (GeneralSecurityException e) {
+396:                         throw new CorruptBackupException("تعذر فك النسخة: " + e.getMessage(), e);
+397:                     }
+398:                     if (dk == null) throw new WrongPasswordException(true);
+399:                     opened = new SecretKeySpec(dk, "AES");
+400:                     Arrays.fill(dk, (byte) 0);
+401:                 }
+402:                 d.flush();
+403:                 header = h.toByteArray();
+404: 
+405:                 int vlen = in.readInt();
+406:                 if (vlen != 16 + TAG_BYTES) throw new CorruptBackupException("بنية النسخة غير صالحة");
+407:                 byte[] v = new byte[vlen];
+408:                 in.readFully(v);
+409:                 try {
+410:                     key = opened != null ? opened : deriveKey(password, salt, iterations);
+411:                 } catch (GeneralSecurityException e) {
+412:                     throw new IOException("تعذر تجهيز فك التشفير على هذا الهاتف: " + e.getMessage(), e);
+413:                 }
+414:                 byte[] check;
+415:                 try {
+416:                     check = gcm(Cipher.DECRYPT_MODE, key, iv(prefix, 0xFFFFFFFF), concat(header, VERIFY_AAD), v, 0, v.length);
+417:                 } catch (AEADBadTagException bad) {
+418:                     throw new WrongPasswordException();
+419:                 } catch (GeneralSecurityException e) {
+420:                     throw new CorruptBackupException("تعذر فك النسخة: " + e.getMessage(), e);
+421:                 }
+422:                 for (byte b : check) if (b != 0) throw new WrongPasswordException();
+423:             } catch (EOFException eof) {
+424:                 throw new CorruptBackupException("الملف ناقص أو فارغ، وليس نسخة احتياطية مكتملة");
+425:             }
+426:         }
+427: 
+428:         private boolean next() throws IOException {
+429:             if (finished) return false;
+430:             int flag = in.read();
+431:             if (flag == -1) throw new CorruptBackupException("الملف ناقص: انتهى قبل نهاية النسخة (ربما لم يكتمل النقل أو الحفظ)");
+432:             if (flag != 0 && flag != 1) throw new CorruptBackupException("الملف تالف (علامة غير صالحة في الجزء " + (index + 1) + ")");
+433:             int len;
+434:             byte[] ct;
+435:             try {
+436:                 len = in.readInt();
+437:                 if (len < TAG_BYTES || len > chunkSize + TAG_BYTES) throw new CorruptBackupException("الملف تالف (طول غير صالح في الجزء " + (index + 1) + ")");
+438:                 ct = new byte[len];
+439:                 in.readFully(ct);
+440:             } catch (EOFException eof) {
+441:                 throw new CorruptBackupException("الملف ناقص: انتهى في منتصف الجزء " + (index + 1));
+442:             }
+443:             try {
+444:                 buf = gcm(Cipher.DECRYPT_MODE, key, iv(prefix, index), chunkAad(header, index, flag), ct, 0, ct.length);
+445:             } catch (AEADBadTagException bad) {
+446:                 throw new CorruptBackupException("الملف تالف أو تم تعديله بعد إنشائه (الجزء " + (index + 1) + ")");
+447:             } catch (GeneralSecurityException e) {
+448:                 throw new CorruptBackupException("تعذر فك الجزء " + (index + 1) + ": " + e.getMessage(), e);
+449:             }
+450:             pos = 0;
+451:             index++;
+452:             if (flag == 1) {
+453:                 finished = true;
+454:                 if (in.read() != -1) throw new CorruptBackupException("توجد بيانات زائدة بعد نهاية النسخة؛ الملف معدّل");
+455:             }
+456:             return true;
+457:         }
+458: 
+459:         @Override public int read() throws IOException {
+460:             while (pos >= buf.length) {
+461:                 if (!next()) return -1;
+462:             }
+463:             return buf[pos++] & 0xFF;
+464:         }
+465: 
+466:         @Override public int read(byte[] b, int off, int len) throws IOException {
+467:             if (len == 0) return 0;
+468:             while (pos >= buf.length) {
+469:                 if (!next()) return -1;
+470:             }
+471:             int n = Math.min(len, buf.length - pos);
+472:             System.arraycopy(buf, pos, b, off, n);
+473:             pos += n;
+474:             return n;
+475:         }
+476: 
+477:         /** هل وصلت القراءة إلى الجزء الأخير الموقّع؟ */
+478:         public boolean isComplete() { return finished && pos >= buf.length; }
+479: 
+480:         @Override public void close() throws IOException { in.close(); }
+481:     }
+482: 
+483:     private static void writeInt(OutputStream o, int v) throws IOException {
+484:         o.write(v >>> 24);
+485:         o.write(v >>> 16);
+486:         o.write(v >>> 8);
+487:         o.write(v);
+488:     }
+489: }

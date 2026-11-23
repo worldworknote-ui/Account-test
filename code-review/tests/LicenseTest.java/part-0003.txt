@@ -1,0 +1,122 @@
+234:         check(xf.get("docProps/core.xml").contains("<dc:description>") && !xf.get("docProps/core.xml").contains("keywords"), "وصف الملف يذكر النسخة المجانية");
+235:         check(xf.get("xl/worksheets/sheet1.xml").contains("<v>1500.00</v>"), "المبلغ نفسه لم يتغير");
+236:         Report r2 = new Report();
+237:         r2.title = "كشف";
+238:         r2.section("USD", "USD").col("المبلغ", 1, Report.MONEY).row(Report.NORMAL, new Report.Money(150000, 2));
+239:         r2.stamp(false, "SA-2026-0001");
+240:         Map<String, String> xp = xlsx(r2);
+241:         check(!xp.get("xl/worksheets/sheet1.xml").contains(Report.FREE_MARK) && !xp.get("xl/worksheets/sheet1.xml").contains("oddFooter"), "الكاملة: بلا علامة");
+242:         check(xp.get("docProps/core.xml").contains("<cp:keywords>SA-SA-2026-0001</cp:keywords>"), "الكاملة: رقم الرخصة في خصائص الملف");
+243:         check(wellFormed(xf) && wellFormed(xp), "XML سليم في الحالتين");
+244: 
+245:         if (args.length > 0) {
+246:             nodeTokens(Paths.get(args[0], "node-tokens.json"));
+247:             for (String k : new String[]{"k1", "k2"}) {
+248:                 Path rp = Paths.get(args[0], "real-" + k + ".json");
+249:                 if (!Files.exists(rp)) continue;
+250:                 // رمز وقّعته أداة البائع بالمفتاح الحقيقي (الملف خارج المشروع): يقبله التحقق المضمّن في التطبيق كما هو
+251:                 String j = new String(Files.readAllBytes(rp), StandardCharsets.UTF_8);
+252:                 byte[] dev = Base64.getDecoder().decode(field(j, "devicePub"));
+253:                 LicenseToken.Grant rg = LicenseToken.verify(field(j, "token"), dev);
+254:                 check(rg != null && ("SA-TEST-" + k).equals(rg.lid()), "مفتاح البائع الحقيقي " + k + ": الرمز يُقبل بالمفاتيح المضمّنة");
+255:             }
+256:         }
+257: 
+258:         System.out.println(fails == 0 ? "ALL " + passes + " PASSED" : fails + " FAILED of " + (passes + fails));
+259:         if (fails > 0) System.exit(1);
+260:     }
+261: 
+262:     static boolean okAll = true;
+263: 
+264:     static void check1(boolean c) { okAll &= c; }
+265: 
+266:     /** رموز وقّعتها أداة البائع (WebCrypto في Node) بمفتاح اختبار: يجب أن يقبلها التطبيق كما هي. */
+267:     static void nodeTokens(Path p) throws Exception {
+268:         if (!Files.exists(p)) {
+269:             System.out.println("  (لا يوجد " + p + ")");
+270:             return;
+271:         }
+272:         System.out.println("== رموز من أداة البائع (Node WebCrypto)");
+273:         String j = new String(Files.readAllBytes(p), StandardCharsets.UTF_8);
+274:         Map<String, String> tr = new HashMap<>();
+275:         tr.put(field(j, "kid"), field(j, "vendorPub"));
+276:         byte[] dev = Base64.getDecoder().decode(field(j, "devicePub"));
+277:         Matcher m = Pattern.compile("\\{\"name\":\"([^\"]*)\",\"token\":\"([^\"]*)\",\"ok\":(true|false)\\}").matcher(j);
+278:         int n = 0;
+279:         while (m.find()) {
+280:             n++;
+281:             boolean got = LicenseToken.verify(m.group(2).replace("\\n", "\n"), dev, tr) != null;   // \n في JSON = سطر جديد حقيقي
+282:             check(got == Boolean.parseBoolean(m.group(3)), "Node: " + m.group(1) + " → " + (got ? "مقبول" : "مرفوض"));
+283:         }
+284:         check(n >= 3, "قُرئت " + n + " رموز من أداة البائع");
+285:     }
+286: 
+287:     static String field(String j, String k) {
+288:         Matcher m = Pattern.compile("\"" + k + "\":\"([^\"]*)\"").matcher(j);
+289:         return m.find() ? m.group(1) : "";
+290:     }
+291: 
+292:     static Map<String, String> xlsx(Report r) throws Exception {
+293:         ByteArrayOutputStream bo = new ByteArrayOutputStream();
+294:         XlsxWriter.write(r, bo, null, TimeZone.getTimeZone("UTC"));
+295:         Map<String, String> out = new HashMap<>();
+296:         try (ZipInputStream z = new ZipInputStream(new ByteArrayInputStream(bo.toByteArray()))) {
+297:             ZipEntry e;
+298:             while ((e = z.getNextEntry()) != null) out.put(e.getName(), new String(z.readAllBytes(), StandardCharsets.UTF_8));
+299:         }
+300:         return out;
+301:     }
+302: 
+303:     static boolean wellFormed(Map<String, String> files) {
+304:         try {
+305:             javax.xml.parsers.DocumentBuilderFactory f = javax.xml.parsers.DocumentBuilderFactory.newInstance();
+306:             for (Map.Entry<String, String> e : files.entrySet()) {
+307:                 if (e.getKey().endsWith(".xml") || e.getKey().endsWith(".rels")) f.newDocumentBuilder().parse(new ByteArrayInputStream(e.getValue().getBytes(StandardCharsets.UTF_8)));
+308:             }
+309:             return true;
+310:         } catch (Exception e) {
+311:             System.out.println("    " + e);
+312:             return false;
+313:         }
+314:     }
+315: 
+316:     // ---- DER <-> خام (r||s) كما تفعل أداة البائع ----
+317:     static byte[] derToRaw(byte[] der) {
+318:         int i = 2;
+319:         if ((der[1] & 0x80) != 0) i += der[1] & 0x7f;
+320:         byte[] out = new byte[64];
+321:         for (int part = 0; part < 2; part++) {
+322:             int len = der[i + 1];
+323:             int start = i + 2;
+324:             int skip = len > 32 ? len - 32 : 0;
+325:             System.arraycopy(der, start + skip, out, part * 32 + (32 - (len - skip)), len - skip);
+326:             i = start + len;
+327:         }
+328:         return out;
+329:     }
+330: 
+331:     static byte[] rawToDer(byte[] raw) {
+332:         byte[][] parts = new byte[2][];
+333:         for (int p = 0; p < 2; p++) {
+334:             int s = p * 32;
+335:             while (s < p * 32 + 31 && raw[s] == 0) s++;
+336:             int len = p * 32 + 32 - s;
+337:             boolean pad = (raw[s] & 0x80) != 0;
+338:             byte[] v = new byte[len + (pad ? 1 : 0)];
+339:             System.arraycopy(raw, s, v, pad ? 1 : 0, len);
+340:             parts[p] = v;
+341:         }
+342:         int total = 2 + parts[0].length + 2 + parts[1].length;
+343:         byte[] der = new byte[2 + total];
+344:         der[0] = 0x30;
+345:         der[1] = (byte) total;
+346:         int i = 2;
+347:         for (byte[] v : parts) {
+348:             der[i++] = 0x02;
+349:             der[i++] = (byte) v.length;
+350:             System.arraycopy(v, 0, der, i, v.length);
+351:             i += v.length;
+352:         }
+353:         return der;
+354:     }
+355: }

@@ -1,0 +1,195 @@
+1: package android.view;
+2: 
+3: import java.awt.*;
+4: import java.awt.event.*;
+5: import java.awt.event.KeyEvent;
+6: import java.awt.event.InputEvent;
+7: import java.util.WeakHashMap;
+8: import javax.swing.*;
+9: import javax.swing.event.*;
+10: import javax.swing.text.*;
+11: 
+12: /** الخانة الحقيقية (Swing) فوق خانة الكتابة المركّزة: تُوضع فوقها تمامًا بخطها ولونها، والباقي يرسمه أندرويد. */
+13: public final class TextOverlay {
+14:     private TextOverlay() {}
+15: 
+16:     private static final class Live {
+17:         View view;
+18:         TextHost host;
+19:         JPanel clip;
+20:         JTextComponent field;
+21:         boolean quiet;
+22:         boolean pwd, single;
+23:         boolean shown;
+24:         boolean notifying;
+25:     }
+26: 
+27:     private static final WeakHashMap<ViewRootImpl, Live> map = new WeakHashMap<>();
+28: 
+29:     public static View active(ViewRootImpl r) { Live l = map.get(r); return l == null ? null : l.view; }
+30: 
+31:     public static void hide(ViewRootImpl r) {
+32:         Live l = map.remove(r);
+33:         if (l == null) return;
+34:         if (l.clip.getParent() != null) {
+35:             Container p = l.clip.getParent();
+36:             p.remove(l.clip);
+37:             p.repaint();
+38:         }
+39:         l.host.liveChanged(false);
+40:         l.view.invalidate();
+41:     }
+42: 
+43:     /** يُظهر الخانة الحقيقية لهذا العنصر؛ (x,y) موضع النقرة بإحداثيات العنصر لوضع المؤشر (-1: لا تغيير). */
+44:     public static void show(ViewRootImpl r, View v, float x, float y) {
+45:         if (!(v instanceof TextHost)) return;
+46:         TextHost h = (TextHost) v;
+47:         Live l = map.get(r);
+48:         if (l != null && (l.view != v || l.pwd != h.password() || l.single != h.singleLine())) { hide(r); l = null; }
+49:         if (l == null) {
+50:             l = create(r, v, h);
+51:             map.put(r, l);
+52:         }
+53:         refresh(l);
+54:         sync(r);
+55:         final Live fl = l;
+56:         if (x >= 0 && l.shown) {
+57:             Rectangle b = l.field.getBounds();
+58:             Point fp = SwingUtilities.convertPoint(r.pane, contentOrigin(v, x, y), l.clip);
+59:             int pos = l.field.viewToModel2D(new Point(fp.x - b.x, fp.y - b.y));
+60:             if (pos >= 0) l.field.setCaretPosition(Math.min(pos, l.field.getDocument().getLength()));
+61:         } else if (x < 0) {
+62:             int s = Math.max(0, Math.min(h.selStart(), l.field.getDocument().getLength())), e = Math.max(0, Math.min(h.selEnd(), l.field.getDocument().getLength()));
+63:             fl.quiet = true;
+64:             l.field.setCaretPosition(s);
+65:             if (e != s) l.field.moveCaretPosition(e);
+66:             fl.quiet = false;
+67:         }
+68:         SwingUtilities.invokeLater(() -> { if (fl.field.isShowing()) fl.field.requestFocusInWindow(); });
+69:     }
+70: 
+71:     private static Rectangle sx(Rectangle r, float s) {
+72:         int x = Math.round(r.x * s), y = Math.round(r.y * s);
+73:         return new Rectangle(x, y, Math.round((r.x + r.width) * s) - x, Math.round((r.y + r.height) * s) - y);
+74:     }
+75: 
+76:     private static Point contentOrigin(View v, float x, float y) {
+77:         float[] p = {x, y};
+78:         v.mapToRoot(p);
+79:         float sc = ViewRootImpl.scale();
+80:         return new Point(Math.round(p[0] * sc), Math.round(p[1] * sc));
+81:     }
+82: 
+83:     private static Live create(ViewRootImpl r, View v, TextHost h) {
+84:         Live l = new Live();
+85:         l.view = v;
+86:         l.host = h;
+87:         l.pwd = h.password();
+88:         l.single = h.singleLine();
+89:         JTextComponent f;
+90:         if (l.pwd) {
+91:             JPasswordField p = new JPasswordField();
+92:             p.setUI(new javax.swing.plaf.basic.BasicPasswordFieldUI());
+93:             f = p;
+94:         } else if (l.single) {
+95:             JTextField t = new JTextField();
+96:             t.setUI(new javax.swing.plaf.basic.BasicTextFieldUI());
+97:             f = t;
+98:         } else {
+99:             JTextArea a = new JTextArea();
+100:             a.setUI(new javax.swing.plaf.basic.BasicTextAreaUI());
+101:             a.setLineWrap(true);
+102:             a.setWrapStyleWord(true);
+103:             f = a;
+104:         }
+105:         f.setOpaque(false);
+106:         f.setBorder(BorderFactory.createEmptyBorder());
+107:         f.setMargin(new Insets(0, 0, 0, 0));
+108:         f.setBackground(new Color(0, 0, 0, 0));
+109:         f.setFocusTraversalKeysEnabled(false);
+110:         final Live fl = l;
+111:         if (f.getDocument() instanceof AbstractDocument) ((AbstractDocument) f.getDocument()).setDocumentFilter(new Filter(h));
+112:         f.getDocument().addDocumentListener(new DocumentListener() {
+113:             void ch() {
+114:                 if (fl.quiet) return;
+115:                 String s = fl.field.getText();
+116:                 fl.notifying = true;
+117:                 try {
+118:                     fl.host.userText(s, fl.field.getSelectionStart(), fl.field.getSelectionEnd());
+119:                 } finally {
+120:                     fl.notifying = false;
+121:                 }
+122:             }
+123:             @Override public void insertUpdate(DocumentEvent e) { ch(); }
+124:             @Override public void removeUpdate(DocumentEvent e) { ch(); }
+125:             @Override public void changedUpdate(DocumentEvent e) {}
+126:         });
+127:         f.addCaretListener(e -> { if (!fl.quiet) fl.host.userSelection(Math.min(e.getDot(), e.getMark()), Math.max(e.getDot(), e.getMark())); });
+128:         f.addKeyListener(new KeyAdapter() {
+129:             @Override public void keyPressed(KeyEvent e) {
+130:                 if (e.getKeyCode() == KeyEvent.VK_ENTER && (fl.single || e.isControlDown() || e.isMetaDown())) {
+131:                     if (fl.host.enterPressed()) { e.consume(); return; }
+132:                     if (fl.single) { r.moveFocus(true); e.consume(); return; }
+133:                 }
+134:                 if (e.getKeyCode() == KeyEvent.VK_ESCAPE || e.getKeyCode() == KeyEvent.VK_TAB
+135:                         || ((e.isMetaDown() || e.isControlDown()) && e.getKeyCode() != KeyEvent.VK_C && e.getKeyCode() != KeyEvent.VK_V
+136:                         && e.getKeyCode() != KeyEvent.VK_X && e.getKeyCode() != KeyEvent.VK_A && e.getKeyCode() != KeyEvent.VK_Z
+137:                         && e.getKeyCode() != KeyEvent.VK_Y && e.getKeyCode() != KeyEvent.VK_LEFT && e.getKeyCode() != KeyEvent.VK_RIGHT
+138:                         && e.getKeyCode() != KeyEvent.VK_BACK_SPACE && e.getKeyCode() != KeyEvent.VK_DELETE)) {
+139:                     r.key(e);
+140:                 }
+141:             }
+142:         });
+143:         f.setComponentPopupMenu(menu(f));
+144:         installUndo(f);
+145:         JPanel clip = new JPanel(null);
+146:         clip.setOpaque(false);
+147:         clip.add(f);
+148:         l.clip = clip;
+149:         l.field = f;
+150:         r.pane.add(clip);
+151:         h.liveChanged(true);
+152:         return l;
+153:     }
+154: 
+155:     private static JPopupMenu menu(JTextComponent f) {
+156:         JPopupMenu m = new JPopupMenu();
+157:         m.applyComponentOrientation(ComponentOrientation.RIGHT_TO_LEFT);
+158:         JMenuItem cut = new JMenuItem("قص"), copy = new JMenuItem("نسخ"), paste = new JMenuItem("لصق"), all = new JMenuItem("تحديد الكل");
+159:         cut.addActionListener(e -> f.cut());
+160:         copy.addActionListener(e -> f.copy());
+161:         paste.addActionListener(e -> f.paste());
+162:         all.addActionListener(e -> f.selectAll());
+163:         m.add(cut); m.add(copy); m.add(paste); m.addSeparator(); m.add(all);
+164:         m.addPopupMenuListener(new PopupMenuListener() {
+165:             @Override public void popupMenuWillBecomeVisible(PopupMenuEvent e) {
+166:                 boolean sel = f.getSelectionStart() != f.getSelectionEnd();
+167:                 cut.setEnabled(sel && f.isEditable() && !(f instanceof JPasswordField));
+168:                 copy.setEnabled(sel && !(f instanceof JPasswordField));
+169:                 paste.setEnabled(f.isEditable());
+170:             }
+171:             @Override public void popupMenuWillBecomeInvisible(PopupMenuEvent e) {}
+172:             @Override public void popupMenuCanceled(PopupMenuEvent e) {}
+173:         });
+174:         return m;
+175:     }
+176: 
+177:     private static void installUndo(JTextComponent f) {
+178:         javax.swing.undo.UndoManager um = new javax.swing.undo.UndoManager();
+179:         f.getDocument().addUndoableEditListener(um);
+180:         int menu;
+181:         try { menu = Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx(); } catch (HeadlessException e) { menu = InputEvent.CTRL_DOWN_MASK; }
+182:         f.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_Z, menu), "sa-undo");
+183:         f.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_Z, menu | InputEvent.SHIFT_DOWN_MASK), "sa-redo");
+184:         f.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_Y, menu), "sa-redo");
+185:         f.getActionMap().put("sa-undo", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { if (um.canUndo()) um.undo(); } });
+186:         f.getActionMap().put("sa-redo", new AbstractAction() { @Override public void actionPerformed(ActionEvent e) { if (um.canRedo()) um.redo(); } });
+187:     }
+188: 
+189:     /** يطابق الخانة الحقيقية مع العنصر (النص، الخط، اللون، المحاذاة). */
+190:     private static void refresh(Live l) {
+191:         TextHost h = l.host;
+192:         JTextComponent f = l.field;
+193:         java.awt.Font hf = h.hostFont();
+194:         float sc = ViewRootImpl.scale();
+195:         f.setFont(sc == 1f ? hf : hf.deriveFont(hf.getSize2D() * sc));

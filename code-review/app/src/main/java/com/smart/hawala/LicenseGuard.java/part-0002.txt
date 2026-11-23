@@ -1,0 +1,144 @@
+159:                 if (w > best && w - best < 3 * DAY) best = w;
+160:             }
+161:         } catch (Throwable ignored) {
+162:             // بلا مزامنة
+163:         }
+164:         return best;
+165:     }
+166: 
+167:     static String dayOf(long t) {
+168:         SimpleDateFormat f = new SimpleDateFormat("yyyyMMdd", Locale.US);
+169:         return f.format(new Date(t));
+170:     }
+171: 
+172:     /** هل حان جلب الوقت؟ (مرة كل 12 ساعة على الأكثر، ولا يلزم إلا برخصة فيها tc). */
+173:     public static boolean timeDue(Db db, LicenseToken.Grant g) {
+174:         if (g == null || g.num(K_CHECK_DAYS) <= 0) return false;
+175:         return Clock.now() - db.settingLong("license_time_try", 0) > 12 * 3600_000L || lastTrusted(db) <= 0;
+176:     }
+177: 
+178:     /** يجلب التاريخ من الإنترنت (يكفي مصدر واحد). يرجع الوقت أو 0. لا يرمي. على خيط خلفية فقط. */
+179:     public static long fetchTime(Db db) {
+180:         db.setSettingQuiet("license_time_try", "" + Clock.now());
+181:         String[] src = testSources != null ? testSources : TIME_SOURCES;
+182:         for (String u : src) {
+183:             HttpURLConnection c = null;
+184:             try {
+185:                 long el0 = android.os.SystemClock.elapsedRealtime();
+186:                 c = (HttpURLConnection) new URL(u).openConnection();
+187:                 c.setRequestMethod("HEAD");
+188:                 c.setInstanceFollowRedirects(false);
+189:                 c.setConnectTimeout(8000);
+190:                 c.setReadTimeout(8000);
+191:                 c.setUseCaches(false);
+192:                 c.getResponseCode();
+193:                 long t = c.getHeaderFieldDate("Date", 0);
+194:                 if (t <= 0) continue;
+195:                 long el1 = android.os.SystemClock.elapsedRealtime();
+196:                 long mid = el0 + (el1 - el0) / 2;
+197:                 long prev = lastTrusted(db);
+198:                 if (prev > 0 && t + 600_000L < prev) continue;   // وقت أقدم من آخر وقت موثوق: يُرفض المصدر
+199:                 db.setSettingQuiet(TIME, t + "|" + mid + "|" + u);
+200:                 return t;
+201:             } catch (Throwable ignored) {
+202:                 // المصدر التالي
+203:             } finally {
+204:                 if (c != null) c.disconnect();
+205:             }
+206:         }
+207:         return 0;
+208:     }
+209: 
+210:     private static volatile boolean fetching;
+211: 
+212:     /** عند الفتح: إن لزم تأكيد الوقت يُجلب في الخلفية ثم يُعاد حساب الرخصة (لا ينتظره شيء). */
+213:     public static void refreshAsync(final Context ctx, final Db db) {
+214:         final LicenseToken.Grant g = lastGrant;
+215:         if (fetching || db == null || !timeDue(db, g)) return;
+216:         fetching = true;
+217:         new Thread(() -> {
+218:             try {
+219:                 if (fetchTime(db) > 0) License.load(ctx, db);
+220:             } catch (Throwable ignored) {
+221:                 // يُعاد لاحقًا
+222:             } finally {
+223:                 fetching = false;
+224:             }
+225:         }, "license-time").start();
+226:     }
+227: 
+228:     // ===================================================================================
+229:     // سجل محاولات الاستخدام لمكتب آخر (مختوم بمفتاح الجهاز)
+230:     // ===================================================================================
+231: 
+232:     static File misuseFile(Context ctx) { return new File(ctx.getFilesDir(), MISUSE_FILE); }
+233: 
+234:     /** السجل كما هو: {"log":[{at,lid,of,saw}], "sig":"…"} أو فارغ. */
+235:     static JSONObject misuse(Context ctx) {
+236:         try {
+237:             return new JSONObject(new String(Db.readAll(misuseFile(ctx)), StandardCharsets.UTF_8));
+238:         } catch (Exception e) {
+239:             return new JSONObject();
+240:         }
+241:     }
+242: 
+243:     /** نص التوقيع: الأسطر بترتيبها (لا تُحذف ولا تُعدَّل دون أن يكسر التوقيع). */
+244:     static String misuseBody(JSONArray log) {
+245:         StringBuilder b = new StringBuilder("SA-MISUSE-1");
+246:         for (int i = 0; i < log.length(); i++) {
+247:             JSONObject x = log.optJSONObject(i);
+248:             if (x == null) continue;
+249:             b.append('|').append(x.optLong("at")).append(',').append(x.optString("lid")).append(',').append(x.optString("of")).append(',').append(x.optString("saw"));
+250:         }
+251:         return b.toString();
+252:     }
+253: 
+254:     /** يسجّل محاولة (مرة لكل مكتب آخر في اليوم). */
+255:     static synchronized void recordMisuse(Context ctx, String lid, String of, String saw) {
+256:         try {
+257:             JSONObject j = misuse(ctx);
+258:             JSONArray log = j.optJSONArray("log");
+259:             if (log == null) log = new JSONArray();
+260:             String today = dayOf(Clock.now());
+261:             for (int i = 0; i < log.length(); i++) {
+262:                 JSONObject x = log.getJSONObject(i);
+263:                 if (saw.equals(x.optString("saw")) && today.equals(dayOf(x.optLong("at")))) return;
+264:             }
+265:             if (log.length() >= 200) return;
+266:             JSONObject e = new JSONObject();
+267:             e.put("at", Clock.now());
+268:             e.put("lid", lid);
+269:             e.put("of", of);
+270:             e.put("saw", saw);
+271:             log.put(e);
+272:             JSONObject out = new JSONObject();
+273:             out.put("log", log);
+274:             out.put("sig", License.signData(misuseBody(log).getBytes(StandardCharsets.UTF_8)));
+275:             File f = misuseFile(ctx), tmp = new File(f.getPath() + ".tmp");
+276:             try (FileOutputStream o = new FileOutputStream(tmp)) {
+277:                 o.write(out.toString().getBytes(StandardCharsets.UTF_8));
+278:             }
+279:             tmp.renameTo(f);
+280:             try {
+281:                 SmartApp.db.audit("LICENSE_OTHER_OFFICE", "license", 0, lid + " → " + saw);
+282:             } catch (Throwable ignored) {
+283:                 // السجل المختوم يكفي
+284:             }
+285:         } catch (Throwable ignored) {
+286:             // لا يمنع العمل
+287:         }
+288:     }
+289: 
+290:     /** ما يُضاف إلى طلب التفعيل: هوية المكتب، وسجل المحاولات وتوقيعه (تفحصه أداة البائع بالمفتاح العام في الطلب). */
+291:     static void addToRequest(Context ctx, Db db, JSONObject req) throws Exception {
+292:         String of = officeUid(db);
+293:         if (of.isEmpty()) throw new IllegalStateException("لم تصل «هوية المكتب» من الجهاز الرئيسي بعد. اضغط «مزامنة الآن» ثم أنشئ طلب التفعيل.");
+294:         req.put("of", of);
+295:         JSONObject m = misuse(ctx);
+296:         JSONArray log = m.optJSONArray("log");
+297:         if (log != null && log.length() > 0) {
+298:             req.put("mis", log);
+299:             req.put("misSig", m.optString("sig"));
+300:         }
+301:     }
+302: }

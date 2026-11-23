@@ -1,0 +1,44 @@
+250: check("D balances-only: no tx, same final balances", TDb.tx.length === 0 && Object.keys(bal1).every((k) => bal1[k] === bal3[k]), bal3);
+251: check("D balances-only dated at period end", mDb.openings.every((o) => o.when === new Date(2026, 9, 13, 23, 0, 0).getTime()));
+252: // كشف معدّل، ومكرر، وعملة غير معروفة
+253: const bad = stmtFrom("fajr.xlsx", SS.statementBook(XLSX, SS.TAMPERED));
+254: const dup = stmtFrom("khal-usd-copy.xlsx", SS.statementBook(XLSX, SS.SPECS["khal-usd.xlsx"]));
+255: const gold = stmtFrom("gold.xlsx", SS.statementBook(XLSX, Object.assign({}, SS.SPECS["khal-eur.xlsx"], { currency: "ذهب", account: "1410100096 الذهبي" })));
+256: const mE = Core.buildStatements(cfgD, stD.concat(bad, dup, gold), serial);
+257: check("D tampered statement rejected whole with row number", mE.errors.some((e) => e.sheet === "fajr.xlsx" && e.row === 11 && e.msg.indexOf("لا يساوي") >= 0) && !mE.offices.some((o) => o.name === "الفجر"), mE.errors);
+258: check("D duplicate account+currency rejected", mE.errors.some((e) => e.sheet === "khal-usd-copy.xlsx" && e.msg.indexOf("مكرر") >= 0), mE.errors);
+259: check("D unknown currency asks for mapping", mE.errors.some((e) => e.msg.indexOf("«ذهب»") >= 0));
+260: check("D good files unaffected by bad ones", Core.report(mE, Core.tables(mE, cfgD, rand), cfgD).rows.filter((r) => r.match === true).length === 4);
+261: const cfgG = Object.assign({}, cfgD, { currencyMap: { [Core.officeKey("ذهب")]: "GOLD" }, currencies: { GOLD: { name: "ذهب", dec: 3 } } });
+262: const mG = Core.buildStatements(cfgG, gold, serial);
+263: check("D mapped unknown currency (GOLD, 3 decimals)", mG.errors.length === 0 && Core.report(mG, Core.tables(mG, cfgG, rand), cfgG).rows[0].balance === -100000n, mG.errors);
+264: // تكرار «رصيد منقول» في رأس صفحة: للتحقق فقط
+265: const carryBook = SS.statementBook(XLSX, SS.SPECS["khal-eur.xlsx"]);
+266: const carryRows = readBook(roundTrip(carryBook))["Page 1"];
+267: const hi = carryRows.findIndex((r) => r && r[4] && r[4].s === "حوالة");
+268: carryRows.splice(hi + 1, 0, carryRows[hi].map((c, i) => (i === 4 ? { s: "رصيد منقول" } : i === 14 ? { s: "9,999.00" } : i === 20 ? { s: "1.00" } : c)));
+269: const carry = Core.parseStatements("carry.xlsx", [{ name: "Page 1", rows: carryRows }]);
+270: const mCarry = Core.buildStatements(cfgD, carry, serial);
+271: check("D carried-forward line only checks the balance", mCarry.errors.length === 0 && mCarry.txs.length === 1 && mCarry.files[0].checked === 2, [mCarry.errors, mCarry.txs.length]);
+272: 
+273: // ---------------------------------------------------------------------------------- الملفات المشفرة
+274: (async () => {
+275:   console.log("== backup files");
+276:   const files = [
+277:     ["A", TA, cfgA, "pass-A-1234", { usd: [["كاش شام", "USD", 130525], ["كاش شام", "SYP", -1250000], ["الأمين للصرافة", "USD", -20000], ["الأمين للصرافة", "EUR", 5000], ["الامين للصرافه", "USD", 1000]] }],
+278:     ["B", TB, cfgB, "كلمة سر عربية ١٢٣", { usd: [["كاش شام", "USD", 90000], ["الأمين", "USD", -10000]] }],
+279:     ["C", TC, cfgC, "x", { usd: [["النور", "USD", 11000]] }],
+280:     ["D", TD, cfgD, "كشوفات-2026", { usd: [["الخال", "USD", 49500], ["الخال", "EUR", -10000], ["النور", "USD", 35000], ["الأمل", "TRY", -101000]] }]
+281:   ];
+282:   const expect = {};
+283:   for (const [name, T, cfg, pw, exp] of files) {
+284:     const bytes = await Core.makeBackup(T, cfg, pw, webcrypto.subtle, rand, name === "C" ? { chunk: 1024 } : undefined);
+285:     fs.writeFileSync(path.join(OUT, name + ".sba"), bytes);
+286:     expect[name] = { password: pw, offices: T.offices.length, tx: T.tx.length, openings: T.opening_balances.length,
+287:       entries: T.journal_entries.length, lines: T.journal_lines.length, balances: exp.usd };
+288:     check(name + ".sba written (" + bytes.length + " bytes)", bytes.length > 100 && Buffer.from(bytes.slice(0, 8)).toString() === "SMARTBK5");
+289:   }
+290:   fs.writeFileSync(path.join(OUT, "expect.json"), JSON.stringify(expect, null, 1));
+291:   console.log(fails === 0 ? "ALL MIGRATION CORE TESTS PASSED" : fails + " FAILED");
+292:   process.exit(fails === 0 ? 0 : 1);
+293: })();

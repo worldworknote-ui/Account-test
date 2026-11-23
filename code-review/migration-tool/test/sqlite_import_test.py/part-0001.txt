@@ -1,0 +1,63 @@
+1: #!/usr/bin/env python3
+2: """يستورد جداول ملفات أداة النقل (بعد فكها بالكود Java) في SQLite بنفس مخطط التطبيق (DDL من Db.java)،
+3: ثم يشغّل استعلامات الأرصدة نفسها التي يستخدمها التطبيق ويقارنها بالقيم المتوقعة."""
+4: import json
+5: import re
+6: import sqlite3
+7: import sys
+8: 
+9: DB_JAVA = sys.argv[1]
+10: DIR = sys.argv[2]
+11: src = open(DB_JAVA, encoding="utf-8").read()
+12: ddl_block = src[src.index("private static final String[] DDL"):src.index("};", src.index("private static final String[] DDL"))]
+13: ddl = re.findall(r'"(CREATE TABLE[^"]+)"', ddl_block)
+14: assert len(ddl) >= 14, len(ddl)
+15: 
+16: # الاستعلامات كما هي في Db.java
+17: q_office_balances = re.search(r'"(SELECT office_id,currency,SUM\(debit_minor-credit_minor\) FROM journal_lines[^"]+)"', src).group(1)
+18: q_totals = ('SELECT l.office_id,l.currency,SUM(l.debit_minor),SUM(l.credit_minor) FROM journal_lines l'
+19:             ' JOIN journal_entries e ON e.id=l.entry_id LEFT JOIN tx t ON t.id=e.tx_id'
+20:             " WHERE l.account='OFFICE' AND l.office_id IS NOT NULL AND (e.tx_id IS NULL OR t.status='ACTIVE')"
+21:             ' GROUP BY l.office_id,l.currency')
+22: assert "l.account='OFFICE'" in src and "(e.tx_id IS NULL OR t.status='ACTIVE')" in src
+23: 
+24: expect = json.load(open(DIR + "/expect.json", encoding="utf-8"))
+25: fails = 0
+26: 
+27: 
+28: def check(name, ok, extra=None):
+29:     global fails
+30:     print(("  PASS " if ok else "  FAIL ") + name + ("" if ok or extra is None else " — " + str(extra)))
+31:     if not ok:
+32:         fails += 1
+33: 
+34: 
+35: ORDER = ["currencies", "offices", "office_currencies", "tx", "journal_entries", "journal_lines",
+36:          "opening_balances", "exchange_rates", "settings", "audit_logs", "users", "reconciliations", "reconciliation_lines"]
+37: for name in sorted(expect.keys()):
+38:     print("== " + name)
+39:     tables = json.load(open(DIR + "/" + name + ".tables.json", encoding="utf-8"))
+40:     db = sqlite3.connect(":memory:")
+41:     db.execute("PRAGMA foreign_keys=ON")
+42:     for d in ddl:
+43:         db.execute(d)
+44:     for t in ORDER:
+45:         cols = {r[1].lower() for r in db.execute("PRAGMA table_info(" + t + ")")}
+46:         for row in tables.get(t, []):
+47:             keys = [k for k in row if k.lower() in cols]
+48:             db.execute("INSERT INTO " + t + "(" + ",".join(keys) + ") VALUES(" + ",".join("?" * len(keys)) + ")", [row[k] for k in keys])
+49:     names = dict(db.execute("SELECT id,name FROM offices"))
+50:     bal = {names[o] + "|" + c: v for o, c, v in db.execute(q_office_balances)}
+51:     tot = {names[o] + "|" + c: d - cr for o, c, d, cr in db.execute(q_totals)}
+52:     for office, cur, v in expect[name]["balances"]:
+53:         k = office + "|" + cur
+54:         check("officeBalances " + k, bal.get(k) == v, bal.get(k))
+55:         check("officeTotals " + k, tot.get(k) == v, tot.get(k))
+56:     unbalanced = db.execute("SELECT entry_id,currency,SUM(debit_minor-credit_minor) s FROM journal_lines GROUP BY entry_id,currency HAVING s<>0").fetchall()
+57:     check("all entries balanced in SQLite", not unbalanced, unbalanced)
+58:     fk = db.execute("PRAGMA foreign_key_check").fetchall()
+59:     check("foreign keys consistent", not fk, fk)
+60:     opening = db.execute("SELECT COUNT(*) FROM opening_balances ob JOIN journal_entries e ON e.id=ob.entry_id WHERE e.kind='OPENING'").fetchone()[0]
+61:     check("opening rows linked to OPENING entries", opening == expect[name]["openings"], opening)
+62: print("ALL SQLITE IMPORT TESTS PASSED" if fails == 0 else str(fails) + " FAILED")
+63: sys.exit(1 if fails else 0)

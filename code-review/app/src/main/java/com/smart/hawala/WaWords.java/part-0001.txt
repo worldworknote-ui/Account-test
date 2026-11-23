@@ -1,0 +1,114 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.Arrays;
+5: import java.util.Collections;
+6: import java.util.LinkedHashSet;
+7: import java.util.List;
+8: import java.util.Locale;
+9: import java.util.Set;
+10: import java.util.regex.Matcher;
+11: import java.util.regex.Pattern;
+12: 
+13: /**
+14:  * 12.3: قاموس كلمات برامج المحادثة بالعربية والإنجليزية (وبعض التركية والرومانية) لتمييز الرسالة الحقيقية عمّا حولها:
+15:  * <ul>
+16:  * <li>{@link #systemText}: نص كله تنبيه من البرنامج لا رسالة (فاصل يوم «Fri 6 Nov»، «33 unread messages»، «تم حذف هذه الرسالة»،
+17:  * «Message history sent by a group member. Learn more»، مكالمة فائتة، انضمام وخروج من الغروب…).</li>
+18:  * <li>{@link #metaLine}: سطر داخل الفقاعة ليس من نصها (Forwarded، Edited، حجم الملف و«Show in Finder»، «صورة»…).</li>
+19:  * <li>{@link #sender}: سطر اسم المرسل في الغروب («~ Abo Nour +40 765 450 476»).</li>
+20:  * <li>{@link #COURTESY}: كلمات التحية والمجاملة («يعطيكم العافية»، «السادة الكرام»، «good morning») فلا تُستخرج اسمًا ولا عملة.</li>
+21:  * </ul>
+22:  * منطق بحت بلا أندرويد حتى يُختبر، ومشترك بين الهاتف والكمبيوتر.
+23:  */
+24: public final class WaWords {
+25:     private WaWords() {}
+26: 
+27:     // ===================================================================================
+28:     // التواريخ وفواصل الأيام
+29:     // ===================================================================================
+30: 
+31:     static final String DAYS = "الأحد|الاحد|الاثنين|الإثنين|الثلاثاء|الأربعاء|الاربعاء|الخميس|الجمعة|الجمعه|السبت|"
+32:             + "sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat|"
+33:             + "pazar|pazartesi|salı|sali|çarşamba|carsamba|perşembe|persembe|cuma|cumartesi|"
+34:             + "duminică|duminica|luni|marți|marti|miercuri|joi|vineri|sâmbătă|sambata";
+35:     static final String MONTHS = "يناير|فبراير|مارس|أبريل|ابريل|إبريل|مايو|يونيو|يوليو|أغسطس|اغسطس|سبتمبر|أكتوبر|اكتوبر|نوفمبر|ديسمبر|"
+36:             + "كانون الثاني|شباط|آذار|اذار|نيسان|أيار|ايار|حزيران|تموز|آب|اب|أيلول|ايلول|تشرين الأول|تشرين الاول|تشرين الثاني|كانون الأول|كانون الاول|"
+37:             + "january|february|march|april|may|june|july|august|september|october|november|december|"
+38:             + "jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec|"
+39:             + "ocak|şubat|subat|mart|nisan|mayıs|mayis|haziran|temmuz|ağustos|agustos|eylül|eylul|ekim|kasım|kasim|aralık|aralik|"
+40:             + "ianuarie|februarie|martie|aprilie|mai|iunie|iulie|septembrie|octombrie|noiembrie|decembrie";
+41: 
+42:     private static final Pattern DATE_PILL = Pattern.compile("(?iu)^\\s*(?:"
+43:             + "اليوم|أمس|امس|البارحة|today|yesterday|bugün|bugun|dün|dun|azi|astăzi|astazi|ieri|"
+44:             + "(?:" + DAYS + ")\\.?(?:\\s*[,،]?\\s*\\d{1,2}(?:\\s+(?:" + MONTHS + ")\\.?)?(?:\\s*[,،]?\\s*\\d{2,4})?)?|"
+45:             + "\\d{1,2}\\s+(?:" + MONTHS + ")\\.?(?:\\s*[,،]?\\s*\\d{2,4})?|"
+46:             + "(?:" + MONTHS + ")\\.?\\s+\\d{1,2}(?:\\s*[,،]?\\s*\\d{2,4})?|"
+47:             + "\\d{1,4}[/.\\-]\\d{1,2}[/.\\-]\\d{1,4}"
+48:             + ")\\s*$");
+49: 
+50:     // ===================================================================================
+51:     // تنبيهات البرنامج (ليست رسائل)
+52:     // ===================================================================================
+53: 
+54:     private static final List<Pattern> SYSTEM = new ArrayList<>();
+55: 
+56:     private static void sys(String re) { SYSTEM.add(Pattern.compile("(?iu)^\\s*(?:" + re + ")\\s*[.!]?\\s*$")); }
+57: 
+58:     static {
+59:         sys("\\d+\\s*(?:رسالة|رسائل|رساله)\\s*غير\\s*مقروءة|(?:رسالة|رسائل)\\s*غير\\s*مقروءة\\s*\\(?\\d*\\)?|\\d+\\s*unread\\s*messages?|unread\\s*messages?|"
+60:                 + "\\d+\\s*okunmamış\\s*mesaj|\\d+\\s*mesaje\\s*necitite");
+61:         sys(".*(?:مشفّرة تمامًا|مشفرة تماما|مشفّرة بين الطرفين|مشفرة بين الطرفين|end-to-end encrypted|uçtan uca şifreli|criptate integral).*");
+62:         sys("this message was deleted|you deleted this message|message deleted|تم حذف هذه الرسالة|حُذفت هذه الرسالة|حذفت هذه الرسالة|"
+63:                 + "لقد حذفت هذه الرسالة|bu mesaj silindi|mesajul a fost șters");
+64:         sys(".*message history sent by a group member.*|.*learn more|.*اعرف المزيد|.*معرفة المزيد|.*daha fazla bilgi");
+65:         sys("waiting for this message.*|في انتظار هذه الرسالة.*|بانتظار هذه الرسالة.*");
+66:         sys("(?:missed\\s+)?(?:voice|video)\\s+call.*|مكالمة\\s+(?:صوتية|فيديو)(?:\\s+فائتة)?.*|cevapsız\\s+(?:sesli|görüntülü)\\s+arama.*");
+67:         sys(".*(?:security code (?:with .{1,40} )?changed|turned (?:on|off) disappearing messages|تغيّر رمز الأمان|تغير رمز الامان|"
+68:                 + "فعّل الرسائل المؤقتة|عطّل الرسائل المؤقتة|فعل الرسائل المؤقتة|عطل الرسائل المؤقتة).*");
+69:         sys("اكتب رسالة|type a message|بحث|search|whatsapp|واتساب|telegram|تلغرام|تيليجرام|الدردشات|chats|المجتمعات|communities|الحالة|status|"
+70:                 + "online|متصل الآن|متصل|typing…?|typing\\.\\.\\.|يكتب…?|يكتب\\.\\.\\.|last seen.*|آخر ظهور.*|click here for group info|"
+71:                 + "اضغط هنا لمعلومات المجموعة|tap here for group info");
+72:         sys("صورة|photo|image|فيديو|video|ملصق|sticker|gif|رسالة صوتية|voice message|مستند|document|ملف|file|موقع|location|جهة اتصال|contact|"
+73:                 + "استطلاع|poll|tap to download|click to download|انقر للتنزيل|اضغط للتنزيل");
+74:     }
+75: 
+76:     /** نص الفقاعة كله تنبيه من البرنامج أو فاصل يوم (لا يُرقَّم ولا يُنقل). */
+77:     public static boolean systemText(String t) {
+78:         if (t == null) return true;
+79:         String s = clean(t);
+80:         if (s.isEmpty()) return true;
+81:         // كل الأسطر تنبيهات (فاصل يوم فوق «رسائل غير مقروءة» مثلًا)
+82:         for (String line : s.split("\n")) {
+83:             String l = line.trim();
+84:             if (l.isEmpty()) continue;
+85:             if (!systemLine(l)) return false;
+86:         }
+87:         return true;
+88:     }
+89: 
+90:     /** انضمام وخروج وإضافة في الغروب: قصيرة، وبلا أرقام إلا رقم هاتف («+40 765… joined»)، حتى لا تُحذف رسالة فيها «added 500». */
+91:     private static final Pattern MEMBERS = Pattern.compile("(?iu)^.{1,60}?\\s(?:joined using this group's invite link|joined|left|was added|were added|was removed|"
+92:             + "added .{1,60}|removed .{1,60}|created group .{1,60}|changed the group.{0,60}|changed this group's.{0,60}|changed the subject.{0,60}|"
+93:             + "changed their phone number.{0,60})$|"
+94:             + "^.{1,60}?\\s(?:انضم|انضمت|غادر|غادرت|خرج|خرجت)(?:\\s.{0,40})?$|^.{1,60}?\\s(?:أضاف|اضاف|أزال|ازال)\\s.{1,60}$|"
+95:             + "^.{0,60}(?:أنشأ|انشأ|أنشأت|انشأت)\\s(?:المجموعة|المجموعه|الغروب).{0,60}$|^.{0,60}(?:غيّر|غير|غيّرت|غيرت)\\s(?:اسم|صورة|وصف)\\s(?:المجموعة|المجموعه|الغروب).{0,60}$");
+96:     private static final Pattern PHONES = Pattern.compile("\\+\\d[\\d \\-]{6,}");
+97: 
+98:     static boolean systemLine(String l) {
+99:         String s = clean(l);
+100:         if (s.isEmpty() || DATE_PILL.matcher(s).matches() || WaCuts.timeLine(s)) return true;
+101:         for (Pattern p : SYSTEM) if (p.matcher(s).matches()) return true;
+102:         if (s.length() <= 120 && !PHONES.matcher(s).replaceAll(" ").matches(".*\\d.*") && MEMBERS.matcher(s).matches()) return true;
+103:         return false;
+104:     }
+105: 
+106:     // ===================================================================================
+107:     // أسطر داخل الفقاعة ليست من نصها
+108:     // ===================================================================================
+109: 
+110:     private static final Pattern META = Pattern.compile("(?iu)^\\s*(?:"
+111:             + "forwarded|forwarded many times|محوّلة|محولة|تمت إعادة توجيهها|تمت إعادة التوجيه|معاد توجيهها|أُعيد توجيهها|تمت إعادة توجيهها عدة مرات|"
+112:             + "تمت إعادة توجيهها كثيرًا|iletildi|redirecționat|"
+113:             + "edited|تم التعديل|معدّلة|معدلة|تم تعديلها|düzenlendi|editat|"
+114:             + "show in finder|show in folder|open|فتح|عرض في المجلد|إظهار في Finder|save as…?|حفظ باسم…?|download|تنزيل|"

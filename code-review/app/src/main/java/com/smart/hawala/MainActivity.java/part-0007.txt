@@ -1,0 +1,156 @@
+1140:         TextView modern = text("جرّب الواجهة الحديثة: المزيد ← المظهر ← شكل الصفحة الرئيسية", 12, muted, false);
+1141:         modern.setGravity(Gravity.CENTER);
+1142:         add(modern);
+1143:         if (!checkPreviousCrash() && can(Auth.Perm.BACKUP)) maybeReminderDialog(reminder);
+1144:     }
+1145: 
+1146:     String versionName() {
+1147:         try {
+1148:             return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+1149:         } catch (Exception e) {
+1150:             return "";
+1151:         }
+1152:     }
+1153: 
+1154:     // ===================================================================================
+1155:     // تذكير النسخ الاحتياطي
+1156:     // ===================================================================================
+1157: 
+1158:     long txSinceBackup() {
+1159:         long now = db.txCount();
+1160:         long at = db.settingLong("last_backup_tx", 0);
+1161:         return now >= at ? now - at : now;
+1162:     }
+1163: 
+1164:     /** 11.5: وقت دقيق مع قربه: «اليوم 14:32 (منذ 5 دقائق)»، «أمس 09:10»، أو التاريخ والساعة. */
+1165:     static String agoAt(long t) {
+1166:         if (t <= 0) return "لا يوجد";
+1167:         long now = Clock.now(), min = Math.max(0, (now - t) / 60000);
+1168:         String hm = UsageScreen.hm(t);
+1169:         if (Model.day(t).equals(Model.day(now))) return "اليوم " + hm + (min < 1 ? " (الآن)" : min < 60 ? " (منذ " + min + " دقيقة)" : "");
+1170:         if (Model.day(t).equals(Model.day(now - 86_400_000L))) return "أمس " + hm;
+1171:         return Model.date(t) + " (" + ago(t) + ")";
+1172:     }
+1173: 
+1174:     static String ago(long t) {
+1175:         if (t <= 0) return "لا يوجد";
+1176:         long days = (Clock.now() - t) / 86400000L;
+1177:         if (days <= 0) return "اليوم";
+1178:         if (days == 1) return "منذ يوم";
+1179:         if (days == 2) return "منذ يومين";
+1180:         if (days <= 10) return "منذ " + days + " أيام";
+1181:         return "منذ " + days + " يومًا";
+1182:     }
+1183: 
+1184:     String backupReminderText() {
+1185:         long txNow = db.txCount();
+1186:         if (txNow == 0 && db.officeCount() == 0) return null;
+1187:         long last = db.settingLong("last_backup", 0);
+1188:         long days = db.settingLong("reminder_days", 7);
+1189:         long txLimit = db.settingLong("reminder_tx", 20);
+1190:         if (days <= 0 && txLimit <= 0) return null;
+1191:         if (last == 0) return "لم تُنشأ أي نسخة احتياطية لبياناتك حتى الآن. احفظ نسخة خارج الهاتف.";
+1192:         if (days > 0 && Clock.now() - last > days * 86400000L) return "آخر نسخة احتياطية كانت " + ago(last) + ".";
+1193:         long n = txSinceBackup();
+1194:         if (txLimit > 0 && n >= txLimit) return "سجّلت " + n + " حركة منذ آخر نسخة احتياطية.";
+1195:         return null;
+1196:     }
+1197: 
+1198:     void maybeReminderDialog(String reminder) {
+1199:         if (reminder == null || reminderShownThisSession) return;
+1200:         String today = day(Clock.now());
+1201:         if (today.equals(db.setting("reminder_dialog_day", ""))) return;
+1202:         reminderShownThisSession = true;
+1203:         db.setSettingQuiet("reminder_dialog_day", today);
+1204:         new AlertDialog.Builder(this).setTitle("تذكير: النسخة الاحتياطية")
+1205:                 .setMessage(reminder + "\n\nالنسخة المحفوظة خارج الهاتف هي الطريقة الوحيدة لاسترجاع بياناتك إذا ضاع الهاتف أو تعطّل.")
+1206:                 .setPositiveButton("إنشاء الآن", (d, w) -> backupScreen.backupDialog()).setNegativeButton("لاحقًا", null).show();
+1207:     }
+1208: 
+1209:     void markBackupDone(String status) {
+1210:         db.setSettingQuiet("last_backup", "" + Clock.now());
+1211:         db.setSettingQuiet("last_backup_tx", "" + db.txCount());
+1212:         db.setSettingQuiet("last_backup_status", status);
+1213:         Reliability.healthAsync(db);
+1214:     }
+1215: 
+1216:     // ===================================================================================
+1217:     // اختيار المكتب (المثبّتة أولًا)
+1218:     // ===================================================================================
+1219: 
+1220:     interface OfficeCb { void on(Model.Office o); }
+1221: 
+1222:     void officePicker(final OfficeCb cb) { officePicker(cb, false); }
+1223: 
+1224:     /** activeOnly: لتسجيل الحركات، تُخفى المكاتب الموقوفة. */
+1225:     void officePicker(final OfficeCb cb, final boolean activeOnly) {
+1226:         final List<Model.Office> all = activeOffices(activeOnly);
+1227:         if (all.isEmpty()) {
+1228:             boolean anyStopped = activeOnly && !db.offices().isEmpty();
+1229:             new AlertDialog.Builder(this).setMessage(anyStopped ? "كل المكاتب موقوفة. فعّل مكتبًا من قائمة المكاتب أولًا." : "لا توجد مكاتب بعد. أضف مكتبًا أولًا.")
+1230:                     .setPositiveButton(anyStopped ? "قائمة المكاتب" : "إضافة مكتب", (d, w) -> {
+1231:                         if (anyStopped) officesScreen.showManager();
+1232:                         else officesScreen.form(null);
+1233:                     }).setNegativeButton("إلغاء", null).show();
+1234:             return;
+1235:         }
+1236:         // 11.5: البحث في الأعلى دائمًا، و«آخر المكاتب» و«مكاتبي» قسمان يُطويان بسهم ويُحفظ آخر وضع لهما،
+1237:         // والقائمة تأخذ ما بقي من الارتفاع (كانت صغيرة في الأسفل). عند الكتابة يختفي القسمان وتظهر النتائج تحت البحث مباشرة.
+1238:         LinearLayout l = new LinearLayout(this);
+1239:         l.setOrientation(LinearLayout.VERTICAL);
+1240:         l.setPadding(dp(12), dp(8), dp(12), dp(8));
+1241:         final android.widget.EditText q = new android.widget.EditText(this);
+1242:         q.setHint("ابحث باسم المكتب أو اختصاره");
+1243:         q.setSingleLine(true);
+1244:         l.addView(q, new LinearLayout.LayoutParams(-1, dp(54)));
+1245:         final AlertDialog[] holder = new AlertDialog[1];
+1246:         final LinearLayout secs = new LinearLayout(this);
+1247:         secs.setOrientation(LinearLayout.VERTICAL);
+1248:         l.addView(secs, new LinearLayout.LayoutParams(-1, -2));
+1249:         final android.widget.ListView list = new android.widget.ListView(this);
+1250:         final Runnable[] sizeList = {null};
+1251:         List<Model.Office> rec = new ArrayList<>();
+1252:         for (Model.Office o : officeHub.recentOffices(8)) if (!activeOnly || o.active) rec.add(o);
+1253:         if (rec.size() > 6) rec = rec.subList(0, 6);
+1254:         if (!rec.isEmpty() && all.size() > 4)
+1255:             pickerSection(secs, "آخر المكاتب", "picker_open_recent", rec, false, holder, cb, sizeList);
+1256:         // 10.7: «مكاتبي» اختصار للمحاسب في أعلى الاختيار
+1257:         List<Model.Office> mine = new ArrayList<>();
+1258:         for (Model.Office o : db.myOffices()) if (!activeOnly || o.active) mine.add(o);
+1259:         if (!mine.isEmpty()) pickerSection(secs, "مكاتبي", "picker_open_mine", mine, true, holder, cb, sizeList);
+1260:         final TextView allHead = text("كل المكاتب (" + all.size() + ") — اضغط مطولًا للتثبيت في الأعلى", 12, muted, true);
+1261:         l.addView(allHead);
+1262:         l.addView(list, new LinearLayout.LayoutParams(-1, dp(360)));
+1263:         final TextView none = text("لا يوجد مكتب بهذا الاسم.", 14, muted, false);
+1264:         none.setVisibility(View.GONE);
+1265:         l.addView(none);
+1266:         sizeList[0] = () -> {
+1267:             // ارتفاع القائمة = ما بقي من الشاشة بعد البحث والقسمين المفتوحين
+1268:             float d = getResources().getDisplayMetrics().density;
+1269:             int screen = Math.round(getResources().getDisplayMetrics().heightPixels / d);
+1270:             int used = 54 + 24 + 150;
+1271:             if (secs.getVisibility() == View.VISIBLE) for (int i = 0; i < secs.getChildCount(); i++) {
+1272:                 View c = secs.getChildAt(i);
+1273:                 if (c.getVisibility() != View.VISIBLE) continue;
+1274:                 used += c instanceof Flow ? 46 * Math.max(1, (int) Math.ceil(((Flow) c).getChildCount() / 3.0)) : 34;
+1275:             }
+1276:             int h = Math.max(200, Math.min(720, screen - used));
+1277:             android.view.ViewGroup.LayoutParams lpL = list.getLayoutParams();
+1278:             if (lpL.height != dp(h)) {
+1279:                 lpL.height = dp(h);
+1280:                 list.setLayoutParams(lpL);
+1281:             }
+1282:         };
+1283:         final android.widget.ArrayAdapter<String> ad = new android.widget.ArrayAdapter<>(this, android.R.layout.simple_list_item_1);
+1284:         final List<Model.Office> shown = new ArrayList<>();
+1285:         list.setAdapter(ad);
+1286:         final Runnable fill = () -> {
+1287:             ad.clear();
+1288:             shown.clear();
+1289:             String f = Model.nz(q.getText().toString()).trim().toLowerCase(java.util.Locale.ROOT);
+1290:             for (Model.Office o : all) {
+1291:                 if (f.isEmpty() || officeMatches(o, f)) {
+1292:                     shown.add(o);
+1293:                     ad.add((o.pinned ? "📌 " : "") + o.name + (o.active ? "" : "  (موقوف)"));
+1294:                 }
+1295:             }

@@ -1,0 +1,160 @@
+307:         // ---------------------------------------------------------------- الشعار
+308:         a.title("الشعار");
+309:         a.hint("يظهر في أعلى الصفحة الرئيسية وفي رأس الكشوفات.");
+310:         String mode = get("home_logo_mode", "default");
+311:         a.seg(new String[]{"الافتراضي", "صورتي", "بدون"}, "custom".equals(mode) ? 1 : "none".equals(mode) ? 2 : 0, i -> {
+312:             if (i == 1) {
+313:                 if (get("home_logo", "").isEmpty()) {
+314:                     pickLogo();
+315:                     return;
+316:                 }
+317:                 put("home_logo_mode", "custom");
+318:             } else put("home_logo_mode", i == 2 ? "none" : "default");
+319:             render();
+320:         });
+321:         if ("custom".equals(mode)) a.button("تغيير الصورة…", a.accent, v -> pickLogo());
+322:         if (!"none".equals(mode) && "classic".equals(get("home_style", "modern"))) {
+323:             String size = get("home_logo_size", "medium");
+324:             a.seg(new String[]{"صغير", "متوسط", "كبير"}, "small".equals(size) ? 0 : "large".equals(size) ? 2 : 1,
+325:                     i -> put("home_logo_size", i == 0 ? "small" : i == 2 ? "large" : "medium"));
+326:         }
+327:         } else {
+328:             title = office = welcome = null;
+329:         }
+330: 
+331:         // ---------------------------------------------------------------- الاختصارات / الأزرار
+332:         a.title(classic ? "أزرار الصفحة الرئيسية" : "الاختصارات");
+333:         a.hint("اسحب «≡» للترتيب (أو ▲ و▼)، الدائرة للون، والمربع للإظهار أو الإخفاء. زر الإعدادات يبقى ظاهرًا دائمًا.");
+334:         final LinearLayout orderBox = new LinearLayout(a);
+335:         orderBox.setOrientation(LinearLayout.VERTICAL);
+336:         a.body.addView(orderBox);
+337:         final Runnable[] drawOrder = new Runnable[1];
+338:         // 10.13: الترتيب بالسحب «≡» إلى جانب الأسهم
+339:         final Ui.DragSort ds = a.new DragSort(orderBox, keys -> {
+340:             List<String> ks = new ArrayList<>();
+341:             for (Object o : keys) ks.add((String) o);
+342:             put("home_order", BackupManager.join(ks, ","));
+343:             drawOrder[0].run();
+344:         });
+345:         drawOrder[0] = () -> {
+346:             orderBox.removeAllViews();
+347:             final List<String> order = MainActivity.parseOrder(get("home_order", Db.DEFAULT_ORDER));
+348:             final Set<String> hidden = MainActivity.parseSet(get("home_hidden", ""));
+349:             final Map<String, String> cols = MainActivity.parseColors(get("btn_colors", ""));
+350:             Map<String, String> names = MainActivity.homeNames();
+351:             for (int i = 0; i < order.size(); i++) {
+352:                 final int idx = i;
+353:                 final String k = order.get(i);
+354:                 LinearLayout r = a.row();
+355:                 r.setBackground(a.round(a.surface, a.line, 12));
+356:                 r.setPadding(a.dp(4), a.dp(2), a.dp(4), a.dp(2));
+357:                 r.setGravity(Gravity.CENTER_VERTICAL);
+358:                 TextView hd = ds.handle();
+359:                 r.addView(hd, new LinearLayout.LayoutParams(a.dp(32), a.dp(42)));
+360:                 ds.bind(r, hd, k);
+361:                 r.addView(a.smallButton("▲", Color.rgb(120, 120, 120), v -> {
+362:                     if (idx == 0) return;
+363:                     order.remove(idx);
+364:                     order.add(idx - 1, k);
+365:                     put("home_order", BackupManager.join(order, ","));
+366:                     drawOrder[0].run();
+367:                 }), new LinearLayout.LayoutParams(a.dp(42), a.dp(42)));
+368:                 r.addView(a.smallButton("▼", Color.rgb(120, 120, 120), v -> {
+369:                     if (idx >= order.size() - 1) return;
+370:                     order.remove(idx);
+371:                     order.add(idx + 1, k);
+372:                     put("home_order", BackupManager.join(order, ","));
+373:                     drawOrder[0].run();
+374:                 }), new LinearLayout.LayoutParams(a.dp(42), a.dp(42)));
+375:                 r.addView(a.text(names.get(k), 14, a.ink, true), new LinearLayout.LayoutParams(0, -2, 1));
+376:                 int col = Ui.parseColor(cols.get(k), a.primary);
+377:                 View sw = a.swatch(col, 32);
+378:                 sw.setOnClickListener(v -> paletteDialog("لون: " + MainActivity.homeNames().get(k), PALETTE, true, cols.get(k), hex -> {
+379:                     Map<String, String> m = MainActivity.parseColors(get("btn_colors", ""));
+380:                     if (hex.isEmpty()) m.remove(k);
+381:                     else m.put(k, hex);
+382:                     put("btn_colors", MainActivity.joinColors(m));
+383:                     drawOrder[0].run();
+384:                 }));
+385:                 LinearLayout.LayoutParams swp = new LinearLayout.LayoutParams(a.dp(32), a.dp(32));
+386:                 swp.setMargins(a.dp(6), 0, a.dp(6), 0);
+387:                 r.addView(sw, swp);
+388:                 CheckBox vis = new CheckBox(a);
+389:                 vis.setChecked(!hidden.contains(k));
+390:                 if (k.equals("settings")) vis.setEnabled(false);
+391:                 vis.setOnCheckedChangeListener((b, c) -> {
+392:                     Set<String> h = MainActivity.parseSet(get("home_hidden", ""));
+393:                     if (c) h.remove(k);
+394:                     else h.add(k);
+395:                     put("home_hidden", BackupManager.join(new ArrayList<>(h), ","));
+396:                 });
+397:                 r.addView(vis, new LinearLayout.LayoutParams(-2, -2));
+398:                 LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-1, -2);
+399:                 rp.setMargins(0, a.dp(3), 0, a.dp(3));
+400:                 orderBox.addView(r, rp);
+401:             }
+402:         };
+403:         drawOrder[0].run();
+404: 
+405:         // ---------------------------------------------------------------- الشريط الثابت
+406:         LinearLayout foot = a.row();
+407:         foot.addView(a.makeButton("تم — عرض الرئيسية", a.primary, v -> {
+408:             if (title != null) saveTexts(title, office, welcome);
+409:             a.showHome();
+410:         }), new LinearLayout.LayoutParams(0, a.dp(50), 1));
+411:         android.widget.Button reset = a.makeButton("استعادة الافتراضي", Color.rgb(120, 120, 120), v -> new AlertDialog.Builder(a).setTitle("استعادة الشكل الافتراضي")
+412:                 .setMessage("تعود الألوان والخط والوضع والصفحة الرئيسية وعناصرها والاختصارات إلى الشكل الأصلي. اسم مكتبك ورسالتك لا يتغيران.\n\nالشكل الكلاسيكي يبقى متاحًا كخيار في «الصفحة الرئيسية».")
+413:                 .setPositiveButton("استعادة", (d, w) -> resetDefaults()).setNegativeButton("إلغاء", null).show());
+414:         LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-2, a.dp(50));
+415:         rp.setMargins(a.dp(8), 0, 0, 0);
+416:         foot.addView(reset, rp);
+417:         a.footer(foot);
+418:     }
+419: 
+420:     private EditText textSetting(String hint, final String key, String def) {
+421:         a.add(a.label(hint));
+422:         final EditText e = a.input(hint);
+423:         e.setText(get(key, def));
+424:         e.addTextChangedListener(Ui.watcher(() -> {
+425:             String v = e.getText().toString();
+426:             if (key.equals("app_title") && v.trim().isEmpty()) return;
+427:             put(key, v.trim());
+428:         }));
+429:         return e;
+430:     }
+431: 
+432:     private void saveTexts(EditText title, EditText office, EditText welcome) {
+433:         String t = title.getText().toString().trim();
+434:         put("app_title", t.isEmpty() ? "المحاسب الذكي لمكاتب الحوالات" : t);
+435:         put("office_name", office.getText().toString().trim());
+436:         put("welcome", welcome.getText().toString().trim());
+437:         a.db.audit("SETTING", "settings", 0, "design");
+438:     }
+439: 
+440:     private void resetDefaults() {
+441:         autoSave("قبل استعادة الافتراضي");
+442:         String oldFont = get("app_font", "plex"), oldTheme = get("theme_mode", "light");
+443:         // 10.12: مستخدم بلا صلاحية التصميم يعيد مظهره هو فقط (لا الشعار المشترك)
+444:         for (String[] kv : DEFAULTS) if (shared() || Db.personal(kv[0])) put(kv[0], kv[1]);
+445:         if (perUser()) a.db.deleteSetting("haptics");
+446:         for (String k : RESET_KEYS) a.db.deleteSetting(k);
+447:         a.db.audit("SETTING", "settings", 0, "design-reset");
+448:         a.toast("عاد الشكل الافتراضي للإصدار 7");
+449:         if (!"plex".equals(oldFont) || !"light".equals(oldTheme)) a.restyle("design");
+450:         else {
+451:             a.applyColors();
+452:             render();
+453:         }
+454:     }
+455: 
+456:     // ===================================================================================
+457:     // 11.3: الثيمات الجاهزة وأنماطي المحفوظة
+458:     // ===================================================================================
+459: 
+460:     private View presetChip(final String[] pz) {
+461:         LinearLayout c = new LinearLayout(a);
+462:         c.setOrientation(LinearLayout.VERTICAL);
+463:         c.setGravity(Gravity.CENTER);
+464:         c.setPadding(a.dp(10), a.dp(8), a.dp(10), a.dp(8));
+465:         c.setBackground(a.ripple(a.round(a.surface, a.line, 12), 12));
+466:         LinearLayout sw = new LinearLayout(a);

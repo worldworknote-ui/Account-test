@@ -1,0 +1,160 @@
+300:     private boolean dirFallback() {
+301:         int d = getTextDirection();
+302:         if (d == TEXT_DIRECTION_FIRST_STRONG_LTR) return false;
+303:         if (d == TEXT_DIRECTION_FIRST_STRONG_RTL) return true;
+304:         return isRtl();
+305:     }
+306:     TextLines lines(int width, CharSequence t) {
+307:         if (cache != null && cacheW == width && cacheVersion == textVersion) return cache;
+308:         TextLines.Spec s = new TextLines.Spec();
+309:         s.paint = paint;
+310:         s.width = horizScroll && singleLine ? -1 : width;
+311:         s.mult = spacingMult; s.add = spacingAdd;
+312:         s.dirMode = dirMode();
+313:         s.rtlFallback = dirFallback();
+314:         s.maxLines = maxLines;
+315:         s.ell = ellipsize;
+316:         if (singleLine && ellipsize != null && s.width <= 0) s.width = width;
+317:         s.singleLine = singleLine;
+318:         s.includePad = includePad;
+319:         s.allCaps = allCaps;
+320:         s.density = getResources().getDisplayMetrics().density;
+321:         if (singleLine && ellipsize != null) { s.width = width; s.singleLine = true; }
+322:         TextLines l = TextLines.build(t, s);
+323:         // للسطر الواحد الطويل بلا «…» نقص العرض فقط (كما في أندرويد)
+324:         cache = l;
+325:         cacheW = width;
+326:         cacheVersion = textVersion;
+327:         return l;
+328:     }
+329:     /** الأسطر المعروضة: النص، أو التلميح إن كان فارغًا. */
+330:     protected TextLines currentLines(int width) {
+331:         CharSequence t = shown();
+332:         if (t.length() == 0 && hint != null && hint.length() > 0) return linesFor(hint, width, true);
+333:         return lines(width, t);
+334:     }
+335:     private TextLines hintCache;
+336:     private int hintW = -2, hintV = -1;
+337:     private TextLines linesFor(CharSequence h, int width, boolean isHint) {
+338:         if (hintCache != null && hintW == width && hintV == textVersion) return hintCache;
+339:         TextLines.Spec s = new TextLines.Spec();
+340:         s.paint = paint; s.width = singleLine ? width : width; s.mult = spacingMult; s.add = spacingAdd;
+341:         s.dirMode = dirMode(); s.rtlFallback = dirFallback(); s.maxLines = maxLines; s.ell = singleLine ? TextUtils.TruncateAt.END : ellipsize;
+342:         s.singleLine = singleLine; s.includePad = includePad;
+343:         s.density = getResources().getDisplayMetrics().density;
+344:         hintCache = TextLines.build(h, s);
+345:         hintW = width;
+346:         hintV = textVersion;
+347:         return hintCache;
+348:     }
+349:     private float oneLine() {
+350:         TextLines.Spec s = new TextLines.Spec();
+351:         s.paint = paint; s.includePad = includePad; s.mult = spacingMult; s.add = spacingAdd;
+352:         return TextLines.build("A", s).height();
+353:     }
+354: 
+355:     @Override protected void onMeasure(int ws, int hs) {
+356:         int wm = MeasureSpec.getMode(ws), wsz = MeasureSpec.getSize(ws), hm = MeasureSpec.getMode(hs), hsz = MeasureSpec.getSize(hs);
+357:         Drawable[] cd = absCompound();
+358:         int padH = getPaddingLeft() + getPaddingRight() + cw(cd[0]) + cw(cd[2]);
+359:         int padV = getPaddingTop() + getPaddingBottom() + ch(cd[1]) + ch(cd[3]);
+360:         int width;
+361:         if (autoMax > 0 && wm != MeasureSpec.UNSPECIFIED) autoFit(wsz - padH, hm == MeasureSpec.EXACTLY ? hsz - padV : -1);
+362:         if (wm == MeasureSpec.EXACTLY) width = wsz;
+363:         else {
+364:             TextLines free = linesUnwrapped();
+365:             int desired = (int) Math.ceil(free.maxWidth()) + padH;
+366:             if (ems > 0) desired = Math.round(ems * paint.getTextSize()) + padH;
+367:             for (Drawable d : new Drawable[]{cd[1], cd[3]}) if (d != null) desired = Math.max(desired, d.getBounds().width() + padH);
+368:             desired = Math.max(desired, Math.max(minWidthPx, getSuggestedMinimumWidth()));
+369:             desired = Math.min(desired, maxWidth == Integer.MAX_VALUE ? desired : maxWidth);
+370:             width = wm == MeasureSpec.AT_MOST ? Math.min(desired, wsz) : desired;
+371:         }
+372:         int avail = Math.max(0, width - padH);
+373:         TextLines tl = currentLines(avail);
+374:         float textH = tl.count() == 0 ? oneLine() : tl.height();
+375:         if (exactLines > 0 || minLines > 0) {
+376:             float one = oneLine();
+377:             int want = exactLines > 0 ? exactLines : minLines;
+378:             if (tl.count() < want) textH = Math.max(textH, one * want);
+379:         }
+380:         int h = (int) Math.ceil(textH) + padV;
+381:         for (Drawable d : new Drawable[]{cd[0], cd[2]}) if (d != null) h = Math.max(h, d.getBounds().height() + getPaddingTop() + getPaddingBottom());
+382:         h = Math.max(h, Math.max(minHeightPx, getSuggestedMinimumHeight()));
+383:         if (maxHeight != Integer.MAX_VALUE) h = Math.min(h, maxHeight);
+384:         int height = hm == MeasureSpec.EXACTLY ? hsz : hm == MeasureSpec.AT_MOST ? Math.min(h, hsz) : h;
+385:         setMeasuredDimension(width, height);
+386:     }
+387:     private TextLines unwrapped;
+388:     private int unwrappedV = -1;
+389:     private TextLines linesUnwrapped() {
+390:         if (unwrapped != null && unwrappedV == textVersion) return unwrapped;
+391:         TextLines.Spec s = new TextLines.Spec();
+392:         CharSequence t = shown();
+393:         if (t.length() == 0 && hint != null) t = hint;
+394:         s.paint = paint; s.width = -1; s.dirMode = dirMode(); s.rtlFallback = dirFallback(); s.singleLine = singleLine; s.allCaps = allCaps;
+395:         s.maxLines = Integer.MAX_VALUE; s.includePad = includePad; s.density = getResources().getDisplayMetrics().density;
+396:         unwrapped = TextLines.build(t, s);
+397:         unwrappedV = textVersion;
+398:         return unwrapped;
+399:     }
+400:     private void autoFit(int w, int h) {
+401:         float lo = autoMin, hi = autoMax, best = autoMin;
+402:         float keep = paint.getTextSize();
+403:         for (int i = 0; i < 8; i++) {
+404:             float mid = (lo + hi) / 2f;
+405:             paint.setTextSize(mid);
+406:             textVersion++;
+407:             TextLines.Spec s = new TextLines.Spec();
+408:             s.paint = paint; s.width = singleLine ? -1 : w; s.maxLines = maxLines; s.singleLine = singleLine;
+409:             TextLines l = TextLines.build(shown(), s);
+410:             boolean fits = l.maxWidth() <= w && (h < 0 || l.height() <= h) && l.count() <= maxLines;
+411:             if (fits) { best = mid; lo = mid; } else hi = mid;
+412:         }
+413:         paint.setTextSize(best);
+414:         if (best != keep) textVersion++;
+415:     }
+416: 
+417:     @Override public int getBaseline() {
+418:         int avail = Math.max(0, getWidth() - getCompoundPaddingLeft() - getCompoundPaddingRight());
+419:         TextLines tl = currentLines(avail);
+420:         return getCompoundPaddingTop() + verticalOffset(tl) + Math.round(tl.count() == 0 ? oneLine() * 0.75f : tl.firstBaseline());
+421:     }
+422:     private int verticalOffset(TextLines tl) {
+423:         int vg = gravity & Gravity.VERTICAL_GRAVITY_MASK;
+424:         int boxH = getHeight() - getCompoundPaddingTop() - getCompoundPaddingBottom();
+425:         float th = tl.count() == 0 ? oneLine() : tl.height();
+426:         if (vg == Gravity.TOP) return 0;
+427:         if (vg == Gravity.BOTTOM) return Math.max(0, Math.round(boxH - th));
+428:         return Math.round((boxH - th) / 2f);
+429:     }
+430:     public int getLineCount() { return currentLines(Math.max(0, getWidth() - getCompoundPaddingLeft() - getCompoundPaddingRight())).count(); }
+431:     public Layout getLayout() {
+432:         if (getWidth() == 0) return null;
+433:         return new Layout(shown(), paint, Math.max(1, getWidth() - getCompoundPaddingLeft() - getCompoundPaddingRight()), Layout.Alignment.ALIGN_NORMAL, spacingMult, spacingAdd, isRtl(), maxLines, ellipsize) {};
+434:     }
+435: 
+436:     // ------------------------------------------------------------------ الرسم
+437:     /** خانات الكتابة لا ترسم نصها حين تظهر الخانة الحقيقية فوقها. */
+438:     protected boolean hideTextForOverlay() { return false; }
+439: 
+440:     @Override protected void onDraw(Canvas c) {
+441:         int[] st = getDrawableState();
+442:         Drawable[] cd = absCompound();
+443:         int w = getWidth(), h = getHeight();
+444:         int l = getCompoundPaddingLeft(), r = getCompoundPaddingRight(), t = getCompoundPaddingTop(), b = getCompoundPaddingBottom();
+445:         // الصور الجانبية
+446:         if (cd[0] != null) drawCompound(c, cd[0], getPaddingLeft(), (t + h - b - cd[0].getBounds().height()) / 2);
+447:         if (cd[2] != null) drawCompound(c, cd[2], w - getPaddingRight() - cd[2].getBounds().width(), (t + h - b - cd[2].getBounds().height()) / 2);
+448:         if (cd[1] != null) drawCompound(c, cd[1], (l + w - r - cd[1].getBounds().width()) / 2, getPaddingTop());
+449:         if (cd[3] != null) drawCompound(c, cd[3], (l + w - r - cd[3].getBounds().width()) / 2, h - getPaddingBottom() - cd[3].getBounds().height());
+450:         if (hideTextForOverlay()) {
+451:             if (text.length() > 0) return;
+452:         }
+453:         boolean showingHint = shown().length() == 0;
+454:         if (showingHint && (hint == null || hint.length() == 0)) return;
+455:         int avail = Math.max(0, w - l - r);
+456:         TextLines tl = currentLines(avail);
+457:         int col = showingHint ? hintColor.getColorForState(st, hintColor.getDefaultColor()) : color.getColorForState(st, color.getDefaultColor());
+458:         if (!isEnabled() && !showingHint) col = (Math.round(Color.alpha(col) * 0.5f) << 24) | (col & 0xFFFFFF);
+459:         int hg = Gravity.getAbsoluteGravity(gravity, getLayoutDirection()) & Gravity.HORIZONTAL_GRAVITY_MASK;

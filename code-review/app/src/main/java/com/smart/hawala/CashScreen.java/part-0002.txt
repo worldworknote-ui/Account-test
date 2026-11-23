@@ -1,0 +1,169 @@
+189:         } catch (Throwable e) {
+190:             a.ownActivity = false;
+191:             a.toast("تعذر فتح شاشة التحقق؛ اضغط «فتح الصندوق» للمحاولة من جديد.");
+192:         }
+193:     }
+194: 
+195:     private void pinDialog(final Runnable ok) {
+196:         long until = a.db.settingLong("cash_locked_until", 0);
+197:         if (until > Clock.now()) {
+198:             a.toast("محاولات خاطئة كثيرة. حاول بعد " + Math.max(1, (until - Clock.now()) / 1000) + " ثانية.");
+199:             return;
+200:         }
+201:         final EditText e = a.field("كلمة سر الصندوق");
+202:         Ui.secret(e, false);
+203:         LinearLayout l = new LinearLayout(a);
+204:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+205:         l.addView(e, new LinearLayout.LayoutParams(-1, a.dp(52)));
+206:         final AlertDialog d = new AlertDialog.Builder(a).setTitle("فتح الصندوق").setView(l).setPositiveButton("فتح", null).setNegativeButton("إلغاء", null).create();
+207:         d.setOnShowListener(x -> d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+208:             if (Pin.verify(e.getText().toString(), a.db.setting("cash_pin_salt", ""), a.db.setting("cash_pin_hash", ""))) {
+209:                 a.db.setSettingQuiet("cash_fails", "0");
+210:                 d.dismiss();
+211:                 ok.run();
+212:             } else {
+213:                 int fails = (int) a.db.settingLong("cash_fails", 0) + 1;
+214:                 a.db.setSettingQuiet("cash_fails", "" + fails);
+215:                 long wait = Pin.lockoutMillis(fails);
+216:                 if (wait > 0) {
+217:                     a.db.setSettingQuiet("cash_locked_until", "" + (Clock.now() + wait));
+218:                     d.dismiss();
+219:                     a.toast("محاولات خاطئة كثيرة. انتظر " + wait / 1000 + " ثانية.");
+220:                 } else {
+221:                     e.setText("");
+222:                     e.setError("كلمة السر غير صحيحة");
+223:                 }
+224:             }
+225:         }));
+226:         d.show();
+227:     }
+228: 
+229:     /** ضبط كلمة سر جديدة للصندوق (4 محارف على الأقل، تُكتب مرتين). */
+230:     private void newPin(final Runnable after) {
+231:         final EditText p1 = a.field("كلمة السر (4 محارف على الأقل)"), p2 = a.field("أعد كتابتها");
+232:         Ui.secret(p1, false);
+233:         Ui.secret(p2, false);
+234:         LinearLayout l = new LinearLayout(a);
+235:         l.setOrientation(LinearLayout.VERTICAL);
+236:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+237:         l.addView(p1, a.lp(-1, 52, 2));
+238:         l.addView(p2, a.lp(-1, 52, 2));
+239:         final AlertDialog d = new AlertDialog.Builder(a).setTitle("كلمة سر الصندوق").setView(l).setPositiveButton("حفظ", null).setNegativeButton("إلغاء", null).create();
+240:         d.setOnShowListener(x -> d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+241:             String s1 = p1.getText().toString();
+242:             if (s1.length() < 4) {
+243:                 p1.setError("4 محارف على الأقل");
+244:                 return;
+245:             }
+246:             if (!s1.equals(p2.getText().toString())) {
+247:                 p2.setError("غير متطابقة");
+248:                 return;
+249:             }
+250:             String salt = Pin.newSalt();
+251:             a.db.setSettingQuiet("cash_pin_salt", salt);
+252:             a.db.setSettingQuiet("cash_pin_hash", Pin.hash(s1, salt));
+253:             a.db.setSettingQuiet("cash_lock", LOCK_PIN);
+254:             a.db.setSettingQuiet("cash_fails", "0");
+255:             d.dismiss();
+256:             a.toast("قُفل الصندوق بكلمة سر ✓");
+257:             after.run();
+258:         }));
+259:         d.show();
+260:     }
+261: 
+262:     // ===================================================================================
+263:     // الصفحة الرئيسية للصندوق
+264:     // ===================================================================================
+265: 
+266:     void show() {
+267:         if (!a.require(Auth.Perm.CASH)) return;
+268:         CashBox.Config cfg = a.db.cashConfig();
+269:         if (!cfg.on) {
+270:             setup(true);
+271:             return;
+272:         }
+273:         guard(this::home);
+274:     }
+275: 
+276:     private List<CashBox.Config> activeBoxes() {
+277:         List<CashBox.Config> out = new ArrayList<>();
+278:         for (CashBox.Config c : a.db.cashBoxes()) if (c.active) out.add(c);
+279:         return out;
+280:     }
+281: 
+282:     void home() {
+283:         final CashBox.Config cfg = a.db.cashConfig();
+284:         tabbed(cfg.name, null);
+285:         a.eyeAction(this::home);
+286:         if (a.can(Auth.Perm.SETTINGS)) a.headerAction(R.drawable.ic_sliders, "إعدادات الصندوق", v -> setup(false));
+287:         a.headerAction(R.drawable.ic_report, "تقرير الصندوق", v -> reportFor(a.reportsScreen.range()[0], a.reportsScreen.range()[1], this::home));
+288: 
+289:         // الصناديق: التنقل بينها وإضافة صندوق
+290:         final List<CashBox.Config> boxes = activeBoxes();
+291:         if (boxes.size() > 1 || a.can(Auth.Perm.SETTINGS)) {
+292:             LinearLayout chips = a.row();
+293:             for (final CashBox.Config b : boxes)
+294:                 chips.addView(a.pill(b.name, b.id == cfg.id, v -> {
+295:                     a.db.setCurrentBox(b.id);
+296:                     home();
+297:                 }), a.gap(-2, -2, 3));
+298:             if (a.can(Auth.Perm.SETTINGS)) chips.addView(a.pill("+ صندوق", false, v -> boxForm(null)), a.gap(-2, -2, 3));
+299:             a.body.addView(a.strip(chips), a.lp(-1, -2, 2));
+300:         }
+301: 
+302:         final List<CashBox.Move> moves = a.db.cashMoves(cfg.id);
+303:         Map<String, Long> bal = CashBox.balances(moves, cfg.currencies);
+304:         Map<String, Integer> dec = a.db.decimalsMap();
+305:         hero(cfg, bal, dec);
+306: 
+307:         Map<String, long[]> today = CashBox.todayFlow(moves, Clock.now());
+308:         if (!today.isEmpty()) {
+309:             LinearLayout t = a.card();
+310:             t.addView(a.text("اليوم", 14, a.ink, true));
+311:             for (Map.Entry<String, long[]> e : today.entrySet()) {
+312:                 int d = dec(dec, e.getKey());
+313:                 t.addView(a.text(iso(e.getKey()) + "   داخل " + a.m(iso(Model.fmt(e.getValue()[0], d))) + "   •   خارج " + a.m(iso(Model.fmt(e.getValue()[1], d))), 13, a.dark, false));
+314:             }
+315:         }
+316:         if (cfg.strict) a.notice(R.drawable.ic_shield, "هذا الصندوق مربوط بالمكاتب: الاستلام والتسليم لحساب مكتب أو عميل فقط" + (cfg.allowInternal ? " (المصاريف والبيع والشراء مسموحة)." : "."), false, null, null);
+317:         actions(cfg, boxes.size() > 1);
+318:         clients.homeSummary();
+319:         list(moves, dec);
+320:     }
+321: 
+322:     private void hero(CashBox.Config cfg, Map<String, Long> bal, Map<String, Integer> dec) {
+323:         LinearLayout card = new LinearLayout(a);
+324:         card.setOrientation(LinearLayout.VERTICAL);
+325:         card.setPadding(a.dp(18), a.dp(16), a.dp(18), a.dp(16));
+326:         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR, a.night ? new int[]{Color.rgb(28, 44, 72), Color.rgb(14, 22, 40)} : new int[]{NAVY, NAVY2});
+327:         g.setCornerRadius(a.dp(22));
+328:         card.setBackground(g);
+329:         LinearLayout top = a.row();
+330:         top.addView(plain("النقد في الصندوق", 13, Color.rgb(196, 210, 232), false), new LinearLayout.LayoutParams(0, -2, 1));
+331:         TextView badge = plain(cfg.strict ? "مربوط بالمكاتب" : "حر", 11, Color.rgb(42, 30, 0), true);
+332:         badge.setPadding(a.dp(10), a.dp(2), a.dp(10), a.dp(3));
+333:         GradientDrawable bg = new GradientDrawable();
+334:         bg.setColor(GOLD);
+335:         bg.setCornerRadius(a.dp(50));
+336:         badge.setBackground(bg);
+337:         top.addView(badge, new LinearLayout.LayoutParams(-2, -2));
+338:         card.addView(top);
+339:         Ledger.Valuation v = Ledger.valueOffice(bal, a.db.usdRates(), dec);
+340:         BigDecimal net = v.netUsd();
+341:         TextView total = plain("≈ " + a.m(iso(Model.fmt(net.setScale(0, RoundingMode.HALF_EVEN).longValue(), 0) + " USD")), 26, Color.WHITE, true);
+342:         total.setPadding(0, a.dp(4), 0, a.dp(2));
+343:         card.addView(total);
+344:         card.addView(plain("مجموع الصندوق مقوّمًا بالدولار حسب أسعار الصرف" + (v.missingRates.isEmpty() ? "" : " (بلا سعر: " + Model.join(new ArrayList<>(v.missingRates), "، ") + ")"),
+345:                 11, Color.rgb(170, 186, 212), false));
+346:         View div = new View(a);
+347:         div.setBackgroundColor(Color.argb(50, 255, 255, 255));
+348:         LinearLayout.LayoutParams dp = new LinearLayout.LayoutParams(-1, Math.max(1, a.dp(1)));
+349:         dp.setMargins(0, a.dp(10), 0, a.dp(6));
+350:         card.addView(div, dp);
+351:         Map<String, String> names = a.db.currencyNames();
+352:         for (Map.Entry<String, Long> e : bal.entrySet()) {
+353:             LinearLayout r = a.row();
+354:             r.setPadding(0, a.dp(3), 0, a.dp(3));
+355:             String nm = names.get(e.getKey());
+356:             r.addView(plain(nm == null || nm.isEmpty() ? e.getKey() : nm + " · " + e.getKey(), 14, Color.rgb(214, 224, 240), false), new LinearLayout.LayoutParams(0, -2, 1));
+357:             long b = e.getValue();

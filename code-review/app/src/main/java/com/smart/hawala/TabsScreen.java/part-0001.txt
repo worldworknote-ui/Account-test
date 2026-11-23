@@ -1,0 +1,169 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.graphics.Color;
+5: import android.graphics.drawable.GradientDrawable;
+6: import android.view.Gravity;
+7: import android.view.View;
+8: import android.widget.CheckBox;
+9: import android.widget.FrameLayout;
+10: import android.widget.ImageView;
+11: import android.widget.LinearLayout;
+12: import android.widget.Switch;
+13: import android.widget.TextView;
+14: import java.util.ArrayList;
+15: import java.util.Arrays;
+16: import java.util.List;
+17: 
+18: /**
+19:  * 10.2: تخصيص الشريط السفلي: ماذا يظهر فيه وبأي ترتيب (من اليمين إلى اليسار).
+20:  * «المزيد» يبقى دائمًا (منه كل الإعدادات)، والحد 6 عناصر في الهاتف وحتى 10 في الشاشات العريضة (11.5). ما لا يملك المستخدم صلاحيته لا يظهر له مهما كان الترتيب.
+21:  * 10.15: كل إعدادات الشريط هنا (من «المزيد ← الشريط السفلي»): النمط (الزجاجي بتجويف من «أموالي»، أو الجزيرة، أو الدائرة)،
+22:  * وشكل الشريط الزجاجي وحجمه وألوانه وشفافيته ولون الدائرة والأيقونات والأسماء، وقائمة «+» (محتواها وترتيبها ولون كل زر
+23:  * وشكلها وحجمها). كل تغيير يُحفظ فورًا لهذا المستخدم وحده ويظهر في الشريط أسفل الشاشة.
+24:  */
+25: final class TabsScreen {
+26:     private final MainActivity a;
+27: 
+28:     TabsScreen(MainActivity a) { this.a = a; }
+29: 
+30:     /** 11.5: الحد الأدنى للحد (الهاتف)؛ الحد الفعلي من عرض الشاشة: {@link MainActivity#maxTabs()}. */
+31:     static final int MIN_MAX = 6;
+32: 
+33:     private NavPrefs p() { return NavPrefs.from(a.nav().toJson()); }
+34: 
+35:     private void save(NavPrefs p) {
+36:         a.saveNav(p);
+37:         show();
+38:     }
+39: 
+40:     void show() {
+41:         a.here(this::show);
+42:         a.tabbedScreen("الشريط السفلي", a.moreScreen::show, "more");
+43:         final String style = a.tabStyle();
+44:         final boolean notch = NavPrefs.STYLE_NOTCH.equals(style);
+45:         final NavPrefs p = p();
+46:         if (notch && p.plusMenu && a.fanKeys().size() >= 2 && a.savedTabs().contains("tx") && a.tabAllowed("tx"))
+47:             a.headerAction(R.drawable.ic_eye, "معاينة قائمة «+»", v -> {
+48:                 if (a.tabs instanceof NotchBar) {
+49:                     List<String> keys = a.tabKeys();
+50:                     a.plusPressed((NotchBar) a.tabs, keys.indexOf("tx"), Math.max(0, keys.indexOf("more")));
+51:                 }
+52:             });
+53:         a.hint("كل تغيير يُحفظ فورًا ويظهر في الشريط أسفل الشاشة" + (a.db.usersEnabled() ? "، وهو لك وحدك لا يتغيّر عند غيرك من المستخدمين." : "."));
+54: 
+55:         // ===== النمط =====
+56:         a.title("نمط الشريط");
+57:         int si = Arrays.asList(NavPrefs.STYLES).indexOf(style);
+58:         a.seg(NavPrefs.STYLE_NAMES, Math.max(0, si), i -> {
+59:             a.db.setSettingQuiet("tab_style", NavPrefs.STYLES[i]);
+60:             Ui.bubbleOpen = false;
+61:             show();
+62:         });
+63:         a.hint(notch ? "«زجاجي بتجويف»: التبويب المفتوح دائرة بارزة بلونه تنزلق إلى التبويب الجديد، و«+» يفتح قائمة سريعة كالمروحة."
+64:                 : NavPrefs.STYLE_BUBBLE.equals(style) ? "«دائرة تتمدد»: الشريط دائرة واحدة، تضغطها فيتمدد يمينًا وشمالًا و«تسجيل» في الوسط."
+65:                 : "«جزيرة»: الشريط السابق — كبسولة عائمة، والتبويب الحالي في إطار بلونه، و«تسجيل» زر بارز في الوسط.");
+66: 
+67:         if (notch) {
+68:             // ===== الشكل والحجم =====
+69:             a.title("الشكل والحجم");
+70:             LinearLayout c0 = a.card();
+71:             c0.addView(a.text("الشكل", 14, a.ink, true));
+72:             Ui.Seg shape = a.new Seg(NavPrefs.BAR_SHAPES, null, p.barFloat ? 1 : 0, false);
+73:             shape.listener = i -> {
+74:                 p.barFloat = i == 1;
+75:                 save(p);
+76:             };
+77:             c0.addView(shape.view);
+78:             c0.addView(a.text("الحجم", 14, a.ink, true), a.lp(-1, -2, 8));
+79:             Ui.Seg bsz = a.new Seg(NavPrefs.SIZES, null, p.barSize, false);
+80:             bsz.listener = i -> {
+81:                 p.barSize = i;
+82:                 save(p);
+83:             };
+84:             c0.addView(bsz.view);
+85:             c0.addView(a.text("أسماء الأزرار تحت الأيقونات", 14, a.ink, true), a.lp(-1, -2, 8));
+86:             Ui.Seg lb = a.new Seg(new String[]{"ظاهرة", "أيقونات فقط"}, null, p.labels ? 0 : 1, false);
+87:             lb.listener = i -> {
+88:                 p.labels = i == 0;
+89:                 save(p);
+90:             };
+91:             c0.addView(lb.view);
+92: 
+93:             // ===== الألوان =====
+94:             a.title("ألوان الشريط");
+95:             LinearLayout c1 = a.card();
+96:             c1.addView(a.text("لون الشريط", 14, a.ink, true));
+97:             c1.addView(a.text("«تلقائي» = لون الشريط العلوي للتطبيق (يتبع ألوانك والوضع الليلي).", 12, a.muted, false));
+98:             c1.addView(swatches(NavPrefs.BAR_COLORS, p.barColor, col -> {
+99:                 p.barColor = col;
+100:                 save(p);
+101:             }));
+102:             c1.addView(a.text("الشفافية", 14, a.ink, true), a.lp(-1, -2, 8));
+103:             Ui.Seg al = a.new Seg(NavPrefs.ALPHA_NAMES, null, p.barAlpha, false);
+104:             al.listener = i -> {
+105:                 p.barAlpha = i;
+106:                 save(p);
+107:             };
+108:             c1.addView(al.view);
+109:             c1.addView(a.text("لون الدائرة (التبويب المفتوح)", 14, a.ink, true), a.lp(-1, -2, 8));
+110:             c1.addView(a.text("«تلقائي» = لكل تبويب لونه (الرئيسية أزرق، المكاتب فيروزي، الصندوق ذهبي…).", 12, a.muted, false));
+111:             c1.addView(swatches(NavPrefs.CIRCLE_COLORS, p.circleColor, col -> {
+112:                 p.circleColor = col;
+113:                 save(p);
+114:             }));
+115:             c1.addView(a.text("لون الأيقونات", 14, a.ink, true), a.lp(-1, -2, 8));
+116:             c1.addView(swatches(NavPrefs.ICON_COLORS, p.iconColor, col -> {
+117:                 p.iconColor = col;
+118:                 save(p);
+119:             }));
+120:         }
+121: 
+122:         // ===== الأزرار وترتيبها =====
+123:         a.title("أزرار الشريط وترتيبها");
+124:         a.hint("اختر ما يظهر في الشريط ورتّبه بسحب «≡» (أو بالأسهم): الأول يظهر في أقصى اليمين والأخير في أقصى اليسار. حتى " + a.maxTabs() + " عناصر، و«المزيد» دائمًا."
+125:                 + (notch ? " ضع «تسجيل» في الوسط ليكون زر «+»." : ""));
+126:         tabsList();
+127: 
+128:         if (notch) fanSection(p);
+129: 
+130:         a.button("الترتيب الافتراضي للأزرار (الصندوق في أقصى اليسار)", a.accent, v -> {
+131:             a.db.deleteSetting("tabs");
+132:             show();
+133:         });
+134:         a.body.addView(a.smallButton("استعادة إعدادات الشريط الافتراضية", Color.rgb(130, 130, 130), v -> a.confirm("استعادة الافتراضي؟",
+135:                 "يعود النمط إلى «زجاجي بتجويف» وتعود ألوانه وحجمه وقائمة «+» كما كانت. ترتيب الأزرار لا يتغيّر.", "استعادة", () -> {
+136:                     a.db.deleteSetting("tab_style");
+137:                     a.db.deleteSetting("nav_prefs");
+138:                     Ui.bubbleOpen = false;
+139:                     show();
+140:                 })), a.lp(-1, 44, 6));
+141:     }
+142: 
+143:     // ===================================================================================
+144:     // أزرار الشريط (10.2، والسحب من 10.13)
+145:     // ===================================================================================
+146: 
+147:     private void tabsList() {
+148:         final List<String> on = new ArrayList<>(a.savedTabs());
+149:         final LinearLayout box = new LinearLayout(a);
+150:         box.setOrientation(LinearLayout.VERTICAL);
+151:         a.body.addView(box);
+152:         final Runnable[] draw = new Runnable[1];
+153:         final Ui.DragSort ds = a.new DragSort(box, keys -> {
+154:             on.clear();
+155:             for (Object o : keys) on.add((String) o);
+156:             saveTabs(on);
+157:         });
+158:         draw[0] = () -> {
+159:             box.removeAllViews();
+160:             List<String> order = new ArrayList<>(on);
+161:             for (String[] t : Ui.TAB_ALL) if (!order.contains(t[0])) order.add(t[0]);
+162:             for (final String k : order) {
+163:                 final boolean shown = on.contains(k);
+164:                 LinearLayout r = a.row();
+165:                 r.setPadding(a.dp(8), a.dp(6), a.dp(4), a.dp(6));
+166:                 r.setBackground(a.round(shown ? a.surface : Ui.mix(a.surface, a.bg, 0.6f), a.line, 14));
+167:                 r.setGravity(Gravity.CENTER_VERTICAL);
+168:                 if (shown) {
+169:                     TextView h = ds.handle();

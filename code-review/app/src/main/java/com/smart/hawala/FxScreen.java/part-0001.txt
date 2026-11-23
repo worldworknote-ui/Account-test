@@ -1,0 +1,174 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.AlertDialog;
+4: import android.widget.Button;
+5: import android.widget.EditText;
+6: import android.widget.LinearLayout;
+7: import android.widget.TextView;
+8: import java.util.List;
+9: 
+10: /**
+11:  * 8.0: تبديل عملة مع مكتب (ساقان مرتبطتان بسعر)، ودمج مكتبين.
+12:  * 10.6: «تسجيل حركة قص عملات» و«تسجيل حركة بين مكتبين» شاشتان كاملتان بأسلوب «تسجيل حركة»، تُفتحان من زر «تسجيل» أو من صفحة المكتب.
+13:  * التبديل: «لنا» بعملة و«علينا» بأخرى في عملية واحدة؛ يُحفظ السعر فيظهر ربح فرق العملة في تقارير صاحب المكتب.
+14:  */
+15: final class FxScreen {
+16:     private final MainActivity a;
+17: 
+18:     FxScreen(MainActivity a) { this.a = a; }
+19: 
+20:     // ===================================================================================
+21:     // 10.6: عناصر مشتركة بين شاشتي القص والتحويل (بأسلوب شاشة «تسجيل حركة» نفسها)
+22:     // ===================================================================================
+23: 
+24:     /** بطاقة ملوّنة بعنوان ونقطة بلونها (طرف «لنا» بالأخضر و«علينا» بالأحمر). */
+25:     private LinearLayout sideCard(String title, String sub, int color, int fill) {
+26:         LinearLayout c = new LinearLayout(a);
+27:         c.setOrientation(LinearLayout.VERTICAL);
+28:         c.setPadding(a.dp(14), a.dp(10), a.dp(14), a.dp(12));
+29:         c.setBackground(a.round(fill, Ui.mix(fill, color, 0.45f), 18));
+30:         LinearLayout h = a.row();
+31:         android.view.View dot = new android.view.View(a);
+32:         android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
+33:         g.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+34:         g.setColor(color);
+35:         dot.setBackground(g);
+36:         LinearLayout.LayoutParams dp = new LinearLayout.LayoutParams(a.dp(10), a.dp(10));
+37:         dp.setMargins(a.dp(2), 0, a.dp(4), 0);
+38:         h.addView(dot, dp);
+39:         h.addView(a.text(title, 16, color, true), new LinearLayout.LayoutParams(0, -2, 1));
+40:         c.addView(h);
+41:         if (sub != null && !sub.isEmpty()) c.addView(a.text(sub, 12, a.muted, false));
+42:         a.body.addView(c, a.lp(-1, -2, 5));
+43:         return c;
+44:     }
+45: 
+46:     /** خانة مبلغ كبيرة (كخانة المبلغ في «تسجيل حركة»). */
+47:     private EditText bigAmount(LinearLayout into, String label) {
+48:         into.addView(a.text(label, 13, a.dark, true));
+49:         EditText e = a.field("0");
+50:         e.setContentDescription(label);
+51:         Ui.numeric(e);
+52:         e.setTextSize(22);
+53:         Ui.bold(e);
+54:         into.addView(e, a.lp(-1, 56, 4));
+55:         return e;
+56:     }
+57: 
+58:     /** أزرار العملات (تمرير أفقي) داخل حامل؛ لا عملة محددة مسبقًا. */
+59:     private Ui.Seg curChips(LinearLayout holder, List<String> codes, int color, Ui.OnPick l, String empty) {
+60:         holder.removeAllViews();
+61:         if (codes.isEmpty()) {
+62:             holder.addView(a.text(empty, 13, a.red, false));
+63:             return null;
+64:         }
+65:         Ui.Seg s = a.new Seg(codes.toArray(new String[0]), new int[]{color}, -1, true);
+66:         s.listener = l;
+67:         holder.addView(s.view, new LinearLayout.LayoutParams(-1, -2));
+68:         return s;
+69:     }
+70: 
+71:     /** زر دائري صغير في المنتصف (قلب العملية أو تبديل الطرفين). */
+72:     private Button swapButton(String label, android.view.View.OnClickListener l) {
+73:         Button b = a.smallButton(label, a.accent, l);
+74:         LinearLayout r = a.row();
+75:         r.setGravity(android.view.Gravity.CENTER);
+76:         r.addView(b, new LinearLayout.LayoutParams(-2, a.dp(40)));
+77:         a.body.addView(r, a.lp(-1, -2, 0));
+78:         return b;
+79:     }
+80: 
+81:     private static String balanceLine(Db db, Model.Office o) {
+82:         StringBuilder sb = new StringBuilder();
+83:         for (java.util.Map.Entry<String, Long> e : db.balances(o.id).entrySet()) {
+84:             if (sb.length() > 0) sb.append("   •   ");
+85:             sb.append(e.getKey()).append(": ").append(Model.bal(e.getValue(), db.decimals(e.getKey())));
+86:         }
+87:         return sb.length() == 0 ? "لا رصيد بعد" : "الرصيد الحالي: " + sb;
+88:     }
+89: 
+90:     /** بطاقة الملخص (العنوان أحمر، والناقص بالأحمر مع ✗) وسطر الشريط الثابت — كملخص «تسجيل حركة». */
+91:     private void renderSummary(LinearLayout box, TextView footer, List<String> lines, String okLine, int okColor) {
+92:         List<String> missing = new java.util.ArrayList<>();
+93:         box.removeAllViews();
+94:         TextView head = a.text(lines.get(0), 14, a.red, true);
+95:         head.setPadding(a.dp(2), 0, a.dp(2), a.dp(4));
+96:         box.addView(head);
+97:         for (int i = 1; i < lines.size(); i++) {
+98:             String l = lines.get(i);
+99:             boolean bad = l.startsWith("✗");
+100:             // 10.8: جدول المقاصة «▤عملة|قبل|الأثر|بعد»
+101:             if (l.startsWith("▤")) {
+102:                 String[] c = l.substring(1).split("\\|", 4);
+103:                 if (i == 1 || !lines.get(i - 1).startsWith("▤")) box.addView(tableRow(new String[]{"العملة", "قبل", "أثر العملية", "بعد"}, true));
+104:                 box.addView(tableRow(c, false));
+105:                 continue;
+106:             }
+107:             if (l.startsWith("⚠")) {
+108:                 // تنبيه غير مانع: سطر كامل بالأحمر، لا يُعد ناقصًا
+109:                 TextView w = a.text(l, 13, a.red, true);
+110:                 w.setBackground(a.round(a.debitBg, a.debitBg, 8));
+111:                 box.addView(w, a.lp(-1, -2, 2));
+112:                 continue;
+113:             }
+114:             String body = bad ? l.substring(1).trim() : l;
+115:             int c = body.indexOf(": ");
+116:             String label = c > 0 ? body.substring(0, c) : body;
+117:             String value = c > 0 ? body.substring(c + 2) : "";
+118:             if (bad) missing.add(label);
+119:             LinearLayout r = a.row();
+120:             r.setPadding(0, a.dp(1), 0, a.dp(1));
+121:             TextView lt = a.text((bad ? "✗ " : "") + label, 13, bad ? a.red : a.muted, bad);
+122:             lt.setPadding(a.dp(2), a.dp(2), a.dp(2), a.dp(2));
+123:             r.addView(lt, new LinearLayout.LayoutParams(a.dp(104), -2));
+124:             TextView vt = a.text(value, 14, bad ? a.red : a.ink, true);
+125:             vt.setPadding(a.dp(2), a.dp(2), a.dp(2), a.dp(2));
+126:             r.addView(vt, new LinearLayout.LayoutParams(0, -2, 1));
+127:             box.addView(r);
+128:         }
+129:         if (missing.isEmpty()) {
+130:             footer.setText("✓ " + okLine);
+131:             footer.setTextColor(a.readable(okColor));
+132:         } else {
+133:             footer.setText("ناقص: " + Model.join(missing, "، "));
+134:             footer.setTextColor(a.red);
+135:         }
+136:     }
+137: 
+138:     /** صف من جدول المقاصة (العملة، قبل، أثر العملية، بعد). */
+139:     private LinearLayout tableRow(String[] c, boolean head) {
+140:         LinearLayout r = a.row();
+141:         r.setPadding(0, a.dp(2), 0, a.dp(2));
+142:         if (head) r.setBackground(a.round(Ui.mix(a.surface, a.line, 0.5f), Ui.mix(a.surface, a.line, 0.5f), 6));
+143:         float[] w = {0.7f, 1.2f, 1.2f, 1.3f};
+144:         for (int k = 0; k < 4; k++) {
+145:             int col = head ? a.muted : k == 2 ? (c[2].startsWith("خصم") ? a.red : a.green) : a.ink;
+146:             TextView t = a.text(c[k], head ? 12 : 13, col, !head && (k == 0 || k == 3));
+147:             t.setPadding(a.dp(3), a.dp(2), a.dp(3), a.dp(2));
+148:             r.addView(t, new LinearLayout.LayoutParams(0, -2, w[k]));
+149:         }
+150:         return r;
+151:     }
+152: 
+153:     /** الملخص والشريط الثابت أسفل الشاشة (ملخص مختصر + زر التسجيل ظاهران دائمًا). */
+154:     /** 10.13: أول عنصر في العمود الثاني على الشاشة العريضة (بطاقة الطرف الثاني). */
+155:     private android.view.View splitMark;
+156: 
+157:     private Object[] summaryAndFooter(String saveLabel, android.view.View.OnClickListener save) {
+158:         LinearLayout summary = new LinearLayout(a);
+159:         summary.setOrientation(LinearLayout.VERTICAL);
+160:         summary.setPadding(a.dp(14), a.dp(10), a.dp(14), a.dp(10));
+161:         summary.setBackground(a.round(Ui.mix(a.surface, a.red, a.night ? 0.12f : 0.045f), Ui.mix(a.line, a.red, 0.55f), 16));
+162:         a.body.addView(summary, a.lp(-1, -2, 8));
+163:         LinearLayout foot = new LinearLayout(a);
+164:         foot.setOrientation(LinearLayout.VERTICAL);
+165:         TextView line = a.text("", 13, a.red, true);
+166:         line.setSingleLine(true);
+167:         line.setEllipsize(android.text.TextUtils.TruncateAt.END);
+168:         line.setPadding(a.dp(4), 0, a.dp(4), a.dp(2));
+169:         foot.addView(line, new LinearLayout.LayoutParams(-1, -2));
+170:         a.hideWithKeyboard = line;
+171:         Button b = a.makeButton(saveLabel, a.primary, save);
+172:         // 10.9: اضغط مطوّلًا حتى يمتلئ الزر، ثم تظهر نافذة التأكيد نفسها
+173:         a.holdToConfirm(b);
+174:         LinearLayout.LayoutParams sbp = new LinearLayout.LayoutParams(-1, a.dp(50));

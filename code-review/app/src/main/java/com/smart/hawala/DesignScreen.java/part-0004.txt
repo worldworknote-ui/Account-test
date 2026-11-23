@@ -1,0 +1,186 @@
+467:         sw.setOrientation(LinearLayout.HORIZONTAL);
+468:         sw.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+469:         int[] cols = {Ui.parseColor(pz[1], a.primary), Ui.parseColor(pz[2], a.accent), Ui.parseColor(pz[4], a.bg),
+470:                 pz[5].isEmpty() ? Color.rgb(11, 20, 17) : Ui.parseColor(pz[5], Color.BLACK)};
+471:         for (int col : cols) {
+472:             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(a.dp(18), a.dp(18));
+473:             lp.setMargins(a.dp(1), 0, a.dp(1), 0);
+474:             sw.addView(a.swatch(col, 18), lp);
+475:         }
+476:         c.addView(sw);
+477:         c.addView(a.text(pz[0], 13, a.ink, true));
+478:         c.setContentDescription("ثيم " + pz[0]);
+479:         c.setOnClickListener(v -> new AlertDialog.Builder(a).setTitle("ثيم «" + pz[0] + "»")
+480:                 .setMessage("تتغيّر الألوان وخلفية الليل والزر المختار. شكلك الحالي يُحفظ أولًا في «أنماطي» لتعود إليه.")
+481:                 .setPositiveButton("تطبيق", (d, w) -> applyPreset(pz)).setNegativeButton("إلغاء", null).show());
+482:         return c;
+483:     }
+484: 
+485:     private void applyPreset(String[] pz) {
+486:         autoSave("قبل ثيم «" + pz[0] + "»");
+487:         put("primary_color", pz[1]);
+488:         put("accent_color", pz[2]);
+489:         put("header_color", pz[3]);
+490:         put("bg_color", pz[4]);
+491:         put("night_bg", pz[5]);
+492:         put("tab_tint", "primary");
+493:         a.db.audit("SETTING", "settings", 0, "design-preset");
+494:         a.toast("طُبّق ثيم «" + pz[0] + "»");
+495:         a.restyle("design");
+496:     }
+497: 
+498:     private org.json.JSONArray styles() {
+499:         try {
+500:             return new org.json.JSONArray(get("design_styles", "[]"));
+501:         } catch (Exception e) {
+502:             return new org.json.JSONArray();
+503:         }
+504:     }
+505: 
+506:     private org.json.JSONObject snapshot() throws org.json.JSONException {
+507:         org.json.JSONObject v = new org.json.JSONObject();
+508:         for (String k : styleKeys()) {
+509:             String x = a.db.setting(k, null);
+510:             v.put(k, x == null ? org.json.JSONObject.NULL : x);
+511:         }
+512:         return v;
+513:     }
+514: 
+515:     /** يحفظ الشكل الحالي باسم (نمط يدوي)، أو تلقائيًا قبل تغيير كبير (يبقى آخر 3 تلقائية فقط). */
+516:     private void saveStyle(String name, boolean auto) {
+517:         try {
+518:             org.json.JSONArray old = styles(), out = new org.json.JSONArray();
+519:             org.json.JSONObject st = new org.json.JSONObject().put("name", name).put("at", Clock.now()).put("auto", auto).put("v", snapshot());
+520:             out.put(st);
+521:             int autos = auto ? 1 : 0;
+522:             for (int i = 0; i < old.length(); i++) {
+523:                 org.json.JSONObject o = old.getJSONObject(i);
+524:                 if (!auto && o.optString("name").equals(name) && !o.optBoolean("auto")) continue;
+525:                 if (o.optBoolean("auto") && ++autos > 3) continue;
+526:                 if (out.length() >= 20) break;
+527:                 out.put(o);
+528:             }
+529:             put("design_styles", out.toString());
+530:         } catch (Exception e) {
+531:             a.error(e);
+532:         }
+533:     }
+534: 
+535:     private void autoSave(String why) { saveStyle(why + " — " + Model.date(Clock.now()), true); }
+536: 
+537:     private void applyStyle(org.json.JSONObject st) {
+538:         autoSave("قبل «" + st.optString("name") + "»");
+539:         org.json.JSONObject v = st.optJSONObject("v");
+540:         if (v == null) return;
+541:         for (String k : styleKeys()) {
+542:             if (!v.has(k)) continue;
+543:             if (v.isNull(k)) a.db.deleteSetting(k);
+544:             else put(k, v.optString(k));
+545:         }
+546:         a.db.audit("SETTING", "settings", 0, "design-style");
+547:         a.toast("عاد نمط «" + st.optString("name") + "»");
+548:         a.restyle("design");
+549:     }
+550: 
+551:     private void myStyles() {
+552:         a.title("أنماطي");
+553:         final org.json.JSONArray list = styles();
+554:         LinearLayout g = a.group();
+555:         for (int i = 0; i < list.length(); i++) {
+556:             final org.json.JSONObject st = list.optJSONObject(i);
+557:             if (st == null) continue;
+558:             final int idx = i;
+559:             View row = a.groupRow(g, st.optBoolean("auto") ? R.drawable.ic_sync : R.drawable.ic_edit, a.primaryInk, st.optString("name"),
+560:                     st.optBoolean("auto") ? "حُفظ تلقائيًا" : "حفظته في " + Model.date(st.optLong("at")), "تطبيق", v -> applyStyle(st));
+561:             row.setOnLongClickListener(v -> {
+562:                 new AlertDialog.Builder(a).setTitle(st.optString("name"))
+563:                         .setItems(new String[]{"تطبيق", "حذف"}, (d, w) -> {
+564:                             if (w == 0) applyStyle(st);
+565:                             else deleteStyle(idx);
+566:                         }).show();
+567:                 return true;
+568:             });
+569:         }
+570:         if (list.length() == 0) a.hint("لا أنماط بعد. احفظ شكلك الحالي لتعود إليه بعد أي تجربة.");
+571:         else a.hint("اضغط مطولًا على نمط لحذفه.");
+572:         a.button("حفظ الشكل الحالي كنمط…", a.accent, v -> {
+573:             final EditText name = a.field("اسم النمط");
+574:             name.setText("نمطي " + (list.length() + 1));
+575:             new AlertDialog.Builder(a).setTitle("حفظ الشكل الحالي").setView(name)
+576:                     .setPositiveButton("حفظ", (d, w) -> {
+577:                         String n = name.getText().toString().trim();
+578:                         saveStyle(n.isEmpty() ? "نمطي" : n, false);
+579:                         a.toast("حُفظ «" + (n.isEmpty() ? "نمطي" : n) + "»");
+580:                         render();
+581:                     }).setNegativeButton("إلغاء", null).show();
+582:         });
+583:     }
+584: 
+585:     private void deleteStyle(int idx) {
+586:         org.json.JSONArray l = styles(), out = new org.json.JSONArray();
+587:         for (int i = 0; i < l.length(); i++) if (i != idx) out.put(l.opt(i));
+588:         put("design_styles", out.toString());
+589:         render();
+590:     }
+591: 
+592:     private void colorRow(String label, final String key, final String def, final String[][] palette, final boolean allowDefault) {
+593:         final LinearLayout r = a.row();
+594:         r.setBackground(a.ripple(a.round(a.surface, a.line, 12), 12));
+595:         r.setPadding(a.dp(12), a.dp(8), a.dp(10), a.dp(8));
+596:         r.addView(a.text(label, 14, a.ink, true), new LinearLayout.LayoutParams(0, -2, 1));
+597:         String v = get(key, def);
+598:         boolean auto = v == null || v.trim().isEmpty();
+599:         boolean nightKey = key.equals("night_bg");
+600:         int col = auto ? (key.equals("header_color") ? a.bg : nightKey ? (a.night ? a.bg : Color.rgb(17, 19, 22)) : a.primary) : Ui.parseColor(v, a.primary);
+601:         r.addView(a.text(auto ? (nightKey ? "تلقائي" : "بلون الخلفية") : v.toUpperCase(Locale.US), 12, a.muted, false), new LinearLayout.LayoutParams(-2, -2));
+602:         r.addView(a.swatch(col, 34), new LinearLayout.LayoutParams(a.dp(34), a.dp(34)));
+603:         r.setOnClickListener(x -> paletteDialog(label, palette, allowDefault, auto ? null : v, h -> {
+604:             put(key, h);
+605:             if (nightKey && a.night) a.restyle("design");
+606:             else {
+607:                 a.applyColors();
+608:                 render();
+609:             }
+610:         }));
+611:         a.body.addView(r, a.lp(-1, -2, 4));
+612:     }
+613: 
+614:     static int indexOf(String[] keys, String v) {
+615:         for (int i = 0; i < keys.length; i++) if (keys[i].equals(v)) return i;
+616:         return 0;
+617:     }
+618: 
+619:     android.graphics.Typeface typeface(String key) {
+620:         try {
+621:             switch (key) {
+622:                 case "cairo": return a.getResources().getFont(R.font.cairo);
+623:                 case "kufi": return a.getResources().getFont(R.font.kufi);
+624:                 case "system": return android.graphics.Typeface.DEFAULT;
+625:                 default: return a.getResources().getFont(R.font.plex);
+626:             }
+627:         } catch (Exception e) {
+628:             return android.graphics.Typeface.DEFAULT;
+629:         }
+630:     }
+631: 
+632:     // ===================================================================================
+633:     // الشعار
+634:     // ===================================================================================
+635: 
+636:     private void pickLogo() {
+637:         pickingLogo = true;
+638:         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+639:         i.addCategory(Intent.CATEGORY_OPENABLE);
+640:         i.setType("image/*");
+641:         a.startForResult(i, MainActivity.PICK_LOGO);
+642:     }
+643: 
+644:     /** يصغّر الصورة إلى 512 بكسل كحد أقصى ويحفظها PNG إن كانت شفافة وإلا JPEG، كنص base64. */
+645:     static String encodeLogo(byte[] raw) throws Exception {
+646:         if (!ImageUtil.isImage(raw)) throw new Exception("الملف المختار ليس صورة صالحة.");
+647:         Bitmap bm = ImageUtil.decodeSampled(raw, 1024);
+648:         if (bm == null) throw new Exception("تعذر قراءة الصورة.");
+649:         int max = 512;
+650:         int w = bm.getWidth(), h = bm.getHeight();
+651:         if (w > max || h > max) {
+652:             float f = Math.min(max / (float) w, max / (float) h);

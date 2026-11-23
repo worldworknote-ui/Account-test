@@ -1,0 +1,92 @@
+1: package android.widget;
+2: 
+3: import android.content.Context;
+4: import android.database.DataSetObserver;
+5: import android.graphics.Canvas;
+6: import android.graphics.drawable.*;
+7: import android.view.*;
+8: 
+9: /** قائمة قابلة للتمرير تبني سطرًا لكل عنصر من المحوّل (القوائم في التطبيق صغيرة). */
+10: public class ListView extends AdapterView<ListAdapter> {
+11:     public static final int CHOICE_MODE_NONE = 0, CHOICE_MODE_SINGLE = 1, CHOICE_MODE_MULTIPLE = 2;
+12:     private ListAdapter adapter;
+13:     private final ScrollView scroll;
+14:     private final LinearLayout box;
+15:     private final DataSetObserver obs = new DataSetObserver() { @Override public void onChanged() { rebuild(); } @Override public void onInvalidated() { rebuild(); } };
+16:     private Drawable divider;
+17:     private int dividerH = 1;
+18:     private int choice, checkedPos = -1;
+19: 
+20:     public ListView(Context c) {
+21:         super(c);
+22:         scroll = new ScrollView(c);
+23:         box = new LinearLayout(c);
+24:         box.setOrientation(LinearLayout.VERTICAL);
+25:         scroll.addView(box, new FrameLayout.LayoutParams(-1, -2));
+26:         super.addView(scroll, -1, new ViewGroup.MarginLayoutParams(-1, -1));
+27:         boolean night = c instanceof android.app.Activity && ((android.app.Activity) c).themeNight();
+28:         divider = new ColorDrawable(night ? 0x1FFFFFFF : 0x1F000000);
+29:     }
+30:     public ListView(Context c, android.util.AttributeSet a) { this(c); }
+31: 
+32:     @Override public ListAdapter getAdapter() { return adapter; }
+33:     @Override public void setAdapter(ListAdapter a) {
+34:         if (adapter != null) adapter.unregisterDataSetObserver(obs);
+35:         adapter = a;
+36:         if (a != null) a.registerDataSetObserver(obs);
+37:         rebuild();
+38:     }
+39:     public void setDivider(Drawable d) { divider = d; rebuild(); }
+40:     public void setDividerHeight(int h) { dividerH = h; rebuild(); }
+41:     public void setChoiceMode(int m) { choice = m; }
+42:     public void setItemChecked(int pos, boolean v) { checkedPos = v ? pos : -1; rebuild(); }
+43:     public int getCheckedItemPosition() { return checkedPos; }
+44:     public void setSelector(Drawable d) {}
+45:     public void setSelector(int r) {}
+46:     public void setFastScrollEnabled(boolean e) {}
+47:     public void setTextFilterEnabled(boolean e) {}
+48:     public void addHeaderView(View v) { box.addView(v, 0); }
+49:     public void addFooterView(View v) { box.addView(v); }
+50:     public void setStackFromBottom(boolean s) {}
+51:     public void setTranscriptMode(int m) {}
+52:     public void smoothScrollToPosition(int p) { setSelection(p); }
+53:     @Override public View getSelectedView() { return null; }
+54:     @Override public void setSelection(int pos) {
+55:         if (pos < 0 || pos >= box.getChildCount()) return;
+56:         post(() -> { View r = box.getChildAt(pos); if (r != null) scroll.scrollTo(0, r.getTop()); });
+57:     }
+58: 
+59:     private void rebuild() {
+60:         box.removeAllViews();
+61:         if (adapter == null) return;
+62:         float d = getResources().getDisplayMetrics().density;
+63:         int n = adapter.getCount();
+64:         for (int i = 0; i < n; i++) {
+65:             final int pos = i;
+66:             View row = adapter.getView(i, null, this);
+67:             if (row.getBackground() == null) {
+68:                 boolean night = getContext() instanceof android.app.Activity && ((android.app.Activity) getContext()).themeNight();
+69:                 row.setBackground(new RippleDrawable(android.content.res.ColorStateList.valueOf(night ? 0x33FFFFFF : 0x1F000000), null, new ColorDrawable(0xFFFFFFFF)));
+70:             }
+71:             row.setClickable(true);
+72:             row.setOnClickListener(v -> { if (choice == CHOICE_MODE_SINGLE) checkedPos = pos; performItemClick(v, pos, adapter.getItemId(pos)); });
+73:             if (itemLong != null) row.setOnLongClickListener(v -> itemLong.onItemLongClick(this, v, pos, adapter.getItemId(pos)));
+74:             box.addView(row, new LinearLayout.LayoutParams(-1, -2));
+75:             if (i < n - 1 && divider != null && dividerH > 0) {
+76:                 View dv = new View(getContext());
+77:                 dv.setBackground(divider);
+78:                 box.addView(dv, new LinearLayout.LayoutParams(-1, dividerH));
+79:             }
+80:         }
+81:     }
+82:     @Override public void setOnItemLongClickListener(OnItemLongClickListener l) { super.setOnItemLongClickListener(l); rebuild(); }
+83: 
+84:     @Override protected void onMeasure(int ws, int hs) {
+85:         scroll.measure(ws, MeasureSpec.getMode(hs) == MeasureSpec.UNSPECIFIED ? MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED) : hs);
+86:         int h = MeasureSpec.getMode(hs) == MeasureSpec.EXACTLY ? MeasureSpec.getSize(hs) : scroll.getMeasuredHeight();
+87:         if (MeasureSpec.getMode(hs) == MeasureSpec.AT_MOST) h = Math.min(h, MeasureSpec.getSize(hs));
+88:         setMeasuredDimension(resolveSize(scroll.getMeasuredWidth(), ws), h);
+89:         scroll.measure(MeasureSpec.makeMeasureSpec(getMeasuredWidth(), MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY));
+90:     }
+91:     @Override protected void onLayout(boolean changed, int l, int t, int r, int b) { scroll.layout(0, 0, r - l, b - t); }
+92: }

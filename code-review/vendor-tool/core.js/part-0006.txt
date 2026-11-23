@@ -1,0 +1,42 @@
+880:     if (L.revoked.indexOf(oldLid) < 0) L.revoked.push(oldLid);
+881:   }
+882: 
+883:   function revocationJson(L) { return JSON.stringify({ revoked: L.revoked.slice().sort(), updatedAt: new Date().toISOString() }, null, 1); }
+884: 
+885:   function csvCell(v) {
+886:     v = String(v == null ? "" : v);
+887:     if (/^[=+\-@\t\r]/.test(v)) v = "'" + v;
+888:     return /[",\n;]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+889:   }
+890: 
+891:   function ledgerCsv(L) {
+892:     var rows = [["رقم الرخصة", "الأصلية", "رقم الطلب", "العميل", "الهاتف", "السعر", "تاريخ الإصدار", "التحديثات حتى", "الميزات", "الحالة", "الجهاز", "التصديق", "ملاحظة"]];
+893:     L.licenses.forEach(function (l) {
+894:       rows.push([l.lid, l.base, l.order, l.customer, l.phone, l.price, new Date(l.issuedAt).toISOString().substring(0, 10), l.uu, l.ft, l.status, l.model, l.attest, l.note]);
+895:     });
+896:     return "﻿" + rows.map(function (r) { return r.map(csvCell).join(","); }).join("\r\n");
+897:   }
+898: 
+899:   /** سجل خادم الترخيص: ما يحتاجه للتحقق من فحص الهاتف (رقم الرخصة ← مفتاح الهاتف العام) والإلغاءات. */
+900:   function serverExport(L) {
+901:     var lic = {};
+902:     L.licenses.forEach(function (l) { lic[l.lid] = { dk: l.dk, pub: l.pub, status: l.status, uu: l.uu }; });
+903:     return JSON.stringify({ v: 1, licenses: lic, revoked: L.revoked.slice().sort() }, null, 1);
+904:   }
+905: 
+906:   var api = {
+907:     PKG: PKG, APP_CERT_SHA256: APP_CERT_SHA256, TRUSTED: TRUSTED, GOOGLE_ROOTS: GOOGLE_ROOTS, LEVELS: LEVELS,
+908:     utf8: utf8, fromUtf8: fromUtf8, b64ToBytes: b64ToBytes, bytesToB64: bytesToB64, b64url: b64url, hex: hex, sha256: sha256,
+909:     deviceFingerprint: deviceFingerprint, pemBlocks: pemBlocks, der: der, kids: kids, parseCert: parseCert, derToRaw: derToRaw, rawToDer: rawToDer,
+910:     verifySig: verifySig, parseKeyDescription: parseKeyDescription, verifyChain: verifyChain, parseRequest: parseRequest, parseRequestAny: parseRequestAny, reviewRequest: reviewRequest,
+911:     importPrivatePem: importPrivatePem, importPkcs8: importPkcs8, payloadOf: payloadOf, issueToken: issueToken, verifyToken: verifyToken,
+912:     verifyRelease: verifyRelease, sealKey: sealKey, openKey: openKey,
+913:     newLedger: newLedger, nextLid: nextLid, defaultUu: defaultUu, ymd: ymd, findLicense: findLicense, baseLid: baseLid, record: record,
+914:     canTransfer: canTransfer, markMoved: markMoved, transfersInYear: transfersInYear, revocationJson: revocationJson, ledgerCsv: ledgerCsv,
+915:     serverExport: serverExport, DAY: DAY,
+916:     misuseBody: misuseBody, officeSeats: officeSeats, seatCheck: seatCheck,
+917:     NUM_KEYS: NUM_KEYS, LIMITS: LIMITS, SWITCHES: SWITCHES, DEFAULT_TEMPLATES: DEFAULT_TEMPLATES, fieldsOf: fieldsOf, describe: describe, limitsOf: limitsOf, amend: amend
+918:   };
+919:   if (typeof module === "object" && module.exports) module.exports = api;
+920:   else root.VT = api;
+921: })(typeof globalThis !== "undefined" ? globalThis : this);

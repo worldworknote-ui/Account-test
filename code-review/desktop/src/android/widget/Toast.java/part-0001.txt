@@ -1,0 +1,73 @@
+1: package android.widget;
+2: 
+3: import android.content.Context;
+4: import android.graphics.drawable.GradientDrawable;
+5: import android.view.*;
+6: 
+7: /** الإشعار العابر أسفل الشاشة. */
+8: public class Toast {
+9:     public static final int LENGTH_SHORT = 0, LENGTH_LONG = 1;
+10:     private final Context ctx;
+11:     private CharSequence text;
+12:     private int duration;
+13:     private View custom;
+14:     private int gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL, yOff = -1;
+15:     private ViewRootImpl root;
+16:     private static Toast current;
+17: 
+18:     public Toast(Context c) { ctx = c; }
+19:     public static Toast makeText(Context c, CharSequence t, int d) { Toast x = new Toast(c); x.text = t; x.duration = d; return x; }
+20:     public static Toast makeText(Context c, int res, int d) { return makeText(c, c.getResources().getText(res), d); }
+21:     public void setText(CharSequence t) { text = t; }
+22:     public void setText(int res) { text = ctx.getResources().getText(res); }
+23:     public void setDuration(int d) { duration = d; }
+24:     public int getDuration() { return duration; }
+25:     public void setView(View v) { custom = v; }
+26:     public View getView() { return custom; }
+27:     public void setGravity(int g, int x, int y) { gravity = g; yOff = y; }
+28:     public void cancel() {
+29:         if (root != null) android.app.WindowStack.remove(root);
+30:         root = null;
+31:     }
+32: 
+33:     public void show() {
+34:         javax.swing.SwingUtilities.invokeLater(this::showNow);
+35:     }
+36:     private void showNow() {
+37:         if (current != null) current.cancel();
+38:         current = this;
+39:         float d = ctx.getResources().getDisplayMetrics().density;
+40:         FrameLayout host = new FrameLayout(ctx);
+41:         View content = custom;
+42:         if (content == null) {
+43:             TextView t = new TextView(ctx);
+44:             t.setText(text);
+45:             t.setTextSize(14);
+46:             t.setTextColor(0xFFFFFFFF);
+47:             t.setGravity(Gravity.CENTER);
+48:             t.setMaxWidth(Math.round(340 * d));
+49:             t.setPadding(Math.round(16 * d), Math.round(10 * d), Math.round(16 * d), Math.round(10 * d));
+50:             GradientDrawable g = new GradientDrawable();
+51:             g.setColor(0xE6333333);
+52:             g.setCornerRadius(22 * d);
+53:             t.setBackground(g);
+54:             t.setElevation(6 * d);
+55:             content = t;
+56:         }
+57:         FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(-2, -2, gravity);
+58:         p.bottomMargin = yOff >= 0 ? yOff : Math.round(64 * d);
+59:         p.topMargin = (gravity & Gravity.VERTICAL_GRAVITY_MASK) == Gravity.TOP ? Math.max(0, yOff) : 0;
+60:         p.leftMargin = p.rightMargin = Math.round(24 * d);
+61:         host.addView(content, p);
+62:         root = android.app.WindowStack.add(host, ViewRootImpl.LAYER_TOAST);
+63:         root.setTouchable(false);
+64:         content.setAlpha(0f);
+65:         content.animate().alpha(1f).setDuration(180).start();
+66:         final View fc = content;
+67:         final ViewRootImpl r = root;
+68:         AttachInfo.MAIN.postDelayed(() -> fc.animate().alpha(0f).setDuration(220).withEndAction(() -> {
+69:             android.app.WindowStack.remove(r);
+70:             if (current == this) current = null;
+71:         }).start(), duration == LENGTH_LONG ? 3500 : 2000);
+72:     }
+73: }

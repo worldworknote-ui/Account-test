@@ -1,0 +1,170 @@
+1: package android.widget;
+2: 
+3: import android.content.Context;
+4: import android.database.DataSetObserver;
+5: import android.graphics.*;
+6: import android.graphics.drawable.*;
+7: import android.view.*;
+8: 
+9: /** قائمة منسدلة: يعرض العنصر المختار وسهمًا، والضغط يفتح قائمة تحته. */
+10: public class Spinner extends AdapterView<SpinnerAdapter> {
+11:     public static final int MODE_DIALOG = 0, MODE_DROPDOWN = 1;
+12:     private SpinnerAdapter adapter;
+13:     private int selected = INVALID_POSITION, notified = -2;
+14:     private View shown;
+15:     private final DataSetObserver obs = new DataSetObserver() { @Override public void onChanged() { refresh(); } };
+16:     private ViewRootImpl popup;
+17:     private int dropW = -2, dropOffY;
+18:     private Drawable popupBg;
+19: 
+20:     public Spinner(Context c) { this(c, MODE_DROPDOWN); }
+21:     public Spinner(Context c, int mode) {
+22:         super(c);
+23:         setClickable(true);
+24:         setFocusable(true);
+25:         float d = c.getResources().getDisplayMetrics().density;
+26:         setMinimumHeight(Math.round(48 * d));
+27:         setPadding(Math.round(8 * d), 0, Math.round(8 * d), 0);
+28:         boolean night = c instanceof android.app.Activity && ((android.app.Activity) c).themeNight();
+29:         setBackground(new RippleDrawable(android.content.res.ColorStateList.valueOf(night ? 0x33FFFFFF : 0x1F000000), null, null));
+30:         super.setOnClickListener(v -> openPopup());
+31:     }
+32:     public Spinner(Context c, android.util.AttributeSet a) { this(c); }
+33: 
+34:     @Override public SpinnerAdapter getAdapter() { return adapter; }
+35:     @Override public void setAdapter(SpinnerAdapter a) {
+36:         if (adapter != null) adapter.unregisterDataSetObserver(obs);
+37:         adapter = a;
+38:         if (a != null) a.registerDataSetObserver(obs);
+39:         selected = a != null && a.getCount() > 0 ? 0 : INVALID_POSITION;
+40:         notified = -2;
+41:         refresh();
+42:     }
+43:     @Override public void setOnClickListener(View.OnClickListener l) { throw new RuntimeException("Don't call setOnClickListener for an AdapterView. You probably want setOnItemClickListener instead"); }
+44:     @Override public void setSelection(int pos) { setSelection(pos, false); }
+45:     public void setSelection(int pos, boolean animate) {
+46:         if (adapter == null || pos < 0 || pos >= adapter.getCount()) return;
+47:         if (pos == selected) return;
+48:         selected = pos;
+49:         refresh();
+50:         scheduleNotify();
+51:     }
+52:     @Override public int getSelectedItemPosition() { return selected; }
+53:     @Override public View getSelectedView() { return shown; }
+54:     public void setDropDownWidth(int w) { dropW = w; }
+55:     public void setDropDownVerticalOffset(int o) { dropOffY = o; }
+56:     public void setDropDownHorizontalOffset(int o) {}
+57:     public void setPopupBackgroundDrawable(Drawable d) { popupBg = d; }
+58:     public void setPopupBackgroundResource(int r) {}
+59:     public void setPrompt(CharSequence p) {}
+60:     public void setGravity(int g) {}
+61:     public boolean performClick() { super.performClick(); return true; }
+62: 
+63:     private void refresh() {
+64:         removeAllViews();
+65:         shown = null;
+66:         if (adapter == null || adapter.getCount() == 0) { selected = INVALID_POSITION; requestLayout(); invalidate(); return; }
+67:         if (selected >= adapter.getCount()) selected = adapter.getCount() - 1;
+68:         if (selected < 0) selected = 0;
+69:         shown = adapter.getView(selected, null, this);
+70:         shown.setDuplicateParentStateEnabled(true);
+71:         addView(shown, new ViewGroup.MarginLayoutParams(-1, -2));
+72:         requestLayout();
+73:         invalidate();
+74:     }
+75:     private void scheduleNotify() {
+76:         post(() -> {
+77:             if (selected == notified) return;
+78:             notified = selected;
+79:             if (itemSelected == null) return;
+80:             if (selected >= 0) itemSelected.onItemSelected(this, shown, selected, adapter.getItemId(selected));
+81:             else itemSelected.onNothingSelected(this);
+82:         });
+83:     }
+84:     @Override public void setOnItemSelectedListener(OnItemSelectedListener l) { super.setOnItemSelectedListener(l); if (isAttachedToWindow()) scheduleNotify(); }
+85: 
+86:     private int arrowW() { return Math.round(24 * getResources().getDisplayMetrics().density); }
+87:     @Override protected void onMeasure(int ws, int hs) {
+88:         int pad = getPaddingLeft() + getPaddingRight() + arrowW();
+89:         int w = 0, h = 0;
+90:         if (shown != null) {
+91:             // العرض بعرض أعرض عنصر (كما في أندرويد)
+92:             int widest = 0;
+93:             if (adapter != null && MeasureSpec.getMode(ws) != MeasureSpec.EXACTLY) {
+94:                 int n = Math.min(adapter.getCount(), 15);
+95:                 for (int i = 0; i < n; i++) {
+96:                     View v = adapter.getView(i, null, this);
+97:                     v.setLayoutParams(new ViewGroup.MarginLayoutParams(-2, -2));
+98:                     v.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED), MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+99:                     widest = Math.max(widest, v.getMeasuredWidth());
+100:                 }
+101:             }
+102:             int cws = MeasureSpec.getMode(ws) == MeasureSpec.UNSPECIFIED ? MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
+103:                     : MeasureSpec.makeMeasureSpec(Math.max(0, MeasureSpec.getSize(ws) - pad), MeasureSpec.getMode(ws) == MeasureSpec.EXACTLY ? MeasureSpec.EXACTLY : MeasureSpec.AT_MOST);
+104:             shown.measure(cws, getChildMeasureSpec(hs, getPaddingTop() + getPaddingBottom(), -2));
+105:             w = Math.max(shown.getMeasuredWidth(), widest);
+106:             h = shown.getMeasuredHeight();
+107:         }
+108:         w = Math.max(w + pad, getSuggestedMinimumWidth());
+109:         h = Math.max(h + getPaddingTop() + getPaddingBottom(), getSuggestedMinimumHeight());
+110:         setMeasuredDimension(resolveSize(w, ws), resolveSize(h, hs));
+111:         if (shown != null) {
+112:             int cw = getMeasuredWidth() - pad;
+113:             shown.measure(MeasureSpec.makeMeasureSpec(Math.max(0, cw), MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(Math.max(0, getMeasuredHeight() - getPaddingTop() - getPaddingBottom()), MeasureSpec.AT_MOST));
+114:         }
+115:     }
+116:     @Override protected void onLayout(boolean changed, int l, int t, int r, int b) {
+117:         if (shown != null) {
+118:             int aw = arrowW();
+119:             int x = isRtl() ? getPaddingLeft() + aw : getPaddingLeft();
+120:             int y = (b - t - shown.getMeasuredHeight()) / 2;
+121:             shown.layout(x, y, x + shown.getMeasuredWidth(), y + shown.getMeasuredHeight());
+122:         }
+123:         if (notified == -2 && selected >= 0) scheduleNotify();
+124:     }
+125:     @Override protected void dispatchDraw(Canvas c) {
+126:         super.dispatchDraw(c);
+127:         float d = getResources().getDisplayMetrics().density;
+128:         float cx = isRtl() ? getPaddingLeft() + arrowW() / 2f : getWidth() - getPaddingRight() - arrowW() / 2f, cy = getHeight() / 2f;
+129:         Path p = new Path();
+130:         p.moveTo(cx - 5 * d, cy - 2.5f * d);
+131:         p.lineTo(cx + 5 * d, cy - 2.5f * d);
+132:         p.lineTo(cx, cy + 2.5f * d);
+133:         p.close();
+134:         Paint pp = new Paint(Paint.ANTI_ALIAS_FLAG);
+135:         boolean night = getContext() instanceof android.app.Activity && ((android.app.Activity) getContext()).themeNight();
+136:         pp.setColor(isEnabled() ? (night ? 0xB3FFFFFF : 0x8A000000) : 0x42000000);
+137:         c.drawPath(p, pp);
+138:     }
+139:     @Override public boolean onInterceptTouchEvent(MotionEvent e) { return true; }
+140: 
+141:     private void openPopup() {
+142:         if (adapter == null || adapter.getCount() == 0 || !isEnabled()) return;
+143:         if (popup != null) { closePopup(); return; }
+144:         final Context ctx = getContext();
+145:         float d = getResources().getDisplayMetrics().density;
+146:         boolean night = ctx instanceof android.app.Activity && ((android.app.Activity) ctx).themeNight();
+147:         int[] loc = new int[2];
+148:         getLocationInWindow(loc);
+149:         ViewRootImpl myRoot = root();
+150:         int winW = myRoot == null ? 480 : myRoot.width(), winH = myRoot == null ? 800 : myRoot.height();
+151:         FrameLayout host = new FrameLayout(ctx);
+152:         ScrollView sv = new ScrollView(ctx);
+153:         LinearLayout list = new LinearLayout(ctx);
+154:         list.setOrientation(LinearLayout.VERTICAL);
+155:         list.setPadding(0, Math.round(8 * d), 0, Math.round(8 * d));
+156:         sv.addView(list, new FrameLayout.LayoutParams(-1, -2));
+157:         GradientDrawable bg = new GradientDrawable();
+158:         bg.setColor(night ? 0xFF2C3833 : 0xFFFFFFFF);
+159:         bg.setCornerRadius(4 * d);
+160:         sv.setBackground(popupBg != null ? popupBg : bg);
+161:         sv.setElevation(8 * d);
+162:         sv.setClipToOutline(true);
+163:         for (int i = 0; i < adapter.getCount(); i++) {
+164:             final int pos = i;
+165:             View row = adapter.getDropDownView(i, null, list);
+166:             if (row instanceof TextView && i == selected) ((TextView) row).setTypeface(android.graphics.Typeface.create(((TextView) row).getTypeface(), android.graphics.Typeface.BOLD));
+167:             row.setBackground(new RippleDrawable(android.content.res.ColorStateList.valueOf(night ? 0x33FFFFFF : 0x1F000000), i == selected ? new ColorDrawable(night ? 0x1FFFFFFF : 0x0F000000) : null, new ColorDrawable(0xFFFFFFFF)));
+168:             row.setClickable(true);
+169:             row.setOnClickListener(v -> {
+170:                 closePopup();

@@ -1,0 +1,56 @@
+178:         if (!s.startsWith("#")) return 0xFF000000;
+179:         String h = s.substring(1);
+180:         if (h.length() == 3) h = "" + h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2);
+181:         if (h.length() == 4) h = "" + h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2) + h.charAt(3) + h.charAt(3);
+182:         long v = Long.parseLong(h, 16);
+183:         return h.length() == 6 ? (int) (v | 0xFF000000L) : (int) v;
+184:     }
+185: 
+186:     public String name() { return name; }
+187:     @Override public int getIntrinsicWidth() { return Math.round(iw * density); }
+188:     @Override public int getIntrinsicHeight() { return Math.round(ih * density); }
+189:     @Override public void setAlpha(int a) { alpha = a; invalidateSelf(); }
+190:     @Override public int getAlpha() { return alpha; }
+191:     @Override public Drawable mutate() { return this; }
+192:     @Override public ConstantState getConstantState() {
+193:         return new ConstantState() { @Override public Drawable newDrawable() { return load(name); } };
+194:     }
+195: 
+196:     @Override public void draw(Canvas c) {
+197:         android.graphics.Rect b = getBounds();
+198:         if (b.isEmpty()) return;
+199:         java.awt.Graphics2D g = c.graphics();
+200:         AffineTransform old = g.getTransform();
+201:         g.translate(b.left, b.top);
+202:         g.scale(b.width() / vw, b.height() / vh);
+203:         float a = c.alpha * alpha / 255f;
+204:         int tc = hasTint() ? tintColor() : tintAttr;
+205:         for (P p : paths) {
+206:             AffineTransform keep = g.getTransform();
+207:             if (p.t != null && !p.t.isIdentity()) g.transform(p.t);
+208:             if (p.fillGrad != null && tc == 0) {
+209:                 g.setPaint(p.fillGrad.paint(a * p.fillAlpha));
+210:                 g.fill(p.path);
+211:             } else if (Color.alpha(p.fill) > 0 || p.fillGrad != null) {
+212:                 g.setPaint(col(p.fillGrad != null ? p.fillGrad.colors[0] : p.fill, tc, a * p.fillAlpha));
+213:                 g.fill(p.path);
+214:             }
+215:             if (p.strokeGrad != null && tc == 0 && p.sw > 0) {
+216:                 g.setPaint(p.strokeGrad.paint(a * p.strokeAlpha));
+217:                 g.fill(new java.awt.BasicStroke(p.sw, p.cap, p.join, 4f).createStrokedShape(p.path));
+218:             } else if (Color.alpha(p.stroke) > 0 && p.sw > 0) {
+219:                 g.setPaint(col(p.stroke, tc, a * p.strokeAlpha));
+220:                 g.fill(new java.awt.BasicStroke(p.sw, p.cap, p.join, 4f).createStrokedShape(p.path));
+221:             }
+222:             g.setTransform(keep);
+223:         }
+224:         g.setTransform(old);
+225:     }
+226: 
+227:     /** التلوين بنمط SRC_IN: لون التلوين بشفافية المسار. */
+228:     private static java.awt.Color col(int c, int tint, float a) {
+229:         int base = tint != 0 ? tint : c;
+230:         int al = Math.round(Color.alpha(c) * (tint != 0 ? Color.alpha(tint) / 255f : 1f) * a);
+231:         return new java.awt.Color(Color.red(base), Color.green(base), Color.blue(base), Math.max(0, Math.min(255, al)));
+232:     }
+233: }

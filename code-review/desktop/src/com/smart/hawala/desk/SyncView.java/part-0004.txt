@@ -1,0 +1,145 @@
+427:             usage.setText(u.total() + " ملفًا" + (u.bytes >= 0 ? " • " + SyncEngine.size(u.bytes) : "") + "  —  حزم " + u.packets + " • لقطات " + u.snapshots
+428:                     + " • صور " + u.images + (u.imageBytes >= 0 ? " (" + SyncEngine.size(u.imageBytes) + ")" : "") + " • أجهزة " + u.members);
+429:             revalidate();
+430:         })));
+431:         if (canClean && admin) pr.add(Ui.ghost("تنظيف الآن", e -> Ui.busy(this, "جارٍ التنظيف…", p -> new SyncEngine(db, folder(db)).clean(true), r -> {
+432:             Ui.toast(r.isEmpty() ? "لا شيء قديم يُحذف الآن" : r);
+433:             refresh();
+434:         })));
+435:         pc.add(pr);
+436:         pc.add(usage);
+437:         if (admin) {
+438:             pc.add(Ui.gap(8));
+439:             JPanel tp = Ui.flow(Ui.ghost("نقل المزامنة إلى طريقة أخرى…", e -> changeTransport()));
+440:             if ("server".equals(tr)) tp.add(Ui.ghost("تعديل عنوان الخادم أو رمزه…", e -> editServer()));
+441:             else if ("drive".equals(tr)) {
+442:                 // 10.14: الحساب المتصل ظاهر، وتغييره نقلٌ منظّم أو بداية جديدة
+443:                 String acct = db.setting("drive_account", ""), old = db.setting("drive_account_old", "");
+444:                 pc.add(Ui.row(Ui.label("حساب Google: " + (acct.isEmpty() ? "غير معروف (سجّل الدخول من جديد ليظهر)" : acct), 13.5f, Ui.ink, true), Box.createHorizontalGlue(),
+445:                         Ui.ghost("تغيير الحساب…", e -> changeAccount(acct))));
+446:                 if (!old.isEmpty() || DeskDriveAuth.has(DeskDriveAuth.OLD))
+447:                     pc.add(Ui.row(Ui.label("الحساب القديم: " + (old.isEmpty() ? "—" : old) + " (نُقلت المزامنة منه)", 13, Ui.muted, false), Box.createHorizontalGlue(),
+448:                             Ui.danger("حذف الخزنة منه…", e -> purgeOld(old))));
+449:                 tp.add(Ui.ghost("إعادة تسجيل الدخول بالحساب نفسه…", e -> driveLogin(() -> {
+450:                     now(app);
+451:                     refresh();
+452:                 })));
+453:                 tp.add(Ui.ghost("تعديل معرّف العميل…", e -> clientDialog()));
+454:             } else tp.add(Ui.ghost("المجلد نفسه في مكان جديد…", e -> repointFolder()));
+455:             pc.add(tp);
+456:         }
+457:         add(pc);
+458:         space(12);
+459: 
+460:         // ——— الأمان ———
+461:         Ui.Card sc = Ui.card();
+462:         sc.add(Ui.heading("الأمان"));
+463:         if (!admin) sc.add(Ui.para("كلمة السر ورمز الاسترداد وإزالة الأجهزة وإيقاف المزامنة لمن يملك صلاحية «إدارة المزامنة».", 13, Ui.muted, w - 40));
+464:         else sc.add(Ui.flow(Ui.ghost("تغيير كلمة سر المزامنة…", e -> changePw()), Ui.ghost("رمز استرداد جديد…", e -> newRecovery()),
+465:                 Ui.ghost("نسيت كلمة السر؟ تعيين كلمة جديدة…", e -> resetPw()), Ui.danger("حذف ملفات المزامنة من هذا المكان…", e -> wipe()),
+466:                 Ui.danger("إيقاف المزامنة على هذا الجهاز", e -> {
+467:                     if (!Ui.confirm(this, "إيقاف المزامنة", "يتوقف هذا الجهاز عن الإرسال والاستلام وتبقى بياناته. للعودة: «الانضمام» (تُستبدل بياناته ببيانات المزامنة).", "إيقاف")) return;
+468:                     new SyncEngine(db, folder(db)).leave();
+469:                     refresh();
+470:                 })));
+471:         sc.add(Ui.gap(6));
+472:         sc.add(Ui.label("تشفير AES-256-GCM بمفتاح من كلمة سر المزامنة • الحزم مسلسلة ومرتبطة ببصمات (أي حذف أو تعديل يُكتشف).", 12, Ui.muted, false));
+473:         add(sc);
+474:         space(12);
+475: 
+476:         java.util.List<JSONObject> hist = SyncEngine.history(db);
+477:         if (!hist.isEmpty()) {
+478:             Ui.Card hc = Ui.card();
+479:             hc.add(Ui.heading("آخر الجولات"));
+480:             int n = 0;
+481:             for (JSONObject x : hist) {
+482:                 if (n++ >= 6) break;
+483:                 hc.add(Ui.para("• " + Model.date(x.optLong("at")) + " — " + x.optString("t") + (x.has("e") ? " — " + x.optString("e") : ""), 12.5f, x.has("e") ? Ui.red : Ui.ink, w - 40));
+484:             }
+485:             add(hc);
+486:         }
+487:     }
+488: 
+489:     static String everyName(int secs) {
+490:         if (secs < 60) return secs + " ثانية";
+491:         if (secs == 90) return "دقيقة ونصف";
+492:         return (secs / 60) + " دقائق";
+493:     }
+494: 
+495:     void renameOther(JSONObject m) {
+496:         Ui.Field n = Ui.field("اسم الجهاز");
+497:         n.setText(m.optString("name"));
+498:         JPanel c = Ui.column();
+499:         c.add(Ui.labeled("الاسم الجديد للجهاز «" + m.optString("name") + "»", n));
+500:         if (!Ui.form(this, "إعادة تسمية جهاز", Ui.rtl(c), "حفظ")) return;
+501:         Ui.busy(this, "جارٍ الحفظ…", p -> {
+502:             new SyncEngine(db, folder(db)).renameDevice(m.optString("dev"), n.val());
+503:             return true;
+504:         }, ok -> {
+505:             Ui.toast("غُيّر اسم الجهاز ✓ (يظهر على الأجهزة الأخرى بعد مزامنتها)");
+506:             refresh();
+507:         });
+508:     }
+509: 
+510:     void renameDialog(String current) {
+511:         Ui.Field n = Ui.field("اسم هذا الجهاز");
+512:         n.setText(current);
+513:         JPanel c = Ui.column();
+514:         c.add(Ui.labeled("اسم هذا الجهاز", n));
+515:         if (!Ui.form(this, "اسم الجهاز", Ui.rtl(c), "حفظ")) return;
+516:         Ui.busy(this, "جارٍ الحفظ…", p -> {
+517:             new SyncEngine(db, folder(db)).rename(n.val());
+518:             return true;
+519:         }, ok -> {
+520:             Ui.toast("غُيّر اسم الجهاز ✓");
+521:             refresh();
+522:         });
+523:     }
+524: 
+525:     void removeDevice(JSONObject m) {
+526:         if (!app.require(Auth.Perm.SYNC)) return;
+527:         if (!Ui.confirm(this, "إزالة «" + m.optString("name") + "» من المزامنة",
+528:                 SyncHelp.REMOVE_TEXT, "إزالة")) return;
+529:         Ui.busy(this, "جارٍ إزالة الجهاز…", p -> new SyncEngine(db, folder(db)).removeDevice(m.optString("dev")), n -> {
+530:             Ui.toast("أُزيل الجهاز ✓ تصل حزمه حتى رقم " + n + " إلى كل الأجهزة ثم تتوقف");
+531:             refresh();
+532:         });
+533:     }
+534: 
+535:     /** 10.5 (AUDIT-002): نقل دور الجهاز الرئيسي من هذا الجهاز إلى جهاز آخر. */
+536:     void transferFounder(JSONObject m) {
+537:         if (!Ui.confirm(this, "جعل «" + m.optString("name") + "» الجهاز الرئيسي",
+538:                 "الجهاز الرئيسي هو الذي يحذف ملفات الأجهزة المُزالة والصور القديمة من مكان المزامنة، ومنه يُفعَّل نظام المستخدمين أو يُوقف.\n"
+539:                         + "• يجب أن يكون «" + m.optString("name") + "» قد زامن قريبًا واستلم كل ما أرسله هذا الجهاز.\n"
+540:                         + "• يصبح هذا الجهاز جهازًا عاديًا فورًا، ويعرف الجهاز الآخر دوره في جولته التالية.\n• لا تتغير أي بيانات محاسبية ولا رموز المستخدمين.",
+541:                 "نقل الدور")) return;
+542:         Ui.busy(this, "جارٍ نقل الدور…", p -> {
+543:             SyncEngine e = new SyncEngine(db, folder(db));
+544:             e.sync();
+545:             e.transferFounder(m.optString("dev"));
+546:             return true;
+547:         }, ok -> {
+548:             Ui.toast("نُقل دور الجهاز الرئيسي إلى «" + m.optString("name") + "» ✓");
+549:             refresh();
+550:         });
+551:     }
+552: 
+553:     /** 10.5 (AUDIT-002): استلام دور الجهاز الرئيسي بعد ضياعه: مدير + رمز الاسترداد + غياب الرئيسي. */
+554:     void claimFounder(SyncEngine.Status st) {
+555:         String block;
+556:         try {
+557:             block = new SyncEngine(db, folder(db)).founderClaimBlock(st.founderDev);
+558:         } catch (Exception ex) {
+559:             block = ex.getMessage();
+560:         }
+561:         if (block != null) {
+562:             Ui.message(this, "استلام دور الجهاز الرئيسي", block, JOptionPane.WARNING_MESSAGE);
+563:             return;
+564:         }
+565:         JPasswordField rc = Ui.password();
+566:         JPanel c = Ui.column();
+567:         c.add(Ui.para("استعمله فقط إن ضاع الجهاز الرئيسي «" + st.founderName() + "» أو تعطل. يلزم رمز استرداد المزامنة (الورقة التي حفظتها عند الإنشاء)؛ "
+568:                 + "كلمة السر ورابط الانضمام لا يكفيان. إن عاد الجهاز القديم يصبح جهازًا عاديًا تلقائيًا.", 13.5f, Ui.ink, 460));
+569:         c.add(Ui.labeled("رمز الاسترداد", rc));
+570:         if (!Ui.form(this, "استلام دور الجهاز الرئيسي", Ui.rtl(c), "استلام الدور")) return;
+571:         Ui.busy(this, "جارٍ استلام الدور…", p -> {

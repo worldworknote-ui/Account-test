@@ -1,0 +1,71 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.ClipData;
+4: import android.content.ClipDescription;
+5: import android.content.ClipboardManager;
+6: import android.content.Context;
+7: import java.util.ArrayList;
+8: import java.util.List;
+9: 
+10: /**
+11:  * 12.1: قراءة الحافظة بكل صيغها (نص عادي + HTML) وتحويلها إلى رسائل.
+12:  * الترتيب: رؤوس واتساب في النص العادي (أندرويد وماك) ← فقاعات HTML (ويندوز والمتصفح) ← أسطر الوقت ← رسالة واحدة.
+13:  */
+14: public final class WaClip {
+15:     private WaClip() {}
+16: 
+17:     public static final class Read {
+18:         public final String text, html;
+19:         public final List<String> mimes;
+20: 
+21:         public Read(String text, String html, List<String> mimes) {
+22:             this.text = text == null ? "" : text;
+23:             this.html = html;
+24:             this.mimes = mimes == null ? new ArrayList<>() : mimes;
+25:         }
+26: 
+27:         public boolean empty() { return text.trim().isEmpty() && (html == null || html.trim().isEmpty()); }
+28:     }
+29: 
+30:     public static Read read(Context c) {
+31:         try {
+32:             ClipboardManager cm = (ClipboardManager) c.getSystemService(Context.CLIPBOARD_SERVICE);
+33:             if (cm == null || !cm.hasPrimaryClip()) return new Read("", null, null);
+34:             ClipData d = cm.getPrimaryClip();
+35:             if (d == null || d.getItemCount() == 0) return new Read("", null, null);
+36:             List<String> mimes = new ArrayList<>();
+37:             ClipDescription desc = d.getDescription();
+38:             if (desc != null) for (int i = 0; i < desc.getMimeTypeCount(); i++) mimes.add(desc.getMimeType(i));
+39:             ClipData.Item it = d.getItemAt(0);
+40:             CharSequence cs = it.coerceToText(c);
+41:             String html = null;
+42:             try {
+43:                 html = it.getHtmlText();
+44:             } catch (Throwable ignored) {
+45:                 html = null;
+46:             }
+47:             return new Read(cs == null ? "" : cs.toString(), html, mimes);
+48:         } catch (Exception e) {
+49:             return new Read("", null, null);
+50:         }
+51:     }
+52: 
+53:     /** الرسائل من الحافظة. */
+54:     public static List<WaText.Msg> messages(String text, String html) {
+55:         List<WaText.Msg> plain = WaText.split(text == null ? "" : text);
+56:         if (plain.size() > 1) return plain;
+57:         List<WaText.Msg> h = WaHtml.messages(html);
+58:         if (h != null && h.size() > 1) return h;
+59:         List<WaText.Msg> cut = WaCuts.auto(text == null ? "" : text);
+60:         if (cut.size() > 1) return cut;
+61:         if (plain.isEmpty() && h != null) return h;
+62:         return plain;
+63:     }
+64: 
+65:     /** نص رسالة واحدة قد يكون فيه أكثر من رسالة ملزوقة (أسطر فارغة أو أكثر من مبلغ): نعرض «القص» اليدوي. */
+66:     public static boolean maybeGlued(String text) {
+67:         List<String> l = WaCuts.lines(text);
+68:         if (l.size() < 3) return false;
+69:         return !WaCuts.suggest(l).isEmpty();
+70:     }
+71: }

@@ -1,0 +1,66 @@
+330:             if (maps.contains("frida") || maps.contains("xposed") || maps.contains("lsposed") || maps.contains("substrate")) b.append("أدوات تعديل التطبيقات أثناء التشغيل؛ ");
+331:         } catch (Throwable ignored) {
+332:             // غير مهم
+333:         }
+334:         return b.toString().trim();
+335:     }
+336: 
+337:     /** أدوات حقن أثناء التشغيل (لا مجرد root): تكفي لوضع علامة «نسخة مجانية» على التصدير حتى تحقق عبر الخادم. */
+338:     static boolean highRisk() {
+339:         return signals.contains("أدوات تعديل");
+340:     }
+341: 
+342:     // ===================================================================================
+343:     // الخادم الاختياري (مرحلة لاحقة): فحص دوري وقائمة إلغاء. معطّل حتى يُكتب عنوانه.
+344:     // ===================================================================================
+345: 
+346:     /** هل حان موعد الفحص (كل 7 أيام)؟ لا يتعطل شيء إن فشل الاتصال أسابيع. */
+347:     static boolean checkDue(Db db) {
+348:         if (db.setting("license_server", "").trim().isEmpty() || !current.pro) return false;
+349:         return Clock.now() - db.settingLong("license_last_check", 0) > 7L * 86400000L;
+350:     }
+351: 
+352:     /**
+353:      * يرسل رقم الرخصة وتحدّيًا عشوائيًا موقّعًا بمفتاح الجهاز (يثبت أنه الهاتف المسجَّل)، ويستقبل قائمة الإلغاء.
+354:      * أي فشل في الاتصال يُتجاهل.
+355:      */
+356:     public static String checkOnline(Context ctx, Db db) {
+357:         String base = db.setting("license_server", "").trim();
+358:         if (base.isEmpty() || !current.pro) return "لا يوجد خادم ترخيص مضبوط أو لا رخصة مفعّلة.";
+359:         HttpURLConnection c = null;
+360:         try {
+361:             byte[] nonce = new byte[16];
+362:             new SecureRandom().nextBytes(nonce);
+363:             String n = Base64.getUrlEncoder().withoutPadding().encodeToString(nonce);
+364:             byte[] dk = deviceKeyX509();
+365:             String body = "v=1;t=check;lid=" + current.lid + ";dk=" + LicenseToken.deviceFingerprint(dk) + ";n=" + n + ";at=" + Clock.now();
+366:             JSONObject req = new JSONObject();
+367:             req.put("body", body);
+368:             req.put("sig", sign(body.getBytes(StandardCharsets.UTF_8)));
+369:             req.put("pub", Base64.getEncoder().encodeToString(dk));
+370:             req.put("ver", BuildInfo.VERSION);
+371:             c = (HttpURLConnection) new URL(base.replaceAll("/+$", "") + "/v1/check").openConnection();
+372:             c.setConnectTimeout(15000);
+373:             c.setReadTimeout(20000);
+374:             c.setDoOutput(true);
+375:             c.setRequestMethod("POST");
+376:             c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+377:             try (OutputStream o = c.getOutputStream()) {
+378:                 o.write(req.toString().getBytes(StandardCharsets.UTF_8));
+379:             }
+380:             if (c.getResponseCode() != 200) return "رد الخادم: " + c.getResponseCode();
+381:             JSONObject res = new JSONObject(new String(Db.readAll(c.getInputStream()), StandardCharsets.UTF_8));
+382:             JSONArray rv = res.optJSONArray("revoked");
+383:             StringBuilder list = new StringBuilder();
+384:             if (rv != null) for (int i = 0; i < rv.length(); i++) list.append(i > 0 ? "," : "").append(rv.optString(i));
+385:             db.setSettingQuiet("license_revoked", list.toString());
+386:             db.setSettingQuiet("license_last_check", "" + Clock.now());
+387:             load(ctx, db);
+388:             return res.optString("message", "تم الفحص ✓");
+389:         } catch (Throwable t) {
+390:             return "تعذر الاتصال بخادم الترخيص (" + t.getClass().getSimpleName() + "). لا يتعطل شيء؛ يُعاد لاحقًا.";
+391:         } finally {
+392:             if (c != null) c.disconnect();
+393:         }
+394:     }
+395: }

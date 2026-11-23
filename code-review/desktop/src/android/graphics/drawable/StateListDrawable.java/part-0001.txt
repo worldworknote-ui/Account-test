@@ -1,0 +1,58 @@
+1: package android.graphics.drawable;
+2: 
+3: import android.graphics.*;
+4: 
+5: public class StateListDrawable extends Drawable implements Drawable.Callback {
+6:     private final java.util.List<int[]> specs = new java.util.ArrayList<>();
+7:     private final java.util.List<Drawable> ds = new java.util.ArrayList<>();
+8:     private Drawable cur;
+9:     private int alpha = 255;
+10: 
+11:     public void addState(int[] spec, Drawable d) {
+12:         specs.add(spec);
+13:         ds.add(d);
+14:         if (d != null) { d.setCallback(this); d.setBounds(getBounds()); }
+15:         pick();
+16:     }
+17:     private boolean matches(int[] spec, int[] st) {
+18:         for (int s : spec) {
+19:             if (s > 0 && !has(st, s)) return false;
+20:             if (s < 0 && has(st, -s)) return false;
+21:         }
+22:         return true;
+23:     }
+24:     private boolean pick() {
+25:         Drawable n = null;
+26:         for (int i = 0; i < specs.size(); i++) if (matches(specs.get(i), getState())) { n = ds.get(i); break; }
+27:         if (n == cur) return false;
+28:         cur = n;
+29:         if (cur != null) { cur.setBounds(getBounds()); cur.setState(getState()); }
+30:         return true;
+31:     }
+32:     public Drawable getCurrent() { return cur; }
+33:     public int getStateCount() { return specs.size(); }
+34:     public Drawable getStateDrawable(int i) { return ds.get(i); }
+35:     @Override protected boolean onStateChange(int[] s) {
+36:         boolean ch = pick();
+37:         if (cur != null) ch |= cur.setState(s);
+38:         return ch;
+39:     }
+40:     @Override public boolean isStateful() { return true; }
+41:     @Override protected void onBoundsChange(Rect b) { for (Drawable d : ds) if (d != null) d.setBounds(b); }
+42:     @Override public void draw(Canvas c) {
+43:         if (cur == null) return;
+44:         float o = c.alpha;
+45:         c.alpha = o * alpha / 255f;
+46:         cur.draw(c);
+47:         c.alpha = o;
+48:     }
+49:     @Override public void setAlpha(int a) { alpha = a; }
+50:     @Override public int getAlpha() { return alpha; }
+51:     @Override public void setTintList(android.content.res.ColorStateList t) { for (Drawable d : ds) if (d != null) d.setTintList(t); }
+52:     @Override public int getIntrinsicWidth() { return cur == null ? -1 : cur.getIntrinsicWidth(); }
+53:     @Override public int getIntrinsicHeight() { return cur == null ? -1 : cur.getIntrinsicHeight(); }
+54:     @Override public java.awt.Shape outline() { return cur == null ? null : cur.outline(); }
+55:     @Override public void invalidateDrawable(Drawable who) { invalidateSelf(); }
+56:     @Override public void scheduleDrawable(Drawable who, Runnable what, long when) { scheduleSelf(what, when); }
+57:     @Override public void unscheduleDrawable(Drawable who, Runnable what) { unscheduleSelf(what); }
+58: }

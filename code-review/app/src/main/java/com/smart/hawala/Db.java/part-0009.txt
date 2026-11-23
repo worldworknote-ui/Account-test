@@ -1,0 +1,153 @@
+1122:         }
+1123:         sortOffices(a);
+1124:         return a;
+1125:     }
+1126: 
+1127:     static void sortOffices(List<Model.Office> a) {
+1128:         final Collator col = Collator.getInstance(new Locale("ar"));
+1129:         Collections.sort(a, new Comparator<Model.Office>() {
+1130:             @Override public int compare(Model.Office x, Model.Office y) {
+1131:                 if (x.pinned != y.pinned) return x.pinned ? -1 : 1;
+1132:                 if (x.active != y.active) return x.active ? -1 : 1;
+1133:                 return col.compare(Model.nz(x.name), Model.nz(y.name));
+1134:             }
+1135:         });
+1136:     }
+1137: 
+1138:     public Model.Office office(long id) {
+1139:         try (Cursor c = getReadableDatabase().rawQuery("SELECT " + OFFICE_COLS + " FROM offices WHERE id=" + id, null)) {
+1140:             return c.moveToFirst() ? readOffice(c) : null;
+1141:         }
+1142:     }
+1143: 
+1144:     public Map<Long, String> officeNames() {
+1145:         Map<Long, String> m = new HashMap<>();
+1146:         for (Model.Office o : offices()) m.put(o.id, o.name);
+1147:         return m;
+1148:     }
+1149: 
+1150:     private static Model.Office readOffice(Cursor c) {
+1151:         Model.Office o = new Model.Office();
+1152:         o.id = c.getLong(0);
+1153:         o.name = Crypto.dec(c.getString(1));
+1154:         o.shortName = Crypto.dec(c.getString(2));
+1155:         o.phone = Crypto.dec(c.getString(3));
+1156:         o.location = Crypto.dec(c.getString(4));
+1157:         o.contact = Crypto.dec(c.getString(5));
+1158:         o.notes = Crypto.dec(c.getString(6));
+1159:         o.active = c.getInt(7) == 1;
+1160:         o.usdLimit = c.isNull(8) ? null : c.getLong(8);
+1161:         o.usdOweLimit = c.isNull(9) ? null : c.getLong(9);
+1162:         o.pinned = !c.isNull(10) && c.getInt(10) == 1;
+1163:         return o;
+1164:     }
+1165: 
+1166:     public List<String> officeCurrencies(long id) {
+1167:         List<String> a = new ArrayList<>();
+1168:         try (Cursor c = getReadableDatabase().rawQuery("SELECT code FROM office_currencies WHERE office_id=" + id + " ORDER BY code", null)) {
+1169:             while (c.moveToNext()) a.add(c.getString(0));
+1170:         }
+1171:         return a;
+1172:     }
+1173: 
+1174:     public Map<String, Limit> officeLimits(long id) {
+1175:         Map<String, Limit> a = new HashMap<>();
+1176:         try (Cursor c = getReadableDatabase().rawQuery("SELECT code,limit_minor,limit_owe_minor FROM office_currencies WHERE office_id=" + id, null)) {
+1177:             while (c.moveToNext()) a.put(c.getString(0), new Limit(c.isNull(1) ? null : c.getLong(1), c.isNull(2) ? null : c.getLong(2)));
+1178:         }
+1179:         return a;
+1180:     }
+1181: 
+1182:     public List<Model.Currency> currencies(boolean all) {
+1183:         refreshMetals(getReadableDatabase());
+1184:         List<Model.Currency> a = new ArrayList<>();
+1185:         try (Cursor c = getReadableDatabase().rawQuery("SELECT code,name,decimals,active FROM currencies" + (all ? "" : " WHERE active=1") + " ORDER BY code", null)) {
+1186:             while (c.moveToNext()) a.add(new Model.Currency(c.getString(0), c.getString(1), c.getInt(2), c.getInt(3) == 1));
+1187:         }
+1188:         return a;
+1189:     }
+1190: 
+1191:     public synchronized void saveCurrency(String code, String name, int dec, boolean active) {
+1192:         String cc = code.trim().toUpperCase(Locale.US);
+1193:         // 12.5: المعدن يُحفظ بإعداداته كلها (saveMetal)؛ هنا الاسم والتفعيل فقط، ومنازله من وحدته. 12.6: صلاحيته «المعادن»
+1194:         Metals.Metal mt = Metals.of(cc);
+1195:         if (mt != null) {
+1196:             saveMetal(cc, name, mt.base, mt.fineness, mt.unit, mt.valued, active);
+1197:             return;
+1198:         }
+1199:         require(Auth.Perm.CURRENCIES);
+1200:         SQLiteDatabase d = getWritableDatabase();
+1201:         // 10.11 (AUDIT-004): المبالغ محفوظة بأصغر وحدة، فتغيير منازل عملة مستعملة يغيّر قيمة كل مبالغها
+1202:         try (Cursor c = d.rawQuery("SELECT decimals FROM currencies WHERE code=?", new String[]{cc})) {
+1203:             if (c.moveToFirst() && c.getInt(0) != dec && currencyUsed(cc))
+1204:                 throw new IllegalStateException("لا يمكن تغيير المنازل العشرية للعملة " + cc + ": عليها حركات أو أرصدة (في المكاتب أو الصندوق أو حسابات العملاء)، وتغييرها يغيّر قيمة المبالغ المسجّلة.");
+1205:         }
+1206:         ContentValues v = new ContentValues();
+1207:         v.put("name", name);
+1208:         v.put("decimals", dec);
+1209:         v.put("active", active ? 1 : 0);
+1210:         if (d.update("currencies", v, "code=?", new String[]{cc}) == 0) {
+1211:             v.put("code", cc);
+1212:             d.insertOrThrow("currencies", null, v);
+1213:         }
+1214:         decimalsCache.remove(cc);
+1215:         audit("SAVE_CURRENCY", "currency", 0, cc);
+1216:     }
+1217: 
+1218:     // ===================================================================================
+1219:     // 12.5: المعادن الثمينة
+1220:     // ===================================================================================
+1221: 
+1222:     /** يقرأ حسابات المعادن إلى سجل Metals (يقرؤه المحلّل والتقويم). رخيص: يُستدعى مع قراءة العملات والأسعار. */
+1223:     void refreshMetals(SQLiteDatabase d) {
+1224:         List<Metals.Metal> l = new ArrayList<>();
+1225:         try (Cursor c = d.rawQuery("SELECT code,metal,unit,fineness,valued FROM currencies WHERE kind='METAL'", null)) {
+1226:             while (c.moveToNext())
+1227:                 l.add(new Metals.Metal(c.getString(0), c.getString(1), c.getString(2), c.isNull(3) ? 0 : c.getInt(3), !c.isNull(4) && c.getInt(4) == 1));
+1228:         }
+1229:         Metals.set(l);
+1230:     }
+1231: 
+1232:     public List<Metals.Metal> metals() {
+1233:         refreshMetals(getReadableDatabase());
+1234:         List<Metals.Metal> out = new ArrayList<>();
+1235:         for (Model.Currency c : currencies(true)) {
+1236:             Metals.Metal m = Metals.of(c.code);
+1237:             if (m != null) out.add(m);
+1238:         }
+1239:         return out;
+1240:     }
+1241: 
+1242:     /**
+1243:      * 12.5: حساب معدن (جديد أو تعديل). المعدن والعيار والوحدة (ومعها المنازل) لا تتغير بعد أول حركة؛
+1244:      * الاسم والتفعيل والتقويم بالدولار تتغير. الرمز لا يكون رمز عملة موجودة.
+1245:      */
+1246:     public synchronized void saveMetal(String code, String name, String base, int fineness, String unit, boolean valued, boolean active) {
+1247:         require(Auth.Perm.METALS);   // 12.6
+1248:         String cc = Model.nz(code).trim().toUpperCase(Locale.US);
+1249:         if (!cc.matches("[A-Z][A-Z0-9]{1,9}")) throw new IllegalArgumentException("الرمز أحرف إنجليزية وأرقام (2 إلى 10) يبدأ بحرف، مثل XAU21");
+1250:         if (Model.nz(name).trim().isEmpty()) throw new IllegalArgumentException("اكتب اسم المعدن");
+1251:         if (!Metals.UNITS.containsKey(unit)) throw new IllegalArgumentException("وحدة الوزن غير معروفة");
+1252:         if (!Arrays.asList(Metals.BASES).contains(base)) throw new IllegalArgumentException("نوع المعدن غير معروف");
+1253:         if (fineness < 0 || fineness > 1000) throw new IllegalArgumentException("العيار بالألف بين 1 و1000 (مثل 875 لعيار 21)");
+1254:         int dec = Metals.unit(unit).decimals;
+1255:         SQLiteDatabase d = getWritableDatabase();
+1256:         d.beginTransaction();
+1257:         try {
+1258:             boolean unchanged = false;   // 12.6: تعديل الاسم أو التفعيل لحساب قائم لا يخضع لفحص التكرار
+1259:             try (Cursor c = d.rawQuery("SELECT kind,metal,unit,fineness,decimals FROM currencies WHERE code=?", new String[]{cc})) {
+1260:                 if (c.moveToFirst()) {
+1261:                     if (!"METAL".equals(c.getString(0))) throw new IllegalStateException("الرمز " + cc + " لعملة موجودة: اختر رمزًا آخر");
+1262:                     boolean same = Model.nz(c.getString(1)).equals(base) && Model.nz(c.getString(2)).equals(unit) && (c.isNull(3) ? 0 : c.getInt(3)) == fineness
+1263:                             && c.getInt(4) == dec;
+1264:                     unchanged = same;
+1265:                     if (!same && currencyUsed(cc))
+1266:                         throw new IllegalStateException("لا يمكن تغيير المعدن أو العيار أو الوحدة لـ" + cc + ": عليه حركات أو أرصدة، وتغييرها يغيّر معنى كل وزن مسجّل. أنشئ حسابًا جديدًا وانقل إليه بـ«قص».");
+1267:                 }
+1268:             }
+1269:             // 12.6: المعدن بالعيار والوحدة نفسيهما حساب واحد؛ وعيار غير محدد بجانب حساب آخر لنفس المعدن يلتبس فيُرفض
+1270:             if (!unchanged) try (Cursor c = d.rawQuery("SELECT code,unit,fineness FROM currencies WHERE kind='METAL' AND metal=? AND code<>?", new String[]{base, cc})) {
+1271:                 while (c.moveToNext()) {
+1272:                     int f2 = c.isNull(2) ? 0 : c.getInt(2);
+1273:                     if (f2 == fineness && Model.nz(c.getString(1)).equals(unit))
+1274:                         throw new IllegalStateException("عندك حساب " + Metals.baseName(base) + (fineness > 0 ? " " + Metals.purityLabel(base, fineness) : "") + " بالـ" + Metals.unit(unit).name

@@ -1,0 +1,150 @@
+1: import android.content.Context;
+2: import android.database.Cursor;
+3: import com.smart.hawala.*;
+4: import java.io.File;
+5: import java.lang.reflect.Method;
+6: import java.nio.charset.StandardCharsets;
+7: import java.nio.file.Files;
+8: import java.util.*;
+9: import org.json.JSONArray;
+10: import org.json.JSONObject;
+11: 
+12: /**
+13:  * 12.7 على Db الحقيقي وبيانات اصطناعية (لا بيانات حقيقية ولا اتصال بخدمة خارجية؛ الوقت من خادم وهمي محلي):
+14:  * لا تنتظر الشاشة أعمال الخلفية (الفحص، اللقطة، الانضمام)، الانضمام على مرحلتين والاستئناف، ملخص المكاتب بالطريقة الجديدة
+15:  * يطابق القديمة، البحث بالنص المحلي يطابق البحث القديم، الفحص اليومي المتتابع لسجل العمليات، ربط الرخصة بالمكتب وسجل
+16:  * المحاولات المختوم، تأكيد الوقت ومهلته، الحركات لكل مستخدم، ومزوّدات القراءة الذكية السحابية.
+17:  * الاستعمال: java Release127Test [مجلد tests/data لكتابة طلب تفعيل نموذجي لأداة البائع]
+18:  */
+19: public class Release127Test {
+20:     static int fails, passes;
+21: 
+22:     static void check(boolean c, String m) {
+23:         if (c) passes++;
+24:         else fails++;
+25:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+26:     }
+27: 
+28:     static Db.TxInput tx(long office, boolean us, long amount, String cur, String person, String desc) {
+29:         Db.TxInput t = new Db.TxInput();
+30:         t.office = office;
+31:         t.type = us ? Model.TYPE_DEBIT : Model.TYPE_CREDIT;
+32:         t.amount = amount;
+33:         t.currency = cur;
+34:         t.person = person;
+35:         t.description = desc;
+36:         t.when = Clock.now() - 90L * 86_400_000L + (long) (Math.abs(desc.hashCode()) % (80L * 86_400_000L));
+37:         return t;
+38:     }
+39: 
+40:     static LicenseToken.Grant grant(Map<String, String> f) throws Exception {
+41:         java.lang.reflect.Constructor<LicenseToken.Grant> c = LicenseToken.Grant.class.getDeclaredConstructor(Map.class);
+42:         c.setAccessible(true);
+43:         return c.newInstance(f);
+44:     }
+45: 
+46:     static Object call(Class<?> k, String name, Class<?>[] types, Object... args) throws Exception {
+47:         Method m = k.getDeclaredMethod(name, types);
+48:         m.setAccessible(true);
+49:         return m.invoke(null, args);
+50:     }
+51: 
+52:     /** أطول انتظار لقراءة بسيطة من «الشاشة» أثناء عمل في الخلفية. */
+53:     static long[] probe(Db d, Runnable work) throws Exception {
+54:         final long[] max = {0};
+55:         final boolean[] stop = {false};
+56:         Thread p = new Thread(() -> {
+57:             while (!stop[0]) {
+58:                 long t = System.nanoTime();
+59:                 d.setting("office_name", "");
+60:                 d.decimals("USD");
+61:                 long w = (System.nanoTime() - t) / 1_000_000;
+62:                 if (w > max[0]) max[0] = w;
+63:                 try {
+64:                     Thread.sleep(15);
+65:                 } catch (Exception e) {
+66:                     return;
+67:                 }
+68:             }
+69:         });
+70:         p.start();
+71:         long t0 = System.currentTimeMillis();
+72:         work.run();
+73:         long total = System.currentTimeMillis() - t0;
+74:         stop[0] = true;
+75:         p.join();
+76:         return new long[]{total, max[0]};
+77:     }
+78: 
+79:     public static void main(String[] a) throws Exception {
+80:         System.setProperty("sa.secrets", "file");
+81:         File data = a.length > 0 ? new File(a[0]) : null;
+82: 
+83:         System.out.println("== 1) الشاشة لا تنتظر أعمال الخلفية");
+84:         Object[] dv = DeskCoreTest.device("r127a");
+85:         Context ctx = (Context) dv[0];
+86:         final Db db = (Db) dv[1];
+87:         License.current = Entitlements.of(DeskCoreTest.fullGrant(), BuildInfo.BUILD_DATE);
+88:         List<Long> offs = new ArrayList<>();
+89:         for (int i = 1; i <= 12; i++) offs.add(db.addOffice("مكتب " + i, "", "", "", "", "", null, null, Arrays.asList("USD", "EUR", "TRY"), new HashMap<>(), new ArrayList<>()));
+90:         Random r = new Random(11);
+91:         String[] names = {"أحمد الخطيب", "محمد العلي", "خالد يوسف", "Sami Haddad", "ليلى قاسم"};
+92:         List<Long> ids = new ArrayList<>();
+93:         for (int i = 0; i < 6000; i++) {
+94:             Db.TxInput t = tx(offs.get(r.nextInt(offs.size())), r.nextBoolean(), 1000 + r.nextInt(900000), new String[]{"USD", "EUR", "TRY"}[r.nextInt(3)],
+95:                     names[r.nextInt(names.length)] + " " + r.nextInt(300), "حوالة رقم " + i + " إلى حلب");
+96:             ids.add(db.addTx(t, null));
+97:         }
+98:         for (int i = 0; i < 300; i++) db.cancelTx(ids.get(i * 7), "اختبار");
+99:         long[] h = probe(db, db::runHealthAuto);
+100:         check(h[1] < 300, "فحص السلامة في الخلفية (" + h[0] + " ms) والشاشة انتظرت " + h[1] + " ms فقط");
+101:         long hits0 = net.zetetic.database.sqlcipher.SQLiteDatabase.READER_HITS.get();
+102:         File shared = Files.createTempDirectory("r127-shared").toFile();
+103:         long[] cr = probe(db, () -> {
+104:             try {
+105:                 new SyncEngine(db, new FileSyncFolder(shared)).create("كلمة-سر-طويلة-127".toCharArray(), "A");
+106:             } catch (Exception e) {
+107:                 throw new RuntimeException(e);
+108:             }
+109:         });
+110:         check(cr[1] < 300, "إنشاء الخزنة واللقطة الكاملة (" + cr[0] + " ms) والشاشة انتظرت " + cr[1] + " ms فقط");
+111:         check(net.zetetic.database.sqlcipher.SQLiteDatabase.READER_HITS.get() > hits0, "قراءات الشاشة خدمها اتصال القراءة الثاني أثناء عمل الخلفية");
+112:         File cache = ctx.getCacheDir();
+113:         String[] left = cache.list((x, n) -> n.startsWith("read-"));
+114:         check(left == null || left.length == 0, "نسخة الملف المؤقتة للّقطة حُذفت بعد البناء");
+115: 
+116:         System.out.println("== 2) الانضمام على مرحلتين، والاستئناف بعد انقطاع");
+117:         Db B = new Db(new Context(Files.createTempDirectory("r127b").toFile()));
+118:         License.current = Entitlements.of(DeskCoreTest.fullGrant(), BuildInfo.BUILD_DATE);
+119:         boolean wrong = false;
+120:         try {
+121:             new SyncEngine(B, new FileSyncFolder(shared)).joinPrepare("كلمة-خاطئة-تماما".toCharArray(), false, "B");
+122:         } catch (IllegalArgumentException e) {
+123:             wrong = e.getMessage().contains("غير صحيحة");
+124:         }
+125:         check(wrong && !SyncEngine.joinPending(B) && !SyncEngine.enabled(B), "كلمة سر خاطئة: لا انضمام معلّق ولا تغيير");
+126:         new SyncEngine(B, new FileSyncFolder(shared)).joinPrepare("كلمة-سر-طويلة-127".toCharArray(), false, "هاتف B");
+127:         check(SyncEngine.joinPending(B) && !SyncEngine.enabled(B) && "هاتف B".equals(SyncEngine.pendingName(B)), "بعد كلمة السر: الجهاز منضم ويُنتظر التحميل (والبيانات لم تُستبدل بعد)");
+128:         String pend = new String(Files.readAllBytes(new File(B.evidenceDir().getParentFile(), "sync-join-pending.json").toPath()), StandardCharsets.UTF_8);
+129:         check(!pend.contains("كلمة-سر-طويلة-127"), "ملف الانضمام المعلّق لا يحوي كلمة السر (مفتاح الخزنة مشفّر بمفتاح الجهاز)");
+130:         // انقطاع: كائن جديد (كأن التطبيق أُغلق وأُعيد فتحه) يكمل التحميل
+131:         final List<Integer> pcts = new ArrayList<>();
+132:         new SyncEngine(B, new FileSyncFolder(shared)).joinFinish((pc, m) -> pcts.add(pc));
+133:         check(SyncEngine.enabled(B) && !SyncEngine.joinPending(B), "الاستئناف أكمل الانضمام وحذف الملف المعلّق");
+134:         boolean rising = !pcts.isEmpty() && pcts.get(pcts.size() - 1) == 100;
+135:         for (int i = 1; i < pcts.size(); i++) if (pcts.get(i) < pcts.get(i - 1)) rising = false;
+136:         check(rising, "شريط التقدم يصعد حتى 100٪ (" + pcts + ")");
+137:         check(db.officeBalances().equals(B.officeBalances()), "أرصدة الجهاز المنضم تطابق الأصل");
+138:         new SyncEngine(B, new FileSyncFolder(shared)).joinFinish(null);
+139:         check(SyncEngine.enabled(B), "إعادة الاستئناف بعد الاكتمال لا تفعل شيئًا");
+140: 
+141:         System.out.println("== 3) ملخص المكاتب بالطريقة السريعة يطابق القديمة");
+142:         Map<String, long[]> old = new HashMap<>();
+143:         try (Cursor c = db.getReadableDatabase().rawQuery("SELECT l.office_id,l.currency,SUM(l.debit_minor),SUM(l.credit_minor) FROM journal_lines l"
+144:                 + " JOIN journal_entries e ON e.id=l.entry_id LEFT JOIN tx t ON t.id=e.tx_id"
+145:                 + " WHERE l.account='OFFICE' AND l.office_id IS NOT NULL AND (e.tx_id IS NULL OR t.status='ACTIVE') GROUP BY l.office_id,l.currency", null)) {
+146:             while (c.moveToNext()) old.put(c.getLong(0) + "/" + c.getString(1), new long[]{c.getLong(2), c.getLong(3)});
+147:         }
+148:         boolean same = true;
+149:         int compared = 0;
+150:         for (Model.OfficeTotals ot : db.officeTotals(null)) {

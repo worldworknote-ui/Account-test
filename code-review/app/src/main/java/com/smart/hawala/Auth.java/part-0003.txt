@@ -1,0 +1,35 @@
+267:         return String.join(",", out);
+268:     }
+269: 
+270:     /** صلاحيات الدور القديم (لترحيل الحسابات الموجودة). */
+271:     public static String legacyPerms(String role) {
+272:         Set<String> s = new LinkedHashSet<>();
+273:         for (Perm p : Perm.values()) if (can(role, p)) s.add(p.name());
+274:         return csv(s);
+275:     }
+276: 
+277:     /** 10.1: الفحص الفعلي للمستخدم. */
+278:     public static boolean can(Model.User u, Perm p) {
+279:         if (u == null) return false;
+280:         if (isAdmin(u)) return true;
+281:         return perms(u).contains(p.name());
+282:     }
+283: 
+284:     /** الأدوار القديمة (للترحيل والاختبارات). role == null يعني وضع المستخدم الواحد (كل الصلاحيات). */
+285:     public static boolean can(String role, Perm p) {
+286:         if (role == null || ADMIN.equals(role)) return true;
+287:         switch (role) {
+288:             case ACCOUNTANT:
+289:                 return p == Perm.TX_ADD || p == Perm.TX_EDIT || p == Perm.TX_CANCEL || p == Perm.VIEW || p == Perm.EXPORT || p == Perm.OFFICES || p == Perm.APPROVE || p == Perm.CASH;
+290:             case EMPLOYEE:
+291:                 return p == Perm.TX_ADD || p == Perm.VIEW || p == Perm.CASH;
+292:             case VIEWER:
+293:                 return p == Perm.VIEW;
+294:             default:
+295:                 return false;
+296:         }
+297:     }
+298: 
+299:     /** للاختبار والواجهة: كل الصلاحيات ما عدا المستخدمين. */
+300:     public static List<Perm> all() { return Arrays.asList(ORDER); }
+301: }

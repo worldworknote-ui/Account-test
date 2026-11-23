@@ -1,0 +1,165 @@
+1: package android.widget;
+2: 
+3: import android.content.Context;
+4: import android.content.res.ColorStateList;
+5: import android.graphics.*;
+6: import android.graphics.drawable.Drawable;
+7: import android.text.*;
+8: import android.text.method.*;
+9: import android.view.*;
+10: import java.util.ArrayList;
+11: import java.util.List;
+12: 
+13: public class TextView extends View {
+14:     public enum BufferType { NORMAL, SPANNABLE, EDITABLE }
+15:     public interface OnEditorActionListener { boolean onEditorAction(TextView v, int actionId, KeyEvent e); }
+16:     public static final int AUTO_SIZE_TEXT_TYPE_NONE = 0, AUTO_SIZE_TEXT_TYPE_UNIFORM = 1;
+17: 
+18:     protected CharSequence text = "";
+19:     private CharSequence hint;
+20:     private ColorStateList color = ColorStateList.valueOf(0xDE000000), hintColor = ColorStateList.valueOf(0x61000000), linkColor;
+21:     protected final TextPaint paint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+22:     private int gravity = Gravity.TOP | Gravity.START;
+23:     private int maxLines = Integer.MAX_VALUE, minLines = 0, maxWidth = Integer.MAX_VALUE, minWidthPx = 0, maxHeight = Integer.MAX_VALUE, minHeightPx = 0;
+24:     private int exactLines = -1, ems = -1;
+25:     protected boolean singleLine;
+26:     private TextUtils.TruncateAt ellipsize;
+27:     private float spacingMult = 1f, spacingAdd = 0f;
+28:     private boolean includePad = true, allCaps;
+29:     private final Drawable[] compound = new Drawable[4];
+30:     private boolean compoundRelative;
+31:     private int compoundPad;
+32:     private ColorStateList compoundTint;
+33:     private TransformationMethod transform;
+34:     protected final List<TextWatcher> watchers = new ArrayList<>();
+35:     private OnEditorActionListener editorListener;
+36:     private int imeOptions, inputType = InputType.TYPE_CLASS_TEXT;
+37:     private InputFilter[] filters = new InputFilter[0];
+38:     private boolean selectable, horizScroll;
+39:     private float shadowR, shadowDx, shadowDy;
+40:     private int shadowColor;
+41:     private int autoMin = -1, autoMax = -1;
+42:     private float autoSize = -1;
+43:     private TextLines cache;
+44:     private int cacheW = -2;
+45:     private int textVersion;
+46:     private int cacheVersion = -1;
+47:     private Layout layoutView;
+48:     private CharSequence error;
+49:     private boolean cursorVisible = true;
+50:     private int highlight = 0x6633B5E5;
+51: 
+52:     public TextView(Context c) {
+53:         super(c);
+54:         float d = c == null ? 1f : c.getResources().getDisplayMetrics().scaledDensity;
+55:         paint.setTextSize(14 * d);
+56:         paint.density = d;
+57:         if (c instanceof android.app.Activity) {
+58:             android.app.Activity a = (android.app.Activity) c;
+59:             color = ColorStateList.valueOf(a.themeTextColor());
+60:             hintColor = ColorStateList.valueOf(a.themeHintColor());
+61:         }
+62:     }
+63:     public TextView(Context c, android.util.AttributeSet a) { this(c); }
+64:     public TextView(Context c, android.util.AttributeSet a, int s) { this(c); }
+65: 
+66:     // ------------------------------------------------------------------ النص
+67:     public void setText(CharSequence t) { setText(t, BufferType.NORMAL); }
+68:     public void setText(CharSequence t, BufferType type) {
+69:         if (t == null) t = "";
+70:         CharSequence old = text;
+71:         text = t;
+72:         textChanged(old);
+73:     }
+74:     public final void setText(int res) { setText(getResources().getText(res)); }
+75:     public final void setText(char[] c, int s, int n) { setText(new String(c, s, n)); }
+76:     public void append(CharSequence t) { setText(TextUtils.concat(text, t)); }
+77:     public void append(CharSequence t, int a, int b) { append(t.subSequence(a, b)); }
+78:     public CharSequence getText() { return text; }
+79:     public int length() { return text.length(); }
+80:     protected void textChanged(CharSequence old) {
+81:         textVersion++;
+82:         requestLayout();
+83:         invalidate();
+84:     }
+85:     public void setHint(CharSequence h) { hint = h; textVersion++; requestLayout(); invalidate(); }
+86:     public final void setHint(int res) { setHint(getResources().getText(res)); }
+87:     public CharSequence getHint() { return hint; }
+88:     public void setError(CharSequence e) {
+89:         error = e;
+90:         invalidate();
+91:         if (e != null && getContext() instanceof android.app.Activity && isAttachedToWindow()) {
+92:             Toast.makeText(getContext(), e, Toast.LENGTH_LONG).show();
+93:         }
+94:     }
+95:     public void setError(CharSequence e, Drawable icon) { setError(e); }
+96:     public CharSequence getError() { return error; }
+97: 
+98:     // ------------------------------------------------------------------ المظهر
+99:     public void setTextSize(float sp) { setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sp); }
+100:     public void setTextSize(int unit, float v) {
+101:         float px = android.util.TypedValue.applyDimension(unit, v, getResources().getDisplayMetrics());
+102:         if (px != paint.getTextSize()) { paint.setTextSize(px); textVersion++; requestLayout(); invalidate(); }
+103:     }
+104:     public float getTextSize() { return paint.getTextSize(); }
+105:     public float getTextSizeDp() { return paint.getTextSize() / getResources().getDisplayMetrics().scaledDensity; }
+106:     public void setTextColor(int c) { color = ColorStateList.valueOf(c); invalidate(); }
+107:     public void setTextColor(ColorStateList c) { if (c != null) color = c; invalidate(); }
+108:     public final ColorStateList getTextColors() { return color; }
+109:     public final int getCurrentTextColor() { return color.getColorForState(getDrawableState(), color.getDefaultColor()); }
+110:     public final void setHintTextColor(int c) { hintColor = ColorStateList.valueOf(c); invalidate(); }
+111:     public final void setHintTextColor(ColorStateList c) { hintColor = c; invalidate(); }
+112:     public final ColorStateList getHintTextColors() { return hintColor; }
+113:     public final int getCurrentHintTextColor() { return hintColor.getDefaultColor(); }
+114:     public final void setLinkTextColor(int c) { linkColor = ColorStateList.valueOf(c); }
+115:     public void setHighlightColor(int c) { highlight = c; }
+116:     public int getHighlightColor() { return highlight; }
+117:     public void setTypeface(Typeface t) { if (t != paint.getTypeface()) { paint.setTypeface(t); textVersion++; requestLayout(); invalidate(); } }
+118:     public void setTypeface(Typeface t, int style) { setTypeface(Typeface.create(t, style)); }
+119:     public Typeface getTypeface() { return paint.getTypeface() == null ? Typeface.DEFAULT : paint.getTypeface(); }
+120:     public TextPaint getPaint() { return paint; }
+121:     public void setPaintFlags(int f) { if (paint.getFlags() != f) { paint.setFlags(f); textVersion++; requestLayout(); invalidate(); } }
+122:     public int getPaintFlags() { return paint.getFlags(); }
+123:     public void setLetterSpacing(float s) { paint.setLetterSpacing(s); textVersion++; requestLayout(); }
+124:     public float getLetterSpacing() { return paint.getLetterSpacing(); }
+125:     public void setShadowLayer(float r, float dx, float dy, int c) { shadowR = r; shadowDx = dx; shadowDy = dy; shadowColor = c; invalidate(); }
+126:     public void setAllCaps(boolean a) { allCaps = a; textVersion++; requestLayout(); }
+127:     public boolean isAllCaps() { return allCaps; }
+128:     public void setTextAppearance(int res) {}
+129:     public void setTextAppearance(Context c, int res) {}
+130:     public void setElegantTextHeight(boolean e) {}
+131:     public void setFontFeatureSettings(String s) {}
+132:     public void setFallbackLineSpacing(boolean b) {}
+133:     public void setTextLocale(java.util.Locale l) {}
+134:     public void setTextScaleX(float s) {}
+135: 
+136:     public void setGravity(int g) {
+137:         if ((g & Gravity.RELATIVE_HORIZONTAL_GRAVITY_MASK) == 0) g |= Gravity.START;
+138:         if ((g & Gravity.VERTICAL_GRAVITY_MASK) == 0) g |= Gravity.TOP;
+139:         if (g != gravity) { gravity = g; invalidate(); }
+140:     }
+141:     public int getGravity() { return gravity; }
+142: 
+143:     public void setSingleLine() { setSingleLine(true); }
+144:     public void setSingleLine(boolean s) {
+145:         singleLine = s;
+146:         if (s) { maxLines = 1; horizScroll = true; } else { if (maxLines == 1) maxLines = Integer.MAX_VALUE; horizScroll = false; }
+147:         textVersion++;
+148:         requestLayout();
+149:         invalidate();
+150:     }
+151:     public boolean isSingleLine() { return singleLine; }
+152:     public void setMaxLines(int m) { maxLines = m <= 0 ? Integer.MAX_VALUE : m; textVersion++; requestLayout(); invalidate(); }
+153:     public int getMaxLines() { return maxLines; }
+154:     public void setMinLines(int m) { minLines = m; requestLayout(); }
+155:     public int getMinLines() { return minLines; }
+156:     public void setLines(int n) { exactLines = n; maxLines = n; minLines = n; textVersion++; requestLayout(); }
+157:     public void setEllipsize(TextUtils.TruncateAt e) { ellipsize = e; textVersion++; requestLayout(); invalidate(); }
+158:     public TextUtils.TruncateAt getEllipsize() { return ellipsize; }
+159:     public void setLineSpacing(float add, float mult) { spacingAdd = add; spacingMult = mult; textVersion++; requestLayout(); }
+160:     public float getLineSpacingMultiplier() { return spacingMult; }
+161:     public float getLineSpacingExtra() { return spacingAdd; }
+162:     public int getLineHeight() { return Math.round((paint.descent() + paint.ascent()) * spacingMult + spacingAdd); }
+163:     public void setLineHeight(int h) {}
+164:     public void setIncludeFontPadding(boolean p) { includePad = p; textVersion++; requestLayout(); }
+165:     public boolean getIncludeFontPadding() { return includePad; }

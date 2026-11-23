@@ -1,0 +1,185 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.Context;
+4: import android.content.SharedPreferences;
+5: import android.security.keystore.KeyGenParameterSpec;
+6: import android.security.keystore.KeyProperties;
+7: import android.util.Base64;
+8: import java.nio.charset.StandardCharsets;
+9: import java.security.KeyStore;
+10: import java.util.LinkedHashMap;
+11: import java.util.Map;
+12: import javax.crypto.Cipher;
+13: import javax.crypto.KeyGenerator;
+14: import javax.crypto.SecretKey;
+15: import javax.crypto.spec.GCMParameterSpec;
+16: 
+17: /**
+18:  * تشفير الحقول الحساسة والمرفقات داخل الهاتف بمفتاح AES-GCM محفوظ في Android Keystore.
+19:  * المفتاح لا يغادر الهاتف، لذلك تُفك البيانات عند إنشاء النسخة الاحتياطية (وتُحمى بكلمة مرور النسخة)،
+20:  * ثم تُشفَّر من جديد بمفتاح الهاتف الجديد عند الاستعادة؛ وبهذا تصلح الاستعادة على هاتف آخر.
+21:  */
+22: public final class Crypto {
+23:     /** النص الذي يظهر مكان أي حقل تعذّر فك تشفيره. */
+24:     public static final String PLACEHOLDER = "[بيانات مشفرة غير قابلة للقراءة]";
+25:     private static final String ALIAS = "smart_accountant_local_v1";
+26:     private static SecretKey cachedKey;
+27: 
+28:     /** ذاكرة مؤقتة للحقول المفكوكة لتسريع الشاشات (فك التشفير عبر Keystore بطيء نسبيًا). */
+29:     private static final int CACHE_MAX = 8000;
+30:     private static final Map<String, String> CACHE = new LinkedHashMap<String, String>(512, 0.75f, true) {
+31:         @Override protected boolean removeEldestEntry(Map.Entry<String, String> e) { return size() > CACHE_MAX; }
+32:     };
+33: 
+34:     private Crypto() {}
+35: 
+36:     /**
+37:      * مفتاح البيانات للحقول النصية (انظر FieldCipher): يُقرأ مرة عند تشغيل التطبيق ويُفك بمفتاح Keystore.
+38:      * null = غير متاح، فتُستخدم الطريقة القديمة (Keystore لكل حقل) كما كانت.
+39:      */
+40:     private static volatile SecretKey dek;
+41:     static final String DEK_PREFS = "field_key", DEK_NAME = "dek_v2";
+42:     /**
+43:      * 8.0: إن كانت قاعدة البيانات أو مفتاح البيانات المغلَّف موجودين فمفتاح Keystore يجب أن يكون موجودًا.
+44:      * قبلها كان ضياعه (إعادة ضبط، نقل بيانات التطبيق بأداة، عطل) يولّد مفتاحًا جديدًا بصمت، فتُكتب نسخ احتياطية
+45:      * حقولها نصوص بديلة وتحل تدريجيًا محل آخر نسخة سليمة.
+46:      */
+47:     private static volatile boolean keyMustExist;
+48: 
+49:     /** يُستدعى مرة عند تشغيل التطبيق قبل فتح قاعدة البيانات. */
+50:     public static synchronized void init(Context ctx) {
+51:         if (dek != null) return;
+52:         keyMustExist = ctx.getDatabasePath(Db.NAME).exists()
+53:                 || ctx.getSharedPreferences(DEK_PREFS, Context.MODE_PRIVATE).contains(DEK_NAME);
+54:         try {
+55:             SharedPreferences sp = ctx.getSharedPreferences(DEK_PREFS, Context.MODE_PRIVATE);
+56:             String wrapped = sp.getString(DEK_NAME, null);
+57:             if (wrapped != null) {
+58:                 // مفتاح موجود: لا يُستبدل أبدًا حتى لو تعذر فكه، وإلا ضاعت البيانات المشفرة به. نعيد المحاولة إن كان Keystore مشغولًا.
+59:                 Exception last = null;
+60:                 for (int i = 0; i < 3; i++) {
+61:                     try {
+62:                         dek = FieldCipher.key(Base64.decode(decLegacy(wrapped), Base64.NO_WRAP));
+63:                         return;
+64:                     } catch (Exception e) {
+65:                         last = e;
+66:                         Thread.sleep(150);
+67:                     }
+68:                 }
+69:                 throw last;
+70:             }
+71:             SecretKey k = FieldCipher.newKey();
+72:             String w = encLegacy(Base64.encodeToString(k.getEncoded(), Base64.NO_WRAP));
+73:             if (!sp.edit().putString(DEK_NAME, w).commit()) return;
+74:             // تحقق من الحفظ والفك قبل الاعتماد عليه
+75:             String back = sp.getString(DEK_NAME, null);
+76:             if (back == null || !back.equals(w)) return;
+77:             byte[] check = Base64.decode(decLegacy(back), Base64.NO_WRAP);
+78:             if (!java.util.Arrays.equals(check, k.getEncoded())) return;
+79:             dek = k;
+80:         } catch (Throwable t) {
+81:             dek = null;
+82:         }
+83:     }
+84: 
+85:     /** 12.6: مفتاح قاعدة البيانات (SQLCipher) المشتق من مفتاح البيانات، أو null إن لم يتوفر. */
+86:     public static String dbKey() { return FieldCipher.dbKey(dek); }
+87: 
+88:     /** هل الحقول الجديدة تُشفَّر بمفتاح البيانات السريع؟ */
+89:     public static boolean fast() { return dek != null; }
+90: 
+91:     /** هل هذا النص المشفّر بالطريقة القديمة (Keystore لكل حقل)؟ */
+92:     public static boolean isLegacy(String s) {
+93:         if (s == null || s.isEmpty()) return false;
+94:         try {
+95:             byte[] in = Base64.decode(s, Base64.NO_WRAP);
+96:             return in.length > 0 && !FieldCipher.isV2(in);
+97:         } catch (IllegalArgumentException e) {
+98:             return false;
+99:         }
+100:     }
+101: 
+102:     private static synchronized SecretKey key() throws Exception {
+103:         if (cachedKey != null) return cachedKey;
+104:         KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+105:         ks.load(null);
+106:         if (!ks.containsAlias(ALIAS)) {
+107:             if (keyMustExist) throw new IllegalStateException("مفتاح Keystore مفقود والبيانات المشفرة موجودة؛ لن يُولَّد مفتاح جديد");
+108:             KeyGenerator kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+109:             kg.init(new KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+110:                     .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+111:                     .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+112:                     .setKeySize(256)
+113:                     .build());
+114:             kg.generateKey();
+115:         }
+116:         cachedKey = ((KeyStore.SecretKeyEntry) ks.getEntry(ALIAS, null)).getSecretKey();
+117:         return cachedKey;
+118:     }
+119: 
+120:     public static String enc(String s) {
+121:         if (s == null) return null;
+122:         SecretKey k = dek;
+123:         if (k != null) {
+124:             try {
+125:                 String r = FieldCipher.encrypt(k, s);
+126:                 synchronized (CACHE) { CACHE.put(r, s); }
+127:                 return r;
+128:             } catch (Exception e) {
+129:                 // نادر جدًا: نعود للطريقة القديمة
+130:             }
+131:         }
+132:         return encLegacy(s);
+133:     }
+134: 
+135:     /** الطريقة القديمة: مفتاح Keystore مباشرة لكل حقل (تُستخدم أيضًا لحفظ مفتاح البيانات نفسه). */
+136:     private static String encLegacy(String s) {
+137:         try {
+138:             Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+139:             c.init(Cipher.ENCRYPT_MODE, key());
+140:             byte[] b = c.doFinal(s.getBytes(StandardCharsets.UTF_8));
+141:             byte[] iv = c.getIV();
+142:             byte[] out = new byte[1 + iv.length + b.length];
+143:             out[0] = (byte) iv.length;
+144:             System.arraycopy(iv, 0, out, 1, iv.length);
+145:             System.arraycopy(b, 0, out, 1 + iv.length, b.length);
+146:             String r = Base64.encodeToString(out, Base64.NO_WRAP);
+147:             synchronized (CACHE) { CACHE.put(r, s); }
+148:             return r;
+149:         } catch (Exception e) {
+150:             throw new IllegalStateException("تعذر تشفير البيانات على هذا الهاتف", e);
+151:         }
+152:     }
+153: 
+154:     /** يفك التشفير ويرمي استثناءً عند الفشل. */
+155:     public static String decStrict(String s) throws Exception {
+156:         if (s == null) return null;
+157:         if (s.isEmpty()) return "";
+158:         synchronized (CACHE) {
+159:             String hit = CACHE.get(s);
+160:             if (hit != null) return hit;
+161:         }
+162:         byte[] in = Base64.decode(s, Base64.NO_WRAP);
+163:         String out;
+164:         if (FieldCipher.isV2(in)) {
+165:             SecretKey k = dek;
+166:             if (k == null) throw new IllegalStateException("مفتاح البيانات غير متاح");
+167:             out = FieldCipher.decrypt(k, in);
+168:         } else out = legacyDecrypt(in);
+169:         synchronized (CACHE) { CACHE.put(s, out); }
+170:         return out;
+171:     }
+172: 
+173:     private static String decLegacy(String s) throws Exception {
+174:         return legacyDecrypt(Base64.decode(s, Base64.NO_WRAP));
+175:     }
+176: 
+177:     private static String legacyDecrypt(byte[] in) throws Exception {
+178:         int n = in[0] & 255;
+179:         byte[] iv = new byte[n];
+180:         System.arraycopy(in, 1, iv, 0, n);
+181:         Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+182:         c.init(Cipher.DECRYPT_MODE, key(), new GCMParameterSpec(128, iv));
+183:         return new String(c.doFinal(in, 1 + n, in.length - 1 - n), StandardCharsets.UTF_8);
+184:     }
+185: 

@@ -1,0 +1,82 @@
+190:                 SyncStore.leave(d, "تراجعت البيانات إلى نسخة أمان؛ تعذر التحقق من حالة المزامنة فخرج هذا الجهاز منها. لإعادته: «الانضمام» من جديد");
+191:                 lastSyncNote = "خرج هذا الجهاز من المزامنة بعد التراجع.";
+192:             }
+193:         }
+194:         if (SyncStore.meta(d, "vault_id") == null) fresh.syncPrefix = 0;
+195:         try {
+196:             if (Long.parseLong(lockNow) > Long.parseLong(fresh.setting("lock_before", "0"))) fresh.setSettingQuiet("lock_before", lockNow);
+197:         } catch (NumberFormatException ignored) {
+198:             // قيمة غير رقمية: تبقى قيمة النسخة
+199:         }
+200:         fresh.cleanupEvidence();
+201:         fresh.audit("REVERT_RESTORE", "backup", 0, label(dir) + " / lock=" + fresh.setting("lock_before", "0") + (lastSyncNote.isEmpty() ? "" : " / " + lastSyncNote));
+202:         deleteTree(backupNow);
+203:         return fresh;
+204:     }
+205: 
+206:     /** 10.5: ما حدث للمزامنة في آخر تراجع (للواجهة)، أو فارغ. */
+207:     public static volatile String lastSyncNote = "";
+208: 
+209:     /**
+210:      * 10.5 (AUDIT-030): بعد استبدال قاعدة البيانات بنسخة الأمان (والحالة قبل التراجع مرفقة باسم cur):
+211:      * إن كانت نسخة الأمان في مزامنة وحالتها أقدم مما وصلت إليه المزامنة قبل التراجع (رقم آخر حزمة أُرسلت أو ما استُلم من
+212:      * غيره، أو خزنة/هوية أخرى، أو كان الجهاز قد خرج منها) يخرج الجهاز من المزامنة: لو بقي لأعاد استعمال أرقام حزم مستعملة
+213:      * بمحتوى مختلف، ولبقيت الأجهزة الأخرى بتغييراته التي أُلغيت هنا دون أن يعرف أحد. البيانات تبقى كما في نسخة الأمان.
+214:      */
+215:     static String syncAfterRevert(SQLiteDatabase d) {
+216:         String freshVault = SyncStore.meta(d, "vault_id");
+217:         if (freshVault == null) return "";
+218:         String curVault = one(d, "SELECT v FROM cur.sync_meta WHERE k='vault_id'"), curDev = one(d, "SELECT v FROM cur.sync_meta WHERE k='device'");
+219:         boolean regressed = curVault == null || !curVault.equals(freshVault) || curDev == null || !curDev.equals(SyncStore.meta(d, "device"));
+220:         if (!regressed) {
+221:             long curSeq = num(one(d, "SELECT v FROM cur.sync_meta WHERE k='my_seq'")), freshSeq = num(SyncStore.meta(d, "my_seq"));
+222:             if (freshSeq < curSeq) regressed = true;
+223:             java.util.Map<String, Long> fc = SyncStore.cursors(d);
+224:             try (android.database.Cursor c = d.rawQuery("SELECT dev,seq FROM cur.sync_cursor", null)) {
+225:                 while (c.moveToNext()) {
+226:                     Long f = fc.get(c.getString(0));
+227:                     if ((f == null ? 0 : f) < c.getLong(1)) regressed = true;
+228:                 }
+229:             }
+230:         }
+231:         if (!regressed) return "";
+232:         String why = curVault == null ? "كان هذا الجهاز قد خرج من المزامنة قبل التراجع"
+233:                 : "نسخة الأمان أقدم من آخر مزامنة لهذا الجهاز";
+234:         SyncStore.leave(d, "تراجعت البيانات إلى نسخة أمان (" + why + ")، فخرج هذا الجهاز من المزامنة كي لا يتعارض مع الأجهزة الأخرى. "
+235:                 + "ما أرسله قبل التراجع باقٍ عندها. لإعادته: «الانضمام» من جديد (تُستبدل بياناته ببيانات الخزنة؛ خذ نسخة احتياطية أولًا إن احتجت ما فيها).");
+236:         return "خرج هذا الجهاز من المزامنة بعد التراجع (" + why + ").";
+237:     }
+238: 
+239:     /**
+240:      * 10.5: للواجهة قبل التراجع: أثره على المزامنة. فارغ إن لم يكن الجهاز في مزامنة.
+241:      * يذكر عدد التغييرات التي لم تُرسل بعد (تضيع من المزامنة بالتراجع) ليزامن أولًا.
+242:      */
+243:     public static String syncImpact(Db current) {
+244:         SQLiteDatabase d = current.getReadableDatabase();
+245:         if (SyncStore.meta(d, "vault_id") == null) return "";
+246:         long unsent = num(one(d, "SELECT COUNT(*) FROM sync_chg")) + num(one(d, "SELECT COUNT(*) FROM sync_outbox WHERE uploaded=0"));
+247:         return "هذا الجهاز في مزامنة: إن كانت نسخة الأمان أقدم من آخر مزامنة يخرج من المزامنة بعد التراجع (ولا تتغير بيانات الأجهزة الأخرى)، ويمكنه الانضمام من جديد."
+248:                 + (unsent > 0 ? " تنبيه: " + unsent + " تغييرًا هنا لم يُرسل بعد؛ زامن أولًا إن أردت أن يصل." : "");
+249:     }
+250: 
+251:     private static String one(SQLiteDatabase d, String sql) {
+252:         try (android.database.Cursor c = d.rawQuery(sql, null)) {
+253:             return c.moveToFirst() ? c.getString(0) : null;
+254:         }
+255:     }
+256: 
+257:     private static long num(String s) {
+258:         try {
+259:             return s == null ? 0 : Long.parseLong(s);
+260:         } catch (NumberFormatException e) {
+261:             return 0;
+262:         }
+263:     }
+264: 
+265:     static void deleteTree(File f) {
+266:         if (f == null || !f.exists()) return;
+267:         File[] kids = f.listFiles();
+268:         if (kids != null) for (File k : kids) deleteTree(k);
+269:         f.delete();
+270:     }
+271: }

@@ -1,0 +1,211 @@
+1: package net.zetetic.database.sqlcipher;
+2: 
+3: import android.database.sqlite.SQLiteConstraintException;
+4: import android.database.sqlite.SQLiteException;
+5: 
+6: import android.content.ContentValues;
+7: import android.database.Cursor;
+8: import java.io.Closeable;
+9: import java.sql.Connection;
+10: import java.sql.DriverManager;
+11: import java.sql.PreparedStatement;
+12: import java.sql.ResultSet;
+13: import java.sql.ResultSetMetaData;
+14: import java.sql.SQLException;
+15: import java.sql.Statement;
+16: import java.util.ArrayList;
+17: import java.util.List;
+18: import java.util.Map;
+19: import java.util.concurrent.locks.ReentrantLock;
+20: 
+21: /**
+22:  * SQLiteDatabase بسلوك أندرويد فوق اتصال JDBC واحد (sqlite-jdbc):
+23:  * <ul>
+24:  *   <li>المعاملات المتداخلة: الداخلية بلا setTransactionSuccessful تُفشل المعاملة كلها (كأندرويد).</li>
+25:  *   <li>المعاملة مملوكة لخيطها: الخيوط الأخرى تنتظر حتى تنتهي (قفل قابل لإعادة الدخول)، فلا تختلط عملياتها بها.</li>
+26:  *   <li>وسائط rawQuery نصوص (كأندرويد تمامًا)، والقيم في ContentValues بأنواعها.</li>
+27:  * </ul>
+28:  */
+29: public final class SQLiteDatabase implements Closeable {
+30:     public static final int CONFLICT_NONE = 0, CONFLICT_ROLLBACK = 1, CONFLICT_ABORT = 2, CONFLICT_FAIL = 3, CONFLICT_IGNORE = 4, CONFLICT_REPLACE = 5;
+31:     private static final String[] CONFLICT = {"", " OR ROLLBACK", " OR ABORT", " OR FAIL", " OR IGNORE", " OR REPLACE"};
+32: 
+33:     private final Connection c;
+34:     private final String path;
+35:     private final ReentrantLock lock = new ReentrantLock(true);
+36:     private int depth;
+37:     private boolean failed;
+38:     private final List<Boolean> marks = new ArrayList<>();
+39:     private boolean readOnly;
+40:     /** 12.7: سر الملف لفتح اتصال القراءة الثاني. */
+41:     private final String password;
+42:     /** 12.7: اتصال قراءة ثانٍ (وضع WAL): القراءة من خيط آخر لا تنتظر معاملة كتابة طويلة في الخلفية (اللقطة، الانضمام، الفحص). */
+43:     private Connection reader;
+44:     private final ReentrantLock readerLock = new ReentrantLock(true);
+45:     /** 12.7: قواعد ملحقة (ATTACH) أو جداول مؤقتة على الاتصال الرئيسي: القراءة تبقى عليه. */
+46:     private volatile int attached;
+47:     /** 12.7: خيط عمل في الخلفية (الفحص): قراءاته من اتصال القراءة دائمًا فلا يحجز الاتصال الرئيسي عن الشاشة. */
+48:     private static final ThreadLocal<Boolean> PREFER = new ThreadLocal<>();
+49: 
+50:     public static void preferReader(boolean on) {
+51:         if (on) PREFER.set(Boolean.TRUE);
+52:         else PREFER.remove();
+53:     }
+54: 
+55:     /** للاختبار: عدد القراءات التي خدمها اتصال القراءة. */
+56:     public static final java.util.concurrent.atomic.AtomicLong READER_HITS = new java.util.concurrent.atomic.AtomicLong();
+57: 
+58:     private SQLiteDatabase(String path, Connection c, String password) {
+59:         this.path = path;
+60:         this.c = c;
+61:         this.password = password == null ? "" : password;
+62:     }
+63: 
+64:     public static SQLiteDatabase openOrCreateDatabase(String path) { return openOrCreateDatabase(path, ""); }
+65: 
+66:     /**
+67:      * 12.6: كاسم مكتبة أندرويد (net.zetetic SQLCipher): بكلمة سر غير فارغة يُفتح الملف مشفّرًا بصيغة SQLCipher 4
+68:      * عبر SQLite3MultipleCiphers (مكتبة io.github.willena:sqlite-jdbc)، وبلا كلمة سر يُفتح ملفًا عاديًا.
+69:      */
+70:     public static SQLiteDatabase openOrCreateDatabase(String path, String password) {
+71:         try {
+72:             return new SQLiteDatabase(path, connect(path, password), password);
+73:         } catch (Exception e) {
+74:             throw new SQLiteException("تعذر فتح قاعدة البيانات: " + e.getMessage(), e);
+75:         }
+76:     }
+77: 
+78:     public static final int OPEN_READWRITE = 0, OPEN_READONLY = 1;
+79: 
+80:     /** 12.7: كتوقيع المكتبة على أندرويد (يُستخدم لفتح نسخة ملف للقراءة). */
+81:     public static SQLiteDatabase openDatabase(String path, String password, Object factory, int flags, Object errorHandler, Object hook) {
+82:         SQLiteDatabase d = openOrCreateDatabase(path, password);
+83:         d.readOnly = (flags & OPEN_READONLY) != 0;
+84:         return d;
+85:     }
+86: 
+87:     private static Connection connect(String path, String password) throws Exception {
+88:         Class.forName("org.sqlite.JDBC");
+89:         org.sqlite.SQLiteConfig cfg;
+90:         if (password != null && !password.isEmpty()) {
+91:             org.sqlite.mc.SQLiteMCSqlCipherConfig mc = org.sqlite.mc.SQLiteMCSqlCipherConfig.getV4Defaults();
+92:             mc.withKey(password);
+93:             cfg = mc.build();
+94:         } else cfg = new org.sqlite.SQLiteConfig();
+95:         cfg.setBusyTimeout(15000);
+96:         Connection c = cfg.createConnection("jdbc:sqlite:" + path);
+97:         c.setAutoCommit(true);
+98:         return c;
+99:     }
+100: 
+101:     /** 12.7: هل تُخدم هذه القراءة من اتصال القراءة؟ استعلام SELECT من خيط لا يملك المعاملة، والاتصال الرئيسي مشغول بخيط آخر. */
+102:     private boolean useReader(String sql) {
+103:         if (attached > 0 || lock.isHeldByCurrentThread()) return false;
+104:         String t = sql.trim();
+105:         if (t.length() < 6) return false;
+106:         String h = t.substring(0, 6).toUpperCase(java.util.Locale.ROOT);
+107:         if (!h.startsWith("SELECT") && !h.startsWith("WITH")) return false;
+108:         String low = t.toLowerCase(java.util.Locale.ROOT);
+109:         if (low.contains("temp.") || low.contains("del_entries")) return false;
+110:         return true;
+111:     }
+112: 
+113:     private Cursor readerQuery(String sql, String[] args) {
+114:         readerLock.lock();
+115:         try {
+116:             if (reader == null || reader.isClosed()) {
+117:                 reader = connect(path, password);
+118:                 try (Statement s = reader.createStatement()) {
+119:                     s.execute("PRAGMA query_only=1");
+120:                     s.execute("PRAGMA cache_size=-16384");
+121:                 }
+122:             }
+123:             try (PreparedStatement p = reader.prepareStatement(sql)) {
+124:                 if (args != null) for (int i = 0; i < args.length; i++) {
+125:                     if (args[i] == null) p.setNull(i + 1, java.sql.Types.NULL);
+126:                     else p.setString(i + 1, args[i]);
+127:                 }
+128:                 boolean has = p.execute();
+129:                 READER_HITS.incrementAndGet();
+130:                 if (!has) return new Cursor(new String[0], new ArrayList<>());
+131:                 try (ResultSet rs = p.getResultSet()) {
+132:                     return read(rs);
+133:                 }
+134:             }
+135:         } catch (SQLException e) {
+136:             throw wrap(e, sql);
+137:         } catch (Exception e) {
+138:             throw new SQLiteException(e.getMessage(), e);
+139:         } finally {
+140:             readerLock.unlock();
+141:         }
+142:     }
+143: 
+144:     public String getPath() { return path; }
+145: 
+146:     public boolean isOpen() {
+147:         try {
+148:             return !c.isClosed();
+149:         } catch (SQLException e) {
+150:             return false;
+151:         }
+152:     }
+153: 
+154:     public boolean isReadOnly() { return readOnly; }
+155: 
+156:     @Override public void close() {
+157:         lock.lock();
+158:         try {
+159:             readerLock.lock();
+160:             try {
+161:                 if (reader != null) reader.close();
+162:             } catch (SQLException ignored) {
+163:                 // مغلق أصلًا
+164:             } finally {
+165:                 reader = null;
+166:                 readerLock.unlock();
+167:             }
+168:             c.close();
+169:         } catch (SQLException ignored) {
+170:             // مغلق أصلًا
+171:         } finally {
+172:             lock.unlock();
+173:         }
+174:     }
+175: 
+176:     // ---------------------------------------------------------------- الإعداد
+177: 
+178:     public void setForeignKeyConstraintsEnabled(boolean on) { execSQL("PRAGMA foreign_keys=" + (on ? "ON" : "OFF")); }
+179: 
+180:     public boolean enableWriteAheadLogging() {
+181:         try (Cursor x = rawQuery("PRAGMA journal_mode=WAL", null)) {
+182:             return x.moveToFirst() && "wal".equalsIgnoreCase(x.getString(0));
+183:         }
+184:     }
+185: 
+186:     public int getVersion() {
+187:         try (Cursor x = rawQuery("PRAGMA user_version", null)) {
+188:             return x.moveToFirst() ? x.getInt(0) : 0;
+189:         }
+190:     }
+191: 
+192:     public void setVersion(int v) { execSQL("PRAGMA user_version=" + v); }
+193: 
+194:     // ---------------------------------------------------------------- المعاملات
+195: 
+196:     public void beginTransaction() {
+197:         lock.lock();
+198:         boolean ok = false;
+199:         try {
+200:             if (depth == 0) {
+201:                 failed = false;
+202:                 marks.clear();
+203:                 try (Statement s = c.createStatement()) {
+204:                     s.execute("BEGIN IMMEDIATE");
+205:                 }
+206:             }
+207:             depth++;
+208:             marks.add(false);
+209:             ok = true;
+210:         } catch (SQLException e) {
+211:             throw new SQLiteException(e.getMessage(), e);

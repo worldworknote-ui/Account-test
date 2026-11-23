@@ -1,0 +1,169 @@
+200:     private static final Map<String, Metal> REG = new ConcurrentHashMap<>();
+201: 
+202:     public static void set(List<Metal> all) {
+203:         Map<String, Metal> m = new LinkedHashMap<>();
+204:         for (Metal x : all) m.put(x.code, x);
+205:         REG.keySet().retainAll(m.keySet());
+206:         REG.putAll(m);
+207:     }
+208: 
+209:     public static Metal of(String code) { return code == null ? null : REG.get(code); }
+210: 
+211:     public static boolean isMetal(String code) { return of(code) != null; }
+212: 
+213:     /** معدن لا يدخل التقويم بالدولار (بالوزن فقط، باختيار المحاسب). */
+214:     public static boolean notValued(String code) {
+215:         Metal m = of(code);
+216:         return m != null && !m.valued;
+217:     }
+218: 
+219:     /** وصف وحدة الحساب بعد المبلغ («غ»…)، أو فارغ لغير المعادن. */
+220:     public static String unitShort(String code) {
+221:         Metal m = of(code);
+222:         return m == null ? "" : m.u().shortName;
+223:     }
+224: 
+225:     // ===================================================================================
+226:     // التحويل
+227:     // ===================================================================================
+228: 
+229:     /** قيمة بوحدة إلى وحدة أخرى بالضبط، ثم إلى منازل الهدف. exact[0] = لم يحتج تقريبًا. */
+230:     public static BigDecimal convert(BigDecimal v, String from, String to, boolean[] exact) {
+231:         Unit a = unit(from), b = unit(to);
+232:         BigDecimal grams = v.multiply(a.grams);
+233:         BigDecimal out = grams.divide(b.grams, 12, RoundingMode.HALF_EVEN).stripTrailingZeros();
+234:         BigDecimal r = out.setScale(b.decimals, RoundingMode.HALF_EVEN);
+235:         if (exact != null && exact.length > 0) exact[0] = r.compareTo(out) == 0;
+236:         return r;
+237:     }
+238: 
+239:     /** سعر الأونصة الصافية بالدولار ← سعر وحدة الحساب (بعياره). */
+240:     public static BigDecimal usdPerUnitFromOunce(BigDecimal usdPerOunce, Metal m) {
+241:         if (usdPerOunce == null || m == null) return null;
+242:         BigDecimal perGram = usdPerOunce.divide(UNITS.get("oz").grams, 16, RoundingMode.HALF_EVEN);
+243:         BigDecimal f = m.fineness > 0 ? BigDecimal.valueOf(m.fineness).divide(BigDecimal.valueOf(1000), 6, RoundingMode.HALF_EVEN) : BigDecimal.ONE;
+244:         return perGram.multiply(m.u().grams).multiply(f).setScale(10, RoundingMode.HALF_EVEN);
+245:     }
+246: 
+247:     // ===================================================================================
+248:     // في الرسائل
+249:     // ===================================================================================
+250: 
+251:     private static final Map<String, String> BASE_WORDS = new LinkedHashMap<>();
+252: 
+253:     static {
+254:         for (String w : new String[]{"ذهب", "الذهب", "دهب", "الدهب", "ذهبي", "كسر ذهب", "gold", "altın", "altin", "aur"}) BASE_WORDS.put(w, GOLD);
+255:         for (String w : new String[]{"فضة", "فضه", "الفضة", "الفضه", "silver", "gümüş", "gumus", "argint"}) BASE_WORDS.put(w, SILVER);
+256:         for (String w : new String[]{"بلاتين", "البلاتين", "platinum", "platin"}) BASE_WORDS.put(w, PLATINUM);
+257:         for (String w : new String[]{"بلاديوم", "البلاديوم", "palladium", "paladyum"}) BASE_WORDS.put(w, PALLADIUM);
+258:     }
+259: 
+260:     private static final Pattern WORD = Pattern.compile("[\\p{L}]+");
+261: 
+262:     /** المعدن المذكور في النص، أو null. */
+263:     public static String baseIn(String text) {
+264:         String s = norm(text);
+265:         Matcher m = WORD.matcher(s);
+266:         while (m.find()) {
+267:             String b = BASE_WORDS.get(m.group());
+268:             if (b != null) return b;
+269:         }
+270:         return null;
+271:     }
+272: 
+273:     private static final Pattern KARAT = Pattern.compile("(?iu)(?:عيار|العيار)\\s*(\\d{1,2})(?!\\d)|(?<![\\d.,])(\\d{1,2})\\s*(?:قيراط|عيار|k|kt|karat|ayar|ayarı)(?![\\p{L}])");
+274:     private static final Pattern MILLE = Pattern.compile("(?<![\\d.,])(999|9999|995|990|958|950|925|916|900|875|835|800|750|585|500|375)(?![\\d.,])");
+275: 
+276:     /** العيار بالألف المذكور في النص (من «عيار 21» أو «18k» أو «925»)، أو 0. */
+277:     public static int finenessIn(String text) {
+278:         String s = norm(text);
+279:         Matcher m = KARAT.matcher(s);
+280:         while (m.find()) {
+281:             String g = m.group(1) != null ? m.group(1) : m.group(2);
+282:             int f = finenessOfKarat(Integer.parseInt(g));
+283:             if (f > 0) return f;
+284:         }
+285:         m = MILLE.matcher(s);
+286:         if (m.find()) return "9999".equals(m.group(1)) ? 999 : Integer.parseInt(m.group(1));
+287:         return 0;
+288:     }
+289: 
+290:     private static final Map<String, String> UNIT_WORDS = new LinkedHashMap<>();
+291: 
+292:     static {
+293:         for (String w : new String[]{"غرام", "غرامات", "غراما", "غم", "غ", "جرام", "جرامات", "جم", "جرام", "gram", "grams", "gr", "g", "gramm", "gram"}) UNIT_WORDS.put(w, "g");
+294:         for (String w : new String[]{"كيلو", "كيلوغرام", "كيلوجرام", "كيلوات", "كغ", "كجم", "kg", "kilo", "kilos", "kilogram"}) UNIT_WORDS.put(w, "kg");
+295:         for (String w : new String[]{"أونصة", "اونصة", "أونصه", "اونصه", "اونصات", "أونصات", "اونس", "أونس", "oz", "ounce", "ounces", "ons"}) UNIT_WORDS.put(w, "oz");
+296:         for (String w : new String[]{"مثقال", "مثاقيل", "مثقالا", "mithqal", "miskal", "miskal"}) UNIT_WORDS.put(w, "mithqal");
+297:         for (String w : new String[]{"تولة", "توله", "تولات", "tola", "tolas"}) UNIT_WORDS.put(w, "tola");
+298:     }
+299: 
+300:     private static final Pattern NUM_UNIT;
+301: 
+302:     static {
+303:         StringBuilder alt = new StringBuilder();
+304:         List<String> ws = new ArrayList<>(UNIT_WORDS.keySet());
+305:         ws.sort((p, q) -> q.length() - p.length());
+306:         for (String w : ws) {
+307:             if (alt.length() > 0) alt.append('|');
+308:             alt.append(Pattern.quote(w));
+309:         }
+310:         NUM_UNIT = Pattern.compile("(?iu)(?<![\\d.,])(\\d+(?:[.,]\\d+)?)\\s*(" + alt + ")(?![\\p{L}])|(?<![\\p{L}])(" + alt + ")\\s*(\\d+(?:[.,]\\d+)?)(?![\\d.,])");
+311:     }
+312: 
+313:     /** الوزن ووحدته المذكوران في النص («2.5 كيلو»، «غرام 50»)، أو null. */
+314:     public static String[] weightIn(String text) {
+315:         Matcher m = NUM_UNIT.matcher(norm(text));
+316:         while (m.find()) {
+317:             String num = m.group(1) != null ? m.group(1) : m.group(4);
+318:             String w = m.group(2) != null ? m.group(2) : m.group(3);
+319:             String u = UNIT_WORDS.get(w.toLowerCase(Locale.ROOT));
+320:             if (u == null || num == null) continue;
+321:             // رقم العيار ليس وزنًا («21 غ» بعد «عيار» نادر؛ «عيار 21 غرام 50»: الوزن 50)
+322:             int at = m.start();
+323:             String before = norm(text).substring(Math.max(0, at - 7), at);
+324:             if (before.matches("(?s).*(?:عيار|العيار)\\s*$") && m.group(1) != null) continue;
+325:             return new String[]{num.replace(',', '.'), u};
+326:         }
+327:         return null;
+328:     }
+329: 
+330:     /**
+331:      * يكمل نتيجة المحلّل لرسالة عن معدن: يختار حساب المعدن بعياره (أو يتركه للمحاسب إن لم يُعرف)،
+332:      * ويحوّل الوزن إلى وحدة الحساب.
+333:      */
+334:     public static void apply(MessageParser.Result r, String text, List<MessageParser.Cur> curs) {
+335:         if (r == null || text == null || curs == null) return;
+336:         List<Metal> mine = new ArrayList<>();
+337:         for (MessageParser.Cur c : curs) {
+338:             Metal m = of(c.code);
+339:             if (m != null) mine.add(m);
+340:         }
+341:         if (mine.isEmpty()) return;
+342:         String base = baseIn(text);
+343:         Metal picked = r.currency == null ? null : of(r.currency);
+344:         if (base == null && picked == null) return;
+345:         if (base == null) base = picked.base;
+346:         int fin = finenessIn(text);
+347:         List<Metal> same = new ArrayList<>();
+348:         for (Metal m : mine) if (m.base.equals(base)) same.add(m);
+349:         Metal chosen = null;
+350:         if (fin > 0) {
+351:             for (Metal m : same) if (m.fineness == fin) chosen = m;
+352:         } else if (same.size() == 1) chosen = same.get(0);
+353:         String[] w = weightIn(text);
+354:         if (chosen == null) {
+355:             if (!same.isEmpty()) {
+356:                 // صرامة: لا نخمّن العيار
+357:                 if (picked != null && picked.base.equals(base)) r.currency = null;
+358:                 if (r.currency != null && of(r.currency) != null) r.currency = null;
+359:                 r.amountNote = (r.amountNote.isEmpty() ? "" : r.amountNote + " — ") + (fin > 0
+360:                         ? "لا يوجد حساب " + baseName(base) + " " + purityLabel(base, fin) + " لهذا المكتب: اختر الحساب بيدك"
+361:                         : "لم يُذكر عيار " + baseName(base) + ": اختر الحساب بيدك");
+362:                 r.currencyWord = baseName(base);
+363:             }
+364:             if (w != null && r.amount.isEmpty()) r.amount = w[0];
+365:             return;
+366:         }
+367:         r.currency = chosen.code;
+368:         r.currencyWord = baseName(base);

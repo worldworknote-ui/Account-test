@@ -1,0 +1,65 @@
+242:   check(mrv.warnings.some(function (w) { return w.indexOf("سلسلة مفاتيح") >= 0; }), "ويُنبَّه البائع أنه بلا تصديق عتادي");
+243:   var mj = JSON.parse(VT.fromUtf8 ? VT.fromUtf8(VT.b64ToBytes(macReq.trim().slice(8))) : Buffer.from(macReq.trim().slice(8), "base64url").toString());
+244:   mj.order = "ORDER-OTHER";
+245:   var mbad = await VT.reviewRequest("SA8-REQ:" + Buffer.from(JSON.stringify(mj)).toString("base64url"), {});
+246:   check(mbad.errors.length > 0, "طلب ماك معدَّل (رقم طلب آخر) يُرفض");
+247:   mj = JSON.parse(Buffer.from(macReq.trim().slice(8), "base64url").toString());
+248:   mj.pkg = "com.other.app";
+249:   check((await VT.reviewRequest("SA8-REQ:" + Buffer.from(JSON.stringify(mj)).toString("base64url"), {})).errors.length > 0, "برنامج آخر يُرفض");
+250: 
+251:   console.log("== 12.7: هوية المكتب، وعدد أجهزة المكتب، وسجل محاولات الاستخدام لمكتب آخر");
+252:   var OF = "OF-0123456789ABCDEF01";
+253:   var ofReq = JSON.parse(Buffer.from(req().replace(/^SA8-REQ:/, "").trim(), "base64url").toString());
+254:   ofReq.of = OF;
+255:   var log = [{ at: 1763600000000, lid: "SA-2026-0007", of: "OF-AAAAAAAAAAAAAAAAAA", saw: OF }];
+256:   var sigDer = nc.sign("sha256", Buffer.from(VT.misuseBody(log), "utf8"), dev.priv);
+257:   ofReq.mis = log;
+258:   ofReq.misSig = Buffer.from(sigDer).toString("base64url");
+259:   var L127 = VT.newLedger();
+260:   var orv = await VT.reviewRequest("SA8-REQ:" + Buffer.from(JSON.stringify(ofReq)).toString("base64url"), { ledger: L127 });
+261:   check(orv.office && orv.office.of === OF && orv.office.active === 0, "هوية المكتب تُقرأ من الطلب");
+262:   check(orv.misuse && orv.misuse.signed === true && orv.warnings.some(function (w) { return w.indexOf("محاولة غش محتملة") >= 0 && w.indexOf("سليم") >= 0; }),
+263:     "سجل المحاولات المختوم بمفتاح الجهاز يتحقق ويظهر تنبيهًا واضحًا");
+264:   check(orv.errors.length === 0, "التنبيه لا يمنع الإصدار (البائع يقرر)");
+265:   var tamper = JSON.parse(JSON.stringify(ofReq));
+266:   tamper.mis[0].saw = "OF-BBBBBBBBBBBBBBBBBB";
+267:   var trv = await VT.reviewRequest("SA8-REQ:" + Buffer.from(JSON.stringify(tamper)).toString("base64url"), {});
+268:   check(trv.misuse && trv.misuse.signed === false && trv.warnings.some(function (w) { return w.indexOf("لا يتحقق") >= 0; }), "سجل معدَّل: الختم لا يتحقق ويُقال ذلك");
+269:   var pl = VT.payloadOf({ lid: "SA-2026-0100", uu: 20271014, dk: dk, of: OF, tc: 14, tg: 14, md: 4 }, "k1");
+270:   check(pl.indexOf(";of=" + OF) > 0 && pl.indexOf(";tc=14") > 0 && pl.indexOf(";tg=14") > 0 && pl.indexOf(";md=4") > 0, "الرمز يحمل هوية المكتب ومدة تأكيد الوقت ومهلته وعدد الأجهزة");
+271:   var badOf = false;
+272:   try { VT.payloadOf({ lid: "SA-2026-0100", uu: 20271014, dk: dk, of: "OF-x;y" }, "k1"); } catch (e) { badOf = true; }
+273:   check(badOf, "هوية مكتب غير صالحة تُرفض");
+274:   for (var si = 0; si < 4; si++) L127.licenses.push({ lid: "SA-2026-01" + si, of: OF, status: "active" });
+275:   check(!VT.seatCheck(L127, OF, 4).ok && VT.seatCheck(L127, OF, 5).ok && VT.seatCheck(L127, OF, 5).n === 5, "حد أجهزة المكتب: الخامس يُرفض بحد 4 ويُقبل بحد 5");
+276:   L127.licenses[0].status = "moved";
+277:   check(VT.seatCheck(L127, OF, 4).ok, "الرخصة المنقولة لا تُحسب جهازًا للمكتب");
+278:   var tf = VT.fieldsOf(VT.DEFAULT_TEMPLATES[1]);
+279:   check(tf.tc === 14 && tf.tg === 14, "القوالب الافتراضية: تأكيد الوقت كل 14 يومًا ومهلة 14");
+280:   check(VT.describe(tf).some(function (x) { return x.indexOf("تأكيد الوقت من الإنترنت كل 14") >= 0; }), "وصف الرخصة يذكر تأكيد الوقت");
+281:   var appVec = path.join(__dirname, "..", "..", "tests", "data", "request-127.txt");
+282:   if (fs.existsSync(appVec)) {
+283:     var arv = await VT.reviewRequest(fs.readFileSync(appVec, "utf8"), {});
+284:     check(arv.errors.length === 0 && arv.office && /^OF-[0-9A-F]{18}$/.test(arv.office.of) && arv.misuse && arv.misuse.signed === true,
+285:       "طلب حقيقي من التطبيق (12.7): هوية المكتب وسجل المحاولات المختوم يتحققان " + JSON.stringify(arv.errors));
+286:   }
+287: 
+288:   if (KEYS && fs.existsSync(path.join(KEYS, "vendor-k1-private.pem"))) {
+289:     console.log("== مفاتيح البائع الحقيقية (خارج المشروع)");
+290:     for (var k of ["k1", "k2"]) {
+291:       var real = await VT.importPrivatePem(fs.readFileSync(path.join(KEYS, "vendor-" + k + "-private.pem"), "utf8"));
+292:       check(real.kid === k, k + ": المفتاح الخاص يطابق المفتاح العام المضمّن في التطبيق");
+293:       var rt = await VT.issueToken(real, { lid: "SA-TEST-" + k, uu: 20271014, dk: dk });
+294:       check(!!(await VT.verifyToken(rt, dev.spki)), k + ": رمز موقّع به يتحقق بالمفاتيح المضمّنة");
+295:       fs.writeFileSync(path.join(OUT, "real-" + k + ".json"), JSON.stringify({ devicePub: VT.bytesToB64(dev.spki), token: rt }));
+296:     }
+297:   }
+298: 
+299:   console.log(fails === 0 ? "ALL " + passes + " PASSED" : fails + " FAILED of " + (passes + fails));
+300:   process.exit(fails ? 1 : 0);
+301: }
+302: 
+303: main().catch(function (e) {
+304:   console.error(e);
+305:   process.exit(1);
+306: });

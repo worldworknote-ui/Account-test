@@ -1,0 +1,117 @@
+171:         long nb = A.editTx(base, m, null, null, "");
+172:         check(nb == base && "عليها مشاكل".equals(A.tx(base).special) && bal(A, off, "USD") == 131000, "العلامة وحدها (الحركة والرصيد كما هما)");
+173:         Db.TxInput m2 = sp(copy(A.tx(base)), "عليها مشاكل", false);
+174:         long nb2 = A.editTx(base, m2, null, null, "");
+175:         check(A.tx(nb2).isUnposted() && "CANCELLED".equals(A.tx(base).status) && bal(A, off, "USD") == 31000, "«لا تُحسب»: تخرج من الرصيد بقيد عكسي: " + bal(A, off, "USD"));
+176: 
+177:         System.out.println("== 7) الإلغاء");
+178:         A.cancelTx(nb2, "تجربة");
+179:         check(Model.STATUS_VOIDED.equals(A.tx(nb2).status) && bal(A, off, "USD") == 31000, "إلغاء غير المحسوبة: VOIDED بلا قيد، والرصيد كما هو");
+180:         check(throwsMsg(() -> A.voidSpecial(nb2, ""), "ليست"), "لا تُلغى مرتين");
+181:         long s7 = A.addTx(sp(tx(off, false, 700, "USD", "", now), "ناقصة أجور", true), null);
+182:         A.cancelTx(s7, "");
+183:         check("CANCELLED".equals(A.tx(s7).status) && bal(A, off, "USD") == 31000, "المحسوبة تُلغى بقيد عكسي كأي حركة");
+184: 
+185:         System.out.println("== 8) أنواع الحركات الخاصة");
+186:         check(A.specialTypes().equals(Arrays.asList(Db.SPECIAL_DEFAULTS)), "الأنواع الافتراضية الأربعة");
+187:         A.editSpecialType("بانتظار الإيصال", false);
+188:         check(A.specialTypes().contains("بانتظار الإيصال") && A.specialTypes().size() == 5, "إضافة نوع جديد");
+189:         check(throwsMsg(() -> A.editSpecialType("بانتظار الإيصال", false), "موجود"), "لا يتكرر");
+190:         A.editSpecialType("عليها مشاكل", true);
+191:         check(!A.specialTypes().contains("عليها مشاكل"), "حذف نوع");
+192:         check(throwsMsg(io(() -> A.addTx(sp(tx(off, true, 1, "USD", "", now), "اسم طويل جدًا جدًا جدًا جدًا جدًا جدًا جدًا جدًا", true), null)), "طويل"), "اسم نوع طويل مرفوض");
+193: 
+194:         System.out.println("== 9) الأمانة والمجمّد إلى حركة عادية");
+195:         String h1 = A.addHold(off, "TRY", Db.HOLD_TRUST, Db.SIDE_OURS, 90000, "أمانة تجربة");
+196:         long egp0 = bal(A, off, "TRY");
+197:         long hx = A.addTx(tx(off, true, 90000, "TRY", "", now), null, h1);
+198:         Db.Hold hh = null;
+199:         for (Db.Hold h : A.holds(off, false)) if (h.uuid.equals(h1)) hh = h;
+200:         check(hh != null && !hh.open() && hh.toTx.equals(A.tx(hx).uuid), "الأمانة فُكّت مربوطة بالحركة");
+201:         check(bal(A, off, "TRY") == egp0 + 90000, "والحركة في الرصيد والكشف");
+202:         check(throwsMsg(io(() -> A.addTx(tx(off, true, 90000, "TRY", "", now), null, h1)), "فُكّت"), "لا تُحوَّل الأمانة مرتين");
+203:         int txBefore = count(A, "SELECT COUNT(*) FROM tx");
+204:         String h2 = A.addHold(off, "TRY", Db.HOLD_TRUST, Db.SIDE_THEIRS, 6000, "");
+205:         check(throwsMsg(io(() -> A.addTx(tx(other, false, 6000, "TRY", "", now), null, h2)), "مكتب"), "حركة لمكتب آخر مرفوضة");
+206:         check(count(A, "SELECT COUNT(*) FROM tx") == txBefore && A.holds(off, true).size() == 1, "ولا يبقى منها شيء (المعاملة كاملة أو لا شيء)");
+207:         check(throwsMsg(io(() -> A.addTx(sp(tx(off, false, 6000, "TRY", "", now), "ناقصة أجور", true), null, h2)), "عادية"), "الأمانة تُحوَّل لحركة عادية فقط");
+208:         String f1 = A.addHold(off, "TRY", Db.HOLD_FREEZE, Db.SIDE_OURS, 30000, "");
+209:         A.releaseHold(f1);
+210:         check(bal(A, off, "TRY") == egp0 + 90000, "فكّ التجميد لا يغيّر الرصيد");
+211:         String f2 = A.addHold(off, "TRY", Db.HOLD_FREEZE, Db.SIDE_OURS, 30000, "");
+212:         A.addTx(tx(off, false, 30000, "TRY", "", now), null, f2);
+213:         check(bal(A, off, "TRY") == egp0 + 60000 && A.holds(off, true).size() == 1, "تسجيل المجمّد حركة: يتغير الرصيد ويُفكّ التجميد");
+214: 
+215:         System.out.println("== 10) الصلاحيات والاعتماد");
+216:         long admin = A.addUser("المدير", Auth.ADMIN, null, "123456");
+217:         as(A, admin);
+218:         long u1 = A.addUser("سامر", Auth.CUSTOM, "VIEW,TX_ADD," + Auth.DETAILED, "1111");
+219:         long u2 = A.addUser("رنا", Auth.CUSTOM, "VIEW,TX_ADD,SPECIAL," + Auth.DETAILED, "2222");
+220:         long u3 = A.addUser("قديم", Auth.CUSTOM, "VIEW,TX_ADD", "3333");
+221:         as(A, u1);
+222:         check(throwsMsg(io(() -> A.addTx(sp(tx(off, true, 1000, "USD", "", Clock.now()), "ناقصة أجور", false), null)), null), "بلا صلاحية «خاصة»: لا تسجيل خاصة (في طبقة البيانات)");
+223:         check(throwsMsg(() -> A.editSpecialType("س", false), null), "ولا إضافة نوع");
+224:         as(A, u2);
+225:         long s10 = A.addTx(sp(tx(off, true, 1000, "USD", "", Clock.now()), "ناقصة أجور", false), null);
+226:         check(A.tx(s10).isUnposted(), "بصلاحية «خاصة»: تُسجَّل");
+227:         check(throwsMsg(io(() -> A.addTx(tx(off, true, 10, "TRY", "", Clock.now()), null, A.addHold(off, "TRY", Db.HOLD_TRUST, Db.SIDE_OURS, 10, ""))), null), "تحويل أمانة يحتاج صلاحية «الأمانات»");
+228:         as(A, u3);
+229:         check(Auth.perms(A.user(u3)).contains("SPECIAL"), "قائمة قديمة بلا علامة تفصيلية: التسجيل يجلب «خاصة» كما يجلب الأمانات");
+230:         as(A, admin);
+231:         long u4 = A.addUser("مراجَع", Auth.CUSTOM, "VIEW,TX_ADD,SPECIAL," + Auth.REVIEW + "," + Auth.DETAILED, "4444");
+232:         as(A, u4);
+233:         long pend = A.addTx(sp(tx(off, true, 500000, "USD", "", Clock.now()), "بانتظار التنفيذ", false), null);
+234:         check(A.tx(pend).isPending(), "مستخدم تنتظر حركاته الاعتماد: الخاصة بانتظار الاعتماد أولًا");
+235:         as(A, admin);
+236:         long b0 = bal(A, off, "USD");
+237:         A.approveTx(pend);
+238:         check(A.tx(pend).isUnposted() && bal(A, off, "USD") == b0, "الاعتماد يجعلها «خاصة» غير محسوبة (بلا قيود)");
+239:         as(A, 0);
+240: 
+241:         System.out.println("== 11) المزامنة");
+242:         File shared = Files.createTempDirectory("sa-124-folder").toFile();
+243:         SyncEngine eA = new SyncEngine(A, new FileSyncFolder(shared));
+244:         eA.create("كلمة-سر-المزامنة".toCharArray(), "المحل");
+245:         Db B = new Db(new Context(Files.createTempDirectory("sa-124-B").toFile()));
+246:         SyncEngine eB = new SyncEngine(B, new FileSyncFolder(shared));
+247:         eB.join("كلمة-سر-المزامنة".toCharArray(), false, "البيت");
+248:         syncAll(eA, eB);
+249:         check(B.specials(off).size() == A.specials(off).size() && !B.specials(off).isEmpty(), "الخاصة وصلت الجهاز الثاني: " + B.specials(off).size());
+250:         check(B.balances(off).equals(A.balances(off)), "والأرصدة متطابقة");
+251:         check(B.specialTypes().equals(A.specialTypes()), "وأنواعها متزامنة");
+252:         as(B, admin);
+253:         Model.Tx onB = B.tx(s10);
+254:         long conv = B.editTx(s10, copy(onB), null, null, "");
+255:         as(B, 0);
+256:         syncAll(eA, eB);
+257:         check(Model.STATUS_CONVERTED.equals(A.tx(s10).status) && A.tx(conv) != null && A.tx(conv).isActive(), "التحويل على جهاز يصل الآخر");
+258:         check(B.balances(off).equals(A.balances(off)), "والأرصدة متطابقة بعده");
+259: 
+260:         System.out.println("== 12) ترحيل قاعدة 10.4 إلى المخطط " + Db.VER);
+261:         File src = new File(a[a.length - 1]);
+262:         if (!src.isDirectory()) check(false, "مجلد قاعدة 10.4 غير موجود: " + src);
+263:         else {
+264:             File home = Files.createTempDirectory("sa-124-mig").toFile();
+265:             MigrationTest.copy(src, home);
+266:             DeskCoreTest.resetCrypto();
+267:             Db M = MigrationTest.open(home);
+268:             Map<Long, Map<String, Long>> balM = new TreeMap<>(M.officeBalances());
+269:             int ver;
+270:             try (Cursor c = M.getReadableDatabase().rawQuery("PRAGMA user_version", null)) {
+271:                 c.moveToFirst();
+272:                 ver = c.getInt(0);
+273:             }
+274:             check(ver == Db.VER && Db.VER >= 12, "رقم المخطط بعد الترحيل " + ver);
+275:             check(count(M, "SELECT COUNT(*) FROM tx WHERE special IS NOT NULL") == 0, "الحركات القديمة كلها عادية");
+276:             for (Model.User u : M.users(false)) if (Auth.isAdmin(u)) as(M, u.id);
+277:             Model.Office mo = M.offices().get(0);
+278:             String cur = M.officeCurrencies(mo.id).get(0);
+279:             M.addTx(sp(tx(mo.id, true, 100, cur, "", Clock.now()), "ناقصة أجور", false), null);
+280:             check(new TreeMap<>(M.officeBalances()).equals(balM) && M.specials(mo.id).size() == 1, "الأرصدة كما هي، والخاصة تعمل على القاعدة القديمة");
+281:         }
+282: 
+283:         System.out.println();
+284:         System.out.println(fails == 0 ? "نجحت اختبارات 12.4 كلها (" + passes + ")" : "فشل " + fails + " من " + (passes + fails));
+285:         System.exit(fails == 0 ? 0 : 1);
+286:     }
+287: }

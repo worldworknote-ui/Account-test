@@ -1,0 +1,130 @@
+1: package com.smart.hawala;
+2: 
+3: import android.content.Context;
+4: import java.io.File;
+5: import java.io.FileInputStream;
+6: import java.io.IOException;
+7: import java.nio.file.Files;
+8: import java.nio.file.StandardCopyOption;
+9: import java.sql.Connection;
+10: import java.sql.DriverManager;
+11: import java.sql.ResultSet;
+12: import java.sql.Statement;
+13: import java.util.ArrayList;
+14: import java.util.LinkedHashMap;
+15: import java.util.List;
+16: import java.util.Map;
+17: 
+18: /**
+19:  * 12.6: تشفير ملف قاعدة البيانات كاملًا على ويندوز والماك (SQLite3MultipleCiphers بصيغة SQLCipher 4)، بالواجهة نفسها
+20:  * لنسخة أندرويد (app/.../DbCipher.java). القاعدة القديمة تُشفَّر مرة واحدة: نسخة أمان من الملف، ثم «rekey» في مكانه،
+21:  * ثم تحقق من كل الجداول وأعداد صفوفها؛ أي فشل يعيد الملف الأصلي كما كان.
+22:  */
+23: final class DbCipher {
+24:     private DbCipher() {}
+25: 
+26:     static boolean isPlain(File f) {
+27:         byte[] h = new byte[16];
+28:         try (FileInputStream in = new FileInputStream(f)) {
+29:             if (in.read(h) != 16) return false;
+30:         } catch (IOException e) {
+31:             return false;
+32:         }
+33:         return new String(h, 0, 15, java.nio.charset.StandardCharsets.US_ASCII).equals("SQLite format 3");
+34:     }
+35: 
+36:     private static Connection open(File f, String key) throws Exception {
+37:         Class.forName("org.sqlite.JDBC");
+38:         if (key == null || key.isEmpty()) return DriverManager.getConnection("jdbc:sqlite:" + f.getPath());
+39:         org.sqlite.mc.SQLiteMCSqlCipherConfig mc = org.sqlite.mc.SQLiteMCSqlCipherConfig.getV4Defaults();
+40:         mc.withKey(key);
+41:         return mc.build().createConnection("jdbc:sqlite:" + f.getPath());
+42:     }
+43: 
+44:     /** على الكمبيوتر المكتبة جزء من sqlite-jdbc وتُحمَّل معه: لا شيء هنا (نظير أندرويد). */
+45:     static void load() { }
+46: 
+47:     /** 12.7: قراءات هذا الخيط من اتصال القراءة الثاني (للفحص وأعمال الخلفية الطويلة). */
+48:     static void preferReader(boolean on) { net.zetetic.database.sqlcipher.SQLiteDatabase.preferReader(on); }
+49: 
+50:     /** 12.7: يفتح ملف قاعدة (نسخة للقراءة) بالمفتاح ("" = غير مشفّر). */
+51:     static net.zetetic.database.sqlcipher.SQLiteDatabase openFile(File f, String key) {
+52:         return net.zetetic.database.sqlcipher.SQLiteDatabase.openOrCreateDatabase(f.getPath(), key == null ? "" : key);
+53:     }
+54: 
+55:     static boolean canOpen(File f, String key) {
+56:         try (Connection c = open(f, key); Statement s = c.createStatement(); ResultSet r = s.executeQuery("SELECT count(*) FROM sqlite_master")) {
+57:             return r.next();
+58:         } catch (Throwable t) {
+59:             return false;
+60:         }
+61:     }
+62: 
+63:     private static Map<String, Long> counts(Connection c) throws Exception {
+64:         Map<String, Long> m = new LinkedHashMap<>();
+65:         List<String> names = new ArrayList<>();
+66:         try (Statement s = c.createStatement(); ResultSet r = s.executeQuery("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")) {
+67:             while (r.next()) names.add(r.getString(1));
+68:         }
+69:         for (String n : names) {
+70:             try (Statement s = c.createStatement(); ResultSet r = s.executeQuery("SELECT count(*) FROM \"" + n.replace("\"", "\"\"") + "\"")) {
+71:                 m.put(n, r.next() ? r.getLong(1) : -1);
+72:             }
+73:         }
+74:         return m;
+75:     }
+76: 
+77:     private static int version(Connection c) throws Exception {
+78:         try (Statement s = c.createStatement(); ResultSet r = s.executeQuery("PRAGMA user_version")) {
+79:             return r.next() ? r.getInt(1) : 0;
+80:         }
+81:     }
+82: 
+83:     static void encrypt(Context ctx, File f, String key) throws Exception {
+84:         Map<String, Long> before;
+85:         int ver;
+86:         // 1) الملف العادي: يُفرغ سجل WAL فيه ويُغلق (حتى تكون النسخة والتشفير على ملف واحد كامل)
+87:         try (Connection c = open(f, "")) {
+88:             try (Statement s = c.createStatement()) {
+89:                 s.execute("PRAGMA wal_checkpoint(TRUNCATE)");
+90:                 s.execute("PRAGMA journal_mode=DELETE");
+91:             }
+92:             before = counts(c);
+93:             ver = version(c);
+94:         }
+95:         File safety = new File(f.getPath() + ".pre-encrypt");
+96:         Files.copy(f.toPath(), safety.toPath(), StandardCopyOption.REPLACE_EXISTING);
+97:         try {
+98:             // 2) التشفير في المكان
+99:             org.sqlite.mc.SQLiteMCSqlCipherConfig mc = org.sqlite.mc.SQLiteMCSqlCipherConfig.getV4Defaults();
+100:             try (Connection c = mc.build().createConnection("jdbc:sqlite:" + f.getPath()); Statement s = c.createStatement()) {
+101:                 s.execute("PRAGMA rekey=\"" + key + "\"");
+102:             }
+103:             if (isPlain(f)) throw new IOException("بقي الملف غير مشفّر بعد rekey");
+104:             // 3) التحقق
+105:             try (Connection c = open(f, key)) {
+106:                 if (!counts(c).equals(before)) throw new IOException("التحقق بعد التشفير فشل: الجداول أو أعداد الصفوف لا تطابق");
+107:                 if (version(c) != ver) throw new IOException("التحقق بعد التشفير فشل: رقم المخطط");
+108:                 try (Statement s = c.createStatement(); ResultSet r = s.executeQuery("PRAGMA integrity_check")) {
+109:                     if (!r.next() || !"ok".equalsIgnoreCase(r.getString(1))) throw new IOException("فحص سلامة القاعدة المشفّرة فشل");
+110:                 }
+111:             }
+112:         } catch (Exception e) {
+113:             // رجوع للأصل كما كان
+114:             new File(f.getPath() + "-wal").delete();
+115:             new File(f.getPath() + "-shm").delete();
+116:             new File(f.getPath() + "-journal").delete();
+117:             Files.copy(safety.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING);
+118:             safety.delete();
+119:             throw e;
+120:         }
+121:         safety.delete();
+122:     }
+123: 
+124:     static void deleteDb(File f) {
+125:         f.delete();
+126:         new File(f.getPath() + "-wal").delete();
+127:         new File(f.getPath() + "-shm").delete();
+128:         new File(f.getPath() + "-journal").delete();
+129:     }
+130: }

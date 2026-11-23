@@ -1,0 +1,166 @@
+176:             row[1] = o.active ? "نشط" : "موقوف";
+177:             int i = 2;
+178:             Map<String, Long> net = new TreeMap<>();
+179:             for (String c : curs) {
+180:                 long[] v = o.perCurrency.get(c);
+181:                 row[i++] = app.hidden() ? ((v == null || v[2] == 0) ? "" : "••••") : new Ui.Money(v == null ? 0 : v[2], dec.getOrDefault(c, 2), true);
+182:                 if (v != null) net.put(c, v[2]);
+183:             }
+184:             Ledger.Valuation val = Ledger.valueOffice(net, rates, dec);
+185:             long whole = val.netUsd().setScale(0, java.math.RoundingMode.HALF_EVEN).longValue();
+186:             row[i] = app.hidden() ? "••••" : !val.missingRates.isEmpty() ? (whole == 0 ? "" : Model.bal(whole, 0) + " ") + "(بلا سعر: " + String.join("، ", val.missingRates) + ")"
+187:                     : new Ui.Money(whole, 0, true);
+188:             m.addRow(row);
+189:             grid.add(card(o, net, val, whole, dec));
+190:         }
+191:         if (shown.isEmpty()) {
+192:             JLabel none = Ui.label(q.isEmpty() ? "لا مكاتب في هذا التصنيف." : "لا مكتب يطابق البحث.", 14, Ui.muted, false);
+193:             grid.add(none);
+194:         }
+195:         grid.applyComponentOrientation(ComponentOrientation.RIGHT_TO_LEFT);
+196:         columns();
+197:         grid.revalidate();
+198:         grid.repaint();
+199:         table.setModel(m);
+200:         table.setDefaultRenderer(Ui.Money.class, new Ui.Cell(SwingConstants.CENTER));
+201:         Ui.widths(table, 260, 80);
+202:         keep.restore(table, shown, o -> o.officeId);
+203:         table.applyComponentOrientation(Ui.RTL);
+204:     }
+205: 
+206:     /** عدد أعمدة البطاقات حسب عرض الشاشة (بطاقة لكل ~360 بكسل). */
+207:     void columns() {
+208:         if (cardsScroll == null) return;
+209:         int wd = cardsScroll.getViewport().getWidth() - 48;
+210:         int cols = Math.max(1, Math.min(4, wd / 360));
+211:         GridLayout gl = (GridLayout) grid.getLayout();
+212:         if (gl.getColumns() != cols) {
+213:             gl.setColumns(cols);
+214:             grid.revalidate();
+215:         }
+216:     }
+217: 
+218:     /** 10.18: بطاقة مكتب كالهاتف: حرف المكتب، الاسم والتثبيت، شارات الأرصدة الملونة، والميزان بالدولار. */
+219:     JComponent card(Model.OfficeTotals o, Map<String, Long> net, Ledger.Valuation val, long whole, Map<String, Integer> dec) {
+220:         // بطاقة واحدة واضحة: إطار مستدير وظل خفيف، الحرف يمينًا والمحتوى بجانبه (اتجاه عربي صريح لكل بطاقة)
+221:         final boolean pin = o.pinned;
+222:         JPanel c = new JPanel(new BorderLayout(14, 0)) {
+223:             @Override protected void paintComponent(Graphics g) {
+224:                 Graphics2D g2 = (Graphics2D) g.create();
+225:                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+226:                 int w = getWidth() - 1, h = getHeight() - 1;
+227:                 g2.setColor(new Color(0, 0, 0, Ui.dark ? 60 : 18));
+228:                 g2.fill(new java.awt.geom.RoundRectangle2D.Float(1, 3, w - 1, h - 2, 22, 22));
+229:                 g2.setColor(Ui.surface);
+230:                 g2.fill(new java.awt.geom.RoundRectangle2D.Float(0, 0, w, h - 2, 22, 22));
+231:                 g2.setColor(pin ? Ui.mix(Ui.primary, Ui.surface, 0.35f) : Ui.line);
+232:                 g2.setStroke(new BasicStroke(pin ? 2f : 1.2f));
+233:                 g2.draw(new java.awt.geom.RoundRectangle2D.Float(0.5f, 0.5f, w - 1, h - 3, 22, 22));
+234:                 g2.dispose();
+235:             }
+236:         };
+237:         c.setOpaque(false);
+238:         c.setBorder(new javax.swing.border.EmptyBorder(16, 18, 18, 18));
+239:         JPanel col = new JPanel();
+240:         col.setLayout(new BoxLayout(col, BoxLayout.Y_AXIS));
+241:         col.setOpaque(false);
+242:         JLabel name = Ui.label(o.name, 18, Ui.ink, true);
+243:         List<Component> head = new ArrayList<>(Arrays.asList(name));
+244:         if (!o.active) head.add(new Ui.Pill("موقوف", Ui.warnBg, Ui.warnInk, 12));
+245:         head.add(Box.createHorizontalGlue());
+246:         if (o.pinned) head.add(new JLabel(new Icons("pin", 18, Ui.goldInk)));
+247:         col.add(Ui.row(head.toArray(new Component[0])));
+248:         col.add(Box.createVerticalStrut(8));
+249:         JPanel pills = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 4));
+250:         pills.setOpaque(false);
+251:         pills.setAlignmentX(Component.RIGHT_ALIGNMENT);
+252:         boolean any = false;
+253:         for (Map.Entry<String, Long> e : net.entrySet()) {
+254:             if (e.getValue() == 0) continue;
+255:             any = true;
+256:             pills.add(Ui.balance(e.getValue(), dec.getOrDefault(e.getKey(), 2), e.getKey(), app.hidden()));
+257:         }
+258:         if (!any) pills.add(Ui.label("لا رصيد", 13, Ui.muted, false));
+259:         col.add(pills);
+260:         if (any) {
+261:             String u = app.hidden() ? "الميزان ≈ •••• USD" : !val.missingRates.isEmpty() ? "الميزان: بلا سعر لـ " + String.join("، ", val.missingRates)
+262:                     : whole == 0 ? "الميزان ≈ صفر USD" : "الميزان ≈ " + Ui.ltr(Model.fmt(Math.abs(whole), 0) + " USD") + " " + (whole > 0 ? "لنا" : "علينا");
+263:             col.add(Box.createVerticalStrut(4));
+264:             col.add(Ui.label(u, 14, !val.missingRates.isEmpty() ? Ui.muted : whole > 0 ? Ui.green : whole < 0 ? Ui.red : Ui.muted, true));
+265:         }
+266:         JPanel av = new JPanel(new BorderLayout());
+267:         av.setOpaque(false);
+268:         av.add(new Ui.Avatar(o.name, 54), BorderLayout.NORTH);
+269:         c.add(av, BorderLayout.LINE_START);
+270:         c.add(col, BorderLayout.CENTER);
+271:         c.applyComponentOrientation(ComponentOrientation.RIGHT_TO_LEFT);
+272:         c.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+273:         c.setToolTipText("انقر لفتح المكتب — زر الفأرة الأيمن: تثبيت، حركة جديدة، مطابقة رصيد، كشف");
+274:         c.addMouseListener(new MouseAdapter() {
+275:             @Override public void mouseClicked(MouseEvent e) {
+276:                 if (SwingUtilities.isLeftMouseButton(e)) app.go("office", o.officeId);
+277:             }
+278: 
+279:             @Override public void mousePressed(MouseEvent e) { pop(e); }
+280: 
+281:             @Override public void mouseReleased(MouseEvent e) { pop(e); }
+282: 
+283:             void pop(MouseEvent e) {
+284:                 if (!e.isPopupTrigger()) return;
+285:                 JPopupMenu m = new JPopupMenu();
+286:                 m.add(App.item(o.pinned ? "إلغاء التثبيت" : "تثبيت", 0, () -> {
+287:                     db.setPinned(o.officeId, !o.pinned);
+288:                     fill();
+289:                 }));
+290:                 if (o.active && can(Auth.Perm.TX_ADD)) m.add(App.item("حركة جديدة", 0, () -> app.go("tx", new TxView.Prefill(o.officeId))));
+291:                 m.add(App.item("مطابقة رصيد", 0, () -> {
+292:                     app.go("office", o.officeId);
+293:                     View v = app.views.get("office");
+294:                     Model.Office of = db.office(o.officeId);
+295:                     if (v instanceof OfficeView && of != null) ((OfficeView) v).sendRecon(of);
+296:                 }));
+297:                 m.add(App.item("كشف حساب", 0, () -> app.go("statement", o.officeId)));
+298:                 Ui.rtl(m);
+299:                 m.show(e.getComponent(), e.getX(), e.getY());
+300:             }
+301:         });
+302:         return c;
+303:     }
+304: 
+305:     /** بطاقة مكتب مختصرة (للرئيسية). */
+306:     static JComponent officeCard(App app, Model.OfficeTotals o, Map<String, Integer> dec) {
+307:         Ui.Card c = Ui.card();
+308:         c.add(Ui.label(o.name, 16, Ui.primaryInk, true));
+309:         boolean any = false;
+310:         for (Map.Entry<String, long[]> e : o.perCurrency.entrySet()) {
+311:             long b = e.getValue()[2];
+312:             if (b == 0) continue;
+313:             any = true;
+314:             c.add(Ui.label(e.getKey() + ": " + (app.hidden() ? "••••" : Model.bal(b, dec.getOrDefault(e.getKey(), 2))), 14, b > 0 ? Ui.green : Ui.red, true));
+315:         }
+316:         if (!any) c.add(Ui.label("لا رصيد", 13, Ui.muted, false));
+317:         c.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+318:         c.addMouseListener(new MouseAdapter() {
+319:             @Override public void mouseClicked(MouseEvent e) { app.go("office", o.officeId); }
+320:         });
+321:         return c;
+322:     }
+323: 
+324:     // ===================================================================================
+325:     // إضافة وتعديل
+326:     // ===================================================================================
+327: 
+328:     static void edit(Component parent, App app, Model.Office old, Runnable after) {
+329:         Db db = app.db;
+330:         if (!app.require(Auth.Perm.OFFICES)) return;
+331:         if (old == null) {
+332:             Entitlements en = License.current;
+333:             String no = db.quotaNow().officeRefusal(en);
+334:             if (no != null) {
+335:                 Ui.limit(parent, no);
+336:                 return;
+337:             }
+338:         }
+339:         JPanel c = Ui.column();
+340:         Ui.Field name = Ui.field("اسم المكتب"), sh = Ui.field("اسم مختصر (اختياري)"), phone = Ui.field("الهاتف"), loc = Ui.field("المدينة / العنوان"),
+341:                 contact = Ui.field("الشخص المسؤول"), notes = Ui.field("ملاحظات");

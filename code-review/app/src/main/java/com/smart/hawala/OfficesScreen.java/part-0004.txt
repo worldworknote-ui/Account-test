@@ -1,0 +1,135 @@
+470:                 if (old == null) for (Model.Currency x : a.db.currencies(true)) if (x.code.equals(cc)) throw new Exception("الرمز " + cc + " موجود");
+471:                 // 12.6: المعدن نفسه بالعيار نفسه والوحدة نفسها حساب واحد فقط؛ وعيار غير محدد مع وجود حسابات أخرى لنفس المعدن ممنوع (يلتبس)
+472:                 if (old == null || om == null || !om.base.equals(b) || om.fineness != f || !om.unit.equals(u)) for (Metals.Metal x : a.db.metals()) {
+473:                     if (old != null && x.code.equals(old.code)) continue;
+474:                     if (!x.base.equals(b)) continue;
+475:                     if (x.fineness == f && x.unit.equals(u))
+476:                         throw new Exception("عندك حساب " + Metals.baseName(b) + (f > 0 ? " " + Metals.purityLabel(b, f) : "") + " بالـ" + Metals.unit(u).name + " باسم «" + x.code + "». كل عيار حساب واحد.");
+477:                     if (f == 0 && !Metals.OTHER.equals(b)) throw new Exception("اختر العيار: عندك حساب " + Metals.baseName(b) + " آخر، والعيار يميّز بينهما");
+478:                 }
+479:                 a.db.saveMetal(cc, name.getText().toString().trim(), b, f, u, valued.isChecked(), old == null || old.active);
+480:                 showCurrencies();
+481:             } catch (Exception e) {
+482:                 a.error(e);
+483:             }
+484:         }).setNegativeButton("إلغاء", null).show();
+485:     }
+486: 
+487:     /** «21» للذهب = 875‰؛ «925» = 925‰؛ فارغ = 0. */
+488:     static int fineness(String base, String typed) throws Exception {
+489:         String t = Db.normalizeNumber(typed == null ? "" : typed.trim());
+490:         if (t.isEmpty()) return 0;
+491:         int n = Integer.parseInt(t);
+492:         if (n >= 1 && n <= 24 && Metals.finenessOfKarat(n) > 0) return Metals.finenessOfKarat(n);
+493:         if (n >= 100 && n <= 1000) return n;
+494:         throw new Exception("العيار غير مفهوم: اكتب قيراط الذهب (24، 22، 21، 18…) أو العيار بالألف (999، 925، 875…)");
+495:     }
+496: 
+497:     private void currencyDialog(final Model.Currency old) {
+498:         LinearLayout l = new LinearLayout(a);
+499:         l.setOrientation(LinearLayout.VERTICAL);
+500:         l.setPadding(a.dp(16), a.dp(8), a.dp(16), a.dp(8));
+501:         final EditText code = new EditText(a);
+502:         code.setHint("الرمز مثل BRL");
+503:         final EditText name = new EditText(a);
+504:         name.setHint("اسم العملة");
+505:         final EditText dec = new EditText(a);
+506:         dec.setHint("المنازل العشرية (0 إلى 6)");
+507:         dec.setInputType(InputType.TYPE_CLASS_NUMBER);
+508:         final boolean used = old != null && a.db.currencyUsed(old.code);
+509:         if (old != null) {
+510:             code.setText(old.code);
+511:             code.setEnabled(false);
+512:             name.setText(old.name);
+513:             dec.setText("" + old.decimals);
+514:             dec.setEnabled(!used);
+515:         }
+516:         l.addView(code);
+517:         l.addView(name);
+518:         l.addView(dec);
+519:         if (used) l.addView(a.text("لا يمكن تغيير المنازل العشرية لعملة مستخدمة في حركات؛ تغييرها يغيّر قيم المبالغ المسجلة.", 12, a.muted, false));
+520:         new AlertDialog.Builder(a).setTitle(old == null ? "عملة جديدة" : "تعديل عملة").setView(l).setPositiveButton("حفظ", (d, w) -> {
+521:             try {
+522:                 String cc = code.getText().toString().trim().toUpperCase(Locale.US);
+523:                 if (cc.isEmpty() || name.getText().toString().trim().isEmpty()) throw new Exception("اكتب رمز العملة واسمها");
+524:                 if (!cc.matches("[A-Z0-9]{2,8}")) throw new Exception("رمز العملة يجب أن يكون أحرفًا إنجليزية أو أرقامًا (2 إلى 8)");
+525:                 int dd = Integer.parseInt(Db.normalizeNumber(dec.getText().toString()));
+526:                 if (dd < 0 || dd > 6) throw new Exception("المنازل العشرية يجب أن تكون بين 0 و 6");
+527:                 if (old == null) {
+528:                     for (Model.Currency x : a.db.currencies(true)) if (x.code.equals(cc)) throw new Exception("هذه العملة موجودة مسبقًا");
+529:                 }
+530:                 a.db.saveCurrency(cc, name.getText().toString().trim(), dd, old == null || old.active);
+531:                 showCurrencies();
+532:             } catch (Exception e) {
+533:                 a.error(e);
+534:             }
+535:         }).setNegativeButton("إلغاء", null).show();
+536:     }
+537: 
+538:     // ===================================================================================
+539:     // أسعار الصرف
+540:     // ===================================================================================
+541: 
+542:     static String usd(BigDecimal v) {
+543:         BigDecimal u = v.setScale(4, RoundingMode.HALF_EVEN).stripTrailingZeros();
+544:         return u.scale() < 0 ? u.setScale(0).toPlainString() : u.toPlainString();
+545:     }
+546: 
+547:     static String unitsPerUsd(BigDecimal usdPerUnit) {
+548:         if (usdPerUnit == null || usdPerUnit.signum() <= 0) return "—";
+549:         BigDecimal u = BigDecimal.ONE.divide(usdPerUnit, 6, RoundingMode.HALF_EVEN).stripTrailingZeros();
+550:         return u.scale() < 0 ? u.setScale(0).toPlainString() : u.toPlainString();
+551:     }
+552: 
+553:     void showRates(final Runnable backTo) {
+554:         if (!a.require(Auth.Perm.VIEW)) return;
+555:         final boolean edit = a.can(Auth.Perm.RATES);   // 12.0: «أسعار الصرف» صلاحية مستقلة
+556:         final boolean online = a.can(Auth.Perm.RATES_ONLINE);   // 12.6: التحديث أونلاين صلاحية مستقلة
+557:         a.here(() -> showRates(backTo));
+558:         a.tabbedScreen("أسعار الصرف", backTo, "more");
+559:         a.hint("يُستخدم السعر لتقويم الأرصدة بالدولار فقط، ولا يغيّر أي مبلغ مسجّل. السعر اليدوي يتقدّم على السعر الأونلاين.");
+560:         if (online) {
+561:             a.button("تحديث الأسعار من الإنترنت الآن", a.primary, v -> a.busy("جارٍ جلب الأسعار…", p -> ExchangeRates.refresh(a.db), res -> {
+562:                 a.toast("تم تحديث " + res + " سعرًا");
+563:                 showRates(backTo);
+564:             }));
+565:             a.hint("المصدر: " + ExchangeRates.source(a.db));
+566:             a.body.addView(a.smallButton("تغيير مصدر الأسعار", Color.rgb(120, 120, 120), v -> {
+567:                 final android.widget.EditText u = a.field(ExchangeRates.DEFAULT_URL);
+568:                 u.setText(a.db.setting("rates_url", ""));
+569:                 u.setTextDirection(android.view.View.TEXT_DIRECTION_LTR);
+570:                 android.widget.LinearLayout box = new android.widget.LinearLayout(a);
+571:                 box.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+572:                 box.addView(u, new android.widget.LinearLayout.LayoutParams(-1, a.dp(52)));
+573:                 new android.app.AlertDialog.Builder(a).setTitle("مصدر أسعار الصرف")
+574:                         .setMessage("اتركه فارغًا للمصدر العالمي الافتراضي، أو اكتب عنوان خادمك (https) بالصيغة نفسها لأسعار السوق المحلية.")
+575:                         .setView(box).setPositiveButton("حفظ", (d, w) -> {
+576:                             String t = u.getText().toString().trim();
+577:                             if (!t.isEmpty() && !t.startsWith("https://")) {
+578:                                 a.toast("العنوان يجب أن يبدأ بـ https://");
+579:                                 return;
+580:                             }
+581:                             try {
+582:                                 a.db.setRatesUrl(t);
+583:                             } catch (Exception e) {
+584:                                 a.error(e);
+585:                                 return;
+586:                             }
+587:                             showRates(backTo);
+588:                         }).setNegativeButton("إلغاء", null).show();
+589:             }), a.lp(-2, 40, 4));
+590:         }
+591:         Map<String, Db.Rate> rates = a.db.rates();
+592:         for (final Model.Currency c : a.db.currencies(false)) {
+593:             if (c.code.equals("USD")) continue;
+594:             LinearLayout x = a.card();
+595:             x.addView(a.text(c.toString(), 17, a.primary, true));
+596:             Db.Rate r = rates.get(c.code);
+597:             StringBuilder sb = new StringBuilder();
+598:             final Metals.Metal mt = Metals.of(c.code);
+599:             if (mt != null) {
+600:                 // 12.5: المعدن بسعر الوحدة بالدولار
+601:                 String un = mt.u().shortName;
+602:                 if (r != null && r.online != null) sb.append("أونلاين (للاستئناس): 1 ").append(un).append(" = ").append(usd(r.online)).append(" USD (").append(Model.date(r.onlineAt)).append(")\n");
+603:                 else sb.append("أونلاين: لا يوجد (مصدر الأسعار لا يعطي سعر المعادن)\n");
+604:                 if (r != null && r.manual != null) sb.append("يدوي: 1 ").append(un).append(" = ").append(usd(r.manual)).append(" USD (").append(Model.date(r.manualAt)).append(")\n");

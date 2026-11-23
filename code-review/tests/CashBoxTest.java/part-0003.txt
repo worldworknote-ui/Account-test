@@ -1,0 +1,40 @@
+305:         stb.put("cash_currencies", "USD,EUR");
+306:         stb.put("cash_boxes", "[{\"id\":2,\"name\":\"الفرع\",\"cur\":\"USD\",\"active\":true},{\"id\":3,\"name\":\"قديم\",\"cur\":\"EUR\",\"active\":false}]");
+307:         List<CashBox.Config> bx = CashBox.Config.boxes(stb);
+308:         check(bx.size() == 3 && bx.get(1).name.equals("الفرع") && bx.get(1).currencies.equals(java.util.Arrays.asList("USD")) && !bx.get(2).active,
+309:                 "الصناديق: الرئيسي + الفرع + المؤرشف");
+310:         check(CashBox.Config.boxes(CashBox.Config.boxesJson(bx).isEmpty() ? stb : stb).size() == 3 && CashBox.Config.boxesJson(bx).contains("الفرع"), "حفظ قائمة الصناديق");
+311:         List<ClientBook.Move> km = new ArrayList<>();
+312:         ClientBook.Move k1 = new ClientBook.Move();
+313:         k1.currency = "EUR";
+314:         k1.amount = 10000;
+315:         k1.dir = -1;
+316:         km.add(k1);
+317:         ClientBook.Move k2 = new ClientBook.Move();
+318:         k2.currency = "EUR";
+319:         k2.amount = 10000;
+320:         k2.dir = 1;
+321:         k2.kind = ClientBook.CASH;
+322:         k2.cashCurrency = "USD";
+323:         k2.cashAmount = 10800;
+324:         k2.cashDir = -1;
+325:         k2.rate = ClientBook.rateOf(10000, 2, 10800, 2);
+326:         km.add(k2);
+327:         check(ClientBook.balances(km).isEmpty() && "1.08".equals(k2.rate), "العميل: له 100 EUR فأخذ 108 USD = حسابه صفر، والسعر 1.08");
+328:         check(ClientBook.text(k2, decs).contains("108") && ClientBook.text(k2, decs).contains("(1 EUR = 1.08 USD)"), "نص الكشف: " + ClientBook.text(k2, decs));
+329:         k2.status = CashBox.CANCELLED;
+330:         check(ClientBook.balances(km).get("EUR") == -10000, "إلغاء التسليم يعيد له 100 EUR (علينا)");
+331:         Map<String, Long> kbal = new java.util.HashMap<>();
+332:         kbal.put("EUR", -10000L);
+333:         check(ClientBook.validateSwap(kbal, "EUR", 20000, "USD", 1) == null ? false : true, "التبديل أكثر من الرصيد يُرفض");
+334: 
+335:         System.out.println("\n" + passes + " نجح، " + fails + " فشل");
+336:         if (fails > 0) System.exit(1);
+337:     }
+338: 
+339:     static String ids(List<Model.Office> l) {
+340:         StringBuilder b = new StringBuilder();
+341:         for (Model.Office o : l) b.append(b.length() > 0 ? "," : "").append(o.id);
+342:         return b.toString();
+343:     }
+344: }

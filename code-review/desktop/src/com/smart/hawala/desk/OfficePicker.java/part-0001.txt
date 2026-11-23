@@ -1,0 +1,193 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: 
+5: import javax.swing.*;
+6: import javax.swing.border.EmptyBorder;
+7: import java.awt.*;
+8: import java.awt.event.*;
+9: import java.util.ArrayList;
+10: import java.util.List;
+11: 
+12: /**
+13:  * 10.18: نافذة «اختر المكتب» كالهاتف: خانة تصفية في الأعلى، «آخر المكاتب»، ثم «مكاتبي» كلها شرائح تتصفى أثناء الكتابة.
+14:  * Enter يختار أول نتيجة، Esc يغلق، والزر الأيمن على مكتب يثبّته في أعلى القائمة أو يلغي تثبيته.
+15:  */
+16: final class OfficePicker {
+17:     private OfficePicker() {}
+18: 
+19:     /** يرجع المكتب المختار أو null. */
+20:     static Model.Office pick(Component parent, Db db, String title) {
+21:         Window w = parent instanceof Window ? (Window) parent : SwingUtilities.getWindowAncestor(parent);
+22:         final JDialog d = new JDialog(w, title == null ? "اختر المكتب" : title, Dialog.ModalityType.APPLICATION_MODAL);
+23:         final Model.Office[] out = {null};
+24:         final Ui.Field q = Ui.field("اكتب جزءًا من اسم المكتب للتصفية");
+25:         q.setFont(Ui.font(16, false));
+26:         q.setMaximumSize(new Dimension(Integer.MAX_VALUE, 44));
+27:         final Wrap body = new Wrap();
+28:         final List<Model.Office> shown = new ArrayList<>();
+29:         final Runnable[] fill = new Runnable[1];
+30:         fill[0] = () -> {
+31:             body.removeAll();
+32:             shown.clear();
+33:             String s = OwnerReports.norm(q.getText());
+34:             List<Model.Office> all = new ArrayList<>();
+35:             for (Model.Office o : RecordView.myFirst(db, db.offices())) if (o.active) all.add(o);
+36:             if (s.isEmpty()) {
+37:                 List<Model.Office> recent = new ArrayList<>();
+38:                 for (String x : db.setting("recent_offices", "").split(","))
+39:                     for (Model.Office o : all) if (x.trim().equals("" + o.id) && recent.size() < 6) recent.add(o);
+40:                 if (!recent.isEmpty()) {
+41:                     body.section("آخر المكاتب");
+42:                     for (Model.Office o : recent) body.chip(o, false, () -> { out[0] = o; d.dispose(); }, () -> pin(db, o, fill[0]));
+43:                 }
+44:             }
+45:             body.section(s.isEmpty() ? "مكاتبي" : "النتائج");
+46:             for (Model.Office o : all) {
+47:                 if (!s.isEmpty() && !OwnerReports.norm(o.name + " " + Model.nz(o.shortName) + " " + Model.nz(o.phone)).contains(s)) continue;
+48:                 shown.add(o);
+49:                 body.chip(o, true, () -> { out[0] = o; d.dispose(); }, () -> pin(db, o, fill[0]));
+50:             }
+51:             if (shown.isEmpty()) body.note("لا مكتب يطابق «" + q.getText().trim() + "»");
+52:             body.note("انقر بالزر الأيمن على مكتب لتثبيته في أعلى القائمة أو إلغاء تثبيته.");
+53:             body.applyComponentOrientation(ComponentOrientation.RIGHT_TO_LEFT);
+54:             body.revalidate();
+55:             body.repaint();
+56:         };
+57:         q.getDocument().addDocumentListener(FxView.now(fill[0]));
+58:         q.addActionListener(e -> {
+59:             if (!shown.isEmpty()) {
+60:                 out[0] = shown.get(0);
+61:                 d.dispose();
+62:             }
+63:         });
+64:         JPanel root = new JPanel(new BorderLayout(0, 10));
+65:         root.setBackground(Ui.surface);
+66:         root.setBorder(new EmptyBorder(16, 18, 14, 18));
+67:         root.add(q, BorderLayout.NORTH);
+68:         JScrollPane sp = new JScrollPane(body);
+69:         sp.setBorder(null);
+70:         sp.getViewport().setBackground(Ui.surface);
+71:         sp.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+72:         sp.getVerticalScrollBar().setUnitIncrement(24);
+73:         root.add(sp, BorderLayout.CENTER);
+74:         JPanel bottom = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+75:         bottom.setOpaque(false);
+76:         bottom.add(Ui.ghost("إلغاء", e -> d.dispose()));
+77:         root.add(bottom, BorderLayout.SOUTH);
+78:         root.applyComponentOrientation(ComponentOrientation.RIGHT_TO_LEFT);
+79:         d.setContentPane(root);
+80:         d.getRootPane().registerKeyboardAction(e -> d.dispose(), KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), JComponent.WHEN_IN_FOCUSED_WINDOW);
+81:         fill[0].run();
+82:         d.setSize(560, 640);
+83:         d.setLocationRelativeTo(w);
+84:         SwingUtilities.invokeLater(q::requestFocusInWindow);
+85:         d.setVisible(true);
+86:         return out[0];
+87:     }
+88: 
+89:     private static void pin(Db db, Model.Office o, Runnable refill) {
+90:         try {
+91:             db.setPinned(o.id, !o.pinned);
+92:             o.pinned = !o.pinned;
+93:             Ui.toast(o.pinned ? "ثُبّت «" + o.name + "» في أعلى القائمة" : "أُلغي تثبيت «" + o.name + "»");
+94:             refill.run();
+95:         } catch (Exception ex) {
+96:             Ui.toast(ex.getMessage());
+97:         }
+98:     }
+99: 
+100:     /** لوحة تلتف شرائحها على عدة أسطر بعرض النافذة (من اليمين). */
+101:     static final class Wrap extends JPanel implements Scrollable {
+102:         Wrap() {
+103:             setLayout(new FlowLayout(FlowLayout.RIGHT, 8, 8));
+104:             setOpaque(false);
+105:         }
+106: 
+107:         void section(String t) {
+108:             JLabel l = Ui.label(t, 13.5f, Ui.muted, true);
+109:             l.setBorder(new EmptyBorder(8, 4, 0, 4));
+110:             add(full(l));
+111:         }
+112: 
+113:         void note(String t) {
+114:             JLabel l = Ui.label(t, 12.5f, Ui.muted, false);
+115:             l.setBorder(new EmptyBorder(6, 4, 0, 4));
+116:             add(full(l));
+117:         }
+118: 
+119:         /** عنصر يأخذ سطرًا كاملًا. */
+120:         JComponent full(JComponent c) {
+121:             JPanel p = new JPanel(new BorderLayout()) {
+122:                 @Override public Dimension getPreferredSize() {
+123:                     Container par = getParent();
+124:                     int w = par == null ? 400 : Math.max(200, par.getWidth() - 20);
+125:                     return new Dimension(w, super.getPreferredSize().height);
+126:                 }
+127:             };
+128:             p.setOpaque(false);
+129:             p.add(c, BorderLayout.LINE_START);
+130:             return p;
+131:         }
+132: 
+133:         void chip(Model.Office o, boolean filled, Runnable pick, Runnable pin) {
+134:             final boolean f = filled;
+135:             JButton b = new JButton((o.pinned ? "• " : "") + o.name) {
+136:                 @Override protected void paintComponent(Graphics g) {
+137:                     Graphics2D g2 = (Graphics2D) g.create();
+138:                     g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+139:                     int h = getHeight() - 1;
+140:                     boolean over = getModel().isRollover();
+141:                     g2.setColor(f ? (over ? Ui.darker(Ui.primary, 0.9f) : Ui.primary) : (over ? Ui.mix(Ui.surface, Ui.primary, 0.08f) : Ui.surface));
+142:                     g2.fill(new java.awt.geom.RoundRectangle2D.Float(0, 0, getWidth() - 1, h, h, h));
+143:                     if (!f) {
+144:                         g2.setColor(Ui.line);
+145:                         g2.draw(new java.awt.geom.RoundRectangle2D.Float(0.5f, 0.5f, getWidth() - 2, h - 1, h, h));
+146:                     }
+147:                     g2.dispose();
+148:                     super.paintComponent(g);
+149:                 }
+150:             };
+151:             b.setForeground(filled ? Color.WHITE : Ui.ink);
+152:             b.setFont(Ui.font(15.5f, filled));
+153:             b.setContentAreaFilled(false);
+154:             b.setBorderPainted(false);
+155:             b.setFocusPainted(false);
+156:             b.setRolloverEnabled(true);
+157:             b.setBorder(new EmptyBorder(10, 20, 11, 20));
+158:             b.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+159:             b.addActionListener(e -> pick.run());
+160:             b.addMouseListener(new MouseAdapter() {
+161:                 @Override public void mousePressed(MouseEvent e) { pop(e); }
+162: 
+163:                 @Override public void mouseReleased(MouseEvent e) { pop(e); }
+164: 
+165:                 void pop(MouseEvent e) {
+166:                     if (e.isPopupTrigger()) pin.run();
+167:                 }
+168:             });
+169:             add(b);
+170:         }
+171: 
+172:         @Override public Dimension getPreferredSize() {
+173:             // ارتفاع الأسطر الملتفة بعرض النافذة
+174:             Container par = getParent();
+175:             int width = par == null ? 500 : par.getWidth();
+176:             if (width <= 0) width = 500;
+177:             FlowLayout fl = (FlowLayout) getLayout();
+178:             int x = fl.getHgap(), y = fl.getVgap(), rowH = 0;
+179:             for (Component c : getComponents()) {
+180:                 Dimension d = c.getPreferredSize();
+181:                 if (x + d.width + fl.getHgap() > width && x > fl.getHgap()) {
+182:                     x = fl.getHgap();
+183:                     y += rowH + fl.getVgap();
+184:                     rowH = 0;
+185:                 }
+186:                 x += d.width + fl.getHgap();
+187:                 rowH = Math.max(rowH, d.height);
+188:             }
+189:             return new Dimension(width, y + rowH + fl.getVgap());
+190:         }
+191: 
+192:         @Override public Dimension getPreferredScrollableViewportSize() { return getPreferredSize(); }
+193: 

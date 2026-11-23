@@ -1,0 +1,119 @@
+875:                     if (!cur.isEmpty()) db.setSettingQuiet("drive_account_old", cur);
+876:                     db.setSettingQuiet("drive_account", email);
+877:                     db.setSettingQuiet("sync_drive_ok", "1");
+878:                     if (fresh) {
+879:                         JTextField code = new JTextField(res);
+880:                         code.setEditable(false);
+881:                         code.setFont(Ui.font(18, true));
+882:                         JPanel q = Ui.column();
+883:                         q.add(Ui.para("أُنشئت المزامنة الجديدة في " + to + " ✓\n\nرمز الاسترداد الجديد يظهر مرة واحدة: احفظه في مكان آمن. على كل جهاز آخر: «انضمام إلى المزامنة الجديدة».", 14, Ui.ink, 460));
+884:                         q.add(Ui.gap(8));
+885:                         q.add(code);
+886:                         Ui.form(this, "رمز الاسترداد — احفظه الآن", Ui.rtl(q), "حفظته");
+887:                         app.changed();
+888:                     } else Ui.info(this, "نُقلت المزامنة ✓", "نُسخ " + res + " ملفًا إلى " + to + ".\n\nعلى كل جهاز آخر: افتح «المزامنة» فيظهر أن المزامنة نُقلت، واضغط «الدخول بالحساب الجديد». "
+889:                             + "بعد أن تنتقل كل الأجهزة احذف الخزنة من الحساب القديم من هنا.");
+890:                     now(app);
+891:                     refresh();
+892:                 });
+893:             });
+894:         });
+895:     }
+896: 
+897:     void purgeOld(String old) {
+898:         if (!Ui.confirm(this, "حذف الخزنة من الحساب القديم", "تُحذف ملفات المزامنة المشفّرة من " + (old.isEmpty() ? "الحساب القديم" : old)
+899:                 + " وتبقى فيه علامة «نُقلت» فقط. تأكد أولًا أن كل أجهزتك انتقلت إلى الحساب الجديد. بياناتك في الحساب الجديد وعلى الأجهزة لا تتأثر.", "حذف")) return;
+900:         if (!DeskDriveAuth.has(DeskDriveAuth.OLD)) {
+901:             Ui.info(this, "الحساب القديم", "دخول الحساب القديم غير محفوظ على هذا الجهاز. احذف الخزنة منه من الجهاز الذي نقل المزامنة، أو أزل صلاحية التطبيق من إعدادات حساب Google القديم.");
+902:             db.setSettingQuiet("drive_account_old", "");
+903:             refresh();
+904:             return;
+905:         }
+906:         UsersView.confirmAdmin(this, db, "حذف الخزنة من الحساب القديم", () -> Ui.busy(this, "جارٍ الحذف من الحساب القديم…",
+907:                 p -> new SyncEngine(db, new DriveSyncFolder(new DeskDriveAuth(db, DeskDriveAuth.OLD))).purgeRetired(), n -> {
+908:                     DeskDriveAuth.drop(DeskDriveAuth.OLD);
+909:                     db.setSettingQuiet("drive_account_old", "");
+910:                     Ui.toast("حُذف " + n + " ملفًا من الحساب القديم ✓");
+911:                     refresh();
+912:                 }));
+913:     }
+914: 
+915:     /** على الأجهزة الأخرى بعد نقل المزامنة أو بدايتها الجديدة في حساب آخر. */
+916:     void movedNotice(SyncEngine.Status st, int w) {
+917:         String email = driveEmail(st.movedTarget);
+918:         boolean drive = "drive".equals(transport(db));
+919:         boolean admin = app.can(Auth.Perm.SYNC);
+920:         if (st.movedFresh) {
+921:             add(Ui.para("! " + st.movedTo + " للمتابعة: انضم إلى المزامنة الجديدة (تُستبدل بيانات هذا الجهاز ببياناتها؛ خذ نسخة احتياطية قبلها).", 14, Ui.red, w));
+922:             if (admin) add(Ui.row(Ui.primary("انضمام إلى المزامنة الجديدة…", e -> {
+923:                 if (!Ui.confirm(this, "الانضمام إلى المزامنة الجديدة", "يخرج هذا الجهاز من المزامنة القديمة (بياناته باقية)، ثم "
+924:                         + (drive && !email.isEmpty() ? "تسجّل الدخول بـ " + email + " و" : "") + "تنضم بكلمة سر المزامنة الجديدة.", "متابعة")) return;
+925:                 new SyncEngine(db, null).leave(st.movedTo);
+926:                 if (drive && !email.isEmpty()) Ui.busy(this, "بانتظار الدخول في المتصفح…", p -> DeskDriveAuth.login(db, DeskDriveAuth.REFRESH, email), got -> {
+927:                     db.setSettingQuiet("drive_account", got.isEmpty() ? email : got);
+928:                     db.setSettingQuiet("sync_drive_ok", "1");
+929:                     refresh();
+930:                 });
+931:                 else refresh();
+932:             }), Box.createHorizontalGlue()));
+933:         } else if (drive && !email.isEmpty()) {
+934:             add(Ui.para("! " + st.movedTo + " سجّل الدخول بالحساب الجديد على هذا الجهاز: الخزنة نفسها وبياناتك كما هي.", 14, Ui.red, w));
+935:             if (admin) add(Ui.row(Ui.primary("الدخول بـ " + email + "…", e -> Ui.busy(this, "بانتظار الدخول في المتصفح…", p -> {
+936:                 String got = DeskDriveAuth.login(db, DeskDriveAuth.NEW, email);
+937:                 if (!got.isEmpty() && !got.equalsIgnoreCase(email)) {
+938:                     DeskDriveAuth.drop(DeskDriveAuth.NEW);
+939:                     throw new IllegalStateException("اخترتَ " + got + ". اختر الحساب الذي نُقلت إليه المزامنة: " + email);
+940:                 }
+941:                 new SyncEngine(db, new DriveSyncFolder(new DeskDriveAuth(db))).moveTo(new DriveSyncFolder(new DeskDriveAuth(db, DeskDriveAuth.NEW)));
+942:                 DeskDriveAuth.promote(DeskDriveAuth.NEW, DeskDriveAuth.REFRESH);
+943:                 return email;
+944:             }, got -> {
+945:                 db.setSettingQuiet("drive_account", got);
+946:                 db.setSettingQuiet("sync_drive_ok", "1");
+947:                 Ui.toast("انتقل هذا الجهاز إلى " + got + " ✓");
+948:                 now(app);
+949:                 refresh();
+950:             })), Box.createHorizontalGlue()));
+951:         } else {
+952:             add(Ui.para("! " + st.movedTo + " اختر المكان الجديد من «نقل المزامنة إلى طريقة أخرى».", 14, Ui.red, w));
+953:         }
+954:         if (!admin) add(Ui.para("اطلب من المدير نقل هذا الجهاز.", 13, Ui.muted, w));
+955:         space(8);
+956:     }
+957: 
+958:     void resetPw() {
+959:         UsersView.confirmAdmin(this, db, "تعيين كلمة سر المزامنة", () -> {
+960:             JPasswordField n1 = Ui.password(), n2 = Ui.password();
+961:             JPanel c = Ui.column();
+962:             c.add(Ui.para("هذا الجهاز منضم ويحمل مفتاح الخزنة، فتُعيَّن الكلمة الجديدة دون القديمة. الأجهزة المنضمة لا تتأثر، ورمز الاسترداد يبقى كما هو.", 13, Ui.ink, 440));
+963:             c.add(Ui.labeled("كلمة السر الجديدة (8 محارف على الأقل)", n1));
+964:             c.add(Ui.labeled("أعد كتابتها", n2));
+965:             if (!Ui.form(this, "كلمة سر مزامنة جديدة", Ui.rtl(c), "حفظ")) return;
+966:             if (n1.getPassword().length < 8 || !new String(n1.getPassword()).equals(new String(n2.getPassword()))) {
+967:                 Ui.info(this, "كلمة سر جديدة", n1.getPassword().length < 8 ? "كلمة السر 8 محارف على الأقل" : "غير متطابقتين");
+968:                 return;
+969:             }
+970:             Ui.busy(this, "جارٍ حفظ كلمة السر الجديدة…", p -> {
+971:                 new SyncEngine(db, folder(db)).resetPassword(n1.getPassword());
+972:                 return true;
+973:             }, ok -> Ui.toast("عُيّنت كلمة سر المزامنة الجديدة ✓"));
+974:         });
+975:     }
+976: 
+977:     void wipe() {
+978:         JComboBox<String> how = Ui.combo(new String[]{"كلمة سر المزامنة", "رمز الاسترداد"});
+979:         JPasswordField pw = Ui.password();
+980:         Ui.Field word = Ui.field("حذف");
+981:         JPanel c = Ui.column();
+982:         c.add(Ui.para("تُحذف كل ملفات المزامنة المشفّرة من «" + kindName(transport(db)) + "». قبل الحذف تُحفظ نسخة أمان من بيانات هذا الجهاز. "
+983:                 + "كل الأجهزة (وهذا الجهاز) تخرج من المزامنة وتبقى بياناتها كما هي، ثم يمكنك إنشاء مزامنة جديدة.", 13.5f, Ui.red, 440));
+984:         c.add(Ui.labeled("بماذا تثبت ملكية الخزنة", how));
+985:         c.add(Ui.labeled("كلمة السر أو الرمز", pw));
+986:         c.add(Ui.labeled("اكتب كلمة «حذف» للتأكيد", word));
+987:         if (!Ui.form(this, "حذف ملفات المزامنة", Ui.rtl(c), "حذف")) return;
+988:         if (!"حذف".equals(word.val().trim())) {
+989:             Ui.info(this, "حذف ملفات المزامنة", "لم يُحذف شيء: اكتب كلمة «حذف» للتأكيد.");
+990:             return;
+991:         }
+992:         char[] sec = pw.getPassword();
+993:         boolean rc = how.getSelectedIndex() == 1;

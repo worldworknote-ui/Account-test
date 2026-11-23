@@ -1,0 +1,150 @@
+376:       function (x) { return hint("phone", x.h) * rowsN + x.p.phones; });
+377:     if (ph) take("phone", ph);
+378:     // جدول عريض: عمود لكل عملة (المكتب | USD | EUR | TRY) — رصيد أو مبلغ موقّع في كل عمود
+379:     if (roles.currency === undefined) {
+380:       var wide = cols.filter(function (x) {
+381:         return !used[x.c] && x.p.ratio(x.p.nums + x.p.numText) >= 0.6 && guessCur(x.h) && !hint("debit", x.h) && !hint("credit", x.h);
+382:       });
+383:       var codes = wide.map(function (x) { return guessCur(x.h); });
+384:       var distinct = codes.filter(function (c, i) { return codes.indexOf(c) === i; });
+385:       if (wide.length >= 2 && distinct.length === wide.length) {
+386:         roles.wide = wide.map(function (x) { used[x.c] = true; return { c: x.c, code: guessCur(x.h), h: x.h }; });
+387:       }
+388:     }
+389:     // الأعمدة الرقمية
+390:     var numeric = cols.filter(function (x) { return !used[x.c] && x.p.ratio(x.p.nums + x.p.numText) >= 0.7; });
+391:     var deb = null, cre = null;
+392:     if (!roles.direction) {
+393:       deb = best(function (x) { return (numeric.indexOf(x) >= 0 || (x.p.n === 0 && hint("debit", x.h) === 2)) && hint("debit", x.h) > 0; },
+394:         function (x) { return hint("debit", x.h) * 10 + x.p.n; });
+395:       if (deb) used[deb.c] = true;
+396:       cre = best(function (x) { return (numeric.indexOf(x) >= 0 || (x.p.n === 0 && hint("credit", x.h) === 2)) && hint("credit", x.h) > 0; },
+397:         function (x) { return hint("credit", x.h) * 10 + x.p.n; });
+398:       if (deb) used[deb.c] = false;
+399:       if (deb && cre && deb !== cre) { take("debit", deb); take("credit", cre); }
+400:     }
+401:     var bal = best(function (x) { return numeric.indexOf(x) >= 0 && hint("balance", x.h) > 0; }, function (x) { return hint("balance", x.h); });
+402:     if (bal) take("balance", bal);
+403:     // الأجرة/العمولة: عمود مستقل يدخل في الرصيد كأجرة الحركة (اتجاهها في الخطوة 3، ويُعرف من عمود الرصيد إن وُجد)
+404:     var fe = best(function (x) { return (numeric.indexOf(x) >= 0 || (x.p.n === 0 && hint("fee", x.h) === 2)) && hint("fee", x.h) > 0; }, function (x) { return hint("fee", x.h) * 10 + x.p.n; });
+405:     if (fe) take("fee", fe);
+406:     if (roles.debit === undefined && !roles.wide) {
+407:       var am = best(function (x) { return numeric.indexOf(x) >= 0; }, function (x) { return hint("amount", x.h) * rowsN * 2 + x.p.n - (x.p.maxDec > 4 ? rowsN : 0); });
+408:       if (am) take("amount", am);
+409:     }
+410:     // جدول أرصدة (بلا تاريخ) عموده الرقمي الوحيد «الرصيد»: هو المبلغ
+411:     if (roles.amount === undefined && roles.debit === undefined && !roles.wide && roles.balance !== undefined && roles.date === undefined) {
+412:       roles.amount = roles.balance;
+413:       delete roles.balance;
+414:     }
+415:     // الحساب: نص يتكرر كثيرًا (أسماء قليلة مقابل صفوف كثيرة)، والبيان: النص الأكثر تنوعًا
+416:     var texts = cols.filter(function (x) { return !used[x.c] && x.p.ratio(x.p.texts + x.p.ints) >= 0.5 && x.p.nd >= 1; });
+417:     // عنوان صريح («الحساب»، «المكتب»، «NAME OF ACCOUNT»)، أو في جدول كبير: نص تتكرر قيمه كثيرًا
+418:     var acc = best(function (x) {
+419:       if (texts.indexOf(x) < 0 || x.p.nd < 1 || x.p.n < rowsN * 0.3) return false;
+420:       return hint("account", x.h) === 2 || (x.p.n >= 8 && x.p.nd <= Math.max(3, x.p.n * 0.25));
+421:     }, function (x) { return hint("account", x.h) * rowsN + x.p.n - x.p.nd * 2; });
+422:     // جدول أرصدة بلا تاريخ: سطر لكل مكتب، فالأسماء لا تتكرر
+423:     var money = roles.amount !== undefined || roles.debit !== undefined || !!roles.wide;
+424:     if (!acc && roles.date === undefined && money) {
+425:       acc = best(function (x) { return texts.indexOf(x) >= 0 && x.p.n >= rowsN * 0.5 && x.p.nd >= x.p.n * 0.9; },
+426:         function (x) { return hint("account", x.h) * rowsN + x.p.n - x.c * 0.001; });
+427:     }
+428:     if (acc) take("account", acc);
+429:     var de = best(function (x) { return texts.indexOf(x) >= 0; }, function (x) { return hint("description", x.h) * rowsN + x.p.nd; });
+430:     if (de) take("description", de);
+431:     // باقي أعمدة الجدول (حتى النادرة التي لم تظهر في العيّنة) تُحفظ في ملاحظات الحركة
+432:     roles.notes = [];
+433:     for (var nc = t.c0; nc <= t.c1; nc++) if (!used[nc]) roles.notes.push(nc);
+434:     return { roles: roles, cols: cols };
+435:   }
+436: 
+437:   // ===================================================================================
+438:   // تصنيف الجداول وتحليل الملف كله
+439:   // ===================================================================================
+440: 
+441:   var GENERIC_SHEET = /^(sheet|ورقه|ورقة|data|البيانات|الحركات|المكاتب|الحسابات|الارصده|الأرصدة|table|page|صفحه|صفحة)\s*\d*$/i;
+442: 
+443:   function signature(t) { return t.names.map(function (h) { return hkey(h); }).join("|"); }
+444: 
+445:   function isHeaderRepeat(t, row) {
+446:     var same = 0, total = 0;
+447:     t.names.forEach(function (h, i) {
+448:       if (!h) return;
+449:       total++;
+450:       if (hkey(text((row || [])[t.c0 + i])) === hkey(h)) same++;
+451:     });
+452:     return total >= 2 && same >= total * 0.8;
+453:   }
+454: 
+455:   /**
+456:    * books: [{name, wb, sheets:[{name, rows}]}] ← تحليل كامل: الجداول بأدوارها وأنواعها، والقيم التي تحتاج مطابقة.
+457:    */
+458:   function analyze(books) {
+459:     var tables = [], lists = [], notes = [];
+460:     books.forEach(function (bk, bi) {
+461:       var xt = excelTables(bk.wb);
+462:       bk.sheets.forEach(function (sh) {
+463:         var rows = sh.rows || [];
+464:         var label = (books.length > 1 ? bk.name + " / " : "") + sh.name;
+465:         if (!rows.length) { notes.push({ sheet: label, kind: "empty" }); return; }
+466:         var mine = xt.filter(function (x) { return x.sheet === sh.name; });
+467:         var found = [];
+468:         mine.forEach(function (x) {
+469:           var rg = decodeRef(x.ref);
+470:           if (!rg) return;
+471:           found.push({ header: x.headerRows ? rg.s.r : -1, first: rg.s.r + x.headerRows, last: Math.min(rows.length - 1, rg.e.r - x.totalsRows),
+472:             c0: rg.s.c, c1: rg.e.c, excel: x.name, names: x.columns });
+473:         });
+474:         if (!found.length) found = guessTables(rows);
+475:         found.forEach(function (f) {
+476:           var t = { id: "t" + tables.length, book: bi, bookName: bk.name, multiBook: books.length > 1, sheet: sh.name, label: label, rows: rows, header: f.header, first: f.first, last: f.last,
+477:             c0: f.c0, c1: f.c1, excel: f.excel || "" };
+478:           t.names = f.names || [];
+479:           if (!f.names) for (var c = t.c0; c <= t.c1; c++) t.names.push(f.header >= 0 ? text((rows[f.header] || [])[c]) : "");
+480:           for (var i = 0; i < t.names.length; i++) if (!t.names[i]) t.names[i] = "عمود " + colName(t.c0 + i);
+481:           // آخر صف فيه بيانات فعلًا (الجداول المعرّفة قد تمتد على صفوف فارغة مُعدّة مسبقًا)
+482:           var last = t.first - 1;
+483:           for (var r = t.first; r <= t.last; r++) if (rowSig(rows[r]).any) last = r;
+484:           t.last = last;
+485:           var inf = inferRoles(t);
+486:           t.roles = inf.roles;
+487:           t.cols = inf.cols;
+488:           classify(t);
+489:           if (t.kind === "balances" && bk.wb && bk.wb.Sheets && bk.wb.Sheets[sh.name]) t.formulaShare = formulaShare(bk.wb.Sheets[sh.name], t);
+490:           tables.push(t);
+491:         });
+492:         if (!found.length) {
+493:           var l = guessList(rows);
+494:           if (l) lists.push({ id: "l" + lists.length, sheet: sh.name, label: label, c: l.c, first: l.first, last: l.last, rows: rows, n: l.n });
+495:           else notes.push({ sheet: label, kind: "unknown" });
+496:         }
+497:       });
+498:       (bk.wb && bk.wb.SheetNames || []).forEach(function (n) {
+499:         if (!bk.sheets.some(function (s) { return s.name === n; })) notes.push({ sheet: n, kind: "chart" });
+500:       });
+501:     });
+502:     // قوائم القيم داخل جداول صغيرة (عملات واتجاهات للإدخال)
+503:     lists.forEach(function (l) { l.kind = "accounts"; describeList(l); });
+504:     markDerived(tables);
+505:     // جدول أرصدة بمعادلات في ملف فيه سجل حركات = ملخص محسوب منه: للتحقق فقط
+506:     var hasJournal = tables.some(function (t) { return t.kind === "journal"; });
+507:     tables.forEach(function (t) {
+508:       if (t.kind === "balances" && hasJournal && t.formulaShare >= 0.5) { t.kind = "summary"; t.use = false; t.summaryWhy = "formulas"; }
+509:     });
+510:     var a = { tables: tables, lists: lists, notes: notes };
+511:     a.values = collectValues(a);
+512:     return a;
+513:   }
+514: 
+515:   function baseName(f) { return clean(String(f || "").replace(/\.[^.]+$/, "")); }
+516: 
+517:   /** «أبو سمير USD» ← {name: «أبو سمير», code: USD}؛ بلا عملة في الاسم ← {name: الاسم كما هو, code: null}. */
+518:   function splitCur(nm) {
+519:     var out = { name: nm, code: null };
+520:     nm.split(/[\s\-_–—()]+/).some(function (w) {
+521:       var g = w && guessCur(w);
+522:       if (!g) return false;
+523:       var rest = clean(nm.replace(w, " ").replace(/[\-_–—()]+/g, " "));
+524:       if (!rest) return false;
+525:       out = { name: rest, code: g };

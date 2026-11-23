@@ -1,0 +1,19 @@
+1: #!/bin/bash
+2: # اختبارات الحسابات بلا هاتف ولا Gradle: bash tools/run-tests.sh [مجلد بيانات النقل]
+3: # يحتاج JDK 11+ فقط؛ org.json (ملكية عامة، github.com/stleary/JSON-java) مرفق في tools/lib.
+4: set -u
+5: ROOT=$(cd "$(dirname "$0")/.." && pwd)
+6: J=$ROOT/app/src/main/java/com/smart/hawala
+7: OUT=${OUT:-$ROOT/app/build/pure-tests}
+8: JSON_CP=${JSON_CP:-$ROOT/tools/lib/org.json.jar}
+9: [ -e "$JSON_CP" ] || { echo "ضع org.json في $JSON_CP أو حدّد JSON_CP (https://repo1.maven.org/maven2/org/json/json/20240303/)"; exit 2; }
+10: SRCS=""
+11: for f in Clock Amounts Auth BackupFormat ExportStyle Ledger MessageParser NumberWords AiExtract Model Pin Reconcile Report Reports SecureStreams \
+12:          XlsxWriter WaText FieldCipher MergePlan LicenseToken Entitlements QuotaState BackupPolicy BuildInfo OwnerReports ReportBuilder AuditChain Sanity DayClose \
+13:          CashBox WaQuota OfficeOrder AboutText ClientBook Hlc SyncCrypto NavPrefs WaWords WaCuts Metals; do
+14:   [ -f "$J/$f.java" ] && SRCS="$SRCS $J/$f.java"
+15: done
+16: rm -rf "$OUT/classes"; mkdir -p "$OUT/classes" "$OUT/out"
+17: javac -nowarn -encoding UTF-8 -cp "$JSON_CP" -d "$OUT/classes" $SRCS "$ROOT"/tests/*.java || { echo "تعذر بناء الاختبارات"; exit 1; }
+18: DATA=${1:-$ROOT/tests/data}
+19: if [ -d "$DATA" ]; then java -Dstdout.encoding=UTF-8 -Dfile.encoding=UTF-8 -cp "$OUT/classes:$JSON_CP" RunAll "$OUT/out" "$DATA"; else java -Dstdout.encoding=UTF-8 -Dfile.encoding=UTF-8 -cp "$OUT/classes:$JSON_CP" RunAll "$OUT/out"; fi

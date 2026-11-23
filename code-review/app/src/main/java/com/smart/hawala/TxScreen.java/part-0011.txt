@@ -1,0 +1,167 @@
+1628:         l.add(x.office == null ? "✗ المكتب: لم يُختر" : "المكتب: " + x.office.name);
+1629:         l.add(x.type.none() ? "✗ النوع: لم تختر «لنا» أو «علينا»"
+1630:                 : x.type.selected == 0 ? "النوع: لنا — المكتب مدين لنا" : "النوع: علينا — نحن مدينون للمكتب");
+1631:         String cur = x.cur == null ? null : x.cur.label();
+1632:         String amt = x.amount.getText().toString().trim();
+1633:         String curName = cur == null ? null : x.names.get(cur);
+1634:         String curText = cur == null ? "" : Metals.isMetal(cur) ? " " + Metals.unitText(cur) : " " + cur + (curName == null || curName.isEmpty() ? "" : " (" + curName + ")");
+1635:         String qw = cur == null ? "المبلغ" : Metals.qtyWord(cur);   // 12.6: «الوزن» للمعدن
+1636:         if (amt.isEmpty()) l.add("✗ " + qw + ": لم يُكتب" + (cur == null ? "" : " —" + curText));
+1637:         else {
+1638:             String shown;
+1639:             try {
+1640:                 int d = cur == null ? 10 : a.db.decimals(cur);
+1641:                 shown = cur == null ? shownAmount(new java.math.BigDecimal(MessageParser.digits(amt).replace(",", "")).toPlainString())
+1642:                         : Model.fmt(Db.minor(amt, d), d);
+1643:             } catch (Exception e) {
+1644:                 shown = null;
+1645:             }
+1646:             if (shown == null) l.add("✗ " + qw + " غير صحيح: اكتب أرقامًا فقط (مثال 1500 أو 1500.50)");
+1647:             else l.add(qw + ": " + shown + curText);
+1648:         }
+1649:         if (x.office != null && x.cur == null) l.add("✗ العملة: لا توجد عملات مفعّلة لهذا المكتب");
+1650:         else if (cur == null) l.add("✗ العملة: لم تُختر");
+1651:         String p = x.person.getText().toString().trim();
+1652:         l.add("المستفيد: " + (p.isEmpty() ? "—" : p));
+1653:         if (x.feeMode.selected == 1 && x.feeKind != null && x.feeKind.selected == 1) {
+1654:             String side = x.feeSide.selected == 0 ? "لنا" : "علينا";
+1655:             java.math.BigDecimal r = Model.parseRate(x.rate.getText().toString());
+1656:             Long fm = rateFeeMinor(x);
+1657:             if (r == null) l.add("✗ الأجرة (" + side + "): اكتب النسبة");
+1658:             else if (fm == null || fm <= 0) l.add("✗ الأجرة (" + side + " " + Model.rateLabel(r, ratePer(x)) + "): تُحسب بعد كتابة المبلغ واختيار العملة");
+1659:             else {
+1660:                 int d = a.db.decimals(cur);
+1661:                 l.add("الأجرة: " + side + " " + Metals.show(Model.fmt(fm, d), cur) + " (" + Model.rateLabel(r, ratePer(x)) + " من " + (Metals.isMetal(cur) ? "الوزن" : "المبلغ") + ")");
+1662:             }
+1663:         } else if (x.feeMode.selected == 1) {
+1664:             String fc = x.feeCur == null ? null : x.feeCur.label();
+1665:             String fe = x.fee.getText().toString().trim();
+1666:             String side = x.feeSide.selected == 0 ? "لنا" : "علينا";
+1667:             if (fc == null) l.add("✗ الأجرة: اختر عملة الأجرة");
+1668:             else if (fe.isEmpty()) l.add("✗ الأجرة (" + side + "): اكتب المبلغ");
+1669:             else {
+1670:                 try {
+1671:                     l.add("الأجرة: " + side + " " + Metals.show(Model.fmt(Db.minor(fe, a.db.decimals(fc)), a.db.decimals(fc)), fc));
+1672:                 } catch (Exception e) {
+1673:                     l.add("✗ مبلغ الأجرة غير صحيح");
+1674:                 }
+1675:             }
+1676:         } else l.add("الأجرة: بدون");
+1677:         long when = x.when == 0 ? Clock.now() : x.when;
+1678:         boolean today = Model.day(when).equals(Model.day(Clock.now()));
+1679:         l.add("التاريخ: " + (today ? "اليوم " : "") + Model.day(when));
+1680:         int imgs = a.pendingImages.size() + existingAtt.size() - removedAtt.size();
+1681:         if (imgs > 0) l.add("الصور: " + imgs);
+1682:         return Model.join(l, "\n");
+1683:     }
+1684: 
+1685:     // ===================================================================================
+1686:     // الصور
+1687:     // ===================================================================================
+1688: 
+1689:     private void pickImages() {
+1690:         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+1691:         i.addCategory(Intent.CATEGORY_OPENABLE);
+1692:         i.setType("image/*");
+1693:         i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+1694:         a.startForResult(i, MainActivity.PICK_IMAGES);
+1695:     }
+1696: 
+1697:     private void takePhoto() {
+1698:         File file = new File(a.sharedDir(), "camera_" + Clock.now() + ".jpg");
+1699:         a.cameraFile = file.getName();
+1700:         Uri u = EvidenceProvider.uriFor(a, file);
+1701:         Intent i = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+1702:         i.putExtra(MediaStore.EXTRA_OUTPUT, u);
+1703:         i.setClipData(ClipData.newRawUri(file.getName(), u));
+1704:         i.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+1705:         a.startForResult(i, MainActivity.TAKE_PHOTO);
+1706:     }
+1707: 
+1708:     @SuppressWarnings("unchecked")
+1709:     void onImageResult(int r, int c, Intent data) throws Exception {
+1710:         if (c != android.app.Activity.RESULT_OK) {
+1711:             if (r == MainActivity.TAKE_PHOTO && a.cameraFile != null) new File(a.sharedDir(), a.cameraFile).delete();
+1712:             return;
+1713:         }
+1714:         if (r == MainActivity.PICK_IMAGES) {
+1715:             if (data == null) return;
+1716:             final List<Uri> uris = new ArrayList<>();
+1717:             if (data.getClipData() != null) {
+1718:                 for (int i = 0; i < data.getClipData().getItemCount(); i++) uris.add(data.getClipData().getItemAt(i).getUri());
+1719:             } else if (data.getData() != null) uris.add(data.getData());
+1720:             a.busy("جارٍ تجهيز الصور…", p -> {
+1721:                 List<byte[]> out = new ArrayList<>();
+1722:                 for (Uri u : uris) {
+1723:                     try (InputStream in = a.getContentResolver().openInputStream(u)) {
+1724:                         if (in == null) continue;
+1725:                         byte[] raw = Db.readAll(in);
+1726:                         if (!ImageUtil.isImage(raw)) continue;
+1727:                         out.add(ImageUtil.shrink(raw));
+1728:                     }
+1729:                 }
+1730:                 return out;
+1731:             }, res -> {
+1732:                 List<byte[]> l = (List<byte[]>) res;
+1733:                 if (l.size() < uris.size()) a.toast("تم تجاهل " + (uris.size() - l.size()) + " ملف ليس صورة صالحة");
+1734:                 a.pendingImages.addAll(l);
+1735:                 imagesChanged();
+1736:             });
+1737:         } else {
+1738:             if (a.cameraFile == null) throw new Exception("تعذر العثور على الصورة الملتقطة. أعد المحاولة.");
+1739:             final File file = new File(a.sharedDir(), a.cameraFile);
+1740:             a.cameraFile = null;
+1741:             a.busy("جارٍ تجهيز الصورة…", p -> {
+1742:                 if (!file.exists() || file.length() == 0) throw new Exception("تطبيق الكاميرا لم يحفظ الصورة. أعد المحاولة.");
+1743:                 byte[] raw = Db.readAll(file);
+1744:                 file.delete();
+1745:                 return ImageUtil.shrink(raw);
+1746:             }, res -> {
+1747:                 a.pendingImages.add((byte[]) res);
+1748:                 imagesChanged();
+1749:             });
+1750:         }
+1751:     }
+1752: 
+1753:     private void imagesChanged() {
+1754:         if (f == null) {
+1755:             a.toast("تمت إضافة الصورة. افتح «تسجيل حركة» للمتابعة.");
+1756:             return;
+1757:         }
+1758:         if (f.imgMode.selected != 1) f.imgMode.set(1, true);
+1759:         refreshThumbs();
+1760:         updateSummary();
+1761:     }
+1762: 
+1763:     private void refreshThumbs() {
+1764:         if (f == null) return;
+1765:         f.thumbs.removeAllViews();
+1766:         for (final Long id : existingAtt) {
+1767:             if (removedAtt.contains(id)) continue;
+1768:             byte[] raw = a.db.attachment(id);
+1769:             addThumb(ImageUtil.decodeSampled(raw, 240), () -> {
+1770:                 removedAtt.add(id);
+1771:                 refreshThumbs();
+1772:                 updateSummary();
+1773:             });
+1774:         }
+1775:         for (int i = 0; i < a.pendingImages.size(); i++) {
+1776:             final int idx = i;
+1777:             addThumb(ImageUtil.decodeSampled(a.pendingImages.get(i), 240), () -> {
+1778:                 if (idx < a.pendingImages.size()) a.pendingImages.remove(idx);
+1779:                 refreshThumbs();
+1780:                 updateSummary();
+1781:             });
+1782:         }
+1783:         if (f.thumbs.getChildCount() == 0) f.thumbs.addView(a.text("لا توجد صور بعد", 13, a.muted, false));
+1784:     }
+1785: 
+1786:     private void addThumb(Bitmap bm, final Runnable remove) {
+1787:         FrameLayout box = new FrameLayout(a);
+1788:         ImageView iv = new ImageView(a);
+1789:         iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+1790:         if (bm != null) iv.setImageBitmap(bm);
+1791:         else iv.setBackgroundColor(Color.LTGRAY);
+1792:         box.addView(iv, new FrameLayout.LayoutParams(a.dp(84), a.dp(84)));
+1793:         TextView x = a.text("✕", 15, Color.WHITE, true);
+1794:         x.setGravity(Gravity.CENTER);

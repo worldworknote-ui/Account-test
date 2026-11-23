@@ -1,0 +1,171 @@
+1: package android.view;
+2: 
+3: import android.content.Context;
+4: import android.graphics.*;
+5: import java.util.ArrayList;
+6: import java.util.List;
+7: 
+8: public abstract class ViewGroup extends View implements ViewParent, ViewManager {
+9:     public static final int FOCUS_BEFORE_DESCENDANTS = 0x20000, FOCUS_AFTER_DESCENDANTS = 0x40000, FOCUS_BLOCK_DESCENDANTS = 0x60000;
+10:     public static final int CLIP_TO_PADDING_MASK = 0x22;
+11:     public static final int LAYOUT_MODE_CLIP_BOUNDS = 0, LAYOUT_MODE_OPTICAL_BOUNDS = 1;
+12: 
+13:     public interface OnHierarchyChangeListener { void onChildViewAdded(View p, View c); void onChildViewRemoved(View p, View c); }
+14: 
+15:     public static class LayoutParams {
+16:         public static final int MATCH_PARENT = -1, FILL_PARENT = -1, WRAP_CONTENT = -2;
+17:         public int width, height;
+18:         public android.view.animation.LayoutAnimationController.AnimationParameters layoutAnimationParameters;
+19:         public LayoutParams(int w, int h) { width = w; height = h; }
+20:         public LayoutParams(LayoutParams o) { width = o.width; height = o.height; }
+21:         public LayoutParams(Context c, android.util.AttributeSet a) { this(-2, -2); }
+22:         public void resolveLayoutDirection(int dir) {}
+23:     }
+24: 
+25:     public static class MarginLayoutParams extends LayoutParams {
+26:         public int leftMargin, topMargin, rightMargin, bottomMargin;
+27:         int startMargin = Integer.MIN_VALUE, endMargin = Integer.MIN_VALUE;
+28:         public MarginLayoutParams(int w, int h) { super(w, h); }
+29:         public MarginLayoutParams(LayoutParams o) {
+30:             super(o);
+31:             if (o instanceof MarginLayoutParams) {
+32:                 MarginLayoutParams m = (MarginLayoutParams) o;
+33:                 leftMargin = m.leftMargin; topMargin = m.topMargin; rightMargin = m.rightMargin; bottomMargin = m.bottomMargin;
+34:                 startMargin = m.startMargin; endMargin = m.endMargin;
+35:             }
+36:         }
+37:         public MarginLayoutParams(MarginLayoutParams o) { this((LayoutParams) o); }
+38:         public MarginLayoutParams(Context c, android.util.AttributeSet a) { super(c, a); }
+39:         public void setMargins(int l, int t, int r, int b) { leftMargin = l; topMargin = t; rightMargin = r; bottomMargin = b; startMargin = endMargin = Integer.MIN_VALUE; }
+40:         public void setMarginStart(int s) { startMargin = s; }
+41:         public void setMarginEnd(int e) { endMargin = e; }
+42:         public int getMarginStart() { return startMargin != Integer.MIN_VALUE ? startMargin : leftMargin; }
+43:         public int getMarginEnd() { return endMargin != Integer.MIN_VALUE ? endMargin : rightMargin; }
+44:         public boolean isMarginRelative() { return startMargin != Integer.MIN_VALUE || endMargin != Integer.MIN_VALUE; }
+45:         @Override public void resolveLayoutDirection(int dir) {
+46:             boolean rtl = dir == LAYOUT_DIRECTION_RTL;
+47:             if (startMargin != Integer.MIN_VALUE) { if (rtl) rightMargin = startMargin; else leftMargin = startMargin; }
+48:             if (endMargin != Integer.MIN_VALUE) { if (rtl) leftMargin = endMargin; else rightMargin = endMargin; }
+49:         }
+50:         public int getLayoutDirection() { return LAYOUT_DIRECTION_INHERIT; }
+51:         public void setLayoutDirection(int d) {}
+52:     }
+53: 
+54:     final List<View> children = new ArrayList<>();
+55:     private boolean clipChildren = true, clipToPadding = true;
+56:     private boolean disallowIntercept;
+57:     private View touchTarget;
+58:     private boolean selfTouch;
+59:     private OnHierarchyChangeListener hierarchy;
+60:     private int descendantFocus = FOCUS_BEFORE_DESCENDANTS;
+61:     private android.animation.LayoutTransition transition;
+62:     private boolean addStatesFromChildren;
+63: 
+64:     public ViewGroup(Context c) { super(c); }
+65:     public ViewGroup(Context c, android.util.AttributeSet a) { super(c); }
+66: 
+67:     // ------------------------------------------------------------------ الأبناء
+68:     public int getChildCount() { return children.size(); }
+69:     public View getChildAt(int i) { return i < 0 || i >= children.size() ? null : children.get(i); }
+70:     public int indexOfChild(View v) { return children.indexOf(v); }
+71: 
+72:     public void addView(View v) { addView(v, -1); }
+73:     public void addView(View v, int index) {
+74:         LayoutParams p = v.getLayoutParams();
+75:         if (p == null) p = generateDefaultLayoutParams();
+76:         addView(v, index, p);
+77:     }
+78:     public void addView(View v, int w, int h) { LayoutParams p = generateDefaultLayoutParams(); p.width = w; p.height = h; addView(v, -1, p); }
+79:     @Override public void addView(View v, LayoutParams p) { addView(v, -1, p); }
+80:     public void addView(View v, int index, LayoutParams p) {
+81:         if (v.parent != null) throw new IllegalStateException("The specified child already has a parent. You must call removeView() on the child's parent first.");
+82:         if (p == null) p = generateDefaultLayoutParams();
+83:         if (!checkLayoutParams(p)) p = generateLayoutParams(p);
+84:         v.setParamsQuiet(p);
+85:         if (index < 0 || index > children.size()) children.add(v);
+86:         else children.add(index, v);
+87:         v.parent = this;
+88:         v.requestLayout();
+89:         requestLayout();
+90:         invalidate();
+91:         if (attachInfo != null) v.dispatchAttachedToWindowTree(attachInfo);
+92:         onViewAdded(v);
+93:         if (hierarchy != null) hierarchy.onChildViewAdded(this, v);
+94:         if (transition != null) transition.added(this, v);
+95:     }
+96:     protected boolean addViewInLayout(View v, int index, LayoutParams p) { addView(v, index, p); return true; }
+97:     @Override public void removeView(View v) {
+98:         int i = children.indexOf(v);
+99:         if (i >= 0) removeViewAt(i);
+100:     }
+101:     public void removeViewInLayout(View v) { removeView(v); }
+102:     public void removeViewAt(int i) {
+103:         View v = children.remove(i);
+104:         detach(v);
+105:     }
+106:     public void removeViews(int start, int count) { for (int k = 0; k < count && start < children.size(); k++) removeViewAt(start); }
+107:     public void removeViewsInLayout(int start, int count) { removeViews(start, count); }
+108:     public void removeAllViews() {
+109:         if (children.isEmpty()) return;
+110:         List<View> old = new ArrayList<>(children);
+111:         children.clear();
+112:         for (View v : old) detach(v);
+113:     }
+114:     public void removeAllViewsInLayout() { removeAllViews(); }
+115:     private void detach(View v) {
+116:         if (touchTarget == v) touchTarget = null;
+117:         if (v.attachInfo != null) v.dispatchDetachedFromWindowTree();
+118:         v.parent = null;
+119:         onViewRemoved(v);
+120:         if (hierarchy != null) hierarchy.onChildViewRemoved(this, v);
+121:         requestLayout();
+122:         invalidate();
+123:     }
+124:     public void onViewAdded(View v) {}
+125:     public void onViewRemoved(View v) {}
+126:     public void setOnHierarchyChangeListener(OnHierarchyChangeListener l) { hierarchy = l; }
+127:     @Override public void bringChildToFront(View v) {
+128:         if (children.remove(v)) { children.add(v); requestLayout(); invalidate(); }
+129:     }
+130:     @Override public void updateViewLayout(View v, LayoutParams p) { v.setLayoutParams(p); }
+131:     void onSetLayoutParams(View v, LayoutParams p) {
+132:         if (!checkLayoutParams(p)) v.setParamsQuiet(generateLayoutParams(p));
+133:     }
+134:     public void detachViewFromParent(View v) { children.remove(v); }
+135:     public void attachViewToParent(View v, int i, LayoutParams p) { addView(v, i, p); }
+136: 
+137:     protected LayoutParams generateDefaultLayoutParams() { return new MarginLayoutParams(-2, -2); }
+138:     protected LayoutParams generateLayoutParams(LayoutParams p) { return p instanceof MarginLayoutParams ? p : new MarginLayoutParams(p); }
+139:     public LayoutParams generateLayoutParams(android.util.AttributeSet a) { return generateDefaultLayoutParams(); }
+140:     protected boolean checkLayoutParams(LayoutParams p) { return p != null; }
+141: 
+142:     @Override void dispatchAttachedToWindowTree(AttachInfo ai) {
+143:         dispatchAttachedToWindow(ai);
+144:         for (View c : new ArrayList<>(children)) c.dispatchAttachedToWindowTree(ai);
+145:     }
+146:     @Override void dispatchDetachedFromWindowTree() {
+147:         for (View c : new ArrayList<>(children)) c.dispatchDetachedFromWindowTree();
+148:         dispatchDetachedFromWindow();
+149:     }
+150: 
+151:     @Override protected View findViewTraversal(int id) {
+152:         if (getId() == id) return this;
+153:         for (View c : children) { View r = c.findViewTraversal(id); if (r != null) return r; }
+154:         return null;
+155:     }
+156:     @Override protected View findWithTag(Object t) {
+157:         if (t != null && t.equals(getTag())) return this;
+158:         for (View c : children) { View r = c.findWithTag(t); if (r != null) return r; }
+159:         return null;
+160:     }
+161:     @Override public View findFocus() {
+162:         if (isFocused()) return this;
+163:         for (View c : children) { View f = c.findFocus(); if (f != null) return f; }
+164:         return null;
+165:     }
+166:     @Override public boolean hasFocus() { return findFocus() != null; }
+167:     @Override public boolean requestFocus(int dir, Rect prev) {
+168:         if (descendantFocus == FOCUS_BLOCK_DESCENDANTS) return super.requestFocus(dir, prev);
+169:         if (descendantFocus == FOCUS_BEFORE_DESCENDANTS && isFocusable() && super.requestFocus(dir, prev)) return true;
+170:         for (View c : children) if (c.getVisibility() == VISIBLE && c.requestFocus(dir, prev)) return true;
+171:         return descendantFocus == FOCUS_AFTER_DESCENDANTS && super.requestFocus(dir, prev);

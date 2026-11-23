@@ -1,0 +1,61 @@
+630:             if (hf) fxHit++;
+631:             if (hx && hf) fxBoth++;
+632:         }
+633:         check(xfer > 0 && xferHit == xfer && fxBoth == 0 && fxHit > 0, "«الحركات بين مكتبين فقط» تطابق ساقي كل حركة بين مكتبين (" + xfer + ")، ولا تختلط بقص العملات");
+634:         int ran = 0;
+635:         for (ReportBuilder.Preset p : ReportBuilder.presets1012()) {
+636:             ReportBuilder.Spec ps = ReportBuilder.Spec.fromJson(p.spec.toJson());
+637:             Report rp = ReportBuilder.build(ps, bd, "");
+638:             if (rp != null && !rp.sections.isEmpty()) ran++;
+639:         }
+640:         check(ran == ReportBuilder.presets1012().size(), "التقارير الجاهزة الجديدة (" + ran + ") تُبنى");
+641:         Report team = db.teamCheckReport(0, 0, "كل الفترات");
+642:         StringBuilder tt = new StringBuilder();
+643:         for (Report.Section sec : team.sections) for (Report.Row rw : sec.rows) tt.append(java.util.Arrays.toString(rw.cells)).append('\n');
+644:         check(team.sections.size() == 3 && tt.indexOf("محاسب ثان") >= 0 && tt.indexOf("المجموع") >= 0, "تقرير التسجيل والتحقق: المكاتب والمحاسبون والمطابقات");
+645:         long verifiedTotal = 0;
+646:         for (Report.Row rw : team.sections.get(0).rows) if (rw.style == Report.TOTAL) verifiedTotal = (Long) rw.cells[4];
+647:         check(verifiedTotal >= 1, "ويحسب ما تحقق منه محاسب آخر (" + verifiedTotal + ")");
+648: 
+649:         System.out.println("== 10.13: حالة عمل المكاتب اليوم («مكاتبي»)");
+650:         as(db, admin);
+651:         Map<Long, Db.Work> wk = db.officeWork();
+652:         check(wk.get(A) != null && Db.W_RECON.equals(wk.get(A).auto) && Db.W_RECON.equals(wk.get(A).status) && wk.get(A).txToday > 0,
+653:                 "تلقائيًا: مكتب فيه حركات اليوم ومطابقة اليوم = «أُرسلت مطابقة»");
+654:         db.setOfficeWork(A, Db.W_DONE);
+655:         Db.Work wa = db.officeWork().get(A);
+656:         check(Db.W_DONE.equals(wa.status) && Db.W_DONE.equals(wa.manual) && !wa.byName.isEmpty(), "يدويًا: «تم التسجيل» ومن وضعها (" + wa.byName + ")");
+657:         db.setOfficeWork(A, null);
+658:         check(db.officeWork().get(A).manual == null && Db.W_RECON.equals(db.officeWork().get(A).status), "إعادتها تلقائية");
+659:         check(throwsMsg(() -> db.setOfficeWork(A, "BOGUS"), "غير معروفة"), "حالة غير معروفة مرفوضة");
+660:         // مكتب جديد لا يسجّله المحاسب الثاني ولا يتحقق منه
+661:         final long nm = db.addOffice("مكتب خارج الفرز", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+662:         as(db, r2);
+663:         check(nm > 0 && throwsMsg(() -> db.setOfficeWork(nm, Db.W_DONE), "لا تغيّر"), "محاسب لا يغيّر حالة مكتب لا يسجّله ولا يتحقق منه (طبقة البيانات)");
+664:         long own2 = db.myOffices().isEmpty() ? -1 : db.myOffices().get(0).id;
+665:         db.setOfficeWork(own2, Db.W_DOING);
+666:         as(db, admin);
+667:         check(Db.W_DOING.equals(db.officeWork().get(own2).status), "المدير يرى الحالة التي وضعها المحاسب");
+668:         check(java.util.Arrays.asList(BackupFormat.TABLES).contains("office_work"), "حالات المكاتب تدخل النسخة الاحتياطية");
+669: 
+670:         System.out.println("== 10.13: قص العملات من الطرفين");
+671:         FxDeal fd2 = new FxDeal();
+672:         fd2.sell = "EUR";
+673:         fd2.buy = "USD";
+674:         fd2.sellDec = 2;
+675:         fd2.buyDec = 2;
+676:         fd2.rate = new java.math.BigDecimal("0.92");
+677:         fd2.buyPerSell = true;
+678:         check(Long.valueOf(100000).equals(fd2.sellAmountFor(92000)), "المشترى 920 USD بسعر 0.92 ← المباع 1,000 EUR");
+679:         fd2.buyPerSell = false;
+680:         fd2.rate = new java.math.BigDecimal("1.087");
+681:         check(Long.valueOf(100004).equals(fd2.sellAmountFor(92000)), "بالاتجاه الآخر (1 USD = 1.087 EUR): 920 USD ← 1,000.04 EUR");
+682:         fd2.sellAmount = fd2.sellAmountFor(92000);
+683:         check(Long.valueOf(92000).equals(fd2.buyAmount()), "والعكس يعيد المبلغ نفسه");
+684: 
+685:         SmartApp.currentUser = null;
+686:         System.out.println();
+687:         System.out.println(passes + " نجح، " + fails + " فشل");
+688:         if (fails > 0) System.exit(1);
+689:     }
+690: }

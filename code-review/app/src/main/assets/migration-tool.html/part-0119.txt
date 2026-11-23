@@ -1,0 +1,200 @@
+343:     else if (typeof v === "object" && v.date) return { ok: false, reason: "تاريخ في خانة مبلغ" };
+344:     if (typeof v === "number") {
+345:       if (!isFinite(v)) return { ok: false, reason: "رقم غير صالح" };
+346:       if (Math.abs(v) >= 1e15) return { ok: false, reason: "رقم كبير جدًا" };
+347:       if (v === 0) return { ok: true, zero: true, neg: false, int: "0", frac: "" };
+348:       var neg0 = v < 0;
+349:       var s0 = Math.abs(v).toFixed(10).replace(/0+$/, "").replace(/\.$/, "");
+350:       var p0 = s0.split(".");
+351:       return { ok: true, neg: neg0, int: p0[0].replace(/^0+(?=\d)/, ""), frac: p0[1] || "", zero: /^0*$/.test(p0[0] + (p0[1] || "")) };
+352:     }
+353:     var s = clean(normDigits(v));
+354:     if (s === "" || s === "-" || s === "—") return { empty: true };
+355:     var neg = false;
+356:     if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1).trim(); }
+357:     if (/^-/.test(s)) { neg = !neg; s = s.slice(1).trim(); } else if (/-$/.test(s)) { neg = !neg; s = s.slice(0, -1).trim(); }
+358:     var hadText = /[^\d.,\s]/.test(s);
+359:     var nums = s.replace(/[^\d.,]/g, " ").trim().split(/\s+/).filter(function (x) { return /\d/.test(x); });
+360:     if (nums.length === 0) return { ok: false, reason: "لا يوجد رقم" };
+361:     if (nums.length > 1) return { ok: false, reason: "أكثر من رقم في الخلية" };
+362:     var t = nums[0];
+363:     var lastDot = t.lastIndexOf("."), lastComma = t.lastIndexOf(",");
+364:     var intPart, fracPart;
+365:     if (lastDot >= 0 && lastComma >= 0) {
+366:       var dec = lastDot > lastComma ? "." : ",";
+367:       var other = dec === "." ? "," : ".";
+368:       var i = t.lastIndexOf(dec);
+369:       intPart = t.slice(0, i).split(other).join("");
+370:       fracPart = t.slice(i + 1);
+371:       if (intPart.indexOf(dec) >= 0 || /[.,]/.test(fracPart)) return { ok: false, reason: "صيغة رقم غير مفهومة" };
+372:     } else if (lastComma >= 0) {
+373:       var parts = t.split(",");
+374:       if (parts.length > 2 || (parts.length === 2 && parts[1].length === 3 && parts[0].length >= 1)) {
+375:         // فاصلة آلاف: 1,250 أو 1,250,000
+376:         if (!parts.slice(1).every(function (x) { return x.length === 3; })) return { ok: false, reason: "صيغة رقم غير مفهومة" };
+377:         intPart = parts.join("");
+378:         fracPart = "";
+379:       } else {
+380:         intPart = parts[0];
+381:         fracPart = parts[1] || "";
+382:       }
+383:     } else if (lastDot >= 0) {
+384:       var dp = t.split(".");
+385:       if (dp.length > 2) {
+386:         if (!dp.slice(1).every(function (x) { return x.length === 3; })) return { ok: false, reason: "صيغة رقم غير مفهومة" };
+387:         intPart = dp.join("");
+388:         fracPart = "";
+389:       } else {
+390:         intPart = dp[0];
+391:         fracPart = dp[1] || "";
+392:       }
+393:     } else {
+394:       intPart = t;
+395:       fracPart = "";
+396:     }
+397:     if (!/^\d*$/.test(intPart) || !/^\d*$/.test(fracPart) || (intPart + fracPart) === "") return { ok: false, reason: "صيغة رقم غير مفهومة" };
+398:     fracPart = fracPart.replace(/0+$/, "");
+399:     intPart = intPart.replace(/^0+(?=\d)/, "") || "0";
+400:     return { ok: true, neg: neg, int: intPart, frac: fracPart, hadText: hadText, zero: /^0*$/.test(intPart + fracPart) };
+401:   }
+402: 
+403:   /** مبلغ بالوحدة الصغرى (BigInt موجب). يرفض المبلغ إن كانت منازله العشرية أكثر من المسموح للعملة. */
+404:   function toMinor(p, dec) {
+405:     if (p.frac.length > dec) return null;
+406:     var f = p.frac;
+407:     while (f.length < dec) f += "0";
+408:     return BigInt(p.int + f);
+409:   }
+410: 
+411:   function fmtMinor(m, dec) {
+412:     var neg = m < 0n;
+413:     var s = (neg ? -m : m).toString();
+414:     while (s.length <= dec) s = "0" + s;
+415:     var ip = dec > 0 ? s.slice(0, s.length - dec) : s;
+416:     var fp = dec > 0 ? s.slice(s.length - dec) : "";
+417:     ip = ip.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+418:     return (neg ? "-" : "") + ip + (fp ? "." + fp : "");
+419:   }
+420: 
+421:   // ===================================================================================
+422:   // التواريخ
+423:   // ===================================================================================
+424: 
+425:   function validDate(y, m, d, H, M, S) {
+426:     if (!(y >= 1980 && y <= 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31 && H >= 0 && H < 24 && M >= 0 && M < 60 && S >= 0 && S < 60)) return null;
+427:     var dt = new Date(y, m - 1, d, H, M, S);
+428:     if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
+429:     return { y: y, m: m, d: d, H: H, M: M, S: S, hasTime: H !== 0 || M !== 0 || S !== 0 };
+430:   }
+431: 
+432:   /** order: dmy | mdy | ymd. يرجع {y,m,d,H,M,S,hasTime} أو null. */
+433:   function parseDate(v, order, serialToDate) {
+434:     if (v === null || v === undefined) return null;
+435:     if (typeof v === "object" && v.date) {
+436:       var x = v.date;
+437:       return validDate(x.y, x.m, x.d, x.H || 0, x.M || 0, Math.floor(x.S || 0));
+438:     }
+439:     if (typeof v === "object" && v.n !== undefined) v = v.n;
+440:     else if (typeof v === "object" && v.s !== undefined) v = v.s;
+441:     if (typeof v === "number") {
+442:       if (v > 20000 && v < 80000 && serialToDate) {
+443:         var d0 = serialToDate(v);
+444:         return d0 ? validDate(d0.y, d0.m, d0.d, d0.H || 0, d0.M || 0, Math.floor(d0.S || 0)) : null;
+445:       }
+446:       return null;
+447:     }
+448:     var s = clean(normDigits(v)).replace(/[،,]/g, " ").replace(/\s+/g, " ");
+449:     var tm = { H: 0, M: 0, S: 0 };
+450:     var tmatch = s.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm|ص|م|a\.m\.|p\.m\.)?/i);
+451:     if (tmatch) {
+452:       tm.H = +tmatch[1];
+453:       tm.M = +tmatch[2];
+454:       tm.S = tmatch[3] ? +tmatch[3] : 0;
+455:       var ap = (tmatch[4] || "").toLowerCase();
+456:       if ((ap === "pm" || ap === "م" || ap === "p.m.") && tm.H < 12) tm.H += 12;
+457:       if ((ap === "am" || ap === "ص" || ap === "a.m.") && tm.H === 12) tm.H = 0;
+458:       s = s.replace(tmatch[0], " ").trim();
+459:     }
+460:     var m = s.match(/(\d{1,4})\s*[\/\-.]\s*(\d{1,2})\s*[\/\-.]\s*(\d{1,4})/);
+461:     if (!m) {
+462:       if (/^\d{8}$/.test(s)) m = [s, s.slice(0, 4), s.slice(4, 6), s.slice(6, 8)];
+463:       else return null;
+464:     }
+465:     var a = +m[1], b = +m[2], c = +m[3], y, mo, d;
+466:     if (m[1].length === 4) { y = a; mo = b; d = c; }
+467:     else if (order === "mdy") { mo = a; d = b; y = c; }
+468:     else if (order === "ymd") { y = a; mo = b; d = c; }
+469:     else { d = a; mo = b; y = c; }
+470:     if (y < 100) y += 2000;
+471:     return validDate(y, mo, d, tm.H, tm.M, tm.S);
+472:   }
+473: 
+474:   /** يقترح ترتيب اليوم والشهر من نصوص التواريخ نفسها. */
+475:   function guessDateOrder(values) {
+476:     var dmy = 0, mdy = 0;
+477:     values.forEach(function (v) {
+478:       if (typeof v !== "string" && !(v && v.s !== undefined)) return;
+479:       var s = normDigits(typeof v === "string" ? v : v.s);
+480:       var m = s.match(/^\s*(\d{1,2})\s*[\/\-.]\s*(\d{1,2})\s*[\/\-.]\s*(\d{2,4})/);
+481:       if (!m) return;
+482:       if (+m[1] > 12) dmy++;
+483:       if (+m[2] > 12) mdy++;
+484:     });
+485:     return mdy > dmy ? "mdy" : "dmy";
+486:   }
+487: 
+488:   function epoch(dt, defaultHour) {
+489:     var H = dt.hasTime ? dt.H : defaultHour, M = dt.hasTime ? dt.M : 0, S = dt.hasTime ? dt.S : 0;
+490:     return new Date(dt.y, dt.m - 1, dt.d, H, M, S).getTime();
+491:   }
+492: 
+493:   function fmtDate(t) {
+494:     var d = new Date(t);
+495:     function p(n) { return (n < 10 ? "0" : "") + n; }
+496:     return d.getFullYear() + "/" + p(d.getMonth() + 1) + "/" + p(d.getDate());
+497:   }
+498: 
+499:   // ===================================================================================
+500:   // قراءة أوراق Excel إلى صفوف
+501:   // ===================================================================================
+502: 
+503:   /** يحوّل ورقة SheetJS إلى مصفوفة صفوف من خلايا: {s} نص، {n} رقم، {date} تاريخ، أو null. */
+504:   function sheetRows(ws, XLSX) {
+505:     if (!ws || !ws["!ref"]) return [];
+506:     var rg = XLSX.utils.decode_range(ws["!ref"]);
+507:     var out = [];
+508:     var maxRows = Math.min(rg.e.r, rg.s.r + 200000);
+509:     for (var r = rg.s.r; r <= maxRows; r++) {
+510:       var row = [];
+511:       for (var c = 0; c <= rg.e.c; c++) {
+512:         var cell = ws[XLSX.utils.encode_cell({ r: r, c: c })];
+513:         row.push(cellValue(cell, XLSX));
+514:       }
+515:       out.push(row);
+516:     }
+517:     return out;
+518:   }
+519: 
+520:   function cellValue(cell, XLSX) {
+521:     if (!cell || cell.v === undefined || cell.v === null) return null;
+522:     switch (cell.t) {
+523:       case "s": case "str": return clean(cell.v) === "" ? null : { s: String(cell.v) };
+524:       case "n":
+525:         if (cell.z && XLSX.SSF.is_date(cell.z)) {
+526:           var p = XLSX.SSF.parse_date_code(cell.v);
+527:           return p ? { date: { y: p.y, m: p.m, d: p.d, H: p.H, M: p.M, S: p.S } } : { n: cell.v };
+528:         }
+529:         return { n: cell.v };
+530:       case "d":
+531:         var dt = cell.v instanceof Date ? cell.v : new Date(cell.v);
+532:         return { date: { y: dt.getFullYear(), m: dt.getMonth() + 1, d: dt.getDate(), H: dt.getHours(), M: dt.getMinutes(), S: dt.getSeconds() } };
+533:       case "b": return { s: cell.v ? "TRUE" : "FALSE" };
+534:       default: return null;
+535:     }
+536:   }
+537: 
+538:   function text(cell) {
+539:     if (!cell) return "";
+540:     if (cell.s !== undefined) return clean(cell.s);
+541:     if (cell.n !== undefined) {
+542:       var n = cell.n;

@@ -1,0 +1,150 @@
+6774:                             if (sensitive != null && sensitive.contains(k)) sv = Crypto.enc(sv);
+6775:                             v.put(k, sv);
+6776:                         }
+6777:                     }
+6778:                     d.insertOrThrow(table, null, v);
+6779:                 }
+6780:             }
+6781:             for (Map.Entry<String, String> e : keepDevice.entrySet()) {
+6782:                 d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES(?,?)", new Object[]{e.getKey(), e.getValue()});
+6783:             }
+6784:             // 10.0: نسخ 9.x صناديقها في الإعدادات: تُنقل إلى جدولها
+6785:             migrateBoxes(d);
+6786:             for (BackupFormat.StagedAttachment s : p.attachments) {
+6787:                 File from = (File) s.handle;
+6788:                 File to = new File(dir, UUID.randomUUID() + ".evd");
+6789:                 if (!from.renameTo(to)) {
+6790:                     copyFile(from, to);
+6791:                     from.delete();
+6792:                 }
+6793:                 moved.add(new File[]{from, to});
+6794:                 ContentValues v = new ContentValues();
+6795:                 v.put("id", s.id);
+6796:                 v.put("tx_id", s.txId);
+6797:                 v.put("path", to.getAbsolutePath());
+6798:                 v.put("mime", s.mime == null ? "image/jpeg" : s.mime);
+6799:                 v.put("created_at", s.createdAt);
+6800:                 ins(d, "attachments", v);
+6801:             }
+6802:             if (p.schema() < 5) {
+6803:                 d.execSQL("UPDATE office_currencies SET limit_owe_minor=limit_minor WHERE limit_owe_minor IS NULL AND limit_minor IS NOT NULL");
+6804:                 d.execSQL("UPDATE offices SET usd_owe_limit_minor=usd_limit_minor WHERE usd_owe_limit_minor IS NULL AND usd_limit_minor IS NOT NULL");
+6805:             }
+6806:             d.execSQL("UPDATE offices SET pinned=0 WHERE pinned IS NULL");
+6807:             int dropped = 0;
+6808:             if (keep != null) {
+6809:                 List<Long> all = new ArrayList<>();
+6810:                 try (Cursor c = d.rawQuery("SELECT id FROM offices", null)) {
+6811:                     while (c.moveToNext()) all.add(c.getLong(0));
+6812:                 }
+6813:                 for (long id : all) if (!keep.contains(id)) {
+6814:                     purgeOffice(d, id);
+6815:                     dropped++;
+6816:                 }
+6817:             }
+6818:             Entitlements ent = License.current;
+6819:             if (!unlimited(ent) && liveOffices(d) > ent.maxOffices()) {
+6820:                 throw new Entitlements.LimitReached("في النسخة " + liveOffices(d) + " مكتبًا، والنسخة المجانية تتسع لـ " + ent.maxOffices()
+6821:                         + ". اختر المكاتب التي تريد استعادتها، أو فعّل النسخة الكاملة.");
+6822:             }
+6823:             seedDefaults(d);
+6824:             rebaseQuota(d);
+6825:             boolean keptLock = lockNow > lockBefore(d);
+6826:             if (keptLock) d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('lock_before',?)", new Object[]{"" + lockNow});
+6827:             audit(d, "RESTORE", "backup", 0, "format=" + p.format + " tx=" + p.table("tx").size() + " att=" + p.attachments.size()
+6828:                     + (keptLock ? " lock_kept=" + lockNow : "") + (dropped > 0 ? " offices_kept=" + keep.size() + " dropped=" + dropped : ""));
+6829:             d.setTransactionSuccessful();
+6830:         } catch (Exception e) {
+6831:             for (File[] m : moved) {
+6832:                 if (!m[1].renameTo(m[0])) m[1].delete();
+6833:             }
+6834:             throw e;
+6835:         } finally {
+6836:             d.endTransaction();
+6837:         }
+6838:         synchronized (this) { decimalsCache.clear(); }
+6839:         Crypto.clearCache();
+6840:         cleanupEvidence();
+6841:     }
+6842: 
+6843:     public int cleanupEvidence() {
+6844:         File dir = evidenceDir();
+6845:         File[] files = dir.listFiles();
+6846:         if (files == null) return 0;
+6847:         Set<String> used = new HashSet<>();
+6848:         try (Cursor c = getReadableDatabase().rawQuery("SELECT path FROM attachments", null)) {
+6849:             while (c.moveToNext()) used.add(new File(c.getString(0)).getName());
+6850:         }
+6851:         int n = 0;
+6852:         for (File f : files) if (f.isFile() && !used.contains(f.getName()) && f.delete()) n++;
+6853:         return n;
+6854:     }
+6855: 
+6856:     static void copyFile(File from, File to) throws IOException {
+6857:         try (FileInputStream i = new FileInputStream(from); FileOutputStream o = new FileOutputStream(to)) {
+6858:             byte[] b = new byte[65536];
+6859:             int n;
+6860:             while ((n = i.read(b)) > 0) o.write(b, 0, n);
+6861:             o.getFD().sync();
+6862:         }
+6863:     }
+6864: 
+6865:     // ===================================================================================
+6866:     // فحص صحة البيانات
+6867:     // ===================================================================================
+6868: 
+6869:     public static class Check {
+6870:         public final boolean ok;
+6871:         public final String title;
+6872:         public final String detail;
+6873: 
+6874:         Check(boolean ok, String title, String detail) {
+6875:             this.ok = ok;
+6876:             this.title = title;
+6877:             this.detail = detail;
+6878:         }
+6879:     }
+6880: 
+6881:     /**
+6882:      * 8.0 (ت1): رصيد كل مكتب وعملة من القيود = أثر الحركات النشطة + الأرصدة السابقة، محسوبًا من جدول الحركات وحده.
+6883:      * أي فرق يعني قيدًا ناقصًا أو زائدًا أو حركة ملغاة لم تُعكس. المعاملات: نوع «لنا»، أجرة «لنا»، أجرة «علينا».
+6884:      */
+6885:     static final String BALANCE_IDENTITY_SQL = "SELECT o||' '||c||' فرق='||SUM(v) FROM ("
+6886:             + "SELECT office_id o,currency c,debit_minor-credit_minor v FROM journal_lines WHERE account='OFFICE' "
+6887:             + "UNION ALL SELECT office_id,currency,CASE WHEN type=? THEN -amount_minor ELSE amount_minor END FROM tx WHERE status='ACTIVE' "
+6888:             + "UNION ALL SELECT office_id,fee_currency,CASE WHEN fee_type=? THEN -fee_minor WHEN fee_type=? THEN fee_minor ELSE 0 END FROM tx WHERE status='ACTIVE' AND fee_minor>0 "
+6889:             + "UNION ALL SELECT office_id,currency,CASE WHEN type='لنا' THEN -amount_minor WHEN type='علينا' THEN amount_minor ELSE 0 END FROM opening_balances"
+6890:             + ") GROUP BY o,c HAVING SUM(v)<>0";
+6891: 
+6892:     public List<Check> healthCheck() { return healthCheck(true); }
+6893: 
+6894:     /**
+6895:      * full=false للفحص التلقائي في الخلفية: فحص سريع لملف القاعدة، ووجود الصور مع فك آخر 10 فقط.
+6896:      */
+6897:     public List<Check> healthCheck(boolean full) {
+6898:         List<Check> out = new ArrayList<>();
+6899:         SQLiteDatabase d = getReadableDatabase();
+6900:         String integrity = "";
+6901:         try (Cursor c = d.rawQuery(full ? "PRAGMA integrity_check" : "PRAGMA quick_check", null)) {
+6902:             List<String> rows = new ArrayList<>();
+6903:             while (c.moveToNext() && rows.size() < 5) rows.add(c.getString(0));
+6904:             integrity = rows.size() == 1 && "ok".equalsIgnoreCase(rows.get(0)) ? "" : String.valueOf(rows);
+6905:         } catch (Exception e) {
+6906:             integrity = "تعذر الفحص: " + e.getMessage();
+6907:         }
+6908:         out.add(new Check(integrity.isEmpty(), "ملف قاعدة البيانات سليم (" + (full ? "فحص كامل" : "فحص سريع") + ")", integrity));
+6909:         out.add(sqlCheck(d, "الروابط بين الجداول سليمة", "PRAGMA foreign_key_check", "روابط مكسورة"));
+6910:         out.add(sqlCheck(d, "رصيد كل مكتب = مجموع حركاته النشطة وأرصدته السابقة", BALANCE_IDENTITY_SQL, "فروق",
+6911:                 new String[]{TYPE_DEBIT, FEE_US, FEE_THEM}));
+6912:         out.add(sqlCheck(d, "توازن كل القيود (المدين = الدائن لكل عملة)",
+6913:                 "SELECT entry_id||' ('||currency||')' FROM journal_lines GROUP BY entry_id,currency HAVING SUM(debit_minor)<>SUM(credit_minor)", "قيود غير متوازنة"));
+6914:         out.add(sqlCheck(d, "أسطر القيود مرتبطة بقيود موجودة",
+6915:                 "SELECT l.id FROM journal_lines l LEFT JOIN journal_entries e ON e.id=l.entry_id WHERE e.id IS NULL", "أسطر يتيمة"));
+6916:         out.add(sqlCheck(d, "كل حركة لها قيد أصل",
+6917:                 "SELECT t.id FROM tx t WHERE t.status IN ('ACTIVE','CANCELLED') AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.tx_id=t.id AND e.kind='PRINCIPAL')", "حركات بلا قيد"));
+6918:         out.add(sqlCheck(d, "الحركات الملغاة والمعدّلة صافيها صفر لكل حساب",
+6919:                 "SELECT t.id||' '||l.account||' '||l.currency FROM tx t JOIN journal_entries e ON e.tx_id=t.id JOIN journal_lines l ON l.entry_id=e.id WHERE t.status='CANCELLED' GROUP BY t.id,l.account,l.currency HAVING SUM(l.debit_minor-l.credit_minor)<>0",
+6920:                 "حركات ملغاة لم تُعكس بالكامل"));
+6921:         out.add(sqlCheck(d, "الحركات مرتبطة بمكاتب موجودة",
+6922:                 "SELECT t.id FROM tx t LEFT JOIN offices o ON o.id=t.office_id WHERE o.id IS NULL", "حركات بلا مكتب"));
+6923:         out.add(sqlCheck(d, "مراجع الحركات غير مكررة", "SELECT uuid FROM tx GROUP BY uuid HAVING COUNT(*)>1", "مراجع مكررة"));

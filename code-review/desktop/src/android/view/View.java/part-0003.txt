@@ -1,0 +1,169 @@
+306:     public static int combineMeasuredStates(int a, int b) { return a | b; }
+307: 
+308:     public void layout(int l, int t, int r, int b) {
+309:         int ol = mLeft, ot = mTop, or = mRight, ob = mBottom;
+310:         boolean changed = setFrame(l, t, r, b);
+311:         if (changed || layoutRequested || layoutNeeded) {
+312:             onLayout(changed, l, t, r, b);
+313:             if (layoutListeners != null && (changed || ol != l || ot != t || or != r || ob != b)) {
+314:                 for (OnLayoutChangeListener x : new ArrayList<>(layoutListeners)) x.onLayoutChange(this, l, t, r, b, ol, ot, or, ob);
+315:             }
+316:         }
+317:         layoutRequested = false;
+318:         layoutNeeded = false;
+319:     }
+320:     protected boolean setFrame(int l, int t, int r, int b) {
+321:         if (mLeft == l && mTop == t && mRight == r && mBottom == b) return false;
+322:         int ow = getWidth(), oh = getHeight();
+323:         mLeft = l; mTop = t; mRight = r; mBottom = b;
+324:         if (ow != r - l || oh != b - t) onSizeChanged(r - l, b - t, ow, oh);
+325:         if (background != null) background.setBounds(0, 0, r - l, b - t);
+326:         invalidate();
+327:         return true;
+328:     }
+329:     protected void onLayout(boolean changed, int l, int t, int r, int b) {}
+330:     protected void onSizeChanged(int w, int h, int ow, int oh) {}
+331:     public void addOnLayoutChangeListener(OnLayoutChangeListener l) { if (layoutListeners == null) layoutListeners = new ArrayList<>(); layoutListeners.add(l); }
+332:     public void removeOnLayoutChangeListener(OnLayoutChangeListener l) { if (layoutListeners != null) layoutListeners.remove(l); }
+333: 
+334:     public void requestLayout() {
+335:         layoutRequested = true;
+336:         oldWSpec = -1;
+337:         if (parent != null && !parent.isLayoutRequested()) parent.requestLayout();
+338:         else if (parent != null) parent.requestLayout();
+339:     }
+340:     public boolean isLayoutRequested() { return layoutRequested; }
+341:     public void forceLayout() { layoutRequested = true; oldWSpec = -1; }
+342:     public boolean isInLayout() { return attachInfo != null && attachInfo.root.inLayout; }
+343:     public boolean isLaidOut() { return getWidth() > 0 || getHeight() > 0 || (attachInfo != null && !layoutRequested); }
+344: 
+345:     // ------------------------------------------------------------------ الرؤية والحالة
+346:     public int getVisibility() { return visibility; }
+347:     public void setVisibility(int v) {
+348:         if (v == visibility) return;
+349:         boolean gone = v == GONE || visibility == GONE;
+350:         visibility = v;
+351:         if (v != VISIBLE && focused) clearFocus();
+352:         if (gone) requestLayout();
+353:         invalidateParent();
+354:         if (attachInfo != null) attachInfo.root.visibilityChanged();
+355:     }
+356:     public boolean isShown() {
+357:         View v = this;
+358:         while (v != null) {
+359:             if (v.visibility != VISIBLE) return false;
+360:             if (!(v.parent instanceof View)) return v.attachInfo != null;
+361:             v = (View) v.parent;
+362:         }
+363:         return false;
+364:     }
+365:     public boolean isEnabled() { return enabled; }
+366:     public void setEnabled(boolean e) { if (enabled != e) { enabled = e; refreshDrawableState(); invalidate(); } }
+367:     public boolean isClickable() { return clickable; }
+368:     public void setClickable(boolean c) { clickable = c; }
+369:     public boolean isLongClickable() { return longClickable; }
+370:     public void setLongClickable(boolean c) { longClickable = c; }
+371:     public boolean isContextClickable() { return false; }
+372:     public void setContextClickable(boolean c) {}
+373:     public boolean isFocusable() { return focusable; }
+374:     public void setFocusable(boolean f) { focusable = f; }
+375:     public void setFocusable(int f) { focusable = f != 0; }
+376:     public void setFocusableInTouchMode(boolean f) { focusableInTouch = f; if (f) focusable = true; }
+377:     public boolean isFocusableInTouchMode() { return focusableInTouch; }
+378:     public boolean isPressed() { return pressed; }
+379:     public void setPressed(boolean p) {
+380:         if (pressed == p) return;
+381:         pressed = p;
+382:         refreshDrawableState();
+383:         dispatchSetPressed(p);
+384:     }
+385:     protected void dispatchSetPressed(boolean p) {}
+386:     public boolean isSelected() { return selected; }
+387:     public void setSelected(boolean s) { if (selected != s) { selected = s; refreshDrawableState(); invalidate(); } }
+388:     public boolean isActivated() { return activated; }
+389:     public void setActivated(boolean a) { if (activated != a) { activated = a; refreshDrawableState(); invalidate(); } }
+390:     public boolean isHovered() { return hovered; }
+391:     public void setHovered(boolean h) { if (hovered != h) { hovered = h; refreshDrawableState(); invalidate(); onHoverChanged(h); } }
+392:     public void onHoverChanged(boolean h) {}
+393:     public void setDuplicateParentStateEnabled(boolean d) { duplicateParentState = d; }
+394: 
+395:     public final int[] getDrawableState() { return onCreateDrawableState(0); }
+396:     protected int[] onCreateDrawableState(int extra) {
+397:         List<Integer> s = new ArrayList<>();
+398:         if (enabled) s.add(android.R.attr.state_enabled);
+399:         if (pressed) s.add(android.R.attr.state_pressed);
+400:         if (focused) s.add(android.R.attr.state_focused);
+401:         if (selected) s.add(android.R.attr.state_selected);
+402:         if (activated) s.add(android.R.attr.state_activated);
+403:         if (hovered) s.add(android.R.attr.state_hovered);
+404:         addStates(s);
+405:         int[] r = new int[s.size() + extra];
+406:         for (int i = 0; i < s.size(); i++) r[i] = s.get(i);
+407:         return r;
+408:     }
+409:     /** للعناصر المشتقة (checked مثلًا). */
+410:     protected void addStates(List<Integer> s) {}
+411:     public void refreshDrawableState() {
+412:         drawableStateChanged();
+413:         if (parent instanceof ViewGroup) ((ViewGroup) parent).childDrawableStateChanged(this);
+414:     }
+415:     protected void drawableStateChanged() {
+416:         int[] st = getDrawableState();
+417:         boolean ch = false;
+418:         if (background != null) ch |= background.setState(st);
+419:         if (foreground != null) ch |= foreground.setState(st);
+420:         if (stateAnimator != null) stateAnimator.setState(st);
+421:         if (ch) invalidate();
+422:     }
+423:     public void jumpDrawablesToCurrentState() { if (background != null) background.jumpToCurrentState(); }
+424:     public void drawableHotspotChanged(float x, float y) { if (background != null) background.setHotspot(x, y); }
+425: 
+426:     // ------------------------------------------------------------------ الخلفية
+427:     public Drawable getBackground() { return background; }
+428:     public void setBackground(Drawable d) {
+429:         if (background == d) return;
+430:         if (background != null) background.setCallback(null);
+431:         background = d;
+432:         if (d != null) {
+433:             d.setCallback(this);
+434:             d.setState(getDrawableState());
+435:             d.setBounds(0, 0, getWidth(), getHeight());
+436:             Rect p = new Rect();
+437:             if (d.getPadding(p) && !(this instanceof android.widget.TextView && !(this instanceof android.widget.Button))) {
+438:                 // أندرويد يأخذ حشو الخلفية (InsetDrawable)
+439:                 setPadding(p.left, p.top, p.right, p.bottom);
+440:             }
+441:         }
+442:         requestLayout();
+443:         invalidate();
+444:     }
+445:     @Deprecated public void setBackgroundDrawable(Drawable d) { setBackground(d); }
+446:     public void setBackgroundColor(int c) {
+447:         if (background instanceof ColorDrawable) { ((ColorDrawable) background).setColor(c); invalidate(); }
+448:         else setBackground(new ColorDrawable(c));
+449:     }
+450:     public void setBackgroundResource(int res) { setBackground(res == 0 ? null : mContext.getDrawable(res)); }
+451:     public void setBackgroundTintList(android.content.res.ColorStateList t) { if (background != null) background.setTintList(t); invalidate(); }
+452:     public void setBackgroundTintMode(PorterDuff.Mode m) {}
+453:     public Drawable getForeground() { return foreground; }
+454:     public void setForeground(Drawable d) {
+455:         foreground = d;
+456:         if (d != null) { d.setCallback(this); d.setState(getDrawableState()); }
+457:         invalidate();
+458:     }
+459: 
+460:     @Override public void invalidateDrawable(Drawable who) { invalidate(); }
+461:     @Override public void scheduleDrawable(Drawable who, Runnable what, long when) { postDelayed(what, when - android.os.SystemClock.uptimeMillis()); }
+462:     @Override public void unscheduleDrawable(Drawable who, Runnable what) { removeCallbacks(what); }
+463:     protected boolean verifyDrawable(Drawable who) { return who == background || who == foreground; }
+464: 
+465:     // ------------------------------------------------------------------ التحويلات
+466:     public float getAlpha() { return alpha; }
+467:     public void setAlpha(float a) { if (alpha != a) { alpha = a; invalidateParent(); } }
+468:     public float getTranslationX() { return tx; }
+469:     public void setTranslationX(float v) { if (tx != v) { tx = v; invalidateParent(); moved(); } }
+470:     public float getTranslationY() { return ty; }
+471:     public void setTranslationY(float v) { if (ty != v) { ty = v; invalidateParent(); moved(); } }
+472:     public float getTranslationZ() { return tz; }
+473:     public void setTranslationZ(float v) { if (tz != v) { tz = v; invalidateParent(); } }
+474:     public float getScaleX() { return sx; }

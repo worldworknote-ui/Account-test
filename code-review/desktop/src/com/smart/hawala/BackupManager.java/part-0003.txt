@@ -1,0 +1,140 @@
+370:         /** 9.0: المكاتب التي تُستعاد (null = كلها)؛ تختارها الواجهة حين تتجاوز النسخة حد النسخة المجانية. */
+371:         public java.util.Set<Long> keep;
+372:         /** 10.13: تبقى تفضيلات المظهر الحالية (لا تُستعاد تفضيلات النسخة). */
+373:         public boolean keepLook;
+374:     }
+375: 
+376:     /** يفك النسخة ويجهّز صورها (مشفّرة بمفتاح هذا الهاتف) ويفحصها كاملة، دون لمس البيانات الحالية. */
+377:     public static Prepared prepareRestore(Context ctx, File file, char[] password, Progress p) throws BackupException {
+378:         char[] pw = password.clone();
+379:         clearStaging(ctx);
+380:         final File dir = stagingDir(ctx);
+381:         if (!dir.exists() && !dir.mkdirs()) throw new BackupException(Stage.READ, "تعذر تجهيز مجلد مؤقت", null);
+382:         BackupFormat.AttachmentStore store = new BackupFormat.AttachmentStore() {
+383:             @Override public Object store(long id, InputStream data) throws Exception {
+384:                 byte[] raw = readLimited(data);
+385:                 File f = new File(dir, UUID.randomUUID() + ".evd");
+386:                 try (FileOutputStream o = new FileOutputStream(f)) {
+387:                     o.write(Crypto.encBytes(raw));
+388:                     o.getFD().sync();
+389:                 }
+390:                 Arrays.fill(raw, (byte) 0);
+391:                 return f;
+392:             }
+393: 
+394:             @Override public void discard(Object handle) {
+395:                 if (handle instanceof File) ((File) handle).delete();
+396:             }
+397:         };
+398:         Prepared out = new Prepared();
+399:         try {
+400:             byte[] head = new byte[8];
+401:             try (InputStream in = new FileInputStream(file)) {
+402:                 int n = 0;
+403:                 while (n < 8) {
+404:                     int r = in.read(head, n, 8 - n);
+405:                     if (r < 0) break;
+406:                     n += r;
+407:                 }
+408:                 if (n < 8) throw new SecureStreams.CorruptBackupException("الملف صغير جدًا وليس نسخة احتياطية");
+409:             } catch (Throwable t) {
+410:                 throw wrap(Stage.READ, t);
+411:             }
+412:             p.update("جارٍ فك التشفير وقراءة النسخة…");
+413:             try {
+414:                 if (SecureStreams.startsWith(head, SecureStreams.MAGIC)) {
+415:                     try (InputStream in = new BufferedInputStream(new FileInputStream(file), 65536)) {
+416:                         out.parsed = BackupFormat.readV5(new SecureStreams.DecryptingInputStream(in, pw), store, dir);
+417:                     }
+418:                 } else if (SecureStreams.startsWith(head, BackupFormat.MAGIC_V4)) {
+419:                     if (file.length() > 300L * 1024 * 1024) throw new SecureStreams.CorruptBackupException("ملف الإصدار القديم كبير جدًا");
+420:                     out.parsed = BackupFormat.readV4(Db.readAll(file), pw, store);
+421:                 } else {
+422:                     throw new SecureStreams.CorruptBackupException("هذا الملف ليس نسخة احتياطية من المحاسب الذكي (امتداد النسخ: .sba)");
+423:                 }
+424:             } catch (Throwable t) {
+425:                 clearStaging(ctx);
+426:                 throw wrap(Stage.DECRYPT, t);
+427:             }
+428:             p.update("جارٍ فحص القيود والعلاقات والصور…");
+429:             out.report = BackupFormat.validate(out.parsed);
+430:             if (!out.report.ok()) {
+431:                 clearStaging(ctx);
+432:                 throw new BackupException(Stage.VALIDATE, "النسخة لا تجتاز الفحص، ولن تُستعاد حتى لا تفسد بياناتك:\n• "
+433:                         + join(out.report.errors, "\n• "), null);
+434:             }
+435:             return out;
+436:         } finally {
+437:             Arrays.fill(pw, '\0');
+438:         }
+439:     }
+440: 
+441:     private static byte[] readLimited(InputStream in) throws IOException {
+442:         ByteArrayOutputStream o = new ByteArrayOutputStream();
+443:         byte[] b = new byte[16384];
+444:         int n;
+445:         while ((n = in.read(b)) > 0) o.write(b, 0, n);
+446:         return o.toByteArray();
+447:     }
+448: 
+449:     static String join(List<String> l, String sep) {
+450:         StringBuilder sb = new StringBuilder();
+451:         for (String s : l) {
+452:             if (sb.length() > 0) sb.append(sep);
+453:             sb.append(s);
+454:         }
+455:         return sb.toString();
+456:     }
+457: 
+458:     /** نسخة أمان من البيانات الحالية ثم الاستبدال. */
+459:     public static void applyRestore(Context ctx, Db db, Prepared prep, Progress p) throws BackupException {
+460:         p.update("جارٍ حفظ نسخة أمان من بياناتك الحالية…");
+461:         try {
+462:             Snapshot.take(ctx, db);
+463:         } catch (Throwable t) {
+464:             throw wrap(Stage.SNAPSHOT, t);
+465:         }
+466:         p.update("جارٍ استبدال البيانات…");
+467:         try {
+468:             db.restoreKeepLook = prep.keepLook;
+469:             db.importBackup(prep.parsed, prep.keep);
+470:         } catch (Throwable t) {
+471:             for (BackupFormat.StagedAttachment s : prep.parsed.attachments) {
+472:                 if (s.handle instanceof File) ((File) s.handle).delete();
+473:             }
+474:             throw wrap(Stage.IMPORT, t);
+475:         } finally {
+476:             db.restoreKeepLook = false;
+477:             clearStaging(ctx);
+478:         }
+479:     }
+480: 
+481:     // ===================================================================================
+482:     // أدوات
+483:     // ===================================================================================
+484: 
+485:     public static String sha256(File f) throws Exception {
+486:         MessageDigest md = MessageDigest.getInstance("SHA-256");
+487:         try (InputStream in = new FileInputStream(f)) {
+488:             byte[] b = new byte[65536];
+489:             int n;
+490:             while ((n = in.read(b)) > 0) md.update(b, 0, n);
+491:         }
+492:         return BackupFormat.hex(md.digest());
+493:     }
+494: 
+495:     public static String size(long bytes) {
+496:         if (bytes < 1024) return bytes + " بايت";
+497:         if (bytes < 1024 * 1024) return String.format(Locale.US, "%.1f كيلوبايت", bytes / 1024.0);
+498:         return String.format(Locale.US, "%.1f ميغابايت", bytes / (1024.0 * 1024));
+499:     }
+500: 
+501:     /** ربط ملف بدل نسخه لتوفير المساحة؛ عند عدم الدعم يُنسخ. */
+502:     static void linkOrCopy(File from, File to) throws IOException {
+503:         try {
+504:             java.nio.file.Files.createLink(to.toPath(), from.toPath());
+505:         } catch (Throwable t) {
+506:             Db.copyFile(from, to);
+507:         }
+508:     }
+509: }

@@ -1,0 +1,163 @@
+1: package com.smart.hawala;
+2: 
+3: import java.util.ArrayList;
+4: import java.util.Collections;
+5: import java.util.HashMap;
+6: import java.util.LinkedHashMap;
+7: import java.util.List;
+8: import java.util.Map;
+9: import java.util.Set;
+10: import java.util.TreeMap;
+11: import java.util.TreeSet;
+12: 
+13: /**
+14:  * يبني محتوى التقارير من البيانات. لا يرسم ولا يكتب ملفات: الناتج نموذج {@link Report} يُحوَّل إلى PDF أو Excel.
+15:  * منطق بحت بدون أندرويد، ومُختبر على الكمبيوتر.
+16:  */
+17: public final class Reports {
+18:     private Reports() {}
+19: 
+20:     // ===================================================================================
+21:     // كشف المكتب
+22:     // ===================================================================================
+23: 
+24:     public static final class StatementInput {
+25:         public String officeName = "";
+26:         public String issuer = "";
+27:         public String periodLabel = "كل الفترات";
+28:         public boolean periodHasStart;
+29:         public boolean selectedOnly;
+30:         public long generatedAt = Clock.now();
+31:         public Map<String, String> currencyNames = new HashMap<>();
+32:         public Map<String, Integer> decimals = new HashMap<>();
+33:         /** أسطر الفترة (ولأي تحديد: أسطر الحركات المحددة فقط). */
+34:         public List<Model.Line> lines = new ArrayList<>();
+35:         /** الرصيد قبل بداية الفترة لكل عملة. */
+36:         public Map<String, Long> opening = new HashMap<>();
+37:         /** الرصيد الحالي الكامل لكل عملة. */
+38:         public Map<String, Long> fullBalance = new HashMap<>();
+39:         /** رقم الحركة ← أرقام صورها (عند تضمين الصور). */
+40:         public Map<Long, List<Long>> attachments;
+41:         /** العملات المطلوبة فقط (null = كل العملات). */
+42:         public Set<String> onlyCurrencies;
+43:         /** عنوان سطر الرصيد الافتتاحي ومربع الملخص (مثل «رصيد آخر مطابقة»). */
+44:         public String openingLabel = "الرصيد السابق (قبل بداية الفترة)";
+45:         public String openingKv = "الرصيد في بداية الفترة";
+46:         public String openingCol = "الرصيد السابق";
+47:     }
+48: 
+49:     static int dec(Map<String, Integer> m, String code) {
+50:         Integer d = m.get(code);
+51:         return d == null ? 2 : d;
+52:     }
+53: 
+54:     static String describe(Model.Line l, ExportStyle st) {
+55:         List<String> parts = new ArrayList<>();
+56:         String ref = st.showRef && l.txUuid != null ? "مرجع: " + Model.shortRef(l.txUuid) : "";
+57:         String cancelled = l.cancelledTx() ? " (ملغاة)" : "";
+58:         switch (l.kind) {
+59:             case "OPENING":
+60:                 return "رصيد سابق مسجّل عند إضافة المكتب";
+61:             case "FEE":
+62:                 parts.add("أجرة: " + Model.nz(l.feeType) + cancelled);
+63:                 if (st.showPerson && !Model.nz(l.person).isEmpty()) parts.add(l.person);
+64:                 parts.add(ref);
+65:                 return Model.join(parts, "\n");
+66:             case "REVERSAL":
+67:                 String who = st.showPerson && !Model.nz(l.person).isEmpty() ? ": " + l.person : "";
+68:                 parts.add("قيد عكسي لإلغاء حركة" + who);
+69:                 parts.add(ref);
+70:                 return Model.join(parts, "\n");
+71:             default:
+72:                 StringBuilder first = new StringBuilder();
+73:                 if (st.showPerson && !Model.nz(l.person).isEmpty()) first.append(l.person);
+74:                 if (first.length() == 0) first.append(Model.TYPE_DEBIT.equals(l.txType) ? "حركة لنا" : "حركة علينا");
+75:                 first.append(cancelled);
+76:                 // 12.4: حركة خاصة محسوبة في الرصيد
+77:                 if (!Model.nz(l.special).isEmpty() && !l.cancelledTx()) first.append(" — معلّقة: ").append(l.special);
+78:                 parts.add(first.toString());
+79:                 // رسائل واتساب الملصقة تُختصر في الكشف (بلا تحية ودعاء ولا تكرار للاسم)؛ النص الكامل يبقى في تفاصيل الحركة
+80:                 if (st.showDesc) parts.add(MessageParser.compact(l.description, st.showPerson ? l.person : null));
+81:                 if (st.showNotes && !Model.nz(l.notes).isEmpty()) parts.add("ملاحظة: " + l.notes);
+82:                 parts.add(ref);
+83:                 return Model.join(parts, "\n");
+84:         }
+85:     }
+86: 
+87:     public static Report statement(StatementInput in, ExportStyle st) {
+88:         Report r = new Report();
+89:         r.title = st.title + ": " + in.officeName;
+90:         if (!in.issuer.trim().isEmpty()) r.headerLines.add("صادر عن: " + in.issuer.trim());
+91:         for (String line : st.issuerInfo.split("\n")) if (!line.trim().isEmpty()) r.headerLines.add(line.trim());
+92:         r.headerLines.add("الفترة: " + in.periodLabel + "   •   تاريخ الإصدار: " + Model.date(in.generatedAt));
+93:         if (in.selectedOnly) r.headerLines.add("يحتوي هذا الكشف على الحركات المحددة فقط، والمجاميع لها وحدها.");
+94:         r.footer = st.footer;
+95:         r.signature = st.signature;
+96:         r.fileBase = "كشف-" + in.officeName;
+97:         if (in.onlyCurrencies != null && in.onlyCurrencies.size() == 1) r.fileBase += "-" + in.onlyCurrencies.iterator().next();
+98: 
+99:         boolean hasOpening = in.periodHasStart && !in.selectedOnly;
+100:         Map<String, List<Model.Line>> byCur = new TreeMap<>();
+101:         for (Model.Line l : in.lines) {
+102:             if (st.hideCancelled && l.cancelledTx()) continue;
+103:             List<Model.Line> list = byCur.get(l.currency);
+104:             if (list == null) {
+105:                 list = new ArrayList<>();
+106:                 byCur.put(l.currency, list);
+107:             }
+108:             list.add(l);
+109:         }
+110:         Set<String> codes = new TreeSet<>(byCur.keySet());
+111:         if (!in.selectedOnly) {
+112:             for (Map.Entry<String, Long> e : in.fullBalance.entrySet()) if (e.getValue() != 0) codes.add(e.getKey());
+113:             if (hasOpening) for (Map.Entry<String, Long> e : in.opening.entrySet()) if (e.getValue() != 0) codes.add(e.getKey());
+114:         }
+115:         if (in.onlyCurrencies != null) {
+116:             codes.retainAll(in.onlyCurrencies);
+117:             if (in.onlyCurrencies.size() == 1) r.headerLines.add("كشف بعملة واحدة: " + in.onlyCurrencies.iterator().next());
+118:         }
+119: 
+120:         Report.Section summary = null;
+121:         if (st.showSummary && !codes.isEmpty()) {
+122:             summary = r.section("ملخص الأرصدة", "ملخص");
+123:             summary.col("العملة", 1.4f, Report.TEXT);
+124:             if (hasOpening) summary.col(in.openingCol, 1.5f, Report.BAL);
+125:             summary.col("مجموع لنا", 1.3f, Report.MONEY).col("مجموع علينا", 1.3f, Report.MONEY);
+126:             summary.col(in.selectedOnly ? "صافي المحدد" : "الرصيد الختامي", 1.5f, Report.BAL);
+127:             if (hasOpening || in.selectedOnly) summary.col("الرصيد الحالي الكامل", 1.5f, Report.BAL);
+128:         }
+129: 
+130:         for (String code : codes) {
+131:             int dec = dec(in.decimals, code);
+132:             List<Model.Line> lines = byCur.containsKey(code) ? byCur.get(code) : new ArrayList<Model.Line>();
+133:             long opening = hasOpening && in.opening.containsKey(code) ? in.opening.get(code) : 0;
+134:             long full = in.fullBalance.containsKey(code) ? in.fullBalance.get(code) : 0;
+135:             long sumUs = 0, sumThem = 0, feeUs = 0, feeThem = 0;
+136:             for (Model.Line l : lines) {
+137:                 sumUs += l.debit;
+138:                 sumThem += l.credit;
+139:                 if ("FEE".equals(l.kind)) {
+140:                     feeUs += l.debit;
+141:                     feeThem += l.credit;
+142:                 }
+143:             }
+144:             long closing = opening + sumUs - sumThem;
+145: 
+146:             if (summary != null) {
+147:                 List<Object> cells = new ArrayList<>();
+148:                 cells.add(code + (in.currencyNames.get(code) == null ? "" : " — " + in.currencyNames.get(code)));
+149:                 if (hasOpening) cells.add(new Report.Bal(opening, dec));
+150:                 cells.add(new Report.Money(sumUs, dec));
+151:                 cells.add(new Report.Money(sumThem, dec));
+152:                 cells.add(new Report.Bal(closing, dec));
+153:                 if (hasOpening || in.selectedOnly) cells.add(new Report.Bal(full, dec));
+154:                 summary.row(Report.NORMAL, cells.toArray());
+155:             }
+156: 
+157:             String name = in.currencyNames.get(code);
+158:             Report.Section s = r.section("العملة: " + code + (name == null ? "" : " — " + name), code);
+159:             if (st.showSummary) {
+160:                 if (hasOpening) s.kv(in.openingKv, new Report.Bal(opening, dec), false);
+161:                 s.kv(in.selectedOnly ? "مجموع لنا (المحدد)" : "مجموع لنا خلال الفترة", new Report.Money(sumUs, dec), false);
+162:                 s.kv(in.selectedOnly ? "مجموع علينا (المحدد)" : "مجموع علينا خلال الفترة", new Report.Money(sumThem, dec), false);
+163:                 if (feeUs > 0) s.kv("منها أجور لنا", new Report.Money(feeUs, dec), false);

@@ -1,0 +1,118 @@
+1: package com.smart.hawala;
+2: 
+3: import android.graphics.Color;
+4: import android.view.View;
+5: import android.widget.LinearLayout;
+6: import android.widget.TextView;
+7: import java.util.ArrayList;
+8: import java.util.Collections;
+9: import java.util.List;
+10: 
+11: /**
+12:  * 8.0: «تقارير صاحب المكتب»: الخلاصة في الأعلى (هل يكبر عملي؟ على من أعتمد؟ أين مالي معلّق؟ من يربحني؟)،
+13:  * ثم كل تقرير في بطاقة، مع تصدير الكل PDF أو Excel. الحساب في خيط خلفي.
+14:  */
+15: final class OwnerScreen {
+16:     private final MainActivity a;
+17:     private boolean allTime;
+18: 
+19:     OwnerScreen(MainActivity a) { this.a = a; }
+20: 
+21:     OwnerReports.Input input() {
+22:         OwnerReports.Input in = new OwnerReports.Input();
+23:         in.now = Clock.now();
+24:         in.txs = a.db.reportTxs();
+25:         in.openings = a.db.reportOpenings();
+26:         in.names = a.db.officeNames();
+27:         in.decimals = a.db.decimalsMap();
+28:         in.usdRates = a.db.usdRates();
+29:         return in;
+30:     }
+31: 
+32:     Report build() {
+33:         Report r = OwnerReports.build(input(), a.db.setting("office_name", ""), allTime);
+34:         return r;
+35:     }
+36: 
+37:     void show() {
+38:         if (!a.require(Auth.Perm.VIEW) || !a.require(Auth.Perm.OWNER)) return;   // 12.0
+39:         a.busy("جارٍ تحليل الحركات…", p -> build(), res -> render((Report) res));
+40:     }
+41: 
+42:     private void render(final Report r) {
+43:         a.here(this::show);
+44:         a.tabbedScreen("تقارير صاحب المكتب", a.moreScreen::show, "more");
+45:         LinearLayout head = a.card();
+46:         head.addView(a.text("الخلاصة", 17, a.primaryInk, true));
+47:         List<String> hl = new ArrayList<>();
+48:         for (String h : r.headerLines) if (!h.startsWith("صادر عن") && !h.startsWith("حتى:")) hl.add(h);
+49:         if (hl.isEmpty()) head.addView(a.text("لا توجد حركات كافية بعد.", 14, a.muted, false));
+50:         for (String h : hl) head.addView(a.text("• " + h, 14, a.ink, false));
+51:         head.addView(a.text("من الحركات النشطة فقط. خصّص ساعة أول كل شهر لأربعة أرقام: النمو، الديون الأقدم من 90 يومًا، المكاتب الصاعدة والمتراجعة، وصافي الأجور.",
+52:                 12, a.muted, false));
+53:         LinearLayout bar = a.row();
+54:         bar.addView(a.smallButton("تصدير PDF / Excel", a.primary, v -> a.exportUi.reportDialog("تقارير صاحب المكتب", this::show,
+55:                 (images, st) -> Collections.singletonList(build()))), a.weight(44, 1.3f, 2));
+56:         bar.addView(a.smallButton(allTime ? "التركّز: كل الفترة" : "التركّز: آخر 12 شهرًا", Color.rgb(120, 120, 120), v -> {
+57:             allTime = !allTime;
+58:             show();
+59:         }), a.weight(44, 1, 2));
+60:         a.body.addView(bar, a.lp(-1, -2, 4));
+61: 
+62:         for (final Report.Section s : r.sections) section(s);
+63:     }
+64: 
+65:     private void section(final Report.Section s) {
+66:         final LinearLayout c = a.card();
+67:         c.addView(a.text(s.heading, 16, a.primaryInk, true));
+68:         for (Report.Kv kv : s.summary) {
+69:             TextView t = a.text(kv.label + ": " + Report.text(kv.value), 13, kv.emphasis ? a.red : a.ink, kv.emphasis);
+70:             c.addView(t);
+71:         }
+72:         final LinearLayout rows = new LinearLayout(a);
+73:         rows.setOrientation(LinearLayout.VERTICAL);
+74:         c.addView(rows);
+75:         final int[] shown = {0};
+76:         final Runnable more = new Runnable() {
+77:             @Override public void run() {
+78:                 int until = Math.min(s.rows.size(), shown[0] + 12);
+79:                 for (int i = shown[0]; i < until; i++) rows.addView(row(s, s.rows.get(i)));
+80:                 shown[0] = until;
+81:             }
+82:         };
+83:         more.run();
+84:         if (s.rows.size() > shown[0]) {
+85:             final TextView all = a.text("عرض المزيد (" + (s.rows.size() - shown[0]) + ")", 13, a.primary, true);
+86:             all.setPadding(0, a.dp(6), 0, a.dp(2));
+87:             all.setOnClickListener(v -> {
+88:                 more.run();
+89:                 if (shown[0] >= s.rows.size()) all.setVisibility(View.GONE);
+90:                 else all.setText("عرض المزيد (" + (s.rows.size() - shown[0]) + ")");
+91:             });
+92:             c.addView(all);
+93:         }
+94:         if (s.note != null && !s.note.isEmpty()) c.addView(a.text(s.note, 12, a.muted, false));
+95:     }
+96: 
+97:     /** سطر جدول مضغوط للهاتف: العمود الأول عنوانًا والباقي «العمود: القيمة». */
+98:     private View row(Report.Section s, Report.Row r) {
+99:         LinearLayout box = new LinearLayout(a);
+100:         box.setOrientation(LinearLayout.VERTICAL);
+101:         box.setPadding(0, a.dp(6), 0, a.dp(6));
+102:         int first = s.cols.size() > 1 && "#".equals(s.cols.get(0).title) ? 1 : 0;
+103:         String title = Report.text(r.cells[first]);
+104:         if (first == 1) title = Report.text(r.cells[0]) + ". " + title;
+105:         box.addView(a.text(title, 14, r.style == Report.MUTED ? a.muted : a.ink, r.style == Report.BOLD));
+106:         List<String> parts = new ArrayList<>();
+107:         for (int i = first + 1; i < s.cols.size() && i < r.cells.length; i++) {
+108:             Object cell = r.cells[i];
+109:             String v = Report.text(cell);
+110:             if (v.isEmpty() || "0".equals(v)) continue;
+111:             boolean num = cell instanceof Report.Money || cell instanceof Report.Bal || cell instanceof Long || cell instanceof Integer;
+112:             parts.add(s.cols.get(i).title + ": " + (num ? "\u2066" + v + "\u2069" : v));
+113:         }
+114:         if (!parts.isEmpty()) box.addView(a.text(Model.join(parts, "   •   "), 12, a.muted, false));
+115:         box.setBackground(a.round(Color.TRANSPARENT, Color.TRANSPARENT, 0));
+116:         return box;
+117:     }
+118: }

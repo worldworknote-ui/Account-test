@@ -1,0 +1,140 @@
+1426:         return Sanity.needsApproval(false, true, in.amount, decimals(in.currency), rate, settingLong("approval_usd", 0));
+1427:     }
+1428: 
+1429:     public List<Model.Tx> pendingTx() {
+1430:         List<Model.Tx> a = new ArrayList<>();
+1431:         try (Cursor c = getReadableDatabase().rawQuery("SELECT " + TX_COLS + " FROM tx WHERE status='" + Model.STATUS_PENDING + "' ORDER BY created_at,id", null)) {
+1432:             while (c.moveToNext()) a.add(readTx(c));
+1433:         }
+1434:         return a;
+1435:     }
+1436: 
+1437:     public long pendingCount() {
+1438:         try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM tx WHERE status='" + Model.STATUS_PENDING + "'", null)) {
+1439:             return c.moveToFirst() ? c.getLong(0) : 0;
+1440:         }
+1441:     }
+1442: 
+1443:     /** الاعتماد: تُكتب القيود الآن بتاريخ الحركة الأصلي، وتصير نشطة. من اقترحها لا يعتمدها. */
+1444:     public void approveTx(long id) {
+1445:         require(Auth.Perm.APPROVE);
+1446:         SQLiteDatabase d = getWritableDatabase();
+1447:         d.beginTransaction();
+1448:         try {
+1449:             Model.Tx t = null;
+1450:             try (Cursor c = d.rawQuery("SELECT " + TX_COLS + " FROM tx WHERE id=" + id, null)) {
+1451:                 if (c.moveToFirst()) t = readTx(c);
+1452:             }
+1453:             if (t == null || !t.isPending()) throw new IllegalStateException("الحركة ليست بانتظار الاعتماد");
+1454:             Model.User u = SmartApp.currentUser;
+1455:             if (u != null && usersEnabled() && enteredBy(t, u)) throw new IllegalStateException("لا يعتمد المستخدم حركة اقترحها بنفسه");
+1456:             // 10.5 (AUDIT-018): العملية المترابطة (تبديل عملة أو تحويل بين مكتبين) تُعتمد بساقيها معًا، فلا تنفذ ساق وتبقى الأخرى معلّقة
+1457:             List<Model.Tx> legs = new ArrayList<>();
+1458:             legs.add(t);
+1459:             if (t.isLinked()) {
+1460:                 try (Cursor c = d.rawQuery("SELECT " + TX_COLS + " FROM tx WHERE pair_uuid=? AND id<>" + id, new String[]{t.pairUuid})) {
+1461:                     while (c.moveToNext()) {
+1462:                         Model.Tx o = readTx(c);
+1463:                         if (!o.isPending()) throw new IllegalStateException("الساق الأخرى من هذه العملية ليست بانتظار الاعتماد؛ لا تُعتمد ساق واحدة.");
+1464:                         legs.add(o);
+1465:                     }
+1466:                 }
+1467:             }
+1468:             for (Model.Tx x : legs) {
+1469:                 checkLock(d, x.createdAt, "تاريخ الحركة يقع داخل فترة محاسبية مقفلة");
+1470:                 // 10.5 (AUDIT-015): المكتب ما زال نشطًا والعملة ما زالت مفعّلة له وقت الاعتماد
+1471:                 validate(inputOf(x));
+1472:                 // 12.4: الخاصة غير المحسوبة في الرصيد تُعتمد إلى «خاصة» بلا قيود
+1473:                 boolean unposted = x.special != null && !x.special.isEmpty() && !x.specialBal;
+1474:                 if (!unposted) postTx(d, x.id, inputOf(x));
+1475:                 d.execSQL("UPDATE tx SET status='" + (unposted ? Model.STATUS_SPECIAL : "ACTIVE") + "',approved_by=?,approved_at=? WHERE id=" + x.id,
+1476:                         new Object[]{u == null || !usersEnabled() ? null : u.id, Clock.now()});
+1477:                 audit(d, "APPROVE_TRANSACTION", "tx", x.id, t.realUser() + (legs.size() > 1 ? " — عملية مترابطة (" + legs.size() + " ساق)" : ""));
+1478:             }
+1479:             d.setTransactionSuccessful();
+1480:         } finally {
+1481:             d.endTransaction();
+1482:         }
+1483:     }
+1484: 
+1485:     /** مدخلات الحركة كما هي محفوظة (لترحيل قيودها عند الاعتماد). */
+1486:     static TxInput inputOf(Model.Tx t) {
+1487:         TxInput in = new TxInput();
+1488:         in.office = t.officeId;
+1489:         in.type = t.type;
+1490:         in.amount = t.amount;
+1491:         in.currency = t.currency;
+1492:         in.feeType = t.feeType;
+1493:         in.fee = t.fee;
+1494:         in.feeCurrency = t.feeCurrency;
+1495:         in.when = t.createdAt;
+1496:         in.person = t.person;
+1497:         in.description = t.description;
+1498:         in.notes = t.notes;
+1499:         in.service = t.service;
+1500:         in.dest = t.dest;
+1501:         in.special = Model.nz(t.special);
+1502:         in.specialBal = t.specialBal;
+1503:         return in;
+1504:     }
+1505: 
+1506:     /**
+1507:      * 10.5 (AUDIT-017): يجعل حركة الصندوق المرتبطة بحركة المكتب مطابقة لها بعد تصحيحها، في المعاملة نفسها:
+1508:      * المبلغ والعملة والمكتب والاتجاه (علينا = استلام يدخل الصندوق، لنا = تسليم يخرج منه) والأجرة على حساب المكتب،
+1509:      * وتنتقل إلى رقم الحركة الجديدة (newTxId) عند التعديل. ما لا يمكن تصحيحه بأمان يُرفض برسالة تشرح البديل.
+1510:      * يرجع وصف التغيير للسجل، أو null إن لم تكن الحركة مرتبطة بالصندوق.
+1511:      */
+1512:     private String relinkCash(SQLiteDatabase d, long oldTxId, long newTxId, TxInput in) {
+1513:         List<CashBox.Move> ms = new ArrayList<>();
+1514:         try (Cursor c = d.rawQuery("SELECT " + CASH_COLS + " FROM cash_moves m LEFT JOIN tx t ON t.id=m.tx_id WHERE m.tx_id=" + oldTxId + " AND m.status='ACTIVE'", null)) {
+1515:             while (c.moveToNext()) ms.add(readCash(c));
+1516:         }
+1517:         if (ms.isEmpty()) return null;
+1518:         if (ms.size() > 1) throw new IllegalStateException("الحركة مرتبطة بأكثر من حركة صندوق؛ ألغِ حركات الصندوق وسجّلها من جديد.");
+1519:         if (!allowed(Auth.Perm.CASH)) throw new SecurityException("هذه الحركة مسجّلة من «صندوق المكتب» وتصحيحها يغيّر النقد أيضًا: يحتاج صلاحية «الصندوق». اطلبه من المدير أو ارفض الحركة.");
+1520:         CashBox.Move m = ms.get(0);
+1521:         CashBox.Config cfg = cashBox(m.boxId);
+1522:         if (!cfg.currencies.contains(in.currency))
+1523:             throw new IllegalStateException("العملة " + in.currency + " غير مفعّلة في «" + cfg.name + "» الذي مرّ به النقد. فعّلها في الصندوق، أو ألغِ حركة الصندوق وسجّلها من جديد بالعملة الصحيحة.");
+1524:         boolean hasFee = !FEE_NONE.equals(in.feeType);
+1525:         long fee;
+1526:         String side;
+1527:         boolean feeCash;
+1528:         if (m.feeInCash && m.fee > 0) {
+1529:             if (hasFee) throw new IllegalStateException("أجرة هذه الحركة دُفعت أو قُبضت نقدًا في الصندوق، فلا تُضاف معها أجرة على حساب المكتب. اختر «بدون أجرة» في التصحيح، أو ألغِ حركة الصندوق وسجّلها من جديد.");
+1530:             if (!in.currency.equals(m.currency)) throw new IllegalStateException("للحركة أجرة نقدية بعملة " + m.currency + "، فلا تتغير عملتها بالتصحيح. ألغِ حركة الصندوق وسجّلها من جديد.");
+1531:             fee = m.fee;
+1532:             side = m.feeSide;
+1533:             feeCash = true;
+1534:         } else if (hasFee) {
+1535:             if (!in.currency.equals(in.feeCurrency)) throw new IllegalStateException("أجرة حركة الصندوق تكون بعملة المبلغ نفسها (" + in.currency + ").");
+1536:             fee = in.fee;
+1537:             side = FEE_US.equals(in.feeType) ? CashBox.FEE_US : CashBox.FEE_THEM;
+1538:             feeCash = false;
+1539:         } else {
+1540:             fee = 0;
+1541:             side = "";
+1542:             feeCash = false;
+1543:         }
+1544:         boolean incoming = TYPE_CREDIT.equals(in.type);
+1545:         ContentValues v = new ContentValues();
+1546:         v.put("tx_id", newTxId);
+1547:         v.put("kind", incoming ? CashBox.IN : CashBox.OUT);
+1548:         v.put("dir", incoming ? 1 : -1);
+1549:         v.put("currency", in.currency);
+1550:         v.put("amount_minor", in.amount);
+1551:         v.put("fee_minor", fee);
+1552:         v.put("fee_side", side);
+1553:         v.put("fee_cash", feeCash ? 1 : 0);
+1554:         v.put("office_id", in.office);
+1555:         v.put("category", incoming ? CashBox.CAT_OFFICE_IN : CashBox.CAT_OFFICE_OUT);
+1556:         v.put("party", Crypto.enc(Model.nz(in.person)));
+1557:         v.put("created_at", in.when);
+1558:         d.update("cash_moves", v, "id=" + m.id, null);
+1559:         String before = (m.dir > 0 ? "دخل " : "خرج ") + Model.fmt(m.amount, decimals(m.currency)) + " " + m.currency + (m.officeId == null ? "" : " — مكتب " + m.officeId);
+1560:         String after = (incoming ? "دخل " : "خرج ") + Model.fmt(in.amount, decimals(in.currency)) + " " + in.currency + " — مكتب " + in.office;
+1561:         return "حركة الصندوق " + m.id + ": " + before + " ← " + after;
+1562:     }
+1563: 
+1564:     /**
+1565:      * 10.2: «تصحيح ثم اعتماد»: المحاسب أو المدير يصحح حركة معلّقة (المبلغ أو الاسم أو المكتب…) بدل رفضها، ثم تُعتمد في الخطوة نفسها.

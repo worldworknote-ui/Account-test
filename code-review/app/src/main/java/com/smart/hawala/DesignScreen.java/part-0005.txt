@@ -1,0 +1,32 @@
+653:             Bitmap s = Bitmap.createScaledBitmap(bm, Math.max(1, Math.round(w * f)), Math.max(1, Math.round(h * f)), true);
+654:             if (s != bm) bm.recycle();
+655:             bm = s;
+656:         }
+657:         ByteArrayOutputStream out = new ByteArrayOutputStream();
+658:         if (bm.hasAlpha()) bm.compress(Bitmap.CompressFormat.PNG, 100, out);
+659:         else bm.compress(Bitmap.CompressFormat.JPEG, 88, out);
+660:         bm.recycle();
+661:         return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP);
+662:     }
+663: 
+664:     void onLogoResult(int c, Intent data) {
+665:         if (!pickingLogo) return;
+666:         pickingLogo = false;
+667:         if (c != Activity.RESULT_OK || data == null || data.getData() == null) {
+668:             render();
+669:             return;
+670:         }
+671:         final Uri u = data.getData();
+672:         a.busy("جارٍ تجهيز الصورة…", p -> {
+673:             try (InputStream in = a.getContentResolver().openInputStream(u)) {
+674:                 if (in == null) throw new Exception("تعذر فتح الصورة.");
+675:                 return encodeLogo(Db.readAll(in));
+676:             }
+677:         }, res -> {
+678:             put("home_logo", (String) res);
+679:             put("home_logo_mode", "custom");
+680:             a.toast("تم حفظ الصورة");
+681:             render();
+682:         });
+683:     }
+684: }

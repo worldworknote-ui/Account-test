@@ -1,0 +1,60 @@
+564:             return;
+565:         }
+566:         UsersView.confirmAdmin(this, db, "عرض كلمة مرور النسخ التلقائي", () -> {
+567:             String pw;
+568:             try {
+569:                 pw = Crypto.decStrict(db.setting("auto_backup_pw", ""));
+570:             } catch (Exception e) {
+571:                 Ui.info(this, "تعذر عرضها", "لا يمكن فك كلمة المرور المحفوظة على هذا الجهاز. عيّن كلمة جديدة؛ النسخ القديمة تُفتح بكلمتها القديمة أو برمز استرداد النسخ إن كان مفعّلًا حينها.");
+572:                 return;
+573:             }
+574:             db.audit("AUTO_PW_REVEAL", "backup", 0, "عُرضت كلمة مرور النسخ التلقائي");
+575:             JTextField f = new JTextField(pw);
+576:             f.setEditable(false);
+577:             f.setFont(Ui.font(16, true));
+578:             JPanel q = Ui.column();
+579:             q.add(Ui.para("اكتبها على ورقة واحفظها بعيدًا عن هذا الجهاز:", 14, Ui.ink, 420));
+580:             q.add(Ui.gap(8));
+581:             q.add(f);
+582:             Ui.form(this, "كلمة مرور النسخ التلقائي", Ui.rtl(q), "إغلاق");
+583:         });
+584:     }
+585: 
+586:     // ===================================================================================
+587:     // التمرين ونسخ الأمان
+588:     // ===================================================================================
+589: 
+590:     void drill() {
+591:         File f = Export.open(this, db, "اختر نسخة لتجربة استعادتها", ".sba");
+592:         if (f == null) return;
+593:         JPasswordField p = Ui.password();
+594:         if (!Ui.form(this, "كلمة مرور النسخة", Ui.rtl(Ui.labeled("كلمة المرور أو رمز استرداد النسخ", p)), "تجربة")) return;
+595:         char[] pw = p.getPassword();
+596:         Ui.busy(this, "جارٍ فك النسخة كاملة وفحصها…", pr -> {
+597:             try {
+598:                 return BackupManager.drill(app.ctx, f, pw, pr::update);
+599:             } finally {
+600:                 Arrays.fill(pw, '\0');
+601:             }
+602:         }, r -> {
+603:             String msg = r.ok ? "النسخة سليمة وتُستعاد: " + r.offices + " مكتب، " + r.tx + " حركة، " + r.attachments + " صورة." + (r.newerTx > 0 ? " (بعدها " + r.newerTx + " حركة أحدث على هذا الجهاز)" : "")
+604:                     : r.message;
+605:             db.setSettingQuiet("restore_drill_status", (r.ok ? "ok" : "fail") + "|" + msg);
+606:             db.setSettingQuiet("restore_drill_at", "" + Clock.now());
+607:             Ui.message(this, r.ok ? "تمرين الاستعادة ✓" : "التمرين لم ينجح", msg, r.ok ? JOptionPane.INFORMATION_MESSAGE : JOptionPane.WARNING_MESSAGE);
+608:             refresh();
+609:         });
+610:     }
+611: 
+612:     void revert(Snapshot.Info x) {
+613:         if (!require(Auth.Perm.RESTORE)) return;
+614:         if (!Ui.confirm(this, "التراجع", "ستعود البيانات كما كانت قبل " + (x.label.isEmpty() ? "آخر استعادة" : x.label) + " (" + Model.date(x.time) + "). أي حركات سُجّلت بعد ذلك ستُفقد. هل تريد المتابعة؟"
+615:                 + (Snapshot.syncImpact(db).isEmpty() ? "" : "\n\n" + Snapshot.syncImpact(db)), "تراجع"))
+616:             return;
+617:         Ui.busy(this, "جارٍ إرجاع البيانات…", p -> Snapshot.revert(app.ctx, db, x.slot), fresh -> {
+618:             if (!Snapshot.lastSyncNote.isEmpty()) Ui.info(this, "التراجع", Snapshot.lastSyncNote);
+619:             SmartApp.db = fresh;
+620:             Main.restart(app, fresh);
+621:         });
+622:     }
+623: }

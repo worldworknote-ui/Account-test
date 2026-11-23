@@ -1,0 +1,148 @@
+1296:             secs.setVisibility(f.isEmpty() ? View.VISIBLE : View.GONE);
+1297:             allHead.setText(f.isEmpty() ? "كل المكاتب (" + all.size() + ") — اضغط مطولًا للتثبيت في الأعلى" : "نتائج البحث: " + shown.size());
+1298:             none.setVisibility(shown.isEmpty() ? View.VISIBLE : View.GONE);
+1299:             sizeList[0].run();
+1300:         };
+1301:         fill.run();
+1302:         final AlertDialog dlg = new AlertDialog.Builder(this).setTitle("اختر المكتب").setView(l).setNegativeButton("إلغاء", null).create();
+1303:         holder[0] = dlg;
+1304:         q.addTextChangedListener(watcher(fill));
+1305:         // Enter في البحث: إن بقي مكتب واحد يُختار مباشرة
+1306:         q.setOnEditorActionListener((v, id, ev) -> {
+1307:             if (shown.size() == 1) {
+1308:                 dlg.dismiss();
+1309:                 cb.on(shown.get(0));
+1310:                 return true;
+1311:             }
+1312:             return false;
+1313:         });
+1314:         list.setOnItemClickListener((p, v, pos, id) -> {
+1315:             if (pos >= 0 && pos < shown.size()) {
+1316:                 dlg.dismiss();
+1317:                 cb.on(shown.get(pos));
+1318:             }
+1319:         });
+1320:         list.setOnItemLongClickListener((p, v, pos, id) -> {
+1321:             if (pos < 0 || pos >= shown.size()) return true;
+1322:             Model.Office o = shown.get(pos);
+1323:             db.setPinned(o.id, !o.pinned);
+1324:             toast(o.pinned ? "أُلغي تثبيت المكتب" : "تم تثبيت المكتب في أعلى القائمة");
+1325:             List<Model.Office> fresh = activeOffices(activeOnly);
+1326:             all.clear();
+1327:             all.addAll(fresh);
+1328:             fill.run();
+1329:             return true;
+1330:         });
+1331:         dlg.show();
+1332:     }
+1333: 
+1334:     /** 11.5: بحث المكتب بالاسم أو الاختصار أو الهاتف، دون اعتبار الهمزات والتاء المربوطة والألف المقصورة. */
+1335:     static boolean officeMatches(Model.Office o, String f) {
+1336:         String k = foldAr(f);
+1337:         return foldAr(Model.nz(o.name)).contains(k) || foldAr(Model.nz(o.shortName)).contains(k) || Model.nz(o.phone).replace(" ", "").contains(f.replace(" ", ""));
+1338:     }
+1339: 
+1340:     static String foldAr(String s) {
+1341:         StringBuilder b = new StringBuilder(s.length());
+1342:         for (char c : s.toLowerCase(java.util.Locale.ROOT).toCharArray()) {
+1343:             if (c == 'أ' || c == 'إ' || c == 'آ' || c == 'ٱ') c = 'ا';
+1344:             else if (c == 'ة') c = 'ه';
+1345:             else if (c == 'ى') c = 'ي';
+1346:             else if (c == 'ؤ') c = 'و';
+1347:             else if (c == 'ئ') c = 'ي';
+1348:             else if (c == 'ـ' || (c >= '\u064B' && c <= '\u0652')) continue;
+1349:             b.append(c);
+1350:         }
+1351:         return b.toString();
+1352:     }
+1353: 
+1354:     /** قسم يُطوى بسهم في نافذة اختيار المكتب، ويُحفظ آخر وضع له لهذا المستخدم. */
+1355:     private void pickerSection(LinearLayout secs, String title, final String key, List<Model.Office> offices, boolean strong,
+1356:                                final AlertDialog[] holder, final OfficeCb cb, final Runnable[] sizeList) {
+1357:         final boolean[] open = {!"0".equals(db.setting(key, "1"))};
+1358:         LinearLayout head = new LinearLayout(this);
+1359:         head.setOrientation(LinearLayout.HORIZONTAL);
+1360:         head.setGravity(Gravity.CENTER_VERTICAL);
+1361:         head.setPadding(0, dp(6), 0, dp(4));
+1362:         final TextView arrow = text(open[0] ? "▾" : "◂", 16, primaryInk, true);
+1363:         head.addView(arrow, new LinearLayout.LayoutParams(dp(22), -2));
+1364:         head.addView(text(title + " (" + offices.size() + ")", 13, strong ? primaryInk : muted, true), new LinearLayout.LayoutParams(0, -2, 1));
+1365:         head.setContentDescription(title);
+1366:         secs.addView(head, new LinearLayout.LayoutParams(-1, dp(34)));
+1367:         final Flow fl = flow();
+1368:         for (final Model.Office o : offices) fl.addView(pill(o.name, strong, v -> {
+1369:             if (holder[0] != null) holder[0].dismiss();
+1370:             cb.on(o);
+1371:         }));
+1372:         fl.setVisibility(open[0] ? View.VISIBLE : View.GONE);
+1373:         secs.addView(fl, new LinearLayout.LayoutParams(-1, -2));
+1374:         head.setOnClickListener(v -> {
+1375:             open[0] = !open[0];
+1376:             fl.setVisibility(open[0] ? View.VISIBLE : View.GONE);
+1377:             arrow.setText(open[0] ? "▾" : "◂");
+1378:             try {
+1379:                 db.setSettingQuiet(key, open[0] ? "1" : "0");
+1380:             } catch (Exception ignored) {
+1381:                 // تفضيل عرض فقط
+1382:             }
+1383:             if (sizeList[0] != null) sizeList[0].run();
+1384:         });
+1385:     }
+1386: 
+1387:     List<Model.Office> activeOffices(boolean activeOnly) {
+1388:         List<Model.Office> all = db.offices();
+1389:         if (!activeOnly) return all;
+1390:         List<Model.Office> out = new ArrayList<>();
+1391:         for (Model.Office o : all) if (o.active) out.add(o);
+1392:         return out;
+1393:     }
+1394: 
+1395:     // ===================================================================================
+1396:     // نتائج الشاشات الأخرى
+1397:     // ===================================================================================
+1398: 
+1399:     @Override
+1400:     protected void onActivityResult(int r, int c, Intent data) {
+1401:         super.onActivityResult(r, c, data);
+1402:         if (db == null) return;
+1403:         try {
+1404:             switch (r) {
+1405:                 case PICK_IMAGES:
+1406:                 case TAKE_PHOTO:
+1407:                     txScreen.onImageResult(r, c, data);
+1408:                     break;
+1409:                 case CREATE_BACKUP:
+1410:                 case OPEN_BACKUP:
+1411:                 case AUTO_TREE:
+1412:                 case DRIVE_FILE:
+1413:                     backupScreen.onResult(r, c, data);
+1414:                     break;
+1415:                 case PICK_LOGO:
+1416:                     designScreen.onLogoResult(c, data);
+1417:                     break;
+1418:                 case SAVE_EXPORT:
+1419:                     exportUi.onSaveResult(c, data);
+1420:                     break;
+1421:                 case LICENSE_FILE:
+1422:                     if (c == RESULT_OK && data != null) licenseScreen.onKeyFile(data.getData());
+1423:                     break;
+1424:                 case LICENSE_QR:
+1425:                     if (c == RESULT_OK && data != null) licenseScreen.onQrImage(data.getData());
+1426:                     break;
+1427:                 case SyncScreen.PICK_TREE:
+1428:                     syncScreen.onResult(c, data);
+1429:                     break;
+1430:                 case DriveAuth.REQ_PICK:
+1431:                     DriveAuth.onPicked(this, c, data);
+1432:                     break;
+1433:                 case DriveAuth.REQ:
+1434:                     DriveAuth.onResult(this, c, data);
+1435:                     break;
+1436:                 default:
+1437:                     break;
+1438:             }
+1439:         } catch (Exception e) {
+1440:             error(e);
+1441:         }
+1442:     }
+1443: }

@@ -1,0 +1,120 @@
+889:             a.groupRow(pg, R.drawable.ic_sync, a.primaryInk, "إعادة تسجيل الدخول بالحساب نفسه",
+890:                     "إن انتهت صلاحية الدخول" + (acct0.isEmpty() ? "" : " (" + acct0 + ")"), "دخول", v -> reLogin(acct0));
+891:         }
+892:         if (a.can(Auth.Perm.SYNC)) {
+893:             if ("server".equals(k)) a.groupRow(pg, R.drawable.ic_edit, a.primaryInk, "تعديل عنوان الخادم أو رمزه", "للخادم نفسه (مثل تغيير رمز الخادم). للانتقال إلى خادم آخر استعمل «الطريقة: تغيير»", "تعديل", v -> editServer());
+894:             else if ("drive".equals(k)) {
+895:                 // 10.14: الحساب المتصل ظاهر، وتغييره نقلٌ منظّم أو بداية جديدة؛ والحساب القديم تُحذف الخزنة منه بعد انتقال الأجهزة
+896:                 final String acct = a.db.setting("drive_account", "");
+897:                 a.groupRow(pg, R.drawable.ic_user, a.primaryInk, "حساب Google: " + (acct.isEmpty() ? "غير محدد (الحساب الذي وافقت عليه أول مرة)" : acct),
+898:                         "استعمل الحساب نفسه على كل الأجهزة", "تغيير", v -> changeAccount(acct));
+899:                 final String old = a.db.setting("drive_account_old", "");
+900:                 if (!old.isEmpty())
+901:                     a.groupRow(pg, R.drawable.ic_trash, a.red, "الحساب القديم: " + old, "نُقلت المزامنة منه. بعد أن تنتقل كل الأجهزة احذف الخزنة منه", "حذف", v -> purgeOld(old));
+902:             }
+903:             else a.groupRow(pg, R.drawable.ic_doc, a.primaryInk, "إعادة اختيار المجلد نفسه", "إن ظهرت «انتهت صلاحية الوصول». لنقل المزامنة إلى مجلد آخر استعمل «الطريقة: تغيير»", "اختيار", v -> pick(() -> now(this::show)));
+904:         }
+905: 
+906:         a.section("الأمان", null, null);
+907:         LinearLayout sg = a.group();
+908:         if (!a.can(Auth.Perm.SYNC)) {
+909:             a.hint("كلمة السر ورمز الاسترداد وإزالة الأجهزة وإيقاف المزامنة لمن يملك صلاحية «إدارة المزامنة».");
+910:             return;
+911:         }
+912:         a.groupRow(sg, R.drawable.ic_key, a.primaryInk, "تغيير كلمة سر المزامنة", "للأجهزة التي تنضم لاحقًا؛ المنضمة تبقى كما هي", null, v -> changePassword());
+913:         a.groupRow(sg, R.drawable.ic_shield, a.primaryInk, "رمز استرداد جديد", "إن ضاع الرمز القديم أو اطّلع عليه غيرك: يتوقف القديم ويظهر جديد مرة واحدة", null, v -> newRecovery());
+914:         a.groupRow(sg, R.drawable.ic_key, a.primaryInk, "نسيت كلمة السر؟ تعيين كلمة جديدة", "من هذا الجهاز المنضم دون الكلمة القديمة (للمدير بعد تأكيد رمزه)", null, v -> resetPassword());
+915:         a.groupRow(sg, R.drawable.ic_trash, a.red, "حذف ملفات المزامنة من هذا المكان", "للمدير، بكلمة السر أو رمز الاسترداد، وبعد نسخة أمان. كل الأجهزة تخرج من المزامنة", null, v -> wipeDialog());
+916:         a.groupRow(sg, R.drawable.ic_logout, a.red, "إيقاف المزامنة على هذا الجهاز", "بياناته تبقى؛ ويمكن الانضمام من جديد", null,
+917:                 v -> a.confirm("إيقاف المزامنة", "يتوقف هذا الجهاز عن الإرسال والاستلام، وتبقى بياناته كما هي. للعودة: «الانضمام» (تُستبدل بياناته ببيانات المزامنة).",
+918:                         "إيقاف", () -> {
+919:                             new SyncEngine(a.db, folder(a, a.db)).leave();
+920:                             show();
+921:                         }));
+922:         a.hint("الخزنة: " + st.vaultId.substring(0, Math.min(8, st.vaultId.length())) + "… • تشفير AES-256-GCM بمفتاح من كلمة سر المزامنة • الحزم مسلسلة ومرتبطة ببصمات (أي حذف أو تعديل يُكتشف).");
+923:     }
+924: 
+925:     static String everyName(int secs) {
+926:         if (secs < 60) return secs + " ثانية";
+927:         if (secs == 90) return "دقيقة ونصف";
+928:         return (secs / 60) + " دقائق";
+929:     }
+930: 
+931:     private void showUsage() {
+932:         a.busy("جارٍ قراءة مكان المزامنة…", p -> new SyncEngine(a.db, folder(a, a.db)).usage(), res -> {
+933:             SyncEngine.Usage u = (SyncEngine.Usage) res;
+934:             new AlertDialog.Builder(a).setTitle("مكان المزامنة")
+935:                     .setMessage(u.total() + " ملفًا" + (u.bytes >= 0 ? " • " + SyncEngine.size(u.bytes) : "") + "\n\n"
+936:                             + "• حزم التغييرات: " + u.packets + "\n"
+937:                             + "• اللقطات الكاملة: " + u.snapshots + (u.snapBytes >= 0 ? " (" + SyncEngine.size(u.snapBytes) + ")" : "") + "\n"
+938:                             + "• الصور: " + u.images + (u.imageBytes >= 0 ? " (" + SyncEngine.size(u.imageBytes) + ")" : "") + "\n"
+939:                             + "• بطاقات الأجهزة: " + u.members + "\n\n"
+940:                             + "كل صورة ملف واحد مهما تكررت، والحزم القديمة تُحذف تلقائيًا بعد وصولها لكل الأجهزة.")
+941:                     .setPositiveButton("حسنًا", null).show();
+942:         });
+943:     }
+944: 
+945:     /** 10.17: المدير يسمّي جهازًا منضمًّا آخر. */
+946:     private void renameOther(final JSONObject m) {
+947:         LinearLayout l = new LinearLayout(a);
+948:         l.setOrientation(LinearLayout.VERTICAL);
+949:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+950:         final EditText n = a.field("اسم الجهاز");
+951:         n.setText(m.optString("name"));
+952:         l.addView(n, a.lp(-1, 50, 3));
+953:         new AlertDialog.Builder(a).setTitle("إعادة تسمية «" + m.optString("name") + "»").setView(l).setPositiveButton("حفظ", (d, w) -> {
+954:             final String v = n.getText().toString();
+955:             a.busy("جارٍ الحفظ…", p -> {
+956:                 new SyncEngine(a.db, folder(a, a.db)).renameDevice(m.optString("dev"), v);
+957:                 return null;
+958:             }, res -> {
+959:                 a.toast("غُيّر اسم الجهاز ✓ (يظهر على الأجهزة الأخرى بعد مزامنتها)");
+960:                 show();
+961:             });
+962:         }).setNegativeButton("إلغاء", null).show();
+963:     }
+964: 
+965:     private void renameDialog(String current) {
+966:         LinearLayout l = new LinearLayout(a);
+967:         l.setOrientation(LinearLayout.VERTICAL);
+968:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+969:         final EditText n = a.field("اسم هذا الجهاز");
+970:         n.setText(current);
+971:         l.addView(n, a.lp(-1, 50, 3));
+972:         new AlertDialog.Builder(a).setTitle("اسم هذا الجهاز").setView(l).setPositiveButton("حفظ", (d, w) -> {
+973:             final String v = n.getText().toString();
+974:             a.busy("جارٍ الحفظ…", p -> {
+975:                 new SyncEngine(a.db, folder(a, a.db)).rename(v);
+976:                 return null;
+977:             }, res -> {
+978:                 a.toast("غُيّر اسم الجهاز ✓ (يظهر للأجهزة الأخرى بعد مزامنتها)");
+979:                 show();
+980:             });
+981:         }).setNegativeButton("إلغاء", null).show();
+982:     }
+983: 
+984:     private void removeDevice(final JSONObject m) {
+985:         if (!a.require(Auth.Perm.SYNC)) return;
+986:         a.confirm("إزالة «" + m.optString("name") + "» من المزامنة",
+987:                 SyncHelp.REMOVE_TEXT,
+988:                 "إزالة", () -> a.busy("جارٍ إزالة الجهاز…", p -> new SyncEngine(a.db, folder(a, a.db)).removeDevice(m.optString("dev")), res -> {
+989:                     a.toast("أُزيل الجهاز ✓ تصل حزمه حتى رقم " + res + " إلى كل الأجهزة ثم تتوقف");
+990:                     show();
+991:                 }));
+992:     }
+993: 
+994:     /** 10.5: من الجهاز الرئيسي: نقل الدور إلى جهاز آخر أو إزالته. */
+995:     private void deviceActions(final JSONObject m) {
+996:         new AlertDialog.Builder(a).setTitle(m.optString("name"))
+997:                 .setItems(new String[]{"اجعله الجهاز الرئيسي", "إزالة من المزامنة", "إعادة تسمية الجهاز"}, (d, w) -> {
+998:                     if (w == 0) transferFounder(m);
+999:                     else if (w == 1) removeDevice(m);
+1000:                     else renameOther(m);
+1001:                 }).setNegativeButton("إلغاء", null).show();
+1002:     }
+1003: 
+1004:     /** 10.5 (AUDIT-002): نقل دور الجهاز الرئيسي. */
+1005:     private void transferFounder(final JSONObject m) {
+1006:         if (!a.require(Auth.Perm.SYNC)) return;
+1007:         a.confirm("جعل «" + m.optString("name") + "» الجهاز الرئيسي",
+1008:                 "الجهاز الرئيسي يحذف ملفات الأجهزة المُزالة والصور القديمة من مكان المزامنة، ومنه يُفعَّل نظام المستخدمين أو يُوقف.\n"

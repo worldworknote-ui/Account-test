@@ -1,0 +1,99 @@
+1: package android.widget;
+2: 
+3: import android.content.Context;
+4: import android.view.*;
+5: import java.util.ArrayList;
+6: import java.util.List;
+7: 
+8: public class FrameLayout extends ViewGroup {
+9:     public static class LayoutParams extends ViewGroup.MarginLayoutParams {
+10:         public static final int UNSPECIFIED_GRAVITY = -1;
+11:         public int gravity = UNSPECIFIED_GRAVITY;
+12:         public LayoutParams(int w, int h) { super(w, h); }
+13:         public LayoutParams(int w, int h, int g) { super(w, h); gravity = g; }
+14:         public LayoutParams(ViewGroup.LayoutParams p) {
+15:             super(p);
+16:             if (p instanceof LayoutParams) gravity = ((LayoutParams) p).gravity;
+17:             else if (p instanceof LinearLayout.LayoutParams) gravity = ((LinearLayout.LayoutParams) p).gravity;
+18:         }
+19:         public LayoutParams(ViewGroup.MarginLayoutParams p) { this((ViewGroup.LayoutParams) p); }
+20:         public LayoutParams(LayoutParams p) { this((ViewGroup.LayoutParams) p); }
+21:         public LayoutParams(Context c, android.util.AttributeSet a) { super(c, a); }
+22:     }
+23: 
+24:     private boolean measureAll;
+25:     private final List<View> matchKids = new ArrayList<>();
+26:     private int foregroundGravity;
+27: 
+28:     public FrameLayout(Context c) { super(c); }
+29:     public FrameLayout(Context c, android.util.AttributeSet a) { super(c); }
+30:     public FrameLayout(Context c, android.util.AttributeSet a, int s) { super(c); }
+31: 
+32:     public void setMeasureAllChildren(boolean m) { measureAll = m; }
+33:     public void setForegroundGravity(int g) { foregroundGravity = g; }
+34:     @Override protected ViewGroup.LayoutParams generateDefaultLayoutParams() { return new LayoutParams(-1, -1); }
+35:     @Override protected ViewGroup.LayoutParams generateLayoutParams(ViewGroup.LayoutParams p) { return new LayoutParams(p); }
+36:     @Override public LayoutParams generateLayoutParams(android.util.AttributeSet a) { return new LayoutParams(getContext(), a); }
+37:     @Override protected boolean checkLayoutParams(ViewGroup.LayoutParams p) { return p instanceof LayoutParams; }
+38: 
+39:     @Override protected void onMeasure(int ws, int hs) {
+40:         int count = getChildCount();
+41:         boolean measureMatch = MeasureSpec.getMode(ws) != MeasureSpec.EXACTLY || MeasureSpec.getMode(hs) != MeasureSpec.EXACTLY;
+42:         matchKids.clear();
+43:         int maxW = 0, maxH = 0, state = 0;
+44:         for (int i = 0; i < count; i++) {
+45:             View c = getChildAt(i);
+46:             if (!measureAll && c.getVisibility() == GONE) continue;
+47:             measureChildWithMargins(c, ws, 0, hs, 0);
+48:             MarginLayoutParams p = margins(c);
+49:             maxW = Math.max(maxW, c.getMeasuredWidth() + p.leftMargin + p.rightMargin);
+50:             maxH = Math.max(maxH, c.getMeasuredHeight() + p.topMargin + p.bottomMargin);
+51:             state = combineMeasuredStates(state, c.getMeasuredState());
+52:             if (measureMatch && (p.width == LayoutParams.MATCH_PARENT || p.height == LayoutParams.MATCH_PARENT)) matchKids.add(c);
+53:         }
+54:         maxW += getPaddingLeft() + getPaddingRight();
+55:         maxH += getPaddingTop() + getPaddingBottom();
+56:         maxH = Math.max(maxH, getSuggestedMinimumHeight());
+57:         maxW = Math.max(maxW, getSuggestedMinimumWidth());
+58:         if (getForeground() != null) { maxH = Math.max(maxH, getForeground().getMinimumHeight()); maxW = Math.max(maxW, getForeground().getMinimumWidth()); }
+59:         setMeasuredDimension(resolveSizeAndState(maxW, ws, state), resolveSizeAndState(maxH, hs, state << 16));
+60:         if (matchKids.size() > 1) {
+61:             for (View c : matchKids) {
+62:                 MarginLayoutParams p = margins(c);
+63:                 int cws = p.width == LayoutParams.MATCH_PARENT
+64:                         ? MeasureSpec.makeMeasureSpec(Math.max(0, getMeasuredWidth() - getPaddingLeft() - getPaddingRight() - p.leftMargin - p.rightMargin), MeasureSpec.EXACTLY)
+65:                         : getChildMeasureSpec(ws, getPaddingLeft() + getPaddingRight() + p.leftMargin + p.rightMargin, p.width);
+66:                 int chs = p.height == LayoutParams.MATCH_PARENT
+67:                         ? MeasureSpec.makeMeasureSpec(Math.max(0, getMeasuredHeight() - getPaddingTop() - getPaddingBottom() - p.topMargin - p.bottomMargin), MeasureSpec.EXACTLY)
+68:                         : getChildMeasureSpec(hs, getPaddingTop() + getPaddingBottom() + p.topMargin + p.bottomMargin, p.height);
+69:                 c.measure(cws, chs);
+70:             }
+71:         }
+72:     }
+73: 
+74:     @Override protected void onLayout(boolean changed, int l, int t, int r, int b) {
+75:         int pl = getPaddingLeft(), pr = r - l - getPaddingRight(), pt = getPaddingTop(), pb = b - t - getPaddingBottom();
+76:         for (int i = 0; i < getChildCount(); i++) {
+77:             View c = getChildAt(i);
+78:             if (c.getVisibility() == GONE) continue;
+79:             ViewGroup.LayoutParams raw = c.getLayoutParams();
+80:             MarginLayoutParams p = margins(c);
+81:             int w = c.getMeasuredWidth(), h = c.getMeasuredHeight();
+82:             int g = raw instanceof LayoutParams ? ((LayoutParams) raw).gravity : -1;
+83:             if (g == -1) g = Gravity.TOP | Gravity.START;
+84:             int abs = Gravity.getAbsoluteGravity(g, getLayoutDirection());
+85:             int x, y;
+86:             switch (abs & Gravity.HORIZONTAL_GRAVITY_MASK) {
+87:                 case Gravity.CENTER_HORIZONTAL: x = pl + (pr - pl - w) / 2 + p.leftMargin - p.rightMargin; break;
+88:                 case Gravity.RIGHT: x = pr - w - p.rightMargin; break;
+89:                 default: x = pl + p.leftMargin; break;
+90:             }
+91:             switch (g & Gravity.VERTICAL_GRAVITY_MASK) {
+92:                 case Gravity.CENTER_VERTICAL: y = pt + (pb - pt - h) / 2 + p.topMargin - p.bottomMargin; break;
+93:                 case Gravity.BOTTOM: y = pb - h - p.bottomMargin; break;
+94:                 default: y = pt + p.topMargin; break;
+95:             }
+96:             c.layout(x, y, x + w, y + h);
+97:         }
+98:     }
+99: }

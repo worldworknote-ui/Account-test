@@ -1,0 +1,152 @@
+178:      * وسلسلة شهادات التصديق التي يفحصها البائع في أداته (لا على الهاتف).
+179:      */
+180:     public static String requestText(Context ctx, Db db, String order) throws Exception {
+181:         order = order == null ? "" : order.trim();
+182:         if (order.isEmpty() || order.length() > 64) throw new IllegalArgumentException("اكتب رقم الطلب الذي أعطاك إياه البائع (حتى 64 حرفًا).");
+183:         if (deviceKeyX509() == null) createDeviceKey(("SA8|" + order).getBytes(StandardCharsets.UTF_8));
+184:         KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+185:         ks.load(null);
+186:         Certificate[] chain = ks.getCertificateChain(DEV);
+187:         byte[] pub = deviceKeyX509();
+188:         JSONObject j = new JSONObject();
+189:         j.put("t", "sa-activate");
+190:         j.put("v", 1);
+191:         j.put("order", order);
+192:         j.put("pkg", ctx.getPackageName());
+193:         j.put("ver", BuildInfo.VERSION);
+194:         j.put("build", BuildInfo.BUILD_DATE);
+195:         j.put("dk", LicenseToken.deviceFingerprint(pub));
+196:         j.put("pub", Base64.getEncoder().encodeToString(pub));
+197:         JSONArray c = new JSONArray();
+198:         if (chain != null) for (Certificate x : chain) c.put(Base64.getEncoder().encodeToString(x.getEncoded()));
+199:         j.put("chain", c);
+200:         j.put("model", Build.MANUFACTURER + " " + Build.MODEL + " / Android " + Build.VERSION.RELEASE);
+201:         j.put("at", Clock.now());
+202:         db.audit("LICENSE_REQUEST", "license", 0, order);
+203:         // 11.5: مضغوطًا (أقصر بنحو الثلث)؛ أداة البائع تقرأ الصيغتين
+204:         LicenseGuard.addToRequest(ctx, db, j);   // 12.7: هوية المكتب وسجل محاولات الاستخدام لمكتب آخر
+205:         return LicenseToken.packRequest(j.toString());
+206:     }
+207: 
+208:     /** يتحقق من الرمز لهذا الهاتف ثم يحفظه في موضعين. يرمي برسالة واضحة إن لم يصلح. */
+209:     public static Entitlements activate(Context ctx, Db db, String token) throws Exception {
+210:         token = LicenseToken.extract(token);   // 11.5: من ملف المفتاح أو رابط QR أو رسائل واتساب مقسّمة
+211:         byte[] dk = deviceKeyX509();
+212:         if (dk == null) throw new IllegalStateException("أنشئ طلب التفعيل أولًا من هذا الهاتف ثم أرسله للبائع.");
+213:         LicenseToken.Grant g = LicenseToken.verify(token, dk);
+214:         if (g == null) {
+215:             String lid = LicenseToken.peek(token).get("lid");
+216:             throw new IllegalArgumentException("الرمز غير صالح لهذا الهاتف" + (lid == null ? "" : " (" + lid + ")")
+217:                     + ": تأكد أنك نسخته كاملًا وأنه صادر لطلب هذا الهاتف نفسه.");
+218:         }
+219:         save(ctx, db, token.replaceAll("\\s+", ""));
+220:         db.audit("LICENSE_ACTIVATE", "license", 0, g.lid());
+221:         load(ctx, db);
+222:         return current;
+223:     }
+224: 
+225:     /**
+226:      * «إلغاء التفعيل» قبل نقل الرخصة: يوقّع إيصال تحرير (رقم الرخصة + بصمة المفتاح + تحدٍّ) بمفتاح الجهاز
+227:      * ثم يحذف الرمز والمفتاح. لا يستطيع إنتاج الإيصال إلا حامل المفتاح الأصلي.
+228:      */
+229:     public static String release(Context ctx, Db db) throws Exception {
+230:         Entitlements e = current;
+231:         String token = storedToken(ctx, db);
+232:         byte[] dk = deviceKeyX509();
+233:         LicenseToken.Grant g = LicenseToken.verify(token, dk);
+234:         if (g == null) throw new IllegalStateException("لا توجد رخصة مفعّلة على هذا الهاتف.");
+235:         byte[] nonce = new byte[12];
+236:         new SecureRandom().nextBytes(nonce);
+237:         String body = "v=1;t=release;lid=" + g.lid() + ";dk=" + LicenseToken.deviceFingerprint(dk) + ";n="
+238:                 + Base64.getUrlEncoder().withoutPadding().encodeToString(nonce) + ";at=" + Clock.now();
+239:         String sig = sign(body.getBytes(StandardCharsets.UTF_8));
+240:         save(ctx, db, "");
+241:         KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+242:         ks.load(null);
+243:         ks.deleteEntry(DEV);
+244:         db.audit("LICENSE_RELEASE", "license", 0, g.lid());
+245:         load(ctx, db);
+246:         return REL_PREFIX + Base64.getUrlEncoder().withoutPadding().encodeToString(body.getBytes(StandardCharsets.UTF_8)) + "." + sig;
+247:     }
+248: 
+249:     /** 12.7: توقيع بمفتاح الجهاز (سجل المحاولات). */
+250:     static String signData(byte[] data) throws Exception { return sign(data); }
+251: 
+252:     private static String sign(byte[] data) throws Exception {
+253:         KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+254:         ks.load(null);
+255:         PrivateKey k = (PrivateKey) ks.getKey(DEV, null);
+256:         java.security.Signature s = java.security.Signature.getInstance("SHA256withECDSA");
+257:         s.initSign(k);
+258:         s.update(data);
+259:         return Base64.getUrlEncoder().withoutPadding().encodeToString(s.sign());
+260:     }
+261: 
+262:     // ===================================================================================
+263:     // بصمة عدّادات المجاني (HMAC بمفتاح Keystore)
+264:     // ===================================================================================
+265: 
+266:     /** بصمة hex، أو «» إن تعذّر Keystore (فتُعامل العدّادات كغير موثوقة وتحكم أرضية البيانات الحية). */
+267:     static String mac(String data) {
+268:         try {
+269:             KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+270:             ks.load(null);
+271:             if (!ks.containsAlias(MAC)) {
+272:                 KeyGenerator kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_HMAC_SHA256, "AndroidKeyStore");
+273:                 kg.init(new KeyGenParameterSpec.Builder(MAC, KeyProperties.PURPOSE_SIGN).build());
+274:                 kg.generateKey();
+275:             }
+276:             Mac m = Mac.getInstance("HmacSHA256");
+277:             m.init((SecretKey) ks.getKey(MAC, null));
+278:             return BackupFormat.hex(m.doFinal(data.getBytes(StandardCharsets.UTF_8)));
+279:         } catch (Throwable t) {
+280:             return "";
+281:         }
+282:     }
+283: 
+284:     // ===================================================================================
+285:     // سلامة الحزمة والبيئة
+286:     // ===================================================================================
+287: 
+288:     static final int SIG_MATCH = 0, SIG_MISMATCH = 1, SIG_UNKNOWN = 2;
+289: 
+290:     /** 11.5: ثلاث نتائج: مطابق، غير مطابق، تعذّر التحقق (كان التعذّر يُعدّ مطابقًا). */
+291:     static int signatureState(Context ctx) {
+292:         try {
+293:             return signatureMatchesOrThrow(ctx) ? SIG_MATCH : SIG_MISMATCH;
+294:         } catch (Throwable t) {
+295:             return SIG_UNKNOWN;
+296:         }
+297:     }
+298: 
+299:     /** للتوافق: «غير مطابق» فقط يعيد false. */
+300:     static boolean signatureMatches(Context ctx) { return signatureState(ctx) != SIG_MISMATCH; }
+301: 
+302:     /** بصمة شهادة التوقيع تطابق شهادة المطوّر؟ نسخة معاد توقيعها تختلف. يرمي إن تعذّر الفحص. */
+303:     static boolean signatureMatchesOrThrow(Context ctx) throws Exception {
+304:         {
+305:             PackageInfo pi = ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), PackageManager.GET_SIGNING_CERTIFICATES);
+306:             Signature[] sigs = pi.signingInfo.hasMultipleSigners() ? pi.signingInfo.getApkContentsSigners() : pi.signingInfo.getSigningCertificateHistory();
+307:             if (sigs == null || sigs.length == 0) return false;
+308:             for (Signature s : sigs) {
+309:                 String h = BackupFormat.hex(MessageDigest.getInstance("SHA-256").digest(s.toByteArray())).toUpperCase(Locale.US);
+310:                 if (h.equals(BuildInfo.SIGNING_CERT_SHA256)) return true;
+311:             }
+312:             return false;
+313:         }
+314:     }
+315: 
+316:     /** إشارات للعرض فقط: لا حذف بيانات ولا إغلاق للتطبيق أبدًا؛ صاحب هاتف مروّت صادق لا يخسر دفاتره. */
+317:     static String environmentSignals(Context ctx) {
+318:         StringBuilder b = new StringBuilder();
+319:         try {
+320:             if ((ctx.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) b.append("نسخة تطوير قابلة للتصحيح؛ ");
+321:             String fp = (Build.FINGERPRINT + " " + Build.MODEL + " " + Build.HARDWARE).toLowerCase(Locale.US);
+322:             if (fp.contains("generic") || fp.contains("emulator") || fp.contains("goldfish") || fp.contains("ranchu") || fp.contains("sdk_gphone")) b.append("محاكٍ؛ ");
+323:             for (String p : new String[]{"/system/xbin/su", "/system/bin/su", "/sbin/su", "/system/app/Superuser.apk", "/data/adb/magisk"}) {
+324:                 if (new File(p).exists()) {
+325:                     b.append("صلاحية الجذر (root)؛ ");
+326:                     break;
+327:                 }
+328:             }
+329:             String maps = new String(Db.readAll(new java.io.FileInputStream("/proc/self/maps")), StandardCharsets.UTF_8);

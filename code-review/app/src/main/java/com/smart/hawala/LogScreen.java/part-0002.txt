@@ -1,0 +1,173 @@
+180:         if (a.db.usersEnabled() && a.can(Auth.Perm.VIEW)) for (Model.User u : a.db.users(false)) whoNames.add(Db.label(u));
+181:         final Spinner who = new Spinner(a);
+182:         a.setItems(who, whoNames);
+183:         who.setSelection(Math.max(0, whoNames.indexOf(whoSel)));
+184:         if (whoNames.size() > 1) adv.addView(who, a.lp(-1, 50, 2));
+185:         LinearLayout amt = a.row();
+186:         final EditText min = a.field("أدنى مبلغ");
+187:         final EditText max = a.field("أعلى مبلغ");
+188:         Ui.numeric(min);
+189:         Ui.numeric(max);
+190:         min.setText(minText);
+191:         max.setText(maxText);
+192:         amt.addView(min, a.weight(48, 1, 2));
+193:         amt.addView(max, a.weight(48, 1, 2));
+194:         adv.addView(amt);
+195:         final CheckBox cancelled = new CheckBox(a);
+196:         cancelled.setText("تضمين الحركات الملغاة والمعدّلة");
+197:         cancelled.setChecked(filter.includeCancelled);
+198:         adv.addView(cancelled);
+199:         adv.addView(a.smallButton("تطبيق الفلاتر", a.primary, v -> {
+200:             term = q.getText().toString().trim();
+201:             int oi = office.getSelectedItemPosition();
+202:             filter.office = oi <= 0 ? null : offices.get(oi - 1).id;
+203:             int ti = type.getSelectedItemPosition();
+204:             filter.type = ti == 1 ? Model.TYPE_DEBIT : ti == 2 ? Model.TYPE_CREDIT : null;
+205:             filter.currency = cur.getSelectedItemPosition() <= 0 ? null : String.valueOf(cur.getSelectedItem());
+206:             filter.includeCancelled = cancelled.isChecked();
+207:             minText = min.getText().toString().trim();
+208:             maxText = max.getText().toString().trim();
+209:             kindSel = kind.getSelectedItemPosition();
+210:             whoSel = who.getSelectedItemPosition() <= 0 ? null : whoNames.get(who.getSelectedItemPosition());
+211:             render(true);
+212:         }), a.lp(-1, 46, 3));
+213:         adv.addView(a.smallButton("مسح كل الفلاتر", Color.rgb(140, 140, 140), v -> {
+214:             filter = new Db.TxFilter();
+215:             term = "";
+216:             minText = "";
+217:             maxText = "";
+218:             kindSel = 0;
+219:             whoSel = null;
+220:             period = StatementScreen.Period.all();
+221:             render(expanded);
+222:         }), a.lp(-1, 42, 3));
+223: 
+224:         // 8.0: البحث في خيط خلفي (لا تجمّد الشاشة مع آلاف الحركات)، وبلا نص بحث ولا حدود مبلغ يُجلب المعروض فقط
+225:         final int gen = ++generation;
+226:         final LinearLayout box = new LinearLayout(a);
+227:         box.setOrientation(LinearLayout.VERTICAL);
+228:         a.body.addView(box);
+229:         box.addView(a.text("جارٍ التحميل…", 14, a.muted, false));
+230:         final int limit = shownLimit;
+231:         new Thread(() -> {
+232:             Object res;
+233:             try {
+234:                 res = query(limit);
+235:             } catch (Throwable t) {
+236:                 res = t;
+237:             }
+238:             final Object fr = res;
+239:             a.runOnUiThread(() -> {
+240:                 if (gen != generation || a.isFinishing() || box.getParent() == null) return;
+241:                 box.removeAllViews();
+242:                 if (fr instanceof NumberFormatException) {
+243:                     box.addView(a.text("قيمة المبلغ في الفلتر غير صحيحة.", 14, a.red, true));
+244:                     return;
+245:                 }
+246:                 if (fr instanceof Throwable) {
+247:                     box.addView(a.text("تعذر عرض الحركات: " + Ui.friendly((Throwable) fr), 14, a.red, true));
+248:                     return;
+249:                 }
+250:                 showResults(box, (Result) fr, expanded);
+251:             });
+252:         }, "log-query").start();
+253:     }
+254: 
+255:     /** نتيجة البحث: الحركات المعروضة والعدد الكلي المطابق. */
+256:     private static final class Result {
+257:         List<Model.Tx> shown;
+258:         long total;
+259:         Map<Long, String> names;
+260:         Map<Long, Integer> att;
+261:     }
+262: 
+263:     private int generation;
+264: 
+265:     private void showResults(LinearLayout box, final Result r, final boolean expanded) {
+266:         List<String> desc = describeFilters(r.names);
+267:         box.addView(a.text("عدد الحركات: " + r.total + (desc.isEmpty() ? "" : "\n" + Model.join(desc, " • ")), 14, a.primary, true));
+268:         if (r.total > 0) {
+269:             box.addView(a.makeButton("تصدير هذه النتائج (PDF / صور / Excel)", a.primary, v -> a.busy("جارٍ جمع النتائج…", p -> query(0).shown,
+270:                     res -> {
+271:                         @SuppressWarnings("unchecked") List<Model.Tx> all = (List<Model.Tx>) res;
+272:                         a.exportUi.listDialog(expanded ? "نتائج البحث" : "سجل الحركات", desc, all);
+273:                     })), a.lp(-1, 48, 4));
+274:         }
+275:         int n = 0;
+276:         for (final Model.Tx t : r.shown) {
+277:             if (n >= shownLimit) break;
+278:             n++;
+279:             LinearLayout x = a.card();
+280:             a.body.removeView(x);
+281:             box.addView(x, a.lp(-1, -2, 5));
+282:             x.addView(txRow(t, r.names.get(t.officeId), r.att.get(t.id)));
+283:             x.setBackground(a.ripple(a.round(a.surface, a.line, 16), 16));
+284:             x.setOnClickListener(v -> details(t, () -> render(expanded)));
+285:         }
+286:         if (r.total > shownLimit) {
+287:             box.addView(a.makeButton("عرض المزيد (" + (r.total - shownLimit) + " متبقية)", Color.rgb(120, 120, 120), v -> {
+288:                 shownLimit += 200;
+289:                 render(expanded);
+290:             }), a.lp(-1, 46, 4));
+291:         }
+292:         if (r.total == 0) box.addView(a.text("لا توجد حركات مطابقة.", 15, a.muted, false));
+293:     }
+294: 
+295:     /** limit=0: كل المطابق (للتصدير). بلا نص بحث ولا حدود مبلغ: العدد من قاعدة البيانات والمعروض فقط يُفك. */
+296:     private Result query(int limit) {
+297:         Db.TxFilter f = new Db.TxFilter();
+298:         f.office = filter.office;
+299:         f.type = filter.type;
+300:         f.currency = filter.currency;
+301:         f.includeCancelled = filter.includeCancelled;
+302:         f.from = period.from;
+303:         f.to = period.to;
+304:         Result r = new Result();
+305:         r.names = a.db.officeNames();
+306:         r.att = a.db.attachmentCounts(null);
+307:         boolean simple = term.isEmpty() && minText.isEmpty() && maxText.isEmpty() && kindSel == 0 && whoSel == null;
+308:         if (simple && limit > 0) {
+309:             r.total = a.db.txCount(f);
+310:             f.limit = limit;
+311:             r.shown = a.db.txLog(f);
+312:             return r;
+313:         }
+314:         // 12.7: مع نص بحث تُقرأ المرشّحة من نص البحث المحلي فقط (لا تُفك كل حركات الفترة)، والتحقق كما كان
+315:         List<Model.Tx> all = term.isEmpty() ? a.db.txLog(f) : a.db.txSearch(f, term.toLowerCase(Locale.ROOT));
+316:         BigDecimal lo = minText.isEmpty() ? null : new BigDecimal(Db.normalizeNumber(minText));
+317:         BigDecimal hi = maxText.isEmpty() ? null : new BigDecimal(Db.normalizeNumber(maxText));
+318:         String t = term.toLowerCase(Locale.ROOT);
+319:         List<Model.Tx> out = new ArrayList<>();
+320:         for (Model.Tx x : all) {
+321:             if (!t.isEmpty()) {
+322:                 int d = a.db.decimals(x.currency);
+323:                 String hay = (Model.nz(r.names.get(x.officeId)) + " " + x.person + " " + x.description + " " + x.notes + " " + x.uuid + " " + Model.nz(x.userName) + " " + Model.nz(x.dest) + " " + x.currency
+324:                         + " " + Model.plain(x.amount, d) + " " + Model.fmt(x.amount, d)).toLowerCase(Locale.ROOT);
+325:                 if (!hay.contains(t)) continue;
+326:             }
+327:             if (kindSel == 1 && x.isLinked()) continue;
+328:             if (kindSel == 2 && !x.isFx()) continue;
+329:             if (kindSel == 3 && !x.isTransfer()) continue;
+330:             if (kindSel == 4 && (Model.FEE_NONE.equals(x.feeType) || x.fee == 0)) continue;
+331:             if (kindSel == 5 && (r.att.get(x.id) == null || r.att.get(x.id) == 0)) continue;
+332:             if (kindSel == 6 && x.replacesId == null) continue;
+333:             if (whoSel != null && !whoSel.equals(Model.nz(x.userName))) continue;
+334:             BigDecimal val = BigDecimal.valueOf(x.amount, a.db.decimals(x.currency));
+335:             if (lo != null && val.compareTo(lo) < 0) continue;
+336:             if (hi != null && val.compareTo(hi) > 0) continue;
+337:             out.add(x);
+338:         }
+339:         r.total = out.size();
+340:         r.shown = out;
+341:         return r;
+342:     }
+343: 
+344:     private List<String> describeFilters(Map<Long, String> names) {
+345:         List<String> d = new ArrayList<>();
+346:         if (!term.isEmpty()) d.add("بحث: " + term);
+347:         if (filter.office != null) d.add("المكتب: " + Model.nz(names.get(filter.office)));
+348:         if (filter.type != null) d.add(Model.TYPE_DEBIT.equals(filter.type) ? "لنا فقط" : "علينا فقط");
+349:         if (filter.currency != null) d.add("العملة: " + filter.currency);
+350:         if (period.hasStart() || period.to != Long.MAX_VALUE) d.add("الفترة: " + period.label);
+351:         if (!minText.isEmpty()) d.add("من مبلغ " + minText);
+352:         if (!maxText.isEmpty()) d.add("إلى مبلغ " + maxText);

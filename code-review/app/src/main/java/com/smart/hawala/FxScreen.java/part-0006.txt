@@ -1,0 +1,143 @@
+739:                         if (s.selected <= 0) continue;
+740:                         long v = Db.minor((k == 0 ? fromFeeAmt : toFeeAmt).getText().toString(), d);
+741:                         net += Model.FEE_US.equals(FEE_KINDS[s.selected]) ? v : -v;
+742:                     }
+743:                     l.add("صافي الأجرة: " + (net >= 0 ? "ربح لنا " : "خسارة علينا ") + "\u2066" + Model.fmt(Math.abs(net), d) + " " + c + "\u2069");
+744:                 } catch (Exception ignored) {
+745:                     // الناقص ظاهر بالأحمر
+746:                 }
+747:             } else l.add("الأجرة: بدون");
+748:             String p = person.getText().toString().trim();
+749:             l.add("المستفيد: " + (p.isEmpty() ? "—" : p));
+750:             if (at != null && from[0] != null && to[0] != null && from[0].id != to[0].id) {
+751:                 try {
+752:                     for (Db.Preview pv : a.db.preview(java.util.Arrays.asList(a.db.transferLegs(input.get())), null))
+753:                         for (String k : pv.before.keySet())
+754:                             l.add("«" + pv.officeName + "» " + k + ": " + Model.bal(pv.before.get(k), a.db.decimals(k)) + "  ←  " + Model.bal(pv.after.get(k), a.db.decimals(k))
+755:                                     + (pv.pending ? " (بعد الاعتماد)" : ""));
+756:                 } catch (Exception ignored) {
+757:                     // الناقص ظاهر بالأحمر أعلاه
+758:                 }
+759:             }
+760:             l.add("التاريخ: اليوم " + Model.day(Clock.now()));
+761:             renderSummary(summary, footer, l, (from[0] == null ? "" : from[0].name) + " ← " + (to[0] == null ? "" : to[0].name) + " • " + at, a.primaryInk);
+762:         };
+763:         final Runnable curs = () -> {
+764:             String keep = cur[0] == null ? null : cur[0].label();
+765:             common.clear();
+766:             if (from[0] != null && to[0] != null) {
+767:                 List<String> y = a.db.officeCurrencies(to[0].id);
+768:                 for (String c : a.db.officeCurrencies(from[0].id)) if (y.contains(c)) common.add(c);
+769:             }
+770:             cur[0] = curChips(curHolder, common, a.primary, i -> update.run(),
+771:                     from[0] == null || to[0] == null ? "اختر المكتبين لتظهر عملاتهما المشتركة" : "لا عملة مشتركة مفعّلة للمكتبين");
+772:             if (cur[0] != null) {
+773:                 if (keep != null && common.contains(keep)) cur[0].set(common.indexOf(keep), false);
+774:                 else if (common.size() == 1) cur[0].set(0, false);
+775:             }
+776:             fromBal.setText(from[0] == null ? "" : balanceLine(a.db, from[0]));
+777:             toBal.setText(to[0] == null ? "" : balanceLine(a.db, to[0]));
+778:             fromBtn.setText(from[0] == null ? "اختر المكتب طالب الحركة" : (from[0].pinned ? "📌 " : "") + from[0].name);
+779:             toBtn.setText(to[0] == null ? "اختر المكتب المنفّذ" : (to[0].pinned ? "📌 " : "") + to[0].name);
+780:             a.txScreen.markOffice(fromBtn, from[0] != null);
+781:             a.txScreen.markOffice(toBtn, to[0] != null);
+782:             update.run();
+783:         };
+784:         fromBtn.setOnClickListener(v -> a.officePicker(o -> {
+785:             if (to[0] != null && to[0].id == o.id) {
+786:                 a.toast("«" + o.name + "» هو المكتب المنفّذ؛ اختر مكتبًا آخر أو اضغط «تبديل الطرفين»");
+787:                 return;
+788:             }
+789:             from[0] = o;
+790:             curs.run();
+791:         }, true));
+792:         toBtn.setOnClickListener(v -> a.officePicker(o -> {
+793:             if (from[0] != null && from[0].id == o.id) {
+794:                 a.toast("«" + o.name + "» هو طالب الحركة؛ اختر مكتبًا آخر أو اضغط «تبديل الطرفين»");
+795:                 return;
+796:             }
+797:             to[0] = o;
+798:             curs.run();
+799:         }, true));
+800:         swap.setOnClickListener(v -> {
+801:             Model.Office t = from[0];
+802:             from[0] = to[0];
+803:             to[0] = t;
+804:             // إعادة رسم الزرين بلا إطار «مختار» إن صار أحدهما فارغًا
+805:             for (Button b : new Button[]{fromBtn, toBtn}) {
+806:                 b.setBackground(a.ripple(a.round(a.goldSoft, a.goldSoft, 14), 14));
+807:                 b.setTextColor(a.goldInk);
+808:                 b.setTextSize(16);
+809:             }
+810:             curs.run();
+811:         });
+812:         // تفعيل الأجرة يقترح الحالة المعتادة: أجرتنا على الطالب «لنا»، وأجرة المنفّذ «علينا»
+813:         feeMode.listener = i -> {
+814:             if (i == 1 && fromFee.selected <= 0 && toFee.selected <= 0) {
+815:                 fromFee.set(1, false);
+816:                 toFee.set(2, false);
+817:             }
+818:             update.run();
+819:         };
+820:         fromFee.listener = i -> update.run();
+821:         toFee.listener = i -> update.run();
+822:         for (EditText e : new EditText[]{amt, fromFeeAmt, toFeeAmt, person}) e.addTextChangedListener(Ui.watcher(update));
+823:         save.setOnClickListener(v -> {
+824:             try {
+825:                 final Db.TransferInput in = input.get();
+826:                 if (in.amount <= 0) throw new IllegalArgumentException("اكتب المبلغ");
+827:                 final List<Db.TxInput> legs = java.util.Arrays.asList(a.db.transferLegs(in));
+828:                 a.confirmTx("تأكيد الحركة بين مكتبين", "", () -> TxConfirm.build(a.db, legs, null, null), "تسجيل الحركة", () -> a.busy("جارٍ التسجيل…",
+829:                         p -> a.db.addTransfer(in), res -> {
+830:                             Model.Tx t = a.db.tx(((long[]) res)[0]);
+831:                             a.toast(t != null && t.isPending() ? "سُجّلت الحركة بانتظار الاعتماد (الساقان معًا)" : "✓ سُجّلت الحركة بين المكتبين");
+832:                             Model.Office back = a.db.office(in.from);
+833:                             if (back != null) a.officeHub.showOffice(back);
+834:                             else a.showHome();
+835:                         }));
+836:             } catch (Exception e) {
+837:                 a.error(e);
+838:             }
+839:         });
+840:         if (start != null && start.active) from[0] = start;
+841:         curs.run();
+842:     }
+843: 
+844:     /** دمج هذا المكتب في مكتب آخر (اسمان لحساب واحد)، بعد نسخة أمان، وبتحقق الأرصدة. */
+845:     void mergeDialog(final Model.Office from) {
+846:         if (!a.require(Auth.Perm.DELETE)) return;
+847:         a.officePicker(into -> {
+848:             if (into.id == from.id) {
+849:                 a.toast("اختر مكتبًا آخر");
+850:                 return;
+851:             }
+852:             final EditText name = new EditText(a);
+853:             name.setHint("اكتب اسم «" + from.name + "» للتأكيد");
+854:             LinearLayout l = new LinearLayout(a);
+855:             l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+856:             l.addView(name, new LinearLayout.LayoutParams(-1, -2));
+857:             final AlertDialog dlg = new AlertDialog.Builder(a).setTitle("دمج «" + from.name + "» في «" + into.name + "»")
+858:                     .setMessage("تنتقل كل حركات «" + from.name + "» وأرصدته السابقة إلى «" + into.name + "» كما هي، ويُحذف «" + from.name + "» بعدها فارغًا. "
+859:                             + "رصيد «" + into.name + "» يصير مجموع الرصيدين، ويُتحقق من ذلك لكل عملة قبل الحفظ. تُحفظ نسخة أمان قبل الدمج للتراجع.")
+860:                     .setView(l).setPositiveButton("دمج", null).setNegativeButton("إلغاء", null).create();
+861:             dlg.setOnShowListener(d -> dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+862:                 if (!name.getText().toString().trim().equals(Model.nz(from.name).trim())) {
+863:                     name.setError("الاسم غير مطابق");
+864:                     return;
+865:                 }
+866:                 dlg.dismiss();
+867:                 a.busy("جارٍ حفظ نسخة أمان ثم الدمج…", p -> {
+868:                     Snapshot.take(a, a.db, "دمج «" + from.name + "» في «" + into.name + "»");
+869:                     a.db.mergeOffices(from.id, into.id);
+870:                     return null;
+871:                 }, res -> {
+872:                     Model.Office fresh = a.db.office(into.id);
+873:                     new AlertDialog.Builder(a).setTitle("تم الدمج ✓").setMessage("صار «" + into.name + "» يحمل حركات المكتبين وأرصدتهما. للتراجع: النسخ الاحتياطي ← التراجع.")
+874:                             .setPositiveButton("حسنًا", null).show();
+875:                     if (fresh != null) a.officeHub.showOffice(fresh);
+876:                 });
+877:             }));
+878:             dlg.show();
+879:         }, false);
+880:     }
+881: }

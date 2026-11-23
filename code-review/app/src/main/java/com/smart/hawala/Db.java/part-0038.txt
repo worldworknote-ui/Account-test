@@ -1,0 +1,156 @@
+5665:         in.opened.putAll(opened);
+5666:         return in;
+5667:     }
+5668: 
+5669:     // ===================================================================================
+5670:     // 9.0: صندوق المكتب
+5671:     // ===================================================================================
+5672: 
+5673:     static final String[] CASH_KEYS = {"cash_on", "cash_name", "cash_currencies", "cash_strict", "cash_allow_internal", "cash_cats_exp", "cash_cats_in", "cash_cats_out", "cash_boxes"};
+5674: 
+5675:     /**
+5676:      * 10.0: الصناديق في جدول خاص (cash_boxes) بأرقام ثابتة: لكل صندوق اسمه وعملاته وربطه بالمكاتب، ويُعطَّل أو يُحذف.
+5677:      * بلا صناديق بعد يرجع صندوقًا افتراضيًا غير مُعَد (on=false) ليظهر الإعداد الأول.
+5678:      */
+5679:     public List<CashBox.Config> cashBoxes() {
+5680:         Map<String, String> st = settings(CASH_KEYS);
+5681:         List<CashBox.Config> out = new ArrayList<>();
+5682:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id,name,currencies,strict,allow_internal,active FROM cash_boxes ORDER BY sort,id", null)) {
+5683:             while (c.moveToNext()) {
+5684:                 CashBox.Config x = CashBox.Config.from(st);
+5685:                 x.on = true;
+5686:                 x.id = c.getLong(0);
+5687:                 x.name = Model.nz(c.getString(1)).trim().isEmpty() ? CashBox.DEFAULT_NAME : c.getString(1).trim();
+5688:                 x.currencies.clear();
+5689:                 x.currencies.addAll(CashBox.Config.list(c.getString(2)));
+5690:                 x.strict = c.getInt(3) == 1;
+5691:                 x.allowInternal = c.getInt(4) == 1;
+5692:                 x.active = c.getInt(5) == 1;
+5693:                 out.add(x);
+5694:             }
+5695:         }
+5696:         if (out.isEmpty()) {
+5697:             CashBox.Config x = CashBox.Config.from(st);
+5698:             x.on = false;
+5699:             x.id = 1;
+5700:             out.add(x);
+5701:         }
+5702:         return out;
+5703:     }
+5704: 
+5705:     /** 10.0: نقل الصناديق من الإعدادات (9.0 و9.0.1) إلى جدولها بالأرقام نفسها (حركاتها تشير إليها). آمن للتكرار. */
+5706:     private static void migrateBoxes(SQLiteDatabase d) {
+5707:         try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM cash_boxes", null)) {
+5708:             if (c.moveToFirst() && c.getLong(0) > 0) return;
+5709:         }
+5710:         Map<String, String> st = new HashMap<>();
+5711:         for (String k : CASH_KEYS) {
+5712:             String v = rawSetting(d, k);
+5713:             if (v != null) st.put(k, v);
+5714:         }
+5715:         if (!"1".equals(st.get("cash_on"))) return;
+5716:         long now = Clock.now();
+5717:         int sort = 0;
+5718:         for (CashBox.Config b : CashBox.Config.boxes(st)) {
+5719:             d.execSQL("INSERT INTO cash_boxes(id,uuid,name,currencies,strict,allow_internal,active,sort,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+5720:                     new Object[]{b.id, UUID.randomUUID().toString(), b.name, CashBox.Config.join(b.currencies), b.strict ? 1 : 0, b.allowInternal ? 1 : 0,
+5721:                             b.active ? 1 : 0, sort++, now});
+5722:         }
+5723:         // حركات صناديق بلا صندوق معروف (لا يُتوقع): صندوق باسمها حتى لا يختفي نقدها
+5724:         try (Cursor c = d.rawQuery("SELECT DISTINCT box_id FROM cash_moves WHERE box_id NOT IN (SELECT id FROM cash_boxes)", null)) {
+5725:             while (c.moveToNext()) {
+5726:                 long id = c.getLong(0);
+5727:                 d.execSQL("INSERT INTO cash_boxes(id,uuid,name,currencies,strict,allow_internal,active,sort,created_at) VALUES(?,?,?,?,0,1,1,?,?)",
+5728:                         new Object[]{id, UUID.randomUUID().toString(), "صندوق " + id, Model.nz(st.get("cash_currencies")), sort++, now});
+5729:             }
+5730:         }
+5731:     }
+5732: 
+5733:     /** الصندوق المفتوح على هذا الجهاز (إعداد خاص بالجهاز)، وأول صندوق مفعّل إن لم يكن موجودًا أو كان معطّلًا. */
+5734:     public long currentBox() {
+5735:         long id = settingLong("cash_current", 1);
+5736:         List<CashBox.Config> all = cashBoxes();
+5737:         CashBox.Config c = CashBox.Config.find(all, id);
+5738:         if (c != null && c.active) return id;
+5739:         for (CashBox.Config x : all) if (x.active) return x.id;
+5740:         return all.get(0).id;
+5741:     }
+5742: 
+5743:     public void setCurrentBox(long id) { setSettingQuiet("cash_current", "" + id); }
+5744: 
+5745:     /** الصندوق برقمه (يرفض غير الموجود: لا تُسجَّل حركة على صندوق آخر خطأً). */
+5746:     public CashBox.Config cashBox(long id) {
+5747:         CashBox.Config c = CashBox.Config.find(cashBoxes(), id);
+5748:         if (c == null) throw new IllegalArgumentException("الصندوق رقم " + id + " غير موجود");
+5749:         return c;
+5750:     }
+5751: 
+5752:     /** إعدادات الصندوق المفتوح. */
+5753:     public CashBox.Config cashConfig() { return cashBox(currentBox()); }
+5754: 
+5755:     public void cashSetup(String name, List<String> currencies, Map<String, Long> openings, boolean strict, boolean allowInternal) {
+5756:         cashSetup(currentBox(), name, currencies, openings, strict, allowInternal);
+5757:     }
+5758: 
+5759:     private void checkBoxCurrencies(List<String> currencies) {
+5760:         if (currencies == null || currencies.isEmpty()) throw new IllegalArgumentException("اختر عملة واحدة على الأقل للصندوق");
+5761:         Set<String> known = new HashSet<>();
+5762:         for (Model.Currency c : currencies(true)) known.add(c.code);
+5763:         for (String c : currencies) if (!known.contains(c)) throw new IllegalArgumentException("العملة " + c + " غير موجودة في التطبيق. أضفها أولًا.");
+5764:     }
+5765: 
+5766:     /**
+5767:      * إعداد الصندوق أول مرة أو تعديل إعداداته: الاسم والعملات، وربطه بالمكاتب (10.0: لكل صندوق ربطه)، وأرصدة افتتاحية للعملات الجديدة.
+5768:      * لا تُزال عملة رصيدها في الصندوق ليس صفرًا.
+5769:      */
+5770:     public void cashSetup(long boxId, String name, List<String> currencies, Map<String, Long> openings, boolean strict, boolean allowInternal) {
+5771:         require(Auth.Perm.SETTINGS);
+5772:         checkBoxCurrencies(currencies);
+5773:         List<CashBox.Config> boxes = cashBoxes();
+5774:         CashBox.Config old = CashBox.Config.find(boxes, boxId);
+5775:         if (old == null) throw new IllegalArgumentException("الصندوق غير موجود");
+5776:         Map<String, Long> bal = old.on ? cashBalances(boxId) : new HashMap<>();
+5777:         for (String c : old.currencies) {
+5778:             Long b = bal.get(c);
+5779:             if (!currencies.contains(c) && b != null && b != 0) throw new IllegalStateException("لا يمكن إزالة " + c + " من الصندوق ورصيدها ليس صفرًا");
+5780:         }
+5781:         SQLiteDatabase d = getWritableDatabase();
+5782:         long now = Clock.now();
+5783:         d.beginTransaction();
+5784:         try {
+5785:             String nm = name == null || name.trim().isEmpty() ? (old.on ? old.name : CashBox.DEFAULT_NAME) : name.trim();
+5786:             for (CashBox.Config o : boxes) if (o.on && o.id != boxId && o.name.equals(nm)) throw new IllegalArgumentException("يوجد صندوق بالاسم نفسه");
+5787:             boolean first = !old.on;
+5788:             if (first) {
+5789:                 ContentValues v = new ContentValues();
+5790:                 v.put("uuid", UUID.randomUUID().toString());
+5791:                 v.put("name", nm);
+5792:                 v.put("currencies", CashBox.Config.join(currencies));
+5793:                 v.put("strict", strict ? 1 : 0);
+5794:                 v.put("allow_internal", allowInternal ? 1 : 0);
+5795:                 v.put("active", 1);
+5796:                 v.put("sort", 0);
+5797:                 v.put("created_at", now);
+5798:                 boxId = ins(d, "cash_boxes", v);
+5799:                 d.execSQL("INSERT OR REPLACE INTO settings(k,v) VALUES('cash_on','1')");
+5800:             } else {
+5801:                 d.execSQL("UPDATE cash_boxes SET name=?,currencies=?,strict=?,allow_internal=? WHERE id=" + boxId,
+5802:                         new Object[]{nm, CashBox.Config.join(currencies), strict ? 1 : 0, allowInternal ? 1 : 0});
+5803:             }
+5804:             insertOpenings(d, boxId, currencies, openings, now);
+5805:             audit(d, first ? "CASH_SETUP" : "CASH_SETTINGS", "cash", boxId, nm + " — " + CashBox.Config.join(currencies) + (strict ? " — مربوط بالمكاتب" : " — حر"));
+5806:             d.setTransactionSuccessful();
+5807:         } finally {
+5808:             d.endTransaction();
+5809:         }
+5810:         if (first(boxes)) setCurrentBox(boxId);
+5811:     }
+5812: 
+5813:     private static boolean first(List<CashBox.Config> boxes) { return boxes.size() == 1 && !boxes.get(0).on; }
+5814: 
+5815:     private void insertOpenings(SQLiteDatabase d, long boxId, List<String> currencies, Map<String, Long> openings, long now) {
+5816:         if (openings == null) return;
+5817:         for (Map.Entry<String, Long> e : openings.entrySet()) {
+5818:             if (e.getValue() == null || e.getValue() <= 0) continue;
+5819:             if (!currencies.contains(e.getKey())) throw new IllegalArgumentException("الرصيد الافتتاحي بعملة غير مختارة: " + e.getKey());
+5820:             CashBox.Move m = new CashBox.Move();

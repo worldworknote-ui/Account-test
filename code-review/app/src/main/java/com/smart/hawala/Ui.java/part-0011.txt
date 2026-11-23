@@ -1,0 +1,191 @@
+1753:         }
+1754:         if (l != null) {
+1755:             r.setBackground(ripple(round(fill, fill, 14), 14));
+1756:             r.setOnClickListener(l);
+1757:         }
+1758:         body.addView(r, lp(-1, -2, 5));
+1759:         return r;
+1760:     }
+1761: 
+1762:     /** إشعار عائم أسفل الشاشة مع زر (مثل «تراجع») يختفي بعد ثوانٍ. */
+1763:     void snack(String msg, String action, final Runnable act) {
+1764:         if (frame == null) return;
+1765:         final FrameLayout host = frame;
+1766:         final LinearLayout s = row();
+1767:         s.setPadding(dp(16), dp(6), dp(8), dp(6));
+1768:         s.setBackground(round(night ? Color.rgb(232, 238, 235) : Color.rgb(29, 42, 38), night ? Color.rgb(232, 238, 235) : Color.rgb(29, 42, 38), 14));
+1769:         s.setElevation(dp(6));
+1770:         int fg = night ? Color.rgb(15, 26, 23) : Color.WHITE;
+1771:         TextView m = new TextView(this);
+1772:         m.setText(msg);
+1773:         m.setTextSize(14);
+1774:         m.setTextColor(fg);
+1775:         m.setGravity(Gravity.RIGHT);
+1776:         s.addView(m, new LinearLayout.LayoutParams(0, -2, 1));
+1777:         if (action != null) {
+1778:             TextView b = new TextView(this);
+1779:             b.setText(action);
+1780:             b.setTextSize(15);
+1781:             b.setTextColor(night ? Color.rgb(11, 107, 83) : Color.rgb(233, 196, 120));
+1782:             bold(b);
+1783:             b.setPadding(dp(14), dp(10), dp(14), dp(10));
+1784:             b.setBackground(ripple(null, 10));
+1785:             b.setOnClickListener(v -> {
+1786:                 host.removeView(s);
+1787:                 act.run();
+1788:             });
+1789:             s.addView(b, new LinearLayout.LayoutParams(-2, -2));
+1790:         }
+1791:         final FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
+1792:         p.setMargins(dp(12), 0, dp(12), dp(12));
+1793:         host.addView(s, p);
+1794:         s.post(() -> {
+1795:             int extra = 0;
+1796:             if (footerBox != null && footerBox.getVisibility() == View.VISIBLE) extra += footerBox.getHeight();
+1797:             if (tabs != null && tabs.getVisibility() == View.VISIBLE) extra += tabCover > 0 ? tabCover : dp(70);
+1798:             p.bottomMargin = dp(12) + extra;
+1799:             s.setLayoutParams(p);
+1800:         });
+1801:         s.postDelayed(() -> host.removeView(s), 9000);
+1802:     }
+1803: 
+1804:     // ===================================================================================
+1805:     // أزرار مجزأة (اختيار واحد من عدة خيارات بضغطة)
+1806:     // ===================================================================================
+1807: 
+1808:     interface OnPick { void picked(int index); }
+1809: 
+1810:     /**
+1811:      * 10.9: أزرار مجزأة عصرية: للأزرار المتساوية مسار هادئ يتحرك فوقه مؤشر ملوّن بمرونة إلى الخيار المختار؛
+1812:      * وللقوائم الممتدة (العملات) رقائق مستديرة يرتفع المختار منها. الاستعمال كما كان تمامًا.
+1813:      */
+1814:     final class Seg {
+1815:         final ViewGroup view;
+1816:         final List<Button> buttons = new ArrayList<>();
+1817:         final int[] colors;
+1818:         final boolean scroll;
+1819:         int selected;
+1820:         OnPick listener;
+1821:         private View ind;
+1822:         private Drawable track;
+1823:         private boolean placed;
+1824: 
+1825:         Seg(String[] labels, int[] colors, int initial, boolean scroll) {
+1826:             this.colors = colors;
+1827:             this.scroll = scroll;
+1828:             LinearLayout r = row();
+1829:             for (int i = 0; i < labels.length; i++) {
+1830:                 final int idx = i;
+1831:                 Button b = new Button(Ui.this);
+1832:                 b.setText(labels[i]);
+1833:                 b.setAllCaps(false);
+1834:                 b.setTextSize(15);
+1835:                 bold(b);
+1836:                 b.setStateListAnimator(null);
+1837:                 b.setOnClickListener(v -> {
+1838:                     if (idx != selected) tick(v);
+1839:                     set(idx, true);
+1840:                 });
+1841:                 buttons.add(b);
+1842:                 if (scroll) {
+1843:                     LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-2, dp(44));
+1844:                     p.setMargins(dp(3), dp(4), dp(3), dp(4));
+1845:                     b.setMinWidth(dp(72));
+1846:                     b.setPadding(dp(16), 0, dp(16), 0);
+1847:                     springy(b, 0.92f);
+1848:                     r.addView(b, p);
+1849:                 } else {
+1850:                     b.setMinHeight(0);
+1851:                     b.setMinimumHeight(0);
+1852:                     b.setPadding(dp(6), 0, dp(6), 0);
+1853:                     springy(b, 0.94f);
+1854:                     r.addView(b, new LinearLayout.LayoutParams(0, dp(44), 1));
+1855:                 }
+1856:             }
+1857:             if (scroll) {
+1858:                 HorizontalScrollView h = new HorizontalScrollView(Ui.this);
+1859:                 h.setHorizontalScrollBarEnabled(false);
+1860:                 h.setClipToPadding(false);
+1861:                 h.addView(r);
+1862:                 LinearLayout wrap = new LinearLayout(Ui.this);
+1863:                 wrap.addView(h, new LinearLayout.LayoutParams(-1, -2));
+1864:                 view = wrap;
+1865:             } else {
+1866:                 FrameLayout f = new FrameLayout(Ui.this);
+1867:                 track = round(segTrack, segTrack, 16);
+1868:                 f.setBackground(track);
+1869:                 f.setPadding(dp(4), dp(4), dp(4), dp(4));
+1870:                 ind = new View(Ui.this);
+1871:                 ind.setVisibility(View.INVISIBLE);
+1872:                 f.addView(ind, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.LEFT));
+1873:                 f.addView(r, new FrameLayout.LayoutParams(-1, -2));
+1874:                 r.addOnLayoutChangeListener((v, l1, t1, r1, b1, l0, t0, r0, b0) -> place(false));
+1875:                 view = f;
+1876:             }
+1877:             set(initial, false);
+1878:         }
+1879: 
+1880:         private int colorOf(int i) { return colors == null ? primary : colors[Math.min(i, colors.length - 1)]; }
+1881: 
+1882:         /** يضع المؤشر تحت الخيار المختار (بحركة مرنة بعد أول رسم). */
+1883:         private void place(boolean animate) {
+1884:             if (ind == null) return;
+1885:             if (selected < 0 || selected >= buttons.size()) {
+1886:                 ind.setVisibility(View.INVISIBLE);
+1887:                 return;
+1888:             }
+1889:             Button b = buttons.get(selected);
+1890:             if (b.getWidth() == 0) return;
+1891:             ViewGroup.LayoutParams lp = ind.getLayoutParams();
+1892:             if (lp.width != b.getWidth() || lp.height != b.getHeight()) {
+1893:                 lp.width = b.getWidth();
+1894:                 lp.height = b.getHeight();
+1895:                 ind.setLayoutParams(lp);
+1896:             }
+1897:             int c = colorOf(selected);
+1898:             ind.setBackground(round(c, c, 12));
+1899:             boolean wasHidden = ind.getVisibility() != View.VISIBLE;
+1900:             ind.setVisibility(View.VISIBLE);
+1901:             if (animate && placed && !wasHidden && !NO_MOTION) {
+1902:                 ind.animate().translationX(b.getLeft()).translationY(b.getTop()).setDuration(580)
+1903:                         .setInterpolator(new android.view.animation.OvershootInterpolator(1.25f)).start();
+1904:             } else {
+1905:                 ind.animate().cancel();
+1906:                 ind.setTranslationX(b.getLeft());
+1907:                 ind.setTranslationY(b.getTop());
+1908:                 if (wasHidden && placed && !NO_MOTION) {
+1909:                     ind.setScaleX(0.85f);
+1910:                     ind.setScaleY(0.85f);
+1911:                     ind.setAlpha(0f);
+1912:                     ind.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(420).setInterpolator(new android.view.animation.OvershootInterpolator(1.6f)).start();
+1913:                 }
+1914:             }
+1915:             placed = true;
+1916:         }
+1917: 
+1918:         /** idx = -1: لا شيء محدد (يُلزم المستخدم بالاختيار). */
+1919:         void set(int idx, boolean fire) {
+1920:             if (idx >= buttons.size()) idx = 0;
+1921:             if (idx < 0) idx = -1;
+1922:             int prev = selected;
+1923:             selected = idx;
+1924:             for (int i = 0; i < buttons.size(); i++) {
+1925:                 int c = colorOf(i);
+1926:                 Button b = buttons.get(i);
+1927:                 if (scroll) {
+1928:                     if (i == idx) {
+1929:                         b.setBackground(ripple(round(c, c, 50), 50));
+1930:                         b.setTextColor(onColor(c));
+1931:                         b.setElevation(dp(2));
+1932:                         if (fire && prev != idx && !NO_MOTION) {
+1933:                             b.setScaleX(0.9f);
+1934:                             b.setScaleY(0.9f);
+1935:                             b.animate().scaleX(1f).scaleY(1f).setDuration(480).setInterpolator(new android.view.animation.OvershootInterpolator(2.6f)).start();
+1936:                         }
+1937:                     } else {
+1938:                         b.setBackground(ripple(round(surface, colors == null ? cardStroke : mix(line, c, 0.35f), 50), 50));
+1939:                         b.setTextColor(colors == null ? ink : readable(c));
+1940:                         b.setElevation(0);
+1941:                     }
+1942:                 } else {
+1943:                     b.setBackground(ripple(null, 12));

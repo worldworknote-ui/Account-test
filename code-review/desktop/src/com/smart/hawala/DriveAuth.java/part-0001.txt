@@ -1,0 +1,181 @@
+1: package com.smart.hawala;
+2: 
+3: import android.app.Activity;
+4: import android.app.AlertDialog;
+5: import android.content.Context;
+6: import android.content.Intent;
+7: import android.widget.EditText;
+8: import android.widget.LinearLayout;
+9: import com.smart.hawala.desk.DeskDriveAuth;
+10: import java.io.IOException;
+11: 
+12: /**
+13:  * 11.0 (الكمبيوتر): الواجهة نفسها التي في الهاتف (اختيار الحساب ثم الدخول)، والدخول نفسه عبر المتصفح (OAuth للكمبيوتر بصلاحية
+14:  * مجلد التطبيق المخفي). رمز التجديد لكل حساب في سلسلة المفاتيح؛ الحساب الحالي (قبل 11.0) في خانته القديمة.
+15:  */
+16: final class DriveAuth implements DriveSyncFolder.Tokens {
+17:     static final int REQ = 71, REQ_PICK = 73;
+18:     private static final String PENDING = "drive_refresh_pending";
+19:     private static String pendingEmail;
+20:     private final DeskDriveAuth inner;
+21: 
+22:     DriveAuth(Context ctx) { this(ctx, ""); }
+23: 
+24:     DriveAuth(Context ctx, String account) { inner = new DeskDriveAuth(SmartApp.db, keyFor(account)); }
+25: 
+26:     /** خانة رمز الحساب: الحساب الحالي في الخانة القديمة إن لم تكن له خانة باسمه. */
+27:     static String keyFor(String account) {
+28:         Db db = SmartApp.db;
+29:         String cur = db == null ? "" : db.setting("drive_account", "");
+30:         if (account == null || account.isEmpty()) account = cur;
+31:         if (account.isEmpty()) return DeskDriveAuth.REFRESH;
+32:         String k = "drive_refresh:" + account.trim().toLowerCase(java.util.Locale.ROOT);
+33:         if (!DeskDriveAuth.has(k) && account.equalsIgnoreCase(cur) && DeskDriveAuth.has(DeskDriveAuth.REFRESH)) return DeskDriveAuth.REFRESH;
+34:         return k;
+35:     }
+36: 
+37:     @Override public String token(boolean refresh) throws IOException { return inner.token(refresh); }
+38: 
+39:     interface Picked { void on(String email); }
+40: 
+41:     interface Done {
+42:         void ok();
+43: 
+44:         void fail(Exception e);
+45:     }
+46: 
+47:     /** على الكمبيوتر: اختيار الحساب = الدخول في المتصفح (يظهر اختيار حساب Google هناك)، ثم يُعرف البريد. */
+48:     static void pickAccount(Activity a, String current, Picked done) {
+49:         if (!clientReady(a, () -> pickAccount(a, current, done))) return;
+50:         waitLogin(a, () -> DeskDriveAuth.login(SmartApp.db, PENDING, current == null ? "" : current), r -> {
+51:             String email = String.valueOf(r);
+52:             if (email.isEmpty()) {
+53:                 DeskDriveAuth.drop(PENDING);
+54:                 ((Ui) a).error(new IOException("تم الدخول لكن تعذّرت معرفة بريد الحساب. أعد المحاولة."));
+55:                 return;
+56:             }
+57:             pendingEmail = email;
+58:             done.on(email);
+59:         }, e -> ((Ui) a).error(e));
+60:     }
+61: 
+62:     interface Login { String run() throws Exception; }
+63: 
+64:     /**
+65:      * 11.2: انتظار الدخول في المتصفح بنافذة فيها «إلغاء» (كانت نافذة انتظار بلا إلغاء حتى 5 دقائق فيبدو البرنامج معلّقًا)،
+66:      * و«فتح صفحة الدخول مرة أخرى». الإلغاء يوقف الانتظار فورًا؛ وبعد 3 دقائق دون دخول يتوقف وحده.
+67:      */
+68:     static void waitLogin(Activity a, Login w, java.util.function.Consumer<String> ok, java.util.function.Consumer<Exception> fail) {
+69:         Ui u = (Ui) a;
+70:         LinearLayout l = new LinearLayout(a);
+71:         l.setOrientation(LinearLayout.HORIZONTAL);
+72:         l.setGravity(android.view.Gravity.CENTER_VERTICAL);
+73:         l.setPadding(u.dp(20), u.dp(20), u.dp(20), u.dp(8));
+74:         l.addView(new android.widget.ProgressBar(a));
+75:         android.widget.TextView tv = u.text("أكمل الدخول بحساب Google في المتصفح الذي فُتح، ثم ارجع إلى البرنامج.", 15, u.dark, false);
+76:         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1);
+77:         lp.setMarginStart(u.dp(14));
+78:         l.addView(tv, lp);
+79:         final boolean[] over = {false};
+80:         final AlertDialog dlg = new AlertDialog.Builder(a).setTitle("الدخول إلى Google").setView(l).setCancelable(false)
+81:                 .setNegativeButton("إلغاء", null)
+82:                 .setNeutralButton("فتح الصفحة مرة أخرى", null)
+83:                 .create();
+84:         dlg.show();
+85:         dlg.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> {
+86:             over[0] = true;
+87:             DeskDriveAuth.cancelLogin();
+88:             dlg.dismiss();
+89:         });
+90:         dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> DeskDriveAuth.reopenLogin());
+91:         new Thread(() -> {
+92:             String r = null;
+93:             Exception err = null;
+94:             try {
+95:                 r = w.run();
+96:             } catch (Exception e) {
+97:                 err = e;
+98:             }
+99:             final String fr = r;
+100:             final Exception fe = err;
+101:             a.runOnUiThread(() -> {
+102:                 boolean cancelled = over[0];
+103:                 over[0] = true;
+104:                 try { dlg.dismiss(); } catch (Throwable ignored) { /* أُغلقت */ }
+105:                 if (cancelled) return;
+106:                 if (fe != null) fail.accept(fe);
+107:                 else ok.accept(fr == null ? "" : fr);
+108:             });
+109:         }, "google-login").start();
+110:     }
+111: 
+112:     static void onPicked(Activity a, int code, Intent data) {}
+113: 
+114:     static void onResult(Activity a, int code, Intent data) {}
+115: 
+116:     static void connect(final Activity a, final Done done) { connect(a, "", done); }
+117: 
+118:     /** الدخول بحساب محدد: إن دخل للتو (اختيار الحساب) يُعتمد رمزه، وإلا يُفتح المتصفح. */
+119:     static void connect(final Activity a, String account, final Done done) {
+120:         final String acct = account == null ? "" : account;
+121:         if (!acct.isEmpty() && acct.equalsIgnoreCase(pendingEmail) && DeskDriveAuth.has(PENDING)) {
+122:             try {
+123:                 DeskDriveAuth.promote(PENDING, keyFor(acct));
+124:                 pendingEmail = null;
+125:                 done.ok();
+126:             } catch (Exception e) {
+127:                 done.fail(e);
+128:             }
+129:             return;
+130:         }
+131:         if (!clientReady(a, () -> connect(a, acct, done))) return;
+132:         final String key = keyFor(acct);
+133:         // 11.3: رمز محفوظ يعمل فعلًا؟ (كان وجوده يكفي فلا تفعل «إعادة الدخول» شيئًا مع رمز منتهٍ)
+134:         if (DeskDriveAuth.has(key)) {
+135:             ((Ui) a).busy("جارٍ التحقق من دخول Google…", p -> {
+136:                 try {
+137:                     new DeskDriveAuth(SmartApp.db, key).token(true);
+138:                     return Boolean.TRUE;
+139:                 } catch (Exception e) {
+140:                     return Boolean.FALSE;
+141:                 }
+142:             }, r -> {
+143:                 if (Boolean.TRUE.equals(r)) done.ok();
+144:                 else browserLogin(a, key, acct, done);
+145:             });
+146:             return;
+147:         }
+148:         browserLogin(a, key, acct, done);
+149:     }
+150: 
+151:     /** الدخول في المتصفح؛ ويُرفض حساب غير المطلوب (يبقى الرمز القديم كما هو). */
+152:     private static void browserLogin(Activity a, String key, String acct, Done done) {
+153:         final String tmp = "drive_refresh_relogin";
+154:         waitLogin(a, () -> DeskDriveAuth.login(SmartApp.db, acct.isEmpty() ? key : tmp, acct), email -> {
+155:             try {
+156:                 if (!acct.isEmpty()) {
+157:                     if (!email.isEmpty() && !email.equalsIgnoreCase(acct)) {
+158:                         DeskDriveAuth.drop(tmp);
+159:                         done.fail(new IOException("دخلتَ بحساب " + email + "، والمزامنة على هذا الجهاز بحساب " + acct + ". أعد المحاولة واختر " + acct + "."));
+160:                         return;
+161:                     }
+162:                     DeskDriveAuth.promote(tmp, key);
+163:                 }
+164:                 done.ok();
+165:             } catch (Exception e) {
+166:                 done.fail(e);
+167:             }
+168:         }, done::fail);
+169:     }
+170: 
+171:     /** معرّف عميل Google للكمبيوتر: من البرنامج نفسه، أو يُلصق مرة واحدة (كما في نسخة الكمبيوتر السابقة). */
+172:     private static boolean clientReady(Activity a, Runnable again) {
+173:         if (DeskDriveAuth.client(SmartApp.db) != null) return true;
+174:         Ui u = (Ui) a;
+175:         LinearLayout box = new LinearLayout(a);
+176:         box.setOrientation(LinearLayout.VERTICAL);
+177:         box.setPadding(u.dp(20), u.dp(4), u.dp(20), 0);
+178:         box.addView(u.text("ربط Google Drive على الكمبيوتر يحتاج «معرّف عميل» من نوع تطبيق كمبيوتر (Desktop app) من مشروع Google Cloud. "
+179:                 + "الصقه مرة واحدة، أو استعمل «خادمك» أو «مجلد مشترك».", 14, u.muted, false));
+180:         final EditText id = u.field("Client ID"), sec = u.field("Client secret");
+181:         id.setLayoutDirection(android.view.View.LAYOUT_DIRECTION_LTR);

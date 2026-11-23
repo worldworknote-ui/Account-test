@@ -1,0 +1,149 @@
+518:                 : CashBox.ADJUST.equals(m.kind) ? R.drawable.ic_check2 : m.officeId != null ? R.drawable.ic_offices : in ? R.drawable.ic_download : R.drawable.ic_upload;
+519:         LinearLayout ic = new LinearLayout(a);
+520:         ic.setGravity(Gravity.CENTER);
+521:         GradientDrawable cg = new GradientDrawable();
+522:         cg.setColor(Ui.mix(a.surface, col, a.night ? 0.3f : 0.12f));
+523:         cg.setCornerRadius(a.dp(12));
+524:         ic.setBackground(cg);
+525:         ic.addView(a.icon(icon, col, 20), new LinearLayout.LayoutParams(a.dp(20), a.dp(20)));
+526:         r.addView(ic, new LinearLayout.LayoutParams(a.dp(40), a.dp(40)));
+527:         LinearLayout c = new LinearLayout(a);
+528:         c.setOrientation(LinearLayout.VERTICAL);
+529:         c.setPadding(a.dp(10), 0, a.dp(6), 0);
+530:         c.addView(a.text(title(m, names), 14, m.counts() ? a.ink : a.muted, true));
+531:         String sub = Model.date(m.createdAt);
+532:         String who = m.clientId != null ? "" : Model.nz(m.party);
+533:         if (!Model.nz(m.description).isEmpty()) who = who.isEmpty() ? m.description : who + " — " + m.description;
+534:         if (!Model.nz(m.rate).isEmpty() && (CashBox.EXCHANGE.equals(m.kind) || m.clientId != null)) who = (who.isEmpty() ? "" : who + " — ") + "السعر " + m.rate;
+535:         if (!who.isEmpty()) sub = who + "\n" + sub;
+536:         String st = m.stateText();
+537:         if (!st.isEmpty()) sub += "   •   " + st;
+538:         TextView s = a.text(sub, 12, a.muted, false);
+539:         s.setMaxLines(3);
+540:         c.addView(s);
+541:         r.addView(c, new LinearLayout.LayoutParams(0, -2, 1));
+542:         LinearLayout amt = new LinearLayout(a);
+543:         amt.setOrientation(LinearLayout.VERTICAL);
+544:         amt.setGravity(Gravity.LEFT);
+545:         int d = dec(dec, m.currency);
+546:         TextView av = a.text(a.amountsHidden() ? "••••" : (in ? "+" : "−") + Model.fmt(m.amount, d), 16, col, true);
+547:         av.setTextDirection(View.TEXT_DIRECTION_LTR);
+548:         amt.addView(av);
+549:         long fc = m.feeCash();
+550:         TextView cur = a.text(m.currency + (fc != 0 && !a.amountsHidden() ? (fc > 0 ? "  أجور +" : "  أجور −") + Model.fmt(Math.abs(fc), d) : ""), 11, a.muted, false);
+551:         cur.setTextDirection(View.TEXT_DIRECTION_LTR);
+552:         amt.addView(cur);
+553:         r.addView(amt, new LinearLayout.LayoutParams(-2, -2));
+554:         r.setOnClickListener(v -> details(m, names));
+555:         return r;
+556:     }
+557: 
+558:     private void details(final CashBox.Move m, Map<Long, String> names) {
+559:         int d = a.db.decimals(m.currency);
+560:         List<String[]> rows = new ArrayList<>();
+561:         rows.add(new String[]{"الحركة", title(m, names)});
+562:         rows.add(new String[]{m.dir > 0 ? "دخل الصندوق" : "خرج من الصندوق", money(m.amount, m.currency)});
+563:         if (m.fee > 0) rows.add(new String[]{"الأجور", iso(Model.fmt(m.fee, d)) + " " + (CashBox.FEE_US.equals(m.feeSide) ? "لنا" : "علينا")
+564:                 + (m.feeInCash ? " — نقدًا في الصندوق" : " — على حساب المكتب")});
+565:         if (!Model.nz(m.rate).isEmpty()) rows.add(new String[]{"السعر", m.rate});
+566:         if (m.pairUuid != null && CashBox.EXCHANGE.equals(m.kind)) {
+567:             for (CashBox.Move o : a.db.cashMoves(m.boxId))
+568:                 if (m.pairUuid.equals(o.pairUuid) && o.id != m.id) rows.add(new String[]{o.dir > 0 ? "ودخل مقابلها" : "وخرج مقابلها", money(o.amount, o.currency)});
+569:         }
+570:         if (!m.party.isEmpty()) rows.add(new String[]{m.clientId != null ? "العميل" : "الشخص", m.party});
+571:         if (!m.description.isEmpty()) rows.add(new String[]{"البيان", m.description});
+572:         if (m.officeId != null) rows.add(new String[]{"على المكتب", (m.dir > 0 ? "علينا" : "لنا") + " — حركة رقم " + m.txId});
+573:         rows.add(new String[]{"التاريخ", Model.date(m.createdAt)});
+574:         rows.add(new String[]{"بواسطة", m.userName});
+575:         if (!m.stateText().isEmpty()) rows.add(new String[]{"الحالة", m.stateText()});
+576:         if (m.cancelled() && !m.cancelReason.isEmpty()) rows.add(new String[]{"سبب الإلغاء", m.cancelReason});
+577:         AlertDialog.Builder db = new AlertDialog.Builder(a).setView(detailView("حركة صندوق", rows, null)).setPositiveButton("إغلاق", null);
+578:         if (!m.cancelled() && a.can(Auth.Perm.TX_CANCEL)) db.setNegativeButton("إلغاء الحركة", (x, w) -> cancel(m));
+579:         db.show();
+580:     }
+581: 
+582:     private void cancel(final CashBox.Move m) {
+583:         final EditText reason = new EditText(a);
+584:         reason.setHint("سبب الإلغاء");
+585:         LinearLayout l = new LinearLayout(a);
+586:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+587:         l.addView(reason, new LinearLayout.LayoutParams(-1, -2));
+588:         String msg = m.officeId != null ? "تُلغى معها حركة المكتب المرتبطة بقيد عكسي، فيعود رصيد المكتب كما كان."
+589:                 : m.clientId != null ? "تُلغى معها الحركة على حساب العميل، فيعود رصيده كما كان."
+590:                 : CashBox.EXCHANGE.equals(m.kind) ? "تُلغى ساقا البيع أو الشراء معًا (العملة ومقابلها)."
+591:                 : CashBox.TRANSFER.equals(m.kind) ? "يُلغى التحويل في الصندوقين معًا." : null;
+592:         new AlertDialog.Builder(a).setTitle("إلغاء حركة الصندوق").setView(l).setMessage(msg)
+593:                 .setPositiveButton("إلغاء الحركة", (d, w) -> {
+594:                     try {
+595:                         a.db.cancelCashMove(m.id, reason.getText().toString().trim());
+596:                         a.toast("أُلغيت الحركة");
+597:                         home();
+598:                     } catch (Exception e) {
+599:                         a.error(e);
+600:                     }
+601:                 }).setNegativeButton("رجوع", null).show();
+602:     }
+603: 
+604:     // ===================================================================================
+605:     // 9.0.1: التفاصيل قبل التسجيل (كل حركة)
+606:     // ===================================================================================
+607: 
+608:     /** جدول «البند: القيمة» داخل نافذة، مع تنبيه أحمر اختياري في أعلاه. */
+609:     View detailView(List<String[]> rows, String warn) { return detailView(null, rows, warn); }
+610: 
+611:     View detailView(String title, List<String[]> rows, String warn) {
+612:         ScrollView sv = new ScrollView(a);
+613:         LinearLayout l = new LinearLayout(a);
+614:         l.setOrientation(LinearLayout.VERTICAL);
+615:         l.setPadding(a.dp(18), a.dp(14), a.dp(18), a.dp(6));
+616:         if (title != null) {
+617:             TextView t = a.text(title, 19, a.primaryInk, true);
+618:             t.setPadding(a.dp(4), 0, a.dp(4), a.dp(8));
+619:             l.addView(t);
+620:         }
+621:         if (warn != null) {
+622:             TextView w = a.text("⚠ " + warn, 14, a.red, true);
+623:             w.setBackground(a.round(a.debitBg, a.debitBg, 10));
+624:             w.setPadding(a.dp(10), a.dp(8), a.dp(10), a.dp(8));
+625:             l.addView(w, a.lp(-1, -2, 4));
+626:         }
+627:         for (String[] r : rows) {
+628:             if (r[0] == null) {
+629:                 TextView h = a.text(r[1], 13, a.primaryInk, true);
+630:                 h.setPadding(a.dp(4), a.dp(10), a.dp(4), a.dp(2));
+631:                 l.addView(h);
+632:                 continue;
+633:             }
+634:             LinearLayout row = a.row();
+635:             row.setPadding(0, a.dp(3), 0, a.dp(3));
+636:             TextView k = a.text(r[0], 13, a.muted, false);
+637:             row.addView(k, new LinearLayout.LayoutParams(0, -2, 0.9f));
+638:             TextView v = a.text(r[1], 14, a.ink, true);
+639:             v.setTextDirection(View.TEXT_DIRECTION_RTL);
+640:             row.addView(v, new LinearLayout.LayoutParams(0, -2, 1.6f));
+641:             l.addView(row);
+642:             View div = new View(a);
+643:             div.setBackgroundColor(a.line);
+644:             l.addView(div, new LinearLayout.LayoutParams(-1, Math.max(1, a.dp(1) / 2)));
+645:         }
+646:         sv.addView(l);
+647:         return sv;
+648:     }
+649: 
+650:     void confirmDialog(String title, List<String[]> rows, String warn, String okLabel, final Runnable go) {
+651:         new AlertDialog.Builder(a).setView(detailView(title, rows, warn))
+652:                 .setPositiveButton(warn != null ? okLabel + " رغم ذلك" : okLabel, (d, w) -> go.run()).setNegativeButton("تعديل", null).show();
+653:     }
+654: 
+655:     String opName(CashBox.Input x) {
+656:         switch (x.kind) {
+657:             case CashBox.IN: return x.officeId != null ? "استلام لحساب مكتب" : x.clientId != null ? "استلام من عميل" : "استلام إلى الصندوق";
+658:             case CashBox.OUT: return x.officeId != null ? "تسليم لحساب مكتب" : x.clientId != null ? "تسليم لعميل" : "تسليم من الصندوق";
+659:             case CashBox.EXPENSE: return "مصروف";
+660:             case CashBox.EXCHANGE: return CashBox.BUY.equals(x.side) ? "شراء عملة" : "بيع عملة";
+661:             case CashBox.TRANSFER: return "تحويل بين الصناديق";
+662:             default: return CashBox.kindName(x.kind);
+663:         }
+664:     }
+665: 
+666:     /** يبني التفاصيل الكاملة لحركة قبل حفظها، ثم يحفظها بعد الموافقة. after: الشاشة بعد الحفظ. */

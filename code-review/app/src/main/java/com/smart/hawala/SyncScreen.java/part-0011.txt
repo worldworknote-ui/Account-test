@@ -1,0 +1,95 @@
+1407:         a.groupRow(g, R.drawable.ic_phone, a.primaryInk, "آخر ظهور: " + MainActivity.agoAt(m.optLong("at")), line, null, null);
+1408:         if (actions) a.button("إجراءات الجهاز", a.accent, v -> deviceActions(m));
+1409:         else if (renameOnly) {
+1410:             a.button("إعادة تسمية الجهاز", a.accent, v -> renameOther(m));
+1411:             if (canRm) a.button("إزالة من المزامنة", a.red, v -> removeDevice(m));
+1412:         } else if (canRm) a.button("إزالة من المزامنة", a.red, v -> removeDevice(m));
+1413:         List<JSONObject> hist = SyncEngine.devHistory(a.db, dev);
+1414:         a.section("السجل (" + hist.size() + ")", hist.isEmpty() ? null : "مسح", hist.isEmpty() ? null : v -> a.confirm("مسح سجل الجهاز",
+1415:                 "يُمسح سجل «" + m.optString("name") + "» على هذا الجهاز فقط.", "مسح", () -> {
+1416:                     SyncEngine.clearDevLog(a.db, dev);
+1417:                     deviceScreen(m, line, me, actions, renameOnly, canRm);
+1418:                 }));
+1419:         if (hist.isEmpty()) a.hint(me ? "يظهر هنا ما أرسله هذا الجهاز واستلمه في كل جولة، وأخطاؤه." : "يظهر هنا ما وصل من هذا الجهاز في كل جولة، وأي خطأ في حزمه.");
+1420:         LinearLayout hg = a.group();
+1421:         for (JSONObject x : hist) {
+1422:             boolean bad = x.has("e");
+1423:             a.groupRow(hg, bad ? R.drawable.ic_warn : R.drawable.ic_check2, bad ? a.red : a.green, MainActivity.agoAt(x.optLong("at")),
+1424:                     x.optString("t") + (bad ? "\n" + Ui.netFriendly(x.optString("e")) : ""), null, null);
+1425:         }
+1426:     }
+1427: 
+1428:     void showDuplicates() {
+1429:         a.here(this::showDuplicates);
+1430:         a.tabbedScreen("حركات قد تكون مكررة", a::showHome, "home");
+1431:         final List<SyncEngine.Dup> l = SyncEngine.duplicates(a.db);
+1432:         a.hint("حركتان بالمكتب والمبلغ والعملة والاسم نفسها سُجّلتا من جهازين قبل أن يتزامنا. قرّر لكل زوج: هل هما حوالة واحدة سُجّلت مرتين، أم حوالتان فعلًا؟ "
+1433:                 + "قرارك يصل إلى كل الأجهزة.");
+1434:         if (l.isEmpty()) {
+1435:             a.add(a.text("لا حركات مكررة محتملة ✓", 15, a.muted, false));
+1436:             return;
+1437:         }
+1438:         Map<Long, String> names = a.db.officeNames();
+1439:         for (final SyncEngine.Dup x : l) {
+1440:             LinearLayout c = a.card();
+1441:             c.addView(a.text(Model.nz(names.get(x.a.officeId)) + " — " + (Model.TYPE_DEBIT.equals(x.a.type) ? "لنا " : "علينا ")
+1442:                     + "\u2066" + Model.fmt(x.a.amount, a.db.decimals(x.a.currency)) + " " + x.a.currency + "\u2069", 16, a.primaryInk, true));
+1443:             c.addView(a.text(dupLine("الأولى", x.a), 13, a.ink, false));
+1444:             c.addView(a.text(dupLine("الثانية", x.b), 13, a.ink, false));
+1445:             LinearLayout r = a.row();
+1446:             r.addView(a.smallButton("أبقِ الاثنتين", a.accent, v -> {
+1447:                 SyncEngine.keepBoth(a.db, x);
+1448:                 a.toast("أُبقيت الحركتان (ليستا مكررتين)");
+1449:                 showDuplicates();
+1450:             }), a.weight(42, 1.2f, 2));
+1451:             r.addView(a.smallButton("ألغِ الأولى", a.red, v -> dropDup(x, x.a)), a.weight(42, 1, 2));
+1452:             r.addView(a.smallButton("ألغِ الثانية", a.red, v -> dropDup(x, x.b)), a.weight(42, 1, 2));
+1453:             c.addView(r);
+1454:         }
+1455:     }
+1456: 
+1457:     private String dupLine(String which, Model.Tx t) {
+1458:         String dev = SyncEngine.deviceOf(a.db, t.id);
+1459:         return "• " + which + ": " + Model.date(t.createdAt) + (t.person.isEmpty() ? "" : " • " + t.person) + (t.description.isEmpty() ? "" : " • " + t.description)
+1460:                 + (t.userName.isEmpty() ? "" : " • سجّلها " + t.userName) + (dev.isEmpty() ? "" : " • من «" + dev + "»") + (t.isPending() ? " • بانتظار الاعتماد" : "");
+1461:     }
+1462: 
+1463:     private void dropDup(final SyncEngine.Dup x, final Model.Tx t) {
+1464:         if (!a.require(t.isPending() ? Auth.Perm.APPROVE : Auth.Perm.TX_CANCEL)) return;
+1465:         a.confirm("إلغاء الحركة المكررة", dupLine("الحركة", t) + "\n\n" + (t.isPending() ? "تُرفض (لم تدخل الأرصدة)." : "تُلغى بقيد عكسي ظاهر في السجل، وتبقى الأخرى."),
+1466:                 "إلغاء هذه", () -> {
+1467:                     try {
+1468:                         SyncEngine.dropDuplicate(a.db, x, t);
+1469:                         a.toast("أُلغيت الحركة المكررة");
+1470:                     } catch (Exception e) {
+1471:                         a.error(e);
+1472:                     }
+1473:                     showDuplicates();
+1474:                 });
+1475:     }
+1476: 
+1477:     private void changePassword() {
+1478:         LinearLayout l = new LinearLayout(a);
+1479:         l.setOrientation(LinearLayout.VERTICAL);
+1480:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+1481:         final EditText o = secret(l, "كلمة السر الحالية"), n1 = secret(l, "الجديدة (8 محارف على الأقل)"), n2 = secret(l, "أعد كتابة الجديدة");
+1482:         final AlertDialog d = new AlertDialog.Builder(a).setTitle("تغيير كلمة سر المزامنة").setView(l).setPositiveButton("حفظ", null).setNegativeButton("إلغاء", null).create();
+1483:         d.setOnShowListener(x -> d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+1484:             if (n1.getText().length() < 8) {
+1485:                 n1.setError("8 محارف على الأقل");
+1486:                 return;
+1487:             }
+1488:             if (!n1.getText().toString().equals(n2.getText().toString())) {
+1489:                 n2.setError("غير متطابقة");
+1490:                 return;
+1491:             }
+1492:             d.dismiss();
+1493:             final String os = o.getText().toString(), ns = n1.getText().toString();
+1494:             a.busy("جارٍ إعادة تغليف المفتاح…", p -> {
+1495:                 new SyncEngine(a.db, folder(a, a.db)).changePassword(os.toCharArray(), ns.toCharArray());
+1496:                 return null;
+1497:             }, res -> a.toast("غُيّرت كلمة سر المزامنة ✓"));
+1498:         }));
+1499:         d.show();
+1500:     }
+1501: }

@@ -1,0 +1,184 @@
+1569:                             for (int i = 0; i < n; i++) {
+1570:                                 tops[i] = box.getChildAt(i).getTop();
+1571:                                 hs[i] = box.getChildAt(i).getHeight();
+1572:                             }
+1573:                             dragH = from + 1 < n ? tops[from + 1] - tops[from] : hs[from];
+1574:                             startY = e.getRawY();
+1575:                             row.setElevation(dp(10));
+1576:                             row.animate().scaleX(1.03f).scaleY(1.03f).setDuration(120).start();
+1577:                             tick(row);
+1578:                             return true;
+1579:                         }
+1580:                         case android.view.MotionEvent.ACTION_MOVE: {
+1581:                             if (tops == null) return false;
+1582:                             float dy = e.getRawY() - startY;
+1583:                             row.setTranslationY(dy);
+1584:                             float center = tops[from] + hs[from] / 2f + dy;
+1585:                             int t = from;
+1586:                             for (int i = from + 1; i < tops.length; i++) if (center > tops[i] + hs[i] / 2f) t = i;
+1587:                             for (int i = from - 1; i >= 0; i--) if (center < tops[i] + hs[i] / 2f) t = i;
+1588:                             if (t != to) {
+1589:                                 to = t;
+1590:                                 for (int i = 0; i < tops.length; i++) {
+1591:                                     if (i == from) continue;
+1592:                                     float want = (from < i && i <= to) ? -dragH : (to <= i && i < from) ? dragH : 0;
+1593:                                     View c = box.getChildAt(i);
+1594:                                     if (c.getTranslationY() != want) c.animate().translationY(want).setDuration(NO_MOTION ? 0 : 160).start();
+1595:                                 }
+1596:                             }
+1597:                             return true;
+1598:                         }
+1599:                         case android.view.MotionEvent.ACTION_UP:
+1600:                         case android.view.MotionEvent.ACTION_CANCEL: {
+1601:                             if (tops == null) return false;
+1602:                             box.requestDisallowInterceptTouchEvent(false);
+1603:                             for (int i = 0; i < box.getChildCount(); i++) {
+1604:                                 View c = box.getChildAt(i);
+1605:                                 c.animate().cancel();
+1606:                                 c.setTranslationY(0);
+1607:                             }
+1608:                             row.setElevation(0);
+1609:                             row.setScaleX(1f);
+1610:                             row.setScaleY(1f);
+1611:                             tops = null;
+1612:                             if (to != from) {
+1613:                                 box.removeView(row);
+1614:                                 box.addView(row, to);
+1615:                                 tick(row);
+1616:                                 List<Object> keys = new ArrayList<>();
+1617:                                 for (int i = 0; i < box.getChildCount(); i++) {
+1618:                                     Object k = box.getChildAt(i).getTag(R.id.drag_key);
+1619:                                     if (k != null) keys.add(k);
+1620:                                 }
+1621:                                 if (done != null) done.accept(keys);
+1622:                             }
+1623:                             return true;
+1624:                         }
+1625:                         default:
+1626:                             return false;
+1627:                     }
+1628:                 }
+1629:             });
+1630:         }
+1631:     }
+1632: 
+1633:     /** رقاقة صغيرة مستديرة (لنا / علينا / موقوف ...). */
+1634:     TextView chip(String s, int fg, int fill) {
+1635:         TextView t = text(s, 12, fg, true);
+1636:         t.setPadding(dp(10), dp(2), dp(10), dp(3));
+1637:         t.setGravity(Gravity.CENTER);
+1638:         t.setBackground(round(fill, fill, 50));
+1639:         return t;
+1640:     }
+1641: 
+1642:     /** رقاقة قابلة للضغط (مرشحات، آخر المكاتب). */
+1643:     TextView pill(String s, boolean on, View.OnClickListener l) {
+1644:         TextView t = text(s, 14, on ? Color.WHITE : ink, on);
+1645:         t.setPadding(dp(14), dp(7), dp(14), dp(8));
+1646:         t.setGravity(Gravity.CENTER);
+1647:         t.setSingleLine(true);
+1648:         t.setBackground(ripple(on ? round(primary, primary, 50) : round(surface, cardStroke, 50), 50));
+1649:         if (on) t.setTextColor(onColor(primary));
+1650:         t.setOnClickListener(l);
+1651:         springy(t, 0.93f);
+1652:         return t;
+1653:     }
+1654: 
+1655:     HorizontalScrollView strip(LinearLayout inner) {
+1656:         HorizontalScrollView h = new HorizontalScrollView(this);
+1657:         h.setHorizontalScrollBarEnabled(false);
+1658:         h.setClipToPadding(false);
+1659:         h.addView(inner);
+1660:         return h;
+1661:     }
+1662: 
+1663:     LinearLayout.LayoutParams gap(int w, int h, int side) {
+1664:         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w < 0 ? w : dp(w), h < 0 ? h : dp(h));
+1665:         p.setMargins(dp(side), 0, dp(side), 0);
+1666:         return p;
+1667:     }
+1668: 
+1669:     /** عنوان قسم مع رابط اختياري في الطرف الآخر. */
+1670:     LinearLayout section(String title, String link, View.OnClickListener l) {
+1671:         LinearLayout r = row();
+1672:         r.setPadding(dp(2), dp(14), dp(2), dp(4));
+1673:         r.addView(text(title, 15, ink, true), new LinearLayout.LayoutParams(0, -2, 1));
+1674:         if (link != null) {
+1675:             TextView t = text(link, 13, primaryInk, true);
+1676:             t.setBackground(ripple(null, 10));
+1677:             t.setOnClickListener(l);
+1678:             r.addView(t, new LinearLayout.LayoutParams(-2, -2));
+1679:         }
+1680:         body.addView(r, new LinearLayout.LayoutParams(-1, -2));
+1681:         return r;
+1682:     }
+1683: 
+1684:     /** بطاقة قائمة بلا حشو داخلي، تُضاف إليها أسطر بـ groupRow. */
+1685:     LinearLayout group() {
+1686:         LinearLayout g = new LinearLayout(this);
+1687:         g.setOrientation(LinearLayout.VERTICAL);
+1688:         g.setBackground(round(surface, cardStroke, 20));
+1689:         g.setClipToOutline(true);
+1690:         body.addView(g, lp(-1, -2, 5));
+1691:         return g;
+1692:     }
+1693: 
+1694:     /** سطر في قائمة مجمّعة: أيقونة، عنوان، وصف اختياري، ونص أو سهم في الطرف. */
+1695:     LinearLayout groupRow(LinearLayout g, int iconRes, int iconColor, String title, String sub, String trail, View.OnClickListener l) {
+1696:         if (g.getChildCount() > 0) {
+1697:             View d = new View(this);
+1698:             d.setBackgroundColor(line);
+1699:             LinearLayout.LayoutParams dp1 = new LinearLayout.LayoutParams(-1, Math.max(1, dp(1) / 2 + 0));
+1700:             dp1.setMargins(dp(14), 0, dp(14), 0);
+1701:             g.addView(d, dp1);
+1702:         }
+1703:         LinearLayout r = row();
+1704:         r.setPadding(dp(14), dp(11), dp(10), dp(11));
+1705:         r.setMinimumHeight(dp(52));
+1706:         if (l != null) springy(r, 0.98f);
+1707:         if (iconRes != 0) {
+1708:             FrameLayout ib = new FrameLayout(this);
+1709:             ib.setBackground(round(primarySoft, primarySoft, 11));
+1710:             ib.addView(icon(iconRes, iconColor, 20), new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER));
+1711:             LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(dp(36), dp(36));
+1712:             ip.setMargins(0, 0, 0, 0);
+1713:             r.addView(ib, ip);
+1714:         }
+1715:         LinearLayout col = new LinearLayout(this);
+1716:         col.setOrientation(LinearLayout.VERTICAL);
+1717:         col.setPadding(dp(8), 0, dp(4), 0);
+1718:         TextView tt = text(title, 15, ink, false);
+1719:         tt.setPadding(dp(2), 0, dp(2), 0);
+1720:         col.addView(tt);
+1721:         if (sub != null && !sub.isEmpty()) {
+1722:             TextView st = text(sub, 12, muted, false);
+1723:             st.setPadding(dp(2), 0, dp(2), 0);
+1724:             col.addView(st);
+1725:         }
+1726:         r.addView(col, new LinearLayout.LayoutParams(0, -2, 1));
+1727:         if (trail != null && !trail.isEmpty()) {
+1728:             TextView tr = text(trail, 13, primaryInk, true);
+1729:             r.addView(tr, new LinearLayout.LayoutParams(-2, -2));
+1730:         } else if (l != null) {
+1731:             r.addView(icon(R.drawable.ic_chevron, mix(muted, surface, 0.25f), 18), new LinearLayout.LayoutParams(dp(18), dp(18)));
+1732:         }
+1733:         if (l != null) {
+1734:             r.setBackground(ripple(null, 0));
+1735:             r.setOnClickListener(l);
+1736:         }
+1737:         g.addView(r, new LinearLayout.LayoutParams(-1, -2));
+1738:         return r;
+1739:     }
+1740: 
+1741:     /** شريط تنبيه (أصفر/أحمر) بنص وإجراء. */
+1742:     LinearLayout notice(int iconRes, String msg, boolean danger, String action, View.OnClickListener l) {
+1743:         int fill = danger ? debitBg : warnBg;
+1744:         int fg = danger ? red : warnInk;
+1745:         LinearLayout r = row();
+1746:         r.setPadding(dp(12), dp(10), dp(12), dp(10));
+1747:         r.setBackground(round(fill, fill, 14));
+1748:         r.addView(icon(iconRes, fg, 20), new LinearLayout.LayoutParams(dp(20), dp(20)));
+1749:         r.addView(text(msg, 13, fg, false), new LinearLayout.LayoutParams(0, -2, 1));
+1750:         if (action != null) {
+1751:             TextView t = text(action, 13, fg, true);
+1752:             r.addView(t, new LinearLayout.LayoutParams(-2, -2));

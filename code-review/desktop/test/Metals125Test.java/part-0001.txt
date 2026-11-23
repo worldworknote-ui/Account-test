@@ -1,0 +1,125 @@
+1: import android.content.Context;
+2: import android.database.Cursor;
+3: import com.smart.hawala.*;
+4: import java.io.File;
+5: import java.math.BigDecimal;
+6: import java.math.RoundingMode;
+7: import java.nio.file.Files;
+8: import java.util.*;
+9: 
+10: /**
+11:  * 12.5 على Db الحقيقي وبيانات اصطناعية: المعادن الثمينة بالوزن (كل عيار حساب)، ثبات الوحدة والعيار بعد أول حركة،
+12:  * التقويم بالدولار باختيار المحاسب، السعر الأونلاين للاستئناس، قراءة الوزن والعيار من الرسائل، المزامنة، وترحيل قاعدة 10.4.
+13:  * الاستعمال: java Metals125Test tests/data/db-10.4
+14:  */
+15: public class Metals125Test {
+16:     static int fails, passes;
+17: 
+18:     static void check(boolean c, String m) {
+19:         if (c) passes++;
+20:         else fails++;
+21:         System.out.println((c ? "  PASS " : "  FAIL ") + m);
+22:     }
+23: 
+24:     static boolean throwsMsg(Runnable r, String part) {
+25:         try {
+26:             r.run();
+27:             return false;
+28:         } catch (RuntimeException e) {
+29:             String all = "";
+30:             for (Throwable t = e; t != null; t = t.getCause()) all += t.getMessage() + " | ";
+31:             if (part != null && !all.contains(part)) System.out.println("      رسالة: " + all);
+32:             return part == null || all.contains(part);
+33:         }
+34:     }
+35: 
+36:     static Db.TxInput tx(long office, boolean us, long amount, String cur) {
+37:         Db.TxInput t = new Db.TxInput();
+38:         t.office = office;
+39:         t.type = us ? Model.TYPE_DEBIT : Model.TYPE_CREDIT;
+40:         t.amount = amount;
+41:         t.currency = cur;
+42:         t.when = Clock.now();
+43:         return t;
+44:     }
+45: 
+46:     static List<MessageParser.Cur> curs(Db db, String... codes) {
+47:         List<MessageParser.Cur> l = new ArrayList<>();
+48:         for (String c : codes) for (Model.Currency x : db.currencies(true)) if (x.code.equals(c)) l.add(new MessageParser.Cur(x.code, x.name, x.decimals));
+49:         return l;
+50:     }
+51: 
+52:     public static void main(String[] a) throws Exception {
+53:         System.setProperty("sa.secrets", "file");
+54:         Object[] first = DeskCoreTest.device("m125A");
+55:         Db A = (Db) first[1];
+56:         License.current = Entitlements.of(DeskCoreTest.fullGrant(), BuildInfo.BUILD_DATE);
+57: 
+58:         System.out.println("== 1) حسابات المعادن");
+59:         A.saveMetal("XAU21", "ذهب عيار 21 (غرام)", Metals.GOLD, 875, "g", false, true);
+60:         A.saveMetal("XAU24", "ذهب عيار 24 (غرام)", Metals.GOLD, 999, "g", true, true);
+61:         A.saveMetal("XAGKG", "فضة 999 (كيلو)", Metals.SILVER, 999, "kg", true, true);
+62:         check(A.decimals("XAU21") == 3 && A.decimals("XAGKG") == 6, "منازل الوحدة: غرام 3، كيلو 6");
+63:         check(A.metals().size() == 3 && Metals.of("XAU21").fineness == 875 && !Metals.of("XAU21").valued, "السجل يعرف المعادن وعيارها وتقويمها");
+64:         check(throwsMsg(() -> A.saveMetal("USD", "x", Metals.GOLD, 999, "g", false, true), "لعملة موجودة"), "رمز عملة موجودة مرفوض");
+65:         check(throwsMsg(() -> A.saveMetal("XAU9", "x", Metals.GOLD, 1200, "g", false, true), "العيار"), "عيار غير صالح مرفوض");
+66:         check(throwsMsg(() -> A.saveMetal("XAU9", "x", Metals.GOLD, 375, "lb", false, true), "وحدة"), "وحدة غير معروفة مرفوضة");
+67: 
+68:         System.out.println("== 2) مكتب بعملة ومعدن");
+69:         List<String> ue = Arrays.asList("USD", "XAU21", "XAU24");
+70:         long off = A.addOffice("صاغة الشام", "", "", "", "", "", null, null, ue, new HashMap<>(), new ArrayList<>());
+71:         A.addTx(tx(off, true, 12500, "XAU21"), null);
+72:         A.addTx(tx(off, false, 2000, "XAU24"), null);
+73:         A.addTx(tx(off, true, 150000, "USD"), null);
+74:         Map<String, Long> b = A.balances(off);
+75:         check(b.get("XAU21") == 12500 && b.get("XAU24") == -2000 && b.get("USD") == 150000, "الأرصدة منفصلة لكل عيار وعملة: " + b);
+76: 
+77:         System.out.println("== 3) الثبات بعد أول حركة");
+78:         check(throwsMsg(() -> A.saveMetal("XAU21", "ذهب", Metals.GOLD, 875, "kg", false, true), "لا يمكن تغيير"), "الوحدة لا تتغير بعد الحركات");
+79:         check(throwsMsg(() -> A.saveMetal("XAU21", "ذهب", Metals.GOLD, 750, "g", false, true), "لا يمكن تغيير"), "العيار لا يتغير بعد الحركات");
+80:         A.saveMetal("XAU21", "ذهب 21 كسر", Metals.GOLD, 875, "g", false, true);
+81:         A.saveCurrency("XAU21", "ذهب عيار 21", 2, true);
+82:         check(A.decimals("XAU21") == 3 && Metals.of("XAU21").unit.equals("g"), "تعديل الاسم يبقي الوحدة والمنازل (حتى من شاشة العملات)");
+83:         check(A.balances(off).get("XAU21") == 12500, "والرصيد كما هو");
+84: 
+85:         System.out.println("== 4) التقويم بالدولار باختيار المحاسب");
+86:         A.setManualRate("XAU24", new BigDecimal("80"));
+87:         Ledger.Valuation v = Ledger.valueOffice(A.balances(off), A.usdRates(), A.decimalsMap());
+88:         check(v.weightOnly.contains("XAU21") && !v.missingRates.contains("XAU21"), "ذهب 21 «بالوزن فقط»: خارج الميزان وليس «بلا سعر»");
+89:         check(v.payableUsd.compareTo(new BigDecimal("160.00")) == 0 && v.receivableUsd.compareTo(new BigDecimal("1500.00")) == 0,
+90:                 "ذهب 24 بسعره: 2 غ × 80 = 160 علينا، والدولار 1500 لنا: " + v.receivableUsd + " / " + v.payableUsd);
+91:         A.saveMetal("XAU21", "ذهب 21 كسر", Metals.GOLD, 875, "g", true, true);
+92:         v = Ledger.valueOffice(A.balances(off), A.usdRates(), A.decimalsMap());
+93:         check(v.missingRates.contains("XAU21") && v.weightOnly.isEmpty(), "حين يختار «يدخل الميزان» بلا سعر: يظهر «بلا سعر»");
+94: 
+95:         System.out.println("== 5) السعر الأونلاين للاستئناس");
+96:         Map<String, BigDecimal> on = new HashMap<>();
+97:         on.put("XAU", new BigDecimal("2488"));
+98:         on.put("XAG", new BigDecimal("31.1034768"));
+99:         A.saveOnlineRates(on, Clock.now());
+100:         BigDecimal g24 = A.rates().get("XAU24").online, g21 = A.rates().get("XAU21").online, agkg = A.rates().get("XAGKG").online;
+101:         check(g24 != null && g24.setScale(4, RoundingMode.HALF_EVEN).compareTo(new BigDecimal("79.9111")) == 0, "غرام 24 = 2488 ÷ 31.1034768 × 0.999 = " + g24);
+102:         check(g21 != null && g21.setScale(4, RoundingMode.HALF_EVEN).compareTo(new BigDecimal("69.9922")) == 0, "غرام 21 = × 0.875 = " + g21);
+103:         check(agkg != null && agkg.setScale(2, RoundingMode.HALF_EVEN).compareTo(new BigDecimal("999.00")) == 0, "كيلو فضة 999 = 1000 غ × 1 × 0.999 = " + agkg);
+104:         check(A.rates().get("XAU24").manual.compareTo(new BigDecimal("80")) == 0 && A.usdRates().get("XAU24").compareTo(new BigDecimal("80")) == 0, "اليدوي يتقدّم على الأونلاين");
+105: 
+106:         System.out.println("== 6) الرسائل: العيار والوزن");
+107:         List<MessageParser.Cur> c3 = curs(A, "USD", "XAU21", "XAU24");
+108:         MessageParser.Result r = MessageParser.parse("تسليم 50 غرام ذهب عيار 21 لأبو خالد", c3);
+109:         check("XAU21".equals(r.currency) && "50".equals(r.amount), "«50 غرام ذهب عيار 21» ← XAU21 50: " + r.currency + " " + r.amount + " [" + r.person + "]");
+110:         r = MessageParser.parse("استلام 2 كيلو ذهب 24 قيراط", c3);
+111:         check("XAU24".equals(r.currency) && "2000".equals(r.amount) && r.amountNote.contains("حُوّل"), "«2 كيلو ذهب 24» ← 2000 غ مع تنبيه التحويل: " + r.amount + " — " + r.amountNote);
+112:         r = MessageParser.parse("1 اونصة ذهب 24k", c3);
+113:         check("XAU24".equals(r.currency) && "31.103".equals(r.amount) && r.amountNote.contains("تقريب"), "«1 أونصة» ← 31.103 غ وتنبيه التقريب: " + r.amount + " — " + r.amountNote);
+114:         r = MessageParser.parse("100 غرام ذهب لسامر", c3);
+115:         check(r.currency == null && "100".equals(r.amount) && r.amountNote.contains("عيار"), "ذهب بلا عيار وللمكتب عياران: لا تخمين: " + r.currency + " — " + r.amountNote);
+116:         r = MessageParser.parse("100 غرام ذهب لسامر", curs(A, "USD", "XAU21"));
+117:         check("XAU21".equals(r.currency) && "100".equals(r.amount), "عيار واحد للمكتب: يُختار: " + r.currency);
+118:         r = MessageParser.parse("ذهب عيار 18 وزن 20 غرام", c3);
+119:         check(r.currency == null && r.amountNote.contains("لا يوجد حساب"), "عيار غير موجود للمكتب: لا يُسجَّل على عيار آخر: " + r.amountNote);
+120:         r = MessageParser.parse("حوالة 500 دولار لأبو علي", c3);
+121:         check("USD".equals(r.currency) && "500".equals(r.amount), "رسالة العملة كما هي: " + r.currency + " " + r.amount);
+122:         check(Metals.finenessIn("فضة 925") == 925 && Metals.finenessIn("18k") == 750 && Metals.finenessIn("عيار 21") == 875, "قراءة العيار: 925، 18k، عيار 21");
+123:         boolean[] ex = {true};
+124:         check(Metals.convert(new BigDecimal("2.5"), "mithqal", "g", ex).compareTo(new BigDecimal("10.625")) == 0 && ex[0], "2.5 مثقال = 10.625 غ بالضبط");
+125: 

@@ -1,0 +1,147 @@
+649:             case "نص": case "نصف": v = new BigDecimal("0.5"); break;
+650:             case "ربع": v = new BigDecimal("0.25"); break;
+651:             default: v = number(num.replace(',', '.'));
+652:         }
+653:         if (v == null || v.signum() <= 0) return new Object[]{null, -1};
+654:         if (unit != null) return new Object[]{v, PER_MILLE_W.matcher(unit).find() ? 1000 : 100};
+655:         // رقم بعده عملة («راجع 50 دولار») = أجرة محددة
+656:         String rest = line.substring(m.end());
+657:         String rn = norm(rest);
+658:         List<String> w = words(rn);
+659:         String first = w.isEmpty() ? "" : w.get(0);
+660:         String sym = rest.trim().isEmpty() ? "" : rest.trim().substring(0, 1);
+661:         if (!first.isEmpty() && (currencyIn(first, kws) != null || anyCurrencyWord(first, al) != null) || SYMBOLS.contains(sym)) {
+662:             span[1] = Math.min(line.length(), m.end() + rest.indexOf(rest.trim()) + (SYMBOLS.contains(sym) ? 1 : 0));
+663:             return new Object[]{v, 0};
+664:         }
+665:         // رقم وحده («راجع 5»): لا يُخمَّن (قد يكون نسبة أو مبلغًا أو حجم الحوالة)؛ يظهر للمحاسب ليحدده
+666:         return new Object[]{v, -1};
+667:     }
+668: 
+669:     public static Result parse(String text, List<Cur> currencies) { return parse(text, currencies, null); }
+670: 
+671:     /** aliases: كلمات أضافها المستخدم لكل رمز عملة (مثل USDT ← «يوز»)، أو null. */
+672:     public static Result parse(String text, List<Cur> currencies, Map<String, List<String>> aliases) {
+673:         Result r = new Result();
+674:         if (text == null || text.trim().isEmpty()) return r;
+675:         final Map<String, List<String>> al = aliases;
+676:         Map<String, List<Kw>> kws = keywords(currencies, al);
+677:         List<Line> lines = new ArrayList<>();
+678:         for (String raw : text.split("\\r?\\n")) {
+679:             Line l = new Line(raw);
+680:             if (!l.orig.isEmpty()) lines.add(l);
+681:         }
+682:         String allNorm = norm(text);
+683:         r.net = containsAny(allNorm, NET_WORDS);
+684: 
+685:         // ---------------------------------------------------------------- الهاتف
+686:         for (Line l : lines) {
+687:             String lab = afterLabel(l, PHONE_LABELS);
+688:             boolean labeled = lab != null && hasDigit(lab);
+689:             boolean lineCur = currencyIn(l.norm, kws) != null || anyCurrencyWord(l.norm, al) != null;
+690:             Matcher m = PHONE.matcher(l.orig);
+691:             while (m.find()) {
+692:                 String p = m.group().trim();
+693:                 if (looksPhone(p, labeled, lineCur)) {
+694:                     if (r.phone.isEmpty()) r.phone = p;
+695:                     if (l.orig.replace(p, "").replaceAll("[\\s:،,\\-]", "").isEmpty() || labeled) l.used = true;
+696:                 }
+697:             }
+698:         }
+699: 
+700:         // ---------------------------------------------------------------- «راجع» (أجرة لنا)
+701:         Map<Line, int[]> rajeSpans = new HashMap<>();
+702:         for (Line l : lines) {
+703:             int[] sp = new int[2];
+704:             Object[] rj = raje(l.orig, sp, kws, al);
+705:             if (rj == null) continue;
+706:             r.raje = true;
+707:             rajeSpans.put(l, sp);
+708:             if (rj[0] == null || !r.rajeRate.isEmpty() || !r.rajeAmount.isEmpty()) continue;
+709:             BigDecimal v = (BigDecimal) rj[0];
+710:             int per = (Integer) rj[1];
+711:             if (per == 100 || per == 1000) {
+712:                 if (v.compareTo(BigDecimal.valueOf(per)) < 0) {
+713:                     r.rajeRate = v.stripTrailingZeros().toPlainString();
+714:                     r.rajePer = per;
+715:                 }
+716:             } else if (per == 0) r.rajeAmount = v.stripTrailingZeros().toPlainString();
+717:             if (per == -1 && r.rajeRate.isEmpty()) r.rajeHint = v.stripTrailingZeros().toPlainString();
+718:         }
+719: 
+720:         // ---------------------------------------------------------------- المبلغ والأجرة (أرقام أو حروف)
+721:         String amountLineCur = null, amountWord = "", afterO = "", afterN = "", amountTok = null;
+722:         int amountScore = -1;
+723:         for (Line l : lines) {
+724:             boolean fee = containsAny(l.norm, FEE_WORDS);
+725:             String lab = afterLabel(l, AMOUNT_LABELS);
+726:             String[] cur = currencyIn(l.norm, kws);
+727:             String other = cur == null ? anyCurrencyWord(l.norm, al) : null;
+728:             boolean lineCur = cur != null || other != null;
+729:             boolean delivery = containsAny(l.norm, DELIVERY);
+730:             String scan = l.orig;
+731:             int[] rs = rajeSpans.get(l);
+732:             if (rs != null) scan = scan.substring(0, rs[0]) + blanks(rs[1] - rs[0]) + scan.substring(rs[1]);
+733:             if (!r.phone.isEmpty()) scan = scan.replace(r.phone, " ");
+734:             Matcher m = NUM.matcher(scan);
+735:             while (m.find()) {
+736:                 String tok = m.group();
+737:                 if (looksPhone(tok, false, lineCur)) continue;
+738:                 BigDecimal v = number(tok);
+739:                 if (v == null || v.signum() <= 0) continue;
+740:                 String rest = scan.substring(m.end());
+741:                 BigDecimal mul = multiplier(words(norm(rest)));
+742:                 // 10.5: «50 الف» = 50,000، أما «50000 الف» فالرقم مكتوب كاملًا و«الف» توضيح له (اصطلاح المكاتب)، لا ضرب بألف
+743:                 String note = "";
+744:                 String shown = tok + (mul.compareTo(BigDecimal.ONE) > 0 ? " " + words(clean(rest)).get(0) : "");
+745:                 if (mul.compareTo(BigDecimal.ONE) > 0 && v.compareTo(mul) >= 0) {
+746:                     boolean exact = v.remainder(mul).signum() == 0;
+747:                     note = "«" + shown + "» فُهمت " + plain(v) + (exact ? " (كلمة «" + words(clean(rest)).get(0) + "» توضيح للمبلغ المكتوب كاملًا لا ضرب)."
+748:                             : ". إن كان المقصود " + plain(v.multiply(mul)) + " فصحّح المبلغ.");
+749:                     mul = BigDecimal.ONE;
+750:                 }
+751:                 v = v.multiply(mul);
+752:                 String sym = rest.trim().isEmpty() ? "" : rest.trim().substring(0, 1);
+753:                 String before = scan.substring(0, m.start()).trim();
+754:                 String symBefore = before.isEmpty() ? "" : before.substring(before.length() - 1);
+755:                 boolean symbol = SYMBOLS.contains(sym) || SYMBOLS.contains(symBefore);
+756:                 int score = 0;
+757:                 if (lab != null) score += 6;
+758:                 if (lineCur || symbol) score += 5;
+759:                 if (mul.compareTo(BigDecimal.ONE) > 0) score += 2;
+760:                 if (delivery) score += 1;
+761:                 if (l.nw.size() <= 3) score += 1;
+762:                 if (fee) {
+763:                     if (r.fee.isEmpty()) r.fee = v.stripTrailingZeros().toPlainString();
+764:                     continue;
+765:                 }
+766:                 if (score > amountScore) {
+767:                     amountScore = score;
+768:                     r.amount = v.stripTrailingZeros().toPlainString();
+769:                     r.amountText = shown;
+770:                     r.amountNote = note;
+771:                     amountTok = mul.compareTo(BigDecimal.ONE) > 0 ? null : tok;
+772:                     amountLineCur = cur == null ? null : cur[0];
+773:                     amountWord = cur != null ? cur[1] : other != null ? other : symbol ? (SYMBOLS.contains(sym) ? sym : symBefore) : "";
+774:                     // الكلمة التالية للمبلغ (بعد «الف» ونحوها): قد تكون اسم عملة عاميًّا لا يعرفه البرنامج
+775:                     List<String> ro = words(clean(rest)), rn = words(norm(rest));
+776:                     int skip = mul.compareTo(BigDecimal.ONE) > 0 ? 1 : 0;
+777:                     if (rn.size() > skip && FILLER.contains(rn.get(skip))) skip++;
+778:                     afterO = ro.size() > skip && rn.size() > skip ? ro.get(skip) : "";
+779:                     afterN = rn.size() > skip ? rn.get(skip) : "";
+780:                     l.used = true;
+781:                 }
+782:             }
+783:             // المبالغ المكتوبة بالحروف: «خمسمية دولار»، «five hundred»، «beş yüz»، «cinci sute de lei»…
+784:             for (NumberWords.Match w : NumberWords.find(l.nw)) {
+785:                 if (w.start > 0 && hasDigit(l.nw.get(w.start - 1))) continue;   // «5 bin»: مضاعِف للرقم، عولج أعلاه
+786:                 int k = w.end;
+787:                 if (k < l.nw.size() && FILLER.contains(l.nw.get(k))) k++;
+788:                 String next = k < l.nw.size() ? String.join(" ", l.nw.subList(k, Math.min(k + 3, l.nw.size()))) : "";
+789:                 String first = k < l.nw.size() ? l.nw.get(k) : "";
+790:                 String prev = w.start > 0 ? l.nw.get(w.start - 1) : "";
+791:                 String[] adj = !first.isEmpty() ? currencyIn(first, kws) : null;
+792:                 if (adj == null && !next.isEmpty()) adj = currencyIn(next, kws);
+793:                 if (adj == null && !prev.isEmpty()) adj = currencyIn(prev, kws);
+794:                 String adjOther = adj != null ? null : !first.isEmpty() && anyCurrencyWord(first, al) != null ? anyCurrencyWord(first, al)
+795:                         : !prev.isEmpty() && anyCurrencyWord(prev, al) != null ? anyCurrencyWord(prev, al) : null;

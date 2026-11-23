@@ -1,0 +1,124 @@
+1142:         a.busy("جارٍ نقل الخزنة المشفّرة إلى " + email + "…", p -> {
+1143:             SyncFolder src = new DriveSyncFolder(new DriveAuth(a, cur)), dst = new DriveSyncFolder(new DriveAuth(a, email));
+1144:             if (SyncEngine.sameFolder(src, dst)) throw new IllegalStateException(email + " هو الحساب المتصل حاليًا. اختر حسابًا آخر.");
+1145:             int n = new SyncEngine(a.db, src).moveTo(dst);
+1146:             new SyncEngine(a.db, src).retire("Google Drive: " + email, false, false);
+1147:             return n;
+1148:         }, res -> {
+1149:             a.db.setSettingQuiet("drive_account", email);
+1150:             if (!cur.isEmpty()) a.db.setSettingQuiet("drive_account_old", cur);
+1151:             a.db.setSettingQuiet("sync_drive_ok", "1");
+1152:             new AlertDialog.Builder(a).setTitle("نُقلت المزامنة ✓")
+1153:                     .setMessage("نُسخ " + res + " ملفًا إلى " + email + ".\n\nعلى كل جهاز آخر: افتح «المزامنة» فيظهر أن المزامنة نُقلت؛ اختر «حساب Google: تغيير ← نقل» "
+1154:                             + "أو «تسجيل الدخول» بـ " + email + ". بعد أن تنتقل كل الأجهزة احذف الخزنة من الحساب القديم من هنا.")
+1155:                     .setPositiveButton("حسنًا", (d, w) -> now(this::show)).show();
+1156:         });
+1157:     }
+1158: 
+1159:     private void freshIn(final String cur, final String email) {
+1160:         LinearLayout l = new LinearLayout(a);
+1161:         l.setOrientation(LinearLayout.VERTICAL);
+1162:         l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+1163:         final EditText p1 = secret(l, "كلمة سر المزامنة الجديدة (8 محارف على الأقل)"), p2 = secret(l, "أعد كتابتها");
+1164:         final AlertDialog d = new AlertDialog.Builder(a).setTitle("مزامنة جديدة في " + email).setView(l).setPositiveButton("إنشاء", null).setNegativeButton("إلغاء", null).create();
+1165:         d.setOnShowListener(x -> d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+1166:             final String s1 = p1.getText().toString();
+1167:             if (s1.length() < 8) {
+1168:                 p1.setError("8 محارف على الأقل");
+1169:                 return;
+1170:             }
+1171:             if (!s1.equals(p2.getText().toString())) {
+1172:                 p2.setError("غير متطابقة");
+1173:                 return;
+1174:             }
+1175:             d.dismiss();
+1176:             final String dn = SyncEngine.status(a.db).deviceName;
+1177:             a.busy("جارٍ إنشاء المزامنة الجديدة في " + email + "…", p -> {
+1178:                 SyncFolder old = new DriveSyncFolder(new DriveAuth(a, cur)), dst = new DriveSyncFolder(new DriveAuth(a, email));
+1179:                 if (SyncEngine.sameFolder(old, dst)) throw new IllegalStateException(email + " هو الحساب المتصل حاليًا. اختر حسابًا آخر.");
+1180:                 new SyncEngine(a.db, old).retire("Google Drive: " + email, true, false);
+1181:                 new SyncEngine(a.db, old).leave();
+1182:                 a.db.setSettingQuiet("drive_account", email);
+1183:                 return new SyncEngine(a.db, dst).create(s1.toCharArray(), dn);
+1184:             }, res -> {
+1185:                 if (!cur.isEmpty()) a.db.setSettingQuiet("drive_account_old", cur);
+1186:                 recoveryDialog((String) res);
+1187:             });
+1188:         }));
+1189:         d.show();
+1190:     }
+1191: 
+1192:     /** 10.14: البريد من وصف الوجهة «Google Drive: x@y» (فارغ إن لم تكن Google). */
+1193:     static String driveEmail(String target) {
+1194:         String p = "Google Drive: ";
+1195:         return target != null && target.startsWith(p) ? target.substring(p.length()).trim() : "";
+1196:     }
+1197: 
+1198:     /** 10.14: على الأجهزة الأخرى بعد نقل المزامنة أو بدايتها الجديدة في حساب آخر: تنبيه واضح وزر الانتقال. */
+1199:     private void movedNotice(final SyncEngine.Status st) {
+1200:         final String email = driveEmail(st.movedTarget);
+1201:         final boolean drive = "drive".equals(transport(a.db));
+1202:         if (!a.can(Auth.Perm.SYNC)) {
+1203:             a.notice(R.drawable.ic_warn, st.movedTo + " اطلب من المدير نقل هذا الجهاز.", true, null, null);
+1204:             return;
+1205:         }
+1206:         if (st.movedFresh) {
+1207:             a.notice(R.drawable.ic_warn, st.movedTo + " للمتابعة: انضم إلى المزامنة الجديدة. تُستبدل بيانات هذا الجهاز ببياناتها، وتُحفظ نسخة أمان قبلها.", true, "انضمام", v ->
+1208:                     a.confirm("الانضمام إلى المزامنة الجديدة", "يخرج هذا الجهاز من المزامنة القديمة (بياناته باقية)، ثم "
+1209:                             + (drive && !email.isEmpty() ? "تختار الحساب " + email + " و" : "") + "تنضم بكلمة سر المزامنة الجديدة.", "متابعة", () -> {
+1210:                         new SyncEngine(a.db, null).leave(st.movedTo);
+1211:                         if (drive && !email.isEmpty()) signIn(email, this::show);
+1212:                         else show();
+1213:                     }));
+1214:             return;
+1215:         }
+1216:         if (drive && !email.isEmpty())
+1217:             a.notice(R.drawable.ic_warn, st.movedTo + " سجّل الدخول بـ " + email + " على هذا الجهاز: الخزنة نفسها وبياناتك كما هي.", true, "انتقال", v ->
+1218:                     DriveAuth.pickAccount(a, email, picked -> {
+1219:                         if (!picked.equalsIgnoreCase(email)) {
+1220:                             a.toast("اختر الحساب الذي نُقلت إليه المزامنة: " + email);
+1221:                             return;
+1222:                         }
+1223:                         DriveAuth.connect(a, picked, new DriveAuth.Done() {
+1224:                             @Override public void ok() {
+1225:                                 final String cur = a.db.setting("drive_account", "");
+1226:                                 a.busy("جارٍ الانتقال إلى " + picked + "…", p -> new SyncEngine(a.db, new DriveSyncFolder(new DriveAuth(a, cur)))
+1227:                                         .moveTo(new DriveSyncFolder(new DriveAuth(a, picked))), res -> {
+1228:                                     a.db.setSettingQuiet("drive_account", picked);
+1229:                                     a.db.setSettingQuiet("sync_drive_ok", "1");
+1230:                                     a.toast("انتقل هذا الجهاز إلى " + picked + " ✓");
+1231:                                     now(SyncScreen.this::show);
+1232:                                 });
+1233:                             }
+1234: 
+1235:                             @Override public void fail(Exception e) { a.error(e); }
+1236:                         });
+1237:                     }));
+1238:         else a.notice(R.drawable.ic_warn, st.movedTo + " اختر المكان الجديد من «الطريقة: تغيير».", true, "تغيير", v -> changeTransport());
+1239:     }
+1240: 
+1241:     private void purgeOld(final String old) {
+1242:         a.confirm("حذف الخزنة من الحساب القديم", "تُحذف ملفات المزامنة المشفّرة من " + old + " وتبقى فيه علامة «نُقلت» فقط. "
+1243:                 + "تأكد أولًا أن كل أجهزتك انتقلت إلى الحساب الجديد (قائمة الأجهزة هنا). بياناتك في الحساب الجديد وعلى الأجهزة لا تتأثر.", "حذف", () ->
+1244:                 a.usersScreen.confirmAdmin("حذف الخزنة من الحساب القديم", () -> a.busy("جارٍ الحذف من " + old + "…",
+1245:                         p -> new SyncEngine(a.db, new DriveSyncFolder(new DriveAuth(a, old))).purgeRetired(), res -> {
+1246:                             a.db.deleteSetting("drive_account_old");
+1247:                             a.toast("حُذف " + res + " ملفًا من الحساب القديم ✓");
+1248:                             show();
+1249:                         })));
+1250:     }
+1251: 
+1252:     private void resetPassword() {
+1253:         a.usersScreen.confirmAdmin("تعيين كلمة سر المزامنة", () -> {
+1254:             LinearLayout l = new LinearLayout(a);
+1255:             l.setOrientation(LinearLayout.VERTICAL);
+1256:             l.setPadding(a.dp(18), a.dp(8), a.dp(18), 0);
+1257:             l.addView(a.text("هذا الجهاز منضم ويحمل مفتاح الخزنة، فتُعيَّن الكلمة الجديدة دون القديمة. الأجهزة المنضمة لا تتأثر، ورمز الاسترداد يبقى كما هو.", 12, a.muted, false));
+1258:             final EditText p1 = secret(l, "كلمة السر الجديدة (8 محارف على الأقل)"), p2 = secret(l, "أعد كتابتها");
+1259:             final AlertDialog d = new AlertDialog.Builder(a).setTitle("كلمة سر مزامنة جديدة").setView(l).setPositiveButton("حفظ", null).setNegativeButton("إلغاء", null).create();
+1260:             d.setOnShowListener(x -> d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+1261:                 final String s1 = p1.getText().toString();
+1262:                 if (s1.length() < 8) {
+1263:                     p1.setError("8 محارف على الأقل");
+1264:                     return;
+1265:                 }

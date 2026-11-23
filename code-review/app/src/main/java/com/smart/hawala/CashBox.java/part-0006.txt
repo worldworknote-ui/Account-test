@@ -1,0 +1,186 @@
+781:         String d = Model.day(dayStart);
+782:         for (Move x : moves) if (Model.day(x.createdAt).equals(d)) out.add(x);
+783:         return out;
+784:     }
+785: 
+786:     /** لكل عملة: الداخل والخارج اليوم (للبطاقات). */
+787:     public static Map<String, long[]> todayFlow(List<Move> moves, long now) {
+788:         Map<String, long[]> m = new LinkedHashMap<>();
+789:         for (Move x : ofDay(moves, startOfDay(now))) {
+790:             long e = x.effect();
+791:             if (e == 0) continue;
+792:             long[] v = m.get(x.currency);
+793:             if (v == null) {
+794:                 v = new long[2];
+795:                 m.put(x.currency, v);
+796:             }
+797:             if (e > 0) v[0] += e;
+798:             else v[1] -= e;
+799:         }
+800:         return m;
+801:     }
+802: 
+803:     /**
+804:      * إن كانت الحركة ستجعل رصيد عملة في الصندوق سالبًا (عجزًا) يرجع نص التنبيه، وإلا null.
+805:      * (النقد لا يكون سالبًا في الواقع: السالب غالبًا خطأ في المبلغ أو العملة أو حركة داخلة لم تُسجَّل.)
+806:      */
+807:     public static String negativeAfter(Input in, Map<String, Long> balances, Map<String, Integer> decimals) {
+808:         Object[] o = in.outgoing();
+809:         if (o == null || o[0] == null) return null;
+810:         String cur = (String) o[0];
+811:         long out = (Long) o[1];
+812:         Long b = balances.get(cur);
+813:         long after = (b == null ? 0 : b) - out;
+814:         if (after >= 0) return null;
+815:         int d = dec(decimals, cur);
+816:         return "في الصندوق الآن " + Model.fmt(b == null ? 0 : b, d) + " " + cur + "، وبعد هذه الحركة يصبح عجزًا بـ " + Model.fmt(-after, d) + " " + cur
+817:                 + ". تأكد من المبلغ والعملة، أو سجّل الداخل أولًا.";
+818:     }
+819: 
+820:     // ===================================================================================
+821:     // 9.0.1: الجرد: سجل لكل جرد، ومقارنة زيادة عملة بعجز أخرى (بيع أو شراء لم يُسجَّل؟)
+822:     // ===================================================================================
+823: 
+824:     /** سطر جرد: المسجّل والمعدود والفرق (موجب = زيادة، سالب = عجز). */
+825:     public static final class CountLine {
+826:         public String currency;
+827:         /** recorded: المتوقع في الصندوق (الرصيد + المعلّق)، و10.5: pending منه لحركات بانتظار الاعتماد. */
+828:         public long recorded, counted, pending;
+829: 
+830:         public CountLine(String c, long recorded, long counted) {
+831:             this.currency = c;
+832:             this.recorded = recorded;
+833:             this.counted = counted;
+834:         }
+835: 
+836:         public CountLine(String c, long recorded, long counted, long pending) {
+837:             this(c, recorded, counted);
+838:             this.pending = pending;
+839:         }
+840: 
+841:         public long diff() { return counted - recorded; }
+842:     }
+843: 
+844:     /** اقتراح: زيادة في عملة وعجز في أخرى قيمتاهما متقاربتان بالدولار = غالبًا بيع لم يُسجَّل. */
+845:     public static final class Suggestion {
+846:         public String soldCur, gotCur;
+847:         public long sold, got;
+848:         public BigDecimal soldUsd, gotUsd, rate;
+849: 
+850:         public BigDecimal gapUsd() { return gotUsd.subtract(soldUsd); }
+851:     }
+852: 
+853:     /** قيمة مبلغ بالدولار أو null بلا سعر. */
+854:     public static BigDecimal usd(long minor, String cur, Map<String, BigDecimal> rates, Map<String, Integer> decimals) {
+855:         BigDecimal r = "USD".equals(cur) ? BigDecimal.ONE : rates.get(cur);
+856:         if (r == null || r.signum() <= 0) return null;
+857:         return BigDecimal.valueOf(minor, dec(decimals, cur)).multiply(r).setScale(2, RoundingMode.HALF_EVEN);
+858:     }
+859: 
+860:     /**
+861:      * يقارن كل عملة فيها زيادة بكل عملة فيها عجز: إن كانت قيمتاهما بالدولار متقاربتين (الفرق ≤ 3٪ أو دولار واحد)
+862:      * فالأرجح أنها عملية بيع (خرجت عملة العجز ودخلت عملة الزيادة) لم تُسجَّل. الأقرب أولًا، وكل عملة في اقتراح واحد.
+863:      */
+864:     public static List<Suggestion> analyze(List<CountLine> lines, Map<String, BigDecimal> rates, Map<String, Integer> decimals) {
+865:         List<Suggestion> all = new ArrayList<>();
+866:         for (CountLine up : lines) {
+867:             if (up.diff() <= 0) continue;
+868:             for (CountLine down : lines) {
+869:                 if (down.diff() >= 0 || down == up) continue;
+870:                 BigDecimal gu = usd(up.diff(), up.currency, rates, decimals), su = usd(-down.diff(), down.currency, rates, decimals);
+871:                 if (gu == null || su == null || gu.signum() == 0 || su.signum() == 0) continue;
+872:                 BigDecimal gap = gu.subtract(su).abs(), tol = gu.max(su).multiply(new BigDecimal("0.03")).max(BigDecimal.ONE);
+873:                 if (gap.compareTo(tol) > 0) continue;
+874:                 Suggestion s = new Suggestion();
+875:                 s.soldCur = down.currency;
+876:                 s.sold = -down.diff();
+877:                 s.gotCur = up.currency;
+878:                 s.got = up.diff();
+879:                 s.soldUsd = su;
+880:                 s.gotUsd = gu;
+881:                 s.rate = BigDecimal.valueOf(s.got, dec(decimals, s.gotCur)).divide(BigDecimal.valueOf(s.sold, dec(decimals, s.soldCur)), 6, RoundingMode.HALF_EVEN).stripTrailingZeros();
+882:                 all.add(s);
+883:             }
+884:         }
+885:         Collections.sort(all, (x, y) -> x.gapUsd().abs().compareTo(y.gapUsd().abs()));
+886:         List<Suggestion> out = new ArrayList<>();
+887:         Set<String> used = new java.util.HashSet<>();
+888:         for (Suggestion s : all) {
+889:             if (used.contains(s.soldCur) || used.contains(s.gotCur)) continue;
+890:             used.add(s.soldCur);
+891:             used.add(s.gotCur);
+892:             out.add(s);
+893:         }
+894:         return out;
+895:     }
+896: 
+897:     /** صافي فروق الجرد بالدولار (زيادة − عجز) والعملات بلا سعر. */
+898:     public static BigDecimal netUsd(List<CountLine> lines, Map<String, BigDecimal> rates, Map<String, Integer> decimals, List<String> missing) {
+899:         BigDecimal n = BigDecimal.ZERO;
+900:         for (CountLine l : lines) {
+901:             if (l.diff() == 0) continue;
+902:             BigDecimal v = usd(Math.abs(l.diff()), l.currency, rates, decimals);
+903:             if (v == null) {
+904:                 if (missing != null) missing.add(l.currency);
+905:                 continue;
+906:             }
+907:             n = l.diff() > 0 ? n.add(v) : n.subtract(v);
+908:         }
+909:         return n;
+910:     }
+911: 
+912:     /** سجل جرد كما يُحفظ. */
+913:     public static final class Count {
+914:         public long id, boxId, createdAt, adjusted;
+915:         public String userName = "", note = "", netUsd = "", sales = "";
+916:         public final List<CountLine> lines = new ArrayList<>();
+917: 
+918:         public long shortages() {
+919:             long n = 0;
+920:             for (CountLine l : lines) if (l.diff() < 0) n++;
+921:             return n;
+922:         }
+923: 
+924:         public long surpluses() {
+925:             long n = 0;
+926:             for (CountLine l : lines) if (l.diff() > 0) n++;
+927:             return n;
+928:         }
+929:     }
+930: 
+931:     public static String linesJson(List<CountLine> lines) {
+932:         org.json.JSONArray a = new org.json.JSONArray();
+933:         for (CountLine l : lines) {
+934:             org.json.JSONObject o = new org.json.JSONObject();
+935:             try {
+936:                 o.put("c", l.currency).put("r", l.recorded).put("n", l.counted);
+937:                 if (l.pending != 0) o.put("p", l.pending);
+938:             } catch (Exception ignored) {
+939:                 // لا يحدث
+940:             }
+941:             a.put(o);
+942:         }
+943:         return a.toString();
+944:     }
+945: 
+946:     public static List<CountLine> linesFrom(String json) {
+947:         List<CountLine> out = new ArrayList<>();
+948:         try {
+949:             org.json.JSONArray a = new org.json.JSONArray(json);
+950:             for (int i = 0; i < a.length(); i++) {
+951:                 org.json.JSONObject o = a.getJSONObject(i);
+952:                 out.add(new CountLine(o.getString("c"), o.getLong("r"), o.getLong("n"), o.optLong("p", 0)));
+953:             }
+954:         } catch (Exception ignored) {
+955:             // سجل تالف: فارغ
+956:         }
+957:         return out;
+958:     }
+959: 
+960:     /** ما يُنقل للتقرير: أسماء المكاتب الحالية. */
+961:     public static Map<Long, String> names(List<Model.Office> offices) {
+962:         Map<Long, String> m = new HashMap<>();
+963:         for (Model.Office o : offices) m.put(o.id, o.name);
+964:         return m;
+965:     }
+966: }

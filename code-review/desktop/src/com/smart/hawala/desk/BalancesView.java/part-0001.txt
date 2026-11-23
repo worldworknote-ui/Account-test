@@ -1,0 +1,38 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import javax.swing.*;
+6: 
+7: /** أرصدة كل المكاتب (Reports.balances كالهاتف): لكل مكتب وعملة مجموع لنا وعلينا والرصيد، مع الإجماليات. */
+8: final class BalancesView extends View {
+9:     final JCheckBox zero = Ui.check("إظهار المكاتب المسدَّدة (رصيد صفر)", false);
+10:     final JPanel out = Ui.column();
+11: 
+12:     BalancesView(App app) {
+13:         super(app, "أرصدة كل المكاتب");
+14:     }
+15: 
+16:     @Override void build() {
+17:         body.add(Ui.flow(zero));
+18:         body.add(Ui.gap(10));
+19:         body.add(out);
+20:         zero.addActionListener(e -> refresh());
+21:         scroll = Ui.scroll(body);
+22:         add(scroll, BorderLayout.CENTER);
+23:     }
+24: 
+25:     Report report() {
+26:         return db.withHolds(Reports.balances(db.officeTotals(null), db.decimalsMap(), db.currencyNames(), zero.isSelected(), db.setting("office_name", ""), Clock.now()));
+27:     }
+28: 
+29:     @Override void refresh() {
+30:         actions.removeAll();
+31:         action(Ui.primary("تصدير / طباعة…", e -> Export.dialog(this, app, "أرصدة المكاتب", this::report)));
+32:         out.removeAll();
+33:         out.add(ReportPanel.render(report(), textWidth()));
+34:         Ui.rtl(out);
+35:         out.revalidate();
+36:         done();
+37:     }
+38: }

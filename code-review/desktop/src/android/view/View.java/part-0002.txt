@@ -1,0 +1,164 @@
+142:     private static int nextId = 0x00100000;
+143: 
+144:     @SuppressWarnings("unchecked")
+145:     public <T extends View> T findViewById(int id) { return (T) findViewTraversal(id); }
+146:     @SuppressWarnings("unchecked")
+147:     public final <T extends View> T requireViewById(int id) { T v = findViewById(id); if (v == null) throw new IllegalArgumentException(); return v; }
+148:     protected View findViewTraversal(int id) { return this.id == id ? this : null; }
+149:     @SuppressWarnings("unchecked")
+150:     public <T extends View> T findViewWithTag(Object t) { return (T) findWithTag(t); }
+151:     protected View findWithTag(Object t) { return t != null && t.equals(tag) ? this : null; }
+152: 
+153:     // ------------------------------------------------------------------ الأب والنافذة
+154:     public final ViewParent getParent() { return parent; }
+155:     public View getRootView() { View v = this; while (v.parent instanceof View) v = (View) v.parent; return v; }
+156:     public boolean isAttachedToWindow() { return attachInfo != null; }
+157:     public android.os.IBinder getWindowToken() { return attachInfo == null ? null : attachInfo.token; }
+158:     public android.os.IBinder getApplicationWindowToken() { return getWindowToken(); }
+159:     public Handler getHandler() { return attachInfo == null ? null : attachInfo.handler; }
+160:     public Display getDisplay() { return new Display(); }
+161:     public WindowInsets getRootWindowInsets() { return new WindowInsets(); }
+162:     public ViewRootImpl root() { return attachInfo == null ? null : attachInfo.root; }
+163: 
+164:     void dispatchAttachedToWindow(AttachInfo ai) {
+165:         attachInfo = ai;
+166:         if (floatingObserver != null) { ai.observer.merge(floatingObserver); floatingObserver = null; }
+167:         onAttachedToWindow();
+168:         if (attachListeners != null) for (OnAttachStateChangeListener l : new ArrayList<>(attachListeners)) l.onViewAttachedToWindow(this);
+169:         refreshDrawableState();
+170:         if (ai.pendingFocus == this) requestFocus();
+171:     }
+172:     void dispatchAttachedToWindowTree(AttachInfo ai) { dispatchAttachedToWindow(ai); }
+173:     void dispatchDetachedFromWindowTree() { dispatchDetachedFromWindow(); }
+174:     public void dispatchSetSelected(boolean s) {}
+175:     boolean duplicatesParentState() { return duplicateParentState; }
+176:     void dispatchDetachedFromWindow() {
+177:         onDetachedFromWindow();
+178:         if (attachListeners != null) for (OnAttachStateChangeListener l : new ArrayList<>(attachListeners)) l.onViewDetachedFromWindow(this);
+179:         if (animator != null) animator.cancel();
+180:         if (focused && attachInfo != null && attachInfo.root.focused == this) attachInfo.root.focused = null;
+181:         focused = false;
+182:         attachInfo = null;
+183:     }
+184:     protected void onAttachedToWindow() {}
+185:     protected void onDetachedFromWindow() {}
+186:     public void addOnAttachStateChangeListener(OnAttachStateChangeListener l) { if (attachListeners == null) attachListeners = new ArrayList<>(); attachListeners.add(l); }
+187:     public void removeOnAttachStateChangeListener(OnAttachStateChangeListener l) { if (attachListeners != null) attachListeners.remove(l); }
+188: 
+189:     public ViewTreeObserver getViewTreeObserver() {
+190:         if (attachInfo != null) return attachInfo.observer;
+191:         if (floatingObserver == null) floatingObserver = new ViewTreeObserver();
+192:         return floatingObserver;
+193:     }
+194: 
+195:     // ------------------------------------------------------------------ تنفيذ لاحق
+196:     public boolean post(Runnable r) {
+197:         Handler h = attachInfo != null ? attachInfo.handler : AttachInfo.MAIN;
+198:         return h.post(r);
+199:     }
+200:     public boolean postDelayed(Runnable r, long ms) {
+201:         Handler h = attachInfo != null ? attachInfo.handler : AttachInfo.MAIN;
+202:         return h.postDelayed(r, ms);
+203:     }
+204:     public void postOnAnimation(Runnable r) { postDelayed(r, 16); }
+205:     public void postOnAnimationDelayed(Runnable r, long ms) { postDelayed(r, ms); }
+206:     public boolean removeCallbacks(Runnable r) {
+207:         if (attachInfo != null) attachInfo.handler.removeCallbacks(r);
+208:         AttachInfo.MAIN.removeCallbacks(r);
+209:         return true;
+210:     }
+211:     public void postInvalidate() { post(this::invalidate); }
+212:     public void postInvalidateOnAnimation() { post(this::invalidate); }
+213:     public void postInvalidateDelayed(long ms) { postDelayed(this::invalidate, ms); }
+214: 
+215:     // ------------------------------------------------------------------ الحشو
+216:     public void setPadding(int l, int t, int r, int b) {
+217:         padStart = Integer.MIN_VALUE; padEnd = Integer.MIN_VALUE;
+218:         if (l != mPaddingLeft || t != mPaddingTop || r != mPaddingRight || b != mPaddingBottom) {
+219:             mPaddingLeft = l; mPaddingTop = t; mPaddingRight = r; mPaddingBottom = b;
+220:             requestLayout();
+221:             invalidate();
+222:         }
+223:     }
+224:     public void setPaddingRelative(int s, int t, int e, int b) {
+225:         padStart = s; padEnd = e;
+226:         mPaddingTop = t; mPaddingBottom = b;
+227:         resolvePadding();
+228:         requestLayout();
+229:         invalidate();
+230:     }
+231:     void resolvePadding() {
+232:         if (padStart == Integer.MIN_VALUE) return;
+233:         boolean rtl = isRtl();
+234:         mPaddingLeft = rtl ? padEnd : padStart;
+235:         mPaddingRight = rtl ? padStart : padEnd;
+236:     }
+237:     public int getPaddingLeft() { resolvePadding(); return mPaddingLeft; }
+238:     public int getPaddingRight() { resolvePadding(); return mPaddingRight; }
+239:     public int getPaddingTop() { return mPaddingTop; }
+240:     public int getPaddingBottom() { return mPaddingBottom; }
+241:     public int getPaddingStart() { return isRtl() ? getPaddingRight() : getPaddingLeft(); }
+242:     public int getPaddingEnd() { return isRtl() ? getPaddingLeft() : getPaddingRight(); }
+243:     public boolean isPaddingRelative() { return padStart != Integer.MIN_VALUE; }
+244: 
+245:     // ------------------------------------------------------------------ المقاسات
+246:     public void setMinimumWidth(int w) { minW = w; requestLayout(); }
+247:     public void setMinimumHeight(int h) { minH = h; requestLayout(); }
+248:     public int getMinimumWidth() { return minW; }
+249:     public int getMinimumHeight() { return minH; }
+250:     public final int getWidth() { return mRight - mLeft; }
+251:     public final int getHeight() { return mBottom - mTop; }
+252:     public final int getLeft() { return mLeft; }
+253:     public final int getTop() { return mTop; }
+254:     public final int getRight() { return mRight; }
+255:     public final int getBottom() { return mBottom; }
+256:     public final void setLeft(int l) { mLeft = l; invalidate(); }
+257:     public final void setTop(int t) { mTop = t; invalidate(); }
+258:     public final void setRight(int r) { mRight = r; invalidate(); }
+259:     public final void setBottom(int b) { mBottom = b; invalidate(); }
+260:     public void setLeftTopRightBottom(int l, int t, int r, int b) { setFrame(l, t, r, b); }
+261:     public final int getMeasuredWidth() { return measuredW & MEASURED_SIZE_MASK; }
+262:     public final int getMeasuredHeight() { return measuredH & MEASURED_SIZE_MASK; }
+263:     public final int getMeasuredWidthAndState() { return measuredW; }
+264:     public final int getMeasuredHeightAndState() { return measuredH; }
+265:     public final int getMeasuredState() { return (measuredW & MEASURED_STATE_MASK) | ((measuredH >> 16) & (MEASURED_STATE_MASK >> 16)); }
+266:     protected final void setMeasuredDimension(int w, int h) { measuredW = w; measuredH = h; }
+267: 
+268:     public ViewGroup.LayoutParams getLayoutParams() { return params; }
+269:     public void setLayoutParams(ViewGroup.LayoutParams p) {
+270:         if (p == null) throw new NullPointerException("Layout parameters cannot be null");
+271:         params = p;
+272:         if (parent instanceof ViewGroup) ((ViewGroup) parent).onSetLayoutParams(this, p);
+273:         requestLayout();
+274:     }
+275:     void setParamsQuiet(ViewGroup.LayoutParams p) { params = p; }
+276: 
+277:     public final void measure(int ws, int hs) {
+278:         boolean force = layoutRequested;
+279:         if (force || ws != oldWSpec || hs != oldHSpec) {
+280:             onMeasure(ws, hs);
+281:             oldWSpec = ws;
+282:             oldHSpec = hs;
+283:             layoutNeeded = true;
+284:         }
+285:     }
+286:     private boolean layoutNeeded = true;
+287: 
+288:     protected void onMeasure(int ws, int hs) {
+289:         setMeasuredDimension(getDefaultSize(getSuggestedMinimumWidth(), ws), getDefaultSize(getSuggestedMinimumHeight(), hs));
+290:     }
+291:     protected int getSuggestedMinimumWidth() { return background == null ? minW : Math.max(minW, background.getMinimumWidth()); }
+292:     protected int getSuggestedMinimumHeight() { return background == null ? minH : Math.max(minH, background.getMinimumHeight()); }
+293:     public static int getDefaultSize(int size, int spec) {
+294:         int mode = MeasureSpec.getMode(spec), s = MeasureSpec.getSize(spec);
+295:         return mode == MeasureSpec.UNSPECIFIED ? size : s;
+296:     }
+297:     public static int resolveSize(int size, int spec) { return resolveSizeAndState(size, spec, 0) & MEASURED_SIZE_MASK; }
+298:     public static int resolveSizeAndState(int size, int spec, int childState) {
+299:         int mode = MeasureSpec.getMode(spec), s = MeasureSpec.getSize(spec);
+300:         int r;
+301:         if (mode == MeasureSpec.AT_MOST) r = size > s ? s | MEASURED_STATE_TOO_SMALL : size;
+302:         else if (mode == MeasureSpec.EXACTLY) r = s;
+303:         else r = size;
+304:         return r | (childState & MEASURED_STATE_MASK);
+305:     }

@@ -1,0 +1,118 @@
+1: package android.hardware.biometrics;
+2: 
+3: import java.io.ByteArrayOutputStream;
+4: import java.io.InputStream;
+5: import java.nio.charset.StandardCharsets;
+6: import java.util.concurrent.TimeUnit;
+7: 
+8: /**
+9:  * 11.2: تحقق النظام على الكمبيوتر بدل البصمة في الهاتف:
+10:  * <ul>
+11:  * <li>ماك: Touch ID أو كلمة سر الماك (LocalAuthentication بسياسة «مالك الجهاز») عبر osascript المدمج في النظام.</li>
+12:  * <li>ويندوز: Windows Hello (الوجه أو البصمة أو رمز PIN) عبر PowerShell المدمج في النظام.</li>
+13:  * </ul>
+14:  * لا شيء يُنزَّل ولا يُثبَّت، ولا يخرج أي شيء من الجهاز. التوفّر يُفحص مرة واحدة في الخلفية ويُحفظ.
+15:  */
+16: public final class SystemAuth {
+17:     private SystemAuth() {}
+18: 
+19:     static final String OS = System.getProperty("os.name", "").toLowerCase();
+20:     static final boolean MAC = OS.contains("mac"), WIN = OS.contains("win");
+21:     /** null = لم يُفحص بعد. */
+22:     private static volatile Boolean available;
+23: 
+24:     /** للتجارب: يمكن فرض النتيجة (sa.auth=yes|no|fail). */
+25:     static String forced() { return android.content.Context.testMode() ? System.getProperty("sa.auth", "") : ""; }
+26: 
+27:     /** يبدأ الفحص في الخلفية (عند تشغيل البرنامج) لئلا ينتظر المستخدم لاحقًا. */
+28:     public static void warmUp() {
+29:         if (available != null) return;
+30:         Thread t = new Thread(SystemAuth::available, "system-auth-check");
+31:         t.setDaemon(true);
+32:         t.start();
+33:     }
+34: 
+35:     /** هل في الجهاز قفل يمكن التحقق به (Touch ID/كلمة سر الماك، أو Windows Hello)؟ */
+36:     public static boolean available() {
+37:         Boolean a = available;
+38:         if (a != null) return a;
+39:         boolean r;
+40:         String f = forced();
+41:         if (!f.isEmpty()) r = !"no".equals(f);
+42:         else if (MAC) r = "yes".equals(run(macScript("check", ""), 20));
+43:         else if (WIN) r = "Available".equals(run(winScript("check", ""), 25));
+44:         else r = false;
+45:         available = r;
+46:         return r;
+47:     }
+48: 
+49:     /** اسم طريقة التحقق للعرض. */
+50:     public static String methodName() {
+51:         if (MAC) return "Touch ID أو كلمة سر الماك";
+52:         if (WIN) return "Windows Hello (الوجه أو البصمة أو رمز PIN)";
+53:         return "قفل النظام";
+54:     }
+55: 
+56:     /** نتيجة التحقق: 0 نجح، 1 أُلغي/فشل، 2 غير متاح. يعمل خارج خيط الواجهة. */
+57:     public static int verify(String reason) {
+58:         String f = forced();
+59:         if (!f.isEmpty()) return "yes".equals(f) ? 0 : "no".equals(f) ? 2 : 1;
+60:         if (!available()) return 2;
+61:         String out;
+62:         if (MAC) out = run(macScript("verify", reason), 120);
+63:         else if (WIN) out = run(winScript("verify", reason), 120);
+64:         else return 2;
+65:         if (MAC) return "ok".equals(out) ? 0 : 1;
+66:         return "Verified".equals(out) ? 0 : "DeviceNotPresent".equals(out) || "NotConfiguredForUser".equals(out) || "DisabledByPolicy".equals(out) ? 2 : 1;
+67:     }
+68: 
+69:     // ------------------------------------------------------------------ ماك
+70:     static String[] macScript(String mode, String reason) {
+71:         String js = "ObjC.import('LocalAuthentication');ObjC.import('Foundation');"
+72:                 + "function run(argv){var c=$.LAContext.alloc.init;"
+73:                 + "if(argv[0]=='check'){return c.canEvaluatePolicyError(2,null)?'yes':'no';}"
+74:                 + "var done=false,ok=false;"
+75:                 + "c.evaluatePolicyLocalizedReasonReply(2,argv[1],function(s,e){ok=s;done=true;});"
+76:                 + "var n=0;while(!done&&n<1200){$.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.1));n++;}"
+77:                 + "return ok?'ok':'fail';}";
+78:         return new String[]{"/usr/bin/osascript", "-l", "JavaScript", "-e", js, mode, reason.isEmpty() ? "التحقق من هويتك" : reason};
+79:     }
+80: 
+81:     // ------------------------------------------------------------------ ويندوز
+82:     static String[] winScript(String mode, String reason) {
+83:         String r = (reason.isEmpty() ? "التحقق من هويتك" : reason).replace("'", "''");
+84:         String ps = "$ErrorActionPreference='Stop';"
+85:                 + "Add-Type -AssemblyName System.Runtime.WindowsRuntime;"
+86:                 + "$m=([System.WindowsRuntimeSystemExtensions].GetMethods()|?{$_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'})[0];"
+87:                 + "function Aw($o,$t){$k=$m.MakeGenericMethod($t).Invoke($null,@($o));$k.Wait(-1)|Out-Null;$k.Result};"
+88:                 + "[Windows.Security.Credentials.UI.UserConsentVerifier,Windows.Security.Credentials.UI,ContentType=WindowsRuntime]|Out-Null;"
+89:                 + ("check".equals(mode)
+90:                 ? "Write-Output (Aw ([Windows.Security.Credentials.UI.UserConsentVerifier]::CheckAvailabilityAsync()) ([Windows.Security.Credentials.UI.UserConsentVerifierAvailability]))"
+91:                 : "Write-Output (Aw ([Windows.Security.Credentials.UI.UserConsentVerifier]::RequestVerificationAsync('" + r + "')) ([Windows.Security.Credentials.UI.UserConsentVerificationResult]))");
+92:         String enc = java.util.Base64.getEncoder().encodeToString(ps.getBytes(StandardCharsets.UTF_16LE));
+93:         return new String[]{"powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-EncodedCommand", enc};
+94:     }
+95: 
+96:     /** يشغّل أمرًا من أدوات النظام ويعيد آخر سطر من مخرجاته (أو "" عند أي خطأ). */
+97:     static String run(String[] cmd, int seconds) {
+98:         try {
+99:             Process p = new ProcessBuilder(cmd).redirectErrorStream(false).start();
+100:             ByteArrayOutputStream bo = new ByteArrayOutputStream();
+101:             Thread rd = new Thread(() -> {
+102:                 try (InputStream in = p.getInputStream()) { in.transferTo(bo); } catch (Exception ignored) { /* انتهى */ }
+103:             });
+104:             rd.setDaemon(true);
+105:             rd.start();
+106:             if (!p.waitFor(seconds, TimeUnit.SECONDS)) {
+107:                 p.destroyForcibly();
+108:                 return "";
+109:             }
+110:             rd.join(2000);
+111:             String s = bo.toString(StandardCharsets.UTF_8).trim();
+112:             int nl = s.lastIndexOf('\n');
+113:             return (nl >= 0 ? s.substring(nl + 1) : s).trim();
+114:         } catch (Exception e) {
+115:             return "";
+116:         }
+117:     }
+118: }

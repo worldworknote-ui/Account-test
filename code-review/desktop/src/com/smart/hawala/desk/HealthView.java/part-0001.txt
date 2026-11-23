@@ -1,0 +1,114 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.*;
+5: import java.io.File;
+6: import java.util.List;
+7: import javax.swing.*;
+8: 
+9: /**
+10:  * اعتمادية البرنامج (كالهاتف): ضوء أخضر/أصفر/أحمر لآخر نسخة، النسخ التلقائي، فحص البيانات (سلامة الملف، الروابط، توازن القيود،
+11:  * رصيد كل مكتب = حركاته، تسلسل سجل العمليات)، مفتاح التشفير، القفل، المساحة، وتمرين الاستعادة.
+12:  */
+13: final class HealthView extends View {
+14:     static final long DAY = 86400000L;
+15:     final JPanel results = Ui.column();
+16: 
+17:     HealthView(App app) {
+18:         super(app, "اعتمادية البرنامج");
+19:     }
+20: 
+21:     @Override void refresh() {
+22:         clear();
+23:         int w = textWidth();
+24:         action(Ui.primary("افحص البيانات الآن", e -> runNow()));
+25:         long now = Clock.now();
+26:         long last = db.settingLong("last_backup", 0);
+27:         boolean verified = "verified".equals(db.setting("last_backup_status", ""));
+28:         int lb = last == 0 ? 2 : now - last > 10 * DAY ? 2 : now - last > 3 * DAY || !verified ? 1 : 0;
+29:         item(lb, "آخر نسخة احتياطية" + (verified ? " متحقَّق منها" : ""), last == 0 ? "لا توجد نسخة بعد. الجهاز وحده لا يكفي." : Model.date(last), "نسخة الآن", () -> {
+30:             app.go("backup");
+31:             ((BackupView) app.views.get("backup")).create();
+32:         });
+33:         String err = db.setting("auto_backup_error", "");
+34:         if (!DeskBackup.enabled(db)) item(1, "النسخ التلقائي متوقف", "فعّله إلى مجلد (مثل iCloud Drive) حتى لا تعتمد على التذكّر.", "الإعداد", () -> app.go("backup"));
+35:         else item(err.isEmpty() ? 0 : 2, err.isEmpty() ? "النسخ التلقائي يعمل" : "فشل النسخ التلقائي الأخير",
+36:                 err.isEmpty() ? "كل " + DeskBackup.intervalHours(db) + " ساعة" + (DeskBackup.everyTx(db) > 0 ? " أو بعد " + DeskBackup.everyTx(db) + " حركة" : "") : err.trim(), "التفاصيل", () -> app.go("backup"));
+37:         String hs = db.setting("health_status", "");
+38:         long hl = db.settingLong("health_last", 0);
+39:         if (hs.isEmpty()) item(1, "فحص سلامة البيانات", "لم يُفحص بعد.", "افحص الآن", this::runNow);
+40:         else if ("ok".equals(hs)) item(now - hl > 3 * DAY ? 1 : 0, "البيانات سليمة", "القيود متوازنة، الأرصدة تطابق الحركات، الملف والسجل سليمان — " + Model.date(hl), "افحص الآن", this::runNow);
+41:         else {
+42:             int bar = hs.indexOf('|');
+43:             item(2, "فحص البيانات وجد " + (bar > 0 ? hs.substring(0, bar) : "") + " ملاحظة", bar > 0 ? hs.substring(bar + 1) : hs, "التفاصيل", this::runNow);
+44:         }
+45:         boolean key = Crypto.healthy(app.ctx);
+46:         item(key ? 0 : 2, key ? "مفتاح التشفير سليم" : "مفتاح التشفير غير متاح", key ? "المفتاح في «سلسلة المفاتيح» لهذا المستخدم، والحقول المشفّرة تُقرأ." : "لا تُنشأ نسخ جديدة حتى لا تحل محل السليمة. استعد آخر نسخة.", null, null);
+47:         boolean locked = db.usersEnabled();
+48:         item(locked ? 0 : 1, locked ? "البرنامج مقفل بالمستخدمين" : "البرنامج بلا قفل", locked ? "يُطلب الدخول عند الفتح وبعد الخمول." : "أي شخص يفتح الكمبيوتر يرى الحسابات. فعّل المستخدمين لقفل البرنامج.", "المستخدمون", () -> app.go("users"));
+49:         File home = app.ctx.home();
+50:         long free = home.getUsableSpace();
+51:         item(free > 500L * 1024 * 1024 ? 0 : free > 100L * 1024 * 1024 ? 1 : 2, "المساحة الحرة", (free / (1024 * 1024)) + " ميغابايت", null, null);
+52:         String ds = db.setting("restore_drill_status", "");
+53:         long da = db.settingLong("restore_drill_at", 0);
+54:         int dl = ds.startsWith("fail") ? 2 : ds.startsWith("ok") && now - da <= 31 * DAY ? 0 : 1;
+55:         item(dl, "تمرين الاستعادة", ds.isEmpty() ? "لم تُجرَّب استعادة أي نسخة بعد. النسخة التي لم تُجرَّب لا تُعدّ نسخة." : ds.substring(ds.indexOf('|') + 1) + " — " + Model.date(da),
+56:                 "جرّب الآن", () -> {
+57:                     app.go("backup");
+58:                     ((BackupView) app.views.get("backup")).drill();
+59:                 });
+60:         space(10);
+61:         add(results);
+62:         add(Ui.para("مجلد البيانات: " + home.getAbsolutePath(), 12, Ui.muted, w));
+63:         done();
+64:     }
+65: 
+66:     void item(int level, String title, String detail, String btn, Runnable r) {
+67:         Color c = level == 0 ? Ui.green : level == 1 ? new Color(196, 140, 20) : Ui.red;
+68:         Ui.Card k = Ui.card();
+69:         k.setLayout(new BorderLayout(12, 0));
+70:         JLabel dot = new JLabel(new Icon() {
+71:             @Override public void paintIcon(Component cc, Graphics g, int x, int y) {
+72:                 Graphics2D g2 = (Graphics2D) g.create();
+73:                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+74:                 g2.setColor(c);
+75:                 g2.fillOval(x, y, 16, 16);
+76:                 g2.dispose();
+77:             }
+78: 
+79:             @Override public int getIconWidth() { return 16; }
+80: 
+81:             @Override public int getIconHeight() { return 16; }
+82:         });
+83:         k.add(dot, BorderLayout.LINE_START);
+84:         JPanel t = Ui.column();
+85:         t.add(Ui.label(title, 15, Ui.ink, true));
+86:         t.add(Ui.para(detail, 13, Ui.muted, textWidth() - 220));
+87:         k.add(t, BorderLayout.CENTER);
+88:         if (btn != null) k.add(Ui.ghost(btn, e -> r.run()), BorderLayout.LINE_END);
+89:         add(k);
+90:         space(8);
+91:     }
+92: 
+93:     void runNow() {
+94:         Ui.busy(this, "جارٍ فحص البيانات كاملة…", p -> {
+95:             List<Db.Check> l = db.healthCheck(true);
+96:             db.runHealthAuto();
+97:             return l;
+98:         }, l -> {
+99:             refresh();
+100:             results.removeAll();
+101:             Ui.Card c = Ui.card();
+102:             c.add(Ui.heading("نتيجة الفحص"));
+103:             for (Db.Check ch : l) {
+104:                 c.add(Ui.label((ch.ok ? "✓ " : "× ") + ch.title, 14, ch.ok ? Ui.green : Ui.red, true));
+105:                 if (ch.detail != null && !ch.detail.isEmpty()) c.add(Ui.para(ch.detail, 12.5f, Ui.muted, textWidth() - 60));
+106:             }
+107:             results.add(c);
+108:             results.add(Ui.gap(10));
+109:             Ui.rtl(results);
+110:             results.revalidate();
+111:             app.updateFoot();
+112:         });
+113:     }
+114: }

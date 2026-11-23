@@ -1,0 +1,149 @@
+3356:     var v = S.a.values;
+3357:     Object.keys(v.dirs).forEach(function (k) { if (!(k in S.cfg.dirMap)) S.cfg.dirMap[k] = v.dirs[k].guess || ""; });
+3358:     Object.keys(v.curs).forEach(function (k) { if (!(k in S.cfg.curMap)) S.cfg.curMap[k] = v.curs[k].guess || ""; });
+3359:     syncCurrencies();
+3360:   }
+3361: 
+3362:   function usedCodes() {
+3363:     var codes = {};
+3364:     Object.keys(S.a.values.curs).forEach(function (k) { var c = S.cfg.curMap[k]; if (c && c !== "__skip") codes[c] = true; });
+3365:     S.a.tables.forEach(function (t) {
+3366:       if (!t.use) return;
+3367:       if (t.roles.currency === undefined && !t.roles.wide) codes[S.cfg.fixedCurrency[t.id] || t.sheetCurrency || S.cfg.defaultCurrency] = true;
+3368:     });
+3369:     return Object.keys(codes);
+3370:   }
+3371: 
+3372:   /** المنازل العشرية لكل عملة = الأكبر بين المعتاد لها وما في الملف، حتى لا يُقرَّب أي مبلغ. */
+3373:   function syncCurrencies() {
+3374:     S.need = X.suggestDecimals(S.a, S.cfg);
+3375:     usedCodes().forEach(function (c) {
+3376:       var d = S.cfg.currencies[c];
+3377:       var k = C.KNOWN[c];
+3378:       if (!d) S.cfg.currencies[c] = { name: k ? k.name : c, dec: Math.max(k ? k.dec : 2, S.need[c] || 0) };
+3379:       else if (!d.userSet && (S.need[c] || 0) > d.dec) d.dec = S.need[c];
+3380:     });
+3381:   }
+3382: 
+3383:   // ===================================================================================
+3384:   // الحساب
+3385:   // ===================================================================================
+3386: 
+3387:   function tablesCfg() {
+3388:     return { now: S.cfg.now, currencies: S.cfg.currencies, defaultCurrency: S.cfg.defaultCurrency, userName: "استيراد ذكي",
+3389:       sourceName: "الاستيراد الذكي — " + S.names.join("، ") };
+3390:   }
+3391: 
+3392:   function run() {
+3393:     S.cfg.now = Date.now();
+3394:     try {
+3395:       var model = X.build(S.a, S.cfg, serialToDate);
+3396:       var tc = tablesCfg();
+3397:       var T = C.tables(model, tc, rand);
+3398:       var rep = C.report(model, T, tc);
+3399:       var unb = C.checkBalanced(T);
+3400:       if (unb.length) throw new Error("قيد غير متوازن — لا يجب أن يحدث، أرسل الملف للمطوّر");
+3401:       // فحص داخلي: رصيد كل مكتب من قيود التطبيق = مجموع صفوف الملف مباشرة
+3402:       var fromT = C.balancesFromTables(T), internal = { n: 0, bad: [] };
+3403:       model.offices.forEach(function (o, i) {
+3404:         T.office_currencies.forEach(function (oc) {
+3405:           if (oc.office_id !== i + 1) return;
+3406:           internal.n++;
+3407:           var a = fromT[(i + 1) + "|" + oc.code] || 0n, b = model.direct[o.key + "|" + oc.code] || 0n;
+3408:           if (a !== b) internal.bad.push(o.name + " " + oc.code);
+3409:         });
+3410:       });
+3411:       var perTable = {};
+3412:       model.txs.forEach(function (x) {
+3413:         var p = perTable[x.src.tid] = perTable[x.src.tid] || { n: 0, offices: {}, codes: {}, min: null, max: null };
+3414:         p.n++; p.offices[x.office] = true; p.codes[x.code] = true;
+3415:         if (p.min === null || x.when < p.min) p.min = x.when;
+3416:         if (p.max === null || x.when > p.max) p.max = x.when;
+3417:       });
+3418:       model.openings.forEach(function (x) {
+3419:         var p = perTable[x.src.tid] = perTable[x.src.tid] || { n: 0, offices: {}, codes: {}, min: null, max: null };
+3420:         p.ob = (p.ob || 0) + 1; p.offices[x.office] = true; p.codes[x.code] = true;
+3421:       });
+3422:       S.result = { model: model, T: T, rep: rep, internal: internal, perTable: perTable, derived: X.derivedChecks(S.a, model, S.cfg, serialToDate) };
+3423:     } catch (e) {
+3424:       S.result = { error: e.message || String(e) };
+3425:     }
+3426:   }
+3427: 
+3428:   var timer = null;
+3429:   function later(full) {
+3430:     clearTimeout(timer);
+3431:     var box = $("review");
+3432:     if (S.result && !S.result.error && !$("busy")) box.insertAdjacentHTML("afterbegin", '<div class="msg info" id="busy">جارٍ إعادة الحساب…</div>');
+3433:     timer = setTimeout(function () { run(); renderAll(full); }, 200);
+3434:   }
+3435: 
+3436:   // ===================================================================================
+3437:   // العرض
+3438:   // ===================================================================================
+3439: 
+3440:   function renderAll(full) {
+3441:     var open = {};
+3442:     document.querySelectorAll("details[data-k]").forEach(function (d) { open[d.dataset.k] = d.open; });
+3443:     renderInfo();
+3444:     renderUnderstand();
+3445:     if (full !== false) renderValues();
+3446:     renderAttention();
+3447:     renderReview();
+3448:     document.querySelectorAll("details[data-k]").forEach(function (d) { if (d.dataset.k in open) d.open = open[d.dataset.k]; });
+3449:     ["step2", "step3", "step4", "step5", "step6"].forEach(function (id) { $(id).classList.toggle("off", !S.a); });
+3450:     updateMake();
+3451:   }
+3452: 
+3453:   function renderInfo() {
+3454:     var rows = 0, sheets = 0;
+3455:     S.books.forEach(function (b) { b.sheets.forEach(function (s) { sheets++; rows += s.rows.length; }); });
+3456:     $("fileInfo").innerHTML = '<div class="msg ok">✓ قرأتُ ' + S.names.map(function (x) { return "«" + esc(x) + "»"; }).join("، ") + ": " + sheets + " ورقة. " +
+3457:       '<label class="btn sec" style="display:inline-flex;align-items:center;min-height:34px;padding:4px 12px;margin-inline-start:8px;font-size:13px">اختيار ملف آخر<input type="file" id="file2" multiple accept=".xlsx,.xlsm,.xlsb,.xls,.csv,.txt,.tsv,.ods" hidden></label></div>';
+3458:   }
+3459: 
+3460:   function fmtDay(ms) { return ms === null || ms === undefined ? "" : C.fmtDate(ms).split(" ")[0]; }
+3461: 
+3462:   function renderUnderstand() {
+3463:     var a = S.a, r = S.result || {}, pt = r.perTable || {};
+3464:     var html = "";
+3465:     var usable = a.tables.filter(function (t) { return t.use; });
+3466:     if (!usable.length) {
+3467:       html += '<div class="msg err"><b>لم أجد في الملف سجل حركات ولا جدول أرصدة يمكن نقله تلقائيًا.</b> افتح «تعديل الأعمدة» في الجدول المناسب أدناه وحدّد أعمدة الحساب والمبلغ (والتاريخ للحركات).</div>';
+3468:     }
+3469:     var jUsed = usable.filter(function (t) { return t.kind !== "balances"; }), bUsed = usable.filter(function (t) { return t.kind === "balances"; });
+3470:     if (jUsed.length && bUsed.length) {
+3471:       html += '<div class="msg warn"><b>انتبه:</b> ستُنقل حركات من ' + jUsed.map(function (t) { return "«" + esc(t.label) + "»"; }).join("، ") + " وأرصدة سابقة من " +
+3472:         bUsed.map(function (t) { return "«" + esc(t.label) + "»"; }).join("، ") + ". إن كان جدول الأرصدة نتيجةً لهذه الحركات (لا رصيدًا قبلها) فأوقف نقله، وإلا تضاعفت الأرصدة.</div>";
+3473:     }
+3474:     a.tables.forEach(function (t) { html += tableCard(t, pt[t.id], r.model && r.model.perTable[t.id]); });
+3475:     a.lists.forEach(function (l) {
+3476:       var empty = 0;
+3477:       if (r.model) l.values.forEach(function (v) { var i = r.model.officeIndex[X.key(S.cfg.rename[X.key(v)] || v)]; if (i !== undefined && r.model.offices[i].emptyOk) empty++; });
+3478:       html += '<div class="tcard"><div class="top"><b>' + esc(l.label) + '</b><span class="badge list">قائمة أسماء الحسابات</span></div>' +
+3479:         '<div class="facts">' + n(l.values.length) + " اسمًا" + (empty ? "، منها " + n(empty) + " بلا أي حركة أو رصيد" : "") + "</div>" +
+3480:         '<label class="check"><input type="checkbox" data-listed="1"' + (S.cfg.listedAccounts ? " checked" : "") + "> أنشئ في التطبيق كل المكاتب التي في القائمة، حتى التي ليس لها حركات</label></div>";
+3481:     });
+3482:     var notes = a.notes.filter(function (x) { return x.kind !== "empty"; });
+3483:     if (notes.length || a.tables.some(function (t) { return t.kind === "lookup"; })) {
+3484:       html += '<p class="hint">أوراق لا يُنقل منها شيء: ' + notes.map(function (x) { return "«" + esc(x.sheet) + "»" + (x.kind === "chart" ? " (رسم بياني)" : " (لا جدول بيانات فيها — نموذج إدخال أو رسم أو نص)"); })
+3485:         .concat(a.tables.filter(function (t) { return t.kind === "lookup"; }).map(function (t) { return "«" + esc(t.label) + "» (قوائم قيم للإدخال)"; })).join("، ") + ".</p>";
+3486:     }
+3487:     $("understand").innerHTML = html;
+3488:   }
+3489: 
+3490:   function tableCard(t, p, st) {
+3491:     if (t.kind === "lookup") return "";
+3492:     var k = KIND[t.kind] || KIND.other;
+3493:     var r = t.roles;
+3494:     var h = '<div class="tcard' + (t.use ? "" : " off") + '"><div class="top"><b>' + esc(t.label) + '</b><span class="badge ' + k[1] + '">' + k[0] + "</span>" +
+3495:       '<span class="hint">' + (t.excel ? "جدول Excel «" + esc(t.excel) + "» · " : "") + "الصفوف " + (t.first + 1) + "–" + (t.last + 1) + "</span></div>";
+3496:     // ما فيه
+3497:     var facts = [];
+3498:     if (t.use && p) {
+3499:       if (p.n) facts.push(n(p.n) + " حركة");
+3500:       if (p.ob) facts.push(n(p.ob) + " رصيد سابق");
+3501:       facts.push(n(Object.keys(p.offices).length) + " حسابًا");
+3502:       facts.push("العملات: " + Object.keys(p.codes).sort().join("، "));
+3503:       if (p.min) facts.push("من " + fmtDay(p.min) + " إلى " + fmtDay(p.max));
+3504:     } else if (t.use && st) facts.push("لا شيء يُنقل منه بعد");

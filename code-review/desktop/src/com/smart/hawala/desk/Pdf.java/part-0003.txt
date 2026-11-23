@@ -1,0 +1,168 @@
+423:         if (o.developer != null && !o.developer.isEmpty()) foot.add(o.developer);
+424:         hline(g, M, H - M - FOOTER + 4, W - M);
+425:         new TB(Model.join(foot, "   •   "), small, new Color(110, 110, 110), CW, CENTER).draw(g, M, H - M - FOOTER + 8);
+426:     }
+427: 
+428:     BufferedImage render(List<Block> page, int index, int count, float scale) {
+429:         BufferedImage im = new BufferedImage((int) (W * scale), (int) (H * scale), BufferedImage.TYPE_INT_RGB);
+430:         Graphics2D g = im.createGraphics();
+431:         g.scale(scale, scale);
+432:         drawPage(g, page, index, count);
+433:         g.dispose();
+434:         return im;
+435:     }
+436: 
+437:     // ---------------------------------------------------------------------------- المخرجات
+438: 
+439:     /** PDF من صور الصفحات (2.2×) مضغوطة بلا فقد؛ يفتح في أي قارئ ويُطبع كما هو. */
+440:     static File pdf(Report r, Opts o, File out) throws IOException {
+441:         Pdf ex = new Pdf(r, o);
+442:         List<List<Block>> pages = ex.pages();
+443:         float scale = 2.2f;
+444:         try (OutputStream os = new FileOutputStream(out)) {
+445:             PdfWriter w = new PdfWriter(os);
+446:             for (int i = 0; i < pages.size(); i++) w.page(ex.render(pages.get(i), i, pages.size(), scale), ex.W, ex.H);
+447:             w.finish(r.title);
+448:         }
+449:         return out;
+450:     }
+451: 
+452:     static List<File> png(Report r, Opts o, File dir, String base) throws IOException {
+453:         Pdf ex = new Pdf(r, o);
+454:         List<List<Block>> pages = ex.pages();
+455:         List<File> files = new ArrayList<>();
+456:         for (int i = 0; i < pages.size(); i++) {
+457:             File f = new File(dir, base + (pages.size() > 1 ? "-" + (i + 1) : "") + ".png");
+458:             ImageIO.write(ex.render(pages.get(i), i, pages.size(), 2f), "png", f);
+459:             files.add(f);
+460:         }
+461:         return files;
+462:     }
+463: 
+464:     static BufferedImage preview(Report r, Opts o, int widthPx) {
+465:         Pdf ex = new Pdf(r, o);
+466:         List<List<Block>> pages = ex.pages();
+467:         return ex.render(pages.isEmpty() ? new ArrayList<>() : pages.get(0), 0, Math.max(1, pages.size()), widthPx / ex.W);
+468:     }
+469: 
+470:     /** الطباعة عبر نافذة الماك (ومنها زر PDF بنص قابل للتحديد). */
+471:     static boolean print(Report r, Opts o) throws Exception {
+472:         final Pdf ex = new Pdf(r, o);
+473:         final List<List<Block>> pages = ex.pages();
+474:         PrinterJob job = PrinterJob.getPrinterJob();
+475:         job.setJobName(r.title);
+476:         PageFormat pf = job.defaultPage();
+477:         Paper p = new Paper();
+478:         p.setSize(595, 842);
+479:         p.setImageableArea(0, 0, 595, 842);
+480:         pf.setPaper(p);
+481:         pf.setOrientation(o.style.landscape ? PageFormat.LANDSCAPE : PageFormat.PORTRAIT);
+482:         job.setPrintable((g, f, i) -> {
+483:             if (i >= pages.size()) return Printable.NO_SUCH_PAGE;
+484:             Graphics2D g2 = (Graphics2D) g;
+485:             g2.translate(f.getImageableX(), f.getImageableY());
+486:             double s = Math.min(f.getImageableWidth() / ex.W, f.getImageableHeight() / ex.H);
+487:             g2.scale(s, s);
+488:             ex.drawPage(g2, pages.get(i), i, pages.size());
+489:             return Printable.PAGE_EXISTS;
+490:         }, pf);
+491:         if (!job.printDialog()) return false;
+492:         job.print();
+493:         return true;
+494:     }
+495: 
+496:     /** كاتب PDF بسيط: صفحة لكل صورة RGB مضغوطة Flate. */
+497:     static final class PdfWriter {
+498:         final OutputStream out;
+499:         long pos;
+500:         final List<Long> offsets = new ArrayList<>();
+501:         final List<Integer> pageIds = new ArrayList<>();
+502:         int next = 3;   // 1 = الكتالوج، 2 = شجرة الصفحات
+503: 
+504:         PdfWriter(OutputStream out) throws IOException {
+505:             this.out = out;
+506:             offsets.add(0L);
+507:             offsets.add(0L);
+508:             offsets.add(0L);
+509:             write("%PDF-1.4\n%âãÏÓ\n".getBytes(StandardCharsets.ISO_8859_1));
+510:         }
+511: 
+512:         void write(byte[] b) throws IOException {
+513:             out.write(b);
+514:             pos += b.length;
+515:         }
+516: 
+517:         void w(String s) throws IOException { write(s.getBytes(StandardCharsets.ISO_8859_1)); }
+518: 
+519:         int obj() {
+520:             int id = next++;
+521:             while (offsets.size() <= id) offsets.add(0L);
+522:             return id;
+523:         }
+524: 
+525:         void begin(int id) throws IOException {
+526:             offsets.set(id, pos);
+527:             w(id + " 0 obj\n");
+528:         }
+529: 
+530:         void page(BufferedImage im, float pw, float ph) throws IOException {
+531:             int iw = im.getWidth(), ih = im.getHeight();
+532:             byte[] raw = new byte[iw * ih * 3];
+533:             int k = 0;
+534:             int[] row = new int[iw];
+535:             for (int y = 0; y < ih; y++) {
+536:                 im.getRGB(0, y, iw, 1, row, 0, iw);
+537:                 for (int x = 0; x < iw; x++) {
+538:                     int c = row[x];
+539:                     raw[k++] = (byte) (c >> 16);
+540:                     raw[k++] = (byte) (c >> 8);
+541:                     raw[k++] = (byte) c;
+542:                 }
+543:             }
+544:             Deflater d = new Deflater(Deflater.BEST_COMPRESSION);
+545:             d.setInput(raw);
+546:             d.finish();
+547:             ByteArrayOutputStream z = new ByteArrayOutputStream(raw.length / 8);
+548:             byte[] buf = new byte[65536];
+549:             while (!d.finished()) z.write(buf, 0, d.deflate(buf));
+550:             d.end();
+551:             byte[] data = z.toByteArray();
+552:             int img = obj(), content = obj(), page = obj();
+553:             begin(img);
+554:             w("<< /Type /XObject /Subtype /Image /Width " + iw + " /Height " + ih + " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length " + data.length + " >>\nstream\n");
+555:             write(data);
+556:             w("\nendstream\nendobj\n");
+557:             String cs = "q " + f(pw) + " 0 0 " + f(ph) + " 0 0 cm /Im0 Do Q\n";
+558:             begin(content);
+559:             w("<< /Length " + cs.length() + " >>\nstream\n" + cs + "endstream\nendobj\n");
+560:             begin(page);
+561:             w("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + f(pw) + " " + f(ph) + "] /Resources << /XObject << /Im0 " + img + " 0 R >> >> /Contents " + content + " 0 R >>\nendobj\n");
+562:             pageIds.add(page);
+563:         }
+564: 
+565:         static String f(float v) { return String.format(java.util.Locale.US, "%.2f", v); }
+566: 
+567:         void finish(String title) throws IOException {
+568:             offsets.set(2, pos);
+569:             StringBuilder kids = new StringBuilder();
+570:             for (int id : pageIds) kids.append(id).append(" 0 R ");
+571:             w("2 0 obj\n<< /Type /Pages /Kids [" + kids + "] /Count " + pageIds.size() + " >>\nendobj\n");
+572:             int info = obj();
+573:             begin(info);
+574:             w("<< /Producer (Smart Accountant for Mac) /Title <" + utf16(title) + "> >>\nendobj\n");
+575:             offsets.set(1, pos);
+576:             w("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+577:             long xref = pos;
+578:             w("xref\n0 " + next + "\n0000000000 65535 f \n");
+579:             for (int i = 1; i < next; i++) w(String.format(java.util.Locale.US, "%010d 00000 n \n", offsets.get(i)));
+580:             w("trailer\n<< /Size " + next + " /Root 1 0 R /Info " + info + " 0 R >>\nstartxref\n" + xref + "\n%%EOF\n");
+581:             out.flush();
+582:         }
+583: 
+584:         static String utf16(String s) {
+585:             StringBuilder b = new StringBuilder("FEFF");
+586:             for (char c : (s == null ? "" : s).toCharArray()) b.append(String.format(java.util.Locale.ROOT, "%04X", (int) c));
+587:             return b.toString();
+588:         }
+589:     }
+590: }

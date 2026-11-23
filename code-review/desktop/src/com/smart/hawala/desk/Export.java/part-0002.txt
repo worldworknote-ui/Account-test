@@ -1,0 +1,65 @@
+165:             db.audit("EXPORT", "report", 0, what + " → " + file.getName());
+166:             int k = Ui.choose(parent, "تم التصدير", "حُفظ: " + file.getName() + "\nفي: " + file.getParent(), new String[]{"فتح الملف", "إظهار في Finder", "حسنًا"});
+167:             try {
+168:                 if (k == 0) Desktop.getDesktop().open(file);
+169:                 else if (k == 1) reveal(file);
+170:             } catch (Exception e) {
+171:                 Ui.error(parent, e);
+172:             }
+173:         });
+174:     }
+175: 
+176:     static Report prepare(Supplier<Report> build, ExportStyle st) {
+177:         Report r = build.get();
+178:         Entitlements e = License.current;
+179:         r.stamp(e.watermark(), e.lid);
+180:         r.signature = st.signature || r.signature;
+181:         if (st.footer != null && !st.footer.trim().isEmpty()) r.footer = st.footer.trim();
+182:         Reports.colorize(r, st);
+183:         return r;
+184:     }
+185: 
+186:     static void reveal(File f) throws Exception {
+187:         if (System.getProperty("os.name", "").toLowerCase().contains("mac")) new ProcessBuilder("open", "-R", f.getAbsolutePath()).start();
+188:         else if (System.getProperty("os.name", "").toLowerCase().contains("win")) new ProcessBuilder("explorer.exe", "/select," + f.getAbsolutePath()).start();
+189:         else Desktop.getDesktop().open(f.getParentFile());
+190:     }
+191: 
+192:     /** نافذة حفظ الماك الأصلية، مع تذكّر آخر مجلد. */
+193:     static File save(Component parent, Db db, String name, String ext) {
+194:         FileDialog fd = new FileDialog(frame(parent), "حفظ", FileDialog.SAVE);
+195:         String dir = db.setting("last_export_dir", "");
+196:         if (dir.isEmpty() || !new File(dir).isDirectory()) dir = new File(System.getProperty("user.home"), "Documents").getAbsolutePath();
+197:         fd.setDirectory(dir);
+198:         fd.setFile(safe(name) + "-" + Model.day(Clock.now()).replace('/', '-') + ext);
+199:         fd.setVisible(true);
+200:         if (fd.getFile() == null) return null;
+201:         String fn = fd.getFile();
+202:         if (!fn.toLowerCase().endsWith(ext)) fn += ext;
+203:         db.setSettingQuiet("last_export_dir", fd.getDirectory());
+204:         return new File(fd.getDirectory(), fn);
+205:     }
+206: 
+207:     static File open(Component parent, Db db, String title, String... exts) {
+208:         FileDialog fd = new FileDialog(frame(parent), title, FileDialog.LOAD);
+209:         String dir = db.setting("last_export_dir", "");
+210:         if (!dir.isEmpty() && new File(dir).isDirectory()) fd.setDirectory(dir);
+211:         if (exts.length > 0) fd.setFilenameFilter((d, n) -> {
+212:             for (String e : exts) if (n.toLowerCase().endsWith(e)) return true;
+213:             return false;
+214:         });
+215:         fd.setVisible(true);
+216:         if (fd.getFile() == null) return null;
+217:         return new File(fd.getDirectory(), fd.getFile());
+218:     }
+219: 
+220:     static Frame frame(Component c) {
+221:         Window w = Ui.win(c);
+222:         while (w != null && !(w instanceof Frame)) w = w.getOwner();
+223:         return w instanceof Frame ? (Frame) w : App.frame;
+224:     }
+225: 
+226:     static String safe(String s) {
+227:         return (s == null ? "تقرير" : s).replaceAll("[\\\\/:*?\"<>|]+", "-").replaceAll("\\s+", "-");
+228:     }
+229: }

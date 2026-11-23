@@ -1,0 +1,172 @@
+5037:     /** 10.8: مطابقات خلال آخر days يومًا في المكاتب التي أتحقق منها، أنشأها غيري ولم يُتحقق منها. */
+5038:     public List<Model.Recon> awaitingMyRecons(int days, int limit) {
+5039:         Model.User me = actor();
+5040:         List<Model.Recon> out = new ArrayList<>();
+5041:         if (me == null || !Auth.can(me, Auth.Perm.VERIFY)) return out;
+5042:         SQLiteDatabase d = getReadableDatabase();
+5043:         Set<Long> scope = checkScope(d, me);
+5044:         if (scope != null && scope.isEmpty()) return out;
+5045:         List<Long> ids = new ArrayList<>();
+5046:         try (Cursor c = d.rawQuery("SELECT id,office_id FROM reconciliations WHERE checked_by IS NULL AND created_at>=" + (Clock.now() - days * 86_400_000L)
+5047:                 + " ORDER BY created_at DESC,id DESC", null)) {
+5048:             while (c.moveToNext()) if (scope == null || scope.contains(c.getLong(1))) ids.add(c.getLong(0));
+5049:         }
+5050:         for (Long id : ids) {
+5051:             Model.Recon r = recon(id);
+5052:             if (r != null && !reconBy(r, me)) out.add(r);
+5053:             if (out.size() >= limit) break;
+5054:         }
+5055:         return out;
+5056:     }
+5057: 
+5058:     /** من أنشأ المطابقة ومن تحقق منها (للعرض). */
+5059:     public String reconPeople(Model.Recon r) {
+5060:         String s = "أنشأها: " + userLabel(r.userId, r.userName);
+5061:         if (r.checkedBy != null && r.checkedAt > 0) s += " — تحقق منها: " + userLabel(r.checkedBy, "") + " (" + Model.date(r.checkedAt) + ")";
+5062:         else s += " — لم يُتحقق منها بعد";
+5063:         return s;
+5064:     }
+5065: 
+5066:     public void setReconStatus(long id, String status, String note) {
+5067:         require(Auth.Perm.TX_ADD);   // 10.11 (AUDIT-011): كما في الواجهة
+5068:         ContentValues v = new ContentValues();
+5069:         v.put("status", status);
+5070:         if (Model.RECON_SENT.equals(status)) v.putNull("confirmed_at");
+5071:         else v.put("confirmed_at", Clock.now());
+5072:         v.put("note", Crypto.enc(note == null ? "" : note));
+5073:         getWritableDatabase().update("reconciliations", v, "id=" + id, null);
+5074:         audit(Model.RECON_CONFIRMED.equals(status) ? "CONFIRM_RECON" : Model.RECON_DISPUTED.equals(status) ? "DISPUTE_RECON" : "REOPEN_RECON", "recon", id, note == null ? "" : note);
+5075:     }
+5076: 
+5077:     public void deleteRecon(long id) {
+5078:         // 10.11 (AUDIT-011): الهاتف يطلب «إلغاء الحركات» والكمبيوتر «حذف المكاتب»: تكفي إحداهما
+5079:         if (!isSystem() && !allowed(Auth.Perm.TX_CANCEL) && !allowed(Auth.Perm.DELETE)) throw new SecurityException("ليست لديك صلاحية لهذه العملية");
+5080:         SQLiteDatabase d = getWritableDatabase();
+5081:         d.beginTransaction();
+5082:         try {
+5083:             d.execSQL("DELETE FROM reconciliation_lines WHERE recon_id=" + id);
+5084:             d.execSQL("DELETE FROM reconciliations WHERE id=" + id);
+5085:             audit(d, "DELETE_RECON", "recon", id, "");
+5086:             d.setTransactionSuccessful();
+5087:         } finally {
+5088:             d.endTransaction();
+5089:         }
+5090:     }
+5091: 
+5092:     /** آخر مطابقة لكل مكتب (للعرض في قائمة الأرصدة). */
+5093:     public Map<Long, Model.Recon> lastReconsByOffice() {
+5094:         Map<Long, Model.Recon> m = new HashMap<>();
+5095:         try (Cursor c = getReadableDatabase().rawQuery("SELECT id,uuid,office_id,created_at,cutoff_entry,status,confirmed_at,note,user_name FROM reconciliations"
+5096:                 + " WHERE id IN (SELECT MAX(id) FROM reconciliations GROUP BY office_id)", null)) {
+5097:             while (c.moveToNext()) {
+5098:                 Model.Recon r = readRecon(c);
+5099:                 m.put(r.officeId, r);
+5100:             }
+5101:         }
+5102:         return m;
+5103:     }
+5104: 
+5105:     // ---- رمز استرداد المدير (بدل الدخول ببصمة الهاتف) ----
+5106: 
+5107:     public boolean hasRecoveryCode() { return !setting("recovery_hash", "").isEmpty(); }
+5108: 
+5109:     /** ينشئ رمز استرداد جديدًا (يُلغي القديم) ويعيده مرة واحدة لعرضه؛ يُحفظ مجزّأً فقط. */
+5110:     public String newRecoveryCode() {
+5111:         if (!recoveryGrant) {
+5112:             require(Auth.Perm.USERS);
+5113:             requireAdmin("رمز استرداد المدير يُنشئه المدير وحده.");
+5114:         }
+5115:         String code = Pin.newRecoveryCode();
+5116:         String salt = Pin.newSalt();
+5117:         setSettingQuiet("recovery_salt", salt);
+5118:         setSettingQuiet("recovery_hash", Pin.hash(Pin.normalizeRecovery(code), salt));
+5119:         audit("NEW_RECOVERY_CODE", "user", 0, "");
+5120:         return code;
+5121:     }
+5122: 
+5123:     public boolean verifyRecoveryCode(String code) {
+5124:         String n = Pin.normalizeRecovery(code);
+5125:         if (n.length() != 16) return false;
+5126:         return Pin.verify(n, setting("recovery_salt", ""), setting("recovery_hash", ""));
+5127:     }
+5128: 
+5129:     public void disableUsers() {
+5130:         require(Auth.Perm.USERS);
+5131:         requireAdmin("إيقاف نظام المستخدمين للمدير وحده.");
+5132:         if (founderBlock() != null) throw new IllegalStateException("نظام المستخدمين يُوقف من الجهاز الرئيسي في المزامنة فقط.");
+5133:         getWritableDatabase().execSQL("UPDATE users SET active=0");
+5134:         audit("DISABLE_USERS", "user", 0, "");
+5135:     }
+5136: 
+5137:     // ===================================================================================
+5138:     // سجل النسخ والتدقيق
+5139:     // ===================================================================================
+5140: 
+5141:     public static class BackupRecord {
+5142:         public long createdAt, size, offices, tx, att;
+5143:         public String status, kind, path, details;
+5144:         public boolean verified;
+5145:     }
+5146: 
+5147:     public void recordBackup(String kind, String status, String path, long size, Map<String, Long> counts, boolean verified, String details) {
+5148:         try {
+5149:             ContentValues v = new ContentValues();
+5150:             v.put("created_at", Clock.now());
+5151:             v.put("kind", kind);
+5152:             v.put("status", status);
+5153:             v.put("path", path);
+5154:             v.put("size_bytes", size);
+5155:             if (counts != null) {
+5156:                 v.put("n_offices", counts.get("offices"));
+5157:                 v.put("n_tx", counts.get("tx"));
+5158:                 v.put("n_att", counts.get("attachments"));
+5159:             }
+5160:             v.put("verified", verified ? 1 : 0);
+5161:             v.put("details", details);
+5162:             getWritableDatabase().insert("backup_history", null, v);
+5163:         } catch (Exception ignored) {
+5164:             // السجل للمعلومة فقط
+5165:         }
+5166:     }
+5167: 
+5168:     public List<BackupRecord> backupHistory(int limit) {
+5169:         List<BackupRecord> a = new ArrayList<>();
+5170:         try (Cursor c = getReadableDatabase().rawQuery(
+5171:                 "SELECT created_at,status,kind,path,details,size_bytes,n_offices,n_tx,n_att,verified FROM backup_history ORDER BY id DESC LIMIT " + limit, null)) {
+5172:             while (c.moveToNext()) {
+5173:                 BackupRecord r = new BackupRecord();
+5174:                 r.createdAt = c.isNull(0) ? 0 : c.getLong(0);
+5175:                 r.status = Model.nz(c.getString(1));
+5176:                 r.kind = Model.nz(c.getString(2));
+5177:                 r.path = Model.nz(c.getString(3));
+5178:                 r.details = Model.nz(c.getString(4));
+5179:                 r.size = c.isNull(5) ? 0 : c.getLong(5);
+5180:                 r.offices = c.isNull(6) ? 0 : c.getLong(6);
+5181:                 r.tx = c.isNull(7) ? 0 : c.getLong(7);
+5182:                 r.att = c.isNull(8) ? 0 : c.getLong(8);
+5183:                 r.verified = !c.isNull(9) && c.getInt(9) == 1;
+5184:                 a.add(r);
+5185:             }
+5186:         }
+5187:         return a;
+5188:     }
+5189: 
+5190:     /** سجل العمليات: {الوقت، العملية، الكيان، الرقم، المستخدم، السبب}. */
+5191:     public List<String[]> auditLog(int limit) {
+5192:         List<String[]> a = new ArrayList<>();
+5193:         try (Cursor c = getReadableDatabase().rawQuery("SELECT created_at,action,entity,entity_id,user_name,reason FROM audit_logs WHERE action<>'LOGIN_SESSION' ORDER BY id DESC LIMIT " + limit, null)) {
+5194:             while (c.moveToNext()) {
+5195:                 a.add(new String[]{Model.date(c.isNull(0) ? 0 : c.getLong(0)), Model.nz(c.getString(1)), Model.nz(c.getString(2)),
+5196:                         c.isNull(3) ? "" : "" + c.getLong(3), Model.nz(Crypto.dec(c.getString(4))), Model.nz(Crypto.dec(c.getString(5)))});
+5197:             }
+5198:         }
+5199:         return a;
+5200:     }
+5201: 
+5202:     /**
+5203:      * 10.16: سجل العمليات من كل الأجهزة: {الوقت، العملية، الكيان، الرقم، المستخدم، السبب، الجهاز}. أسطر هذا الجهاز من سجله
+5204:      * المتسلسل، وأسطر الأجهزة الأخرى مما وصل بالمزامنة. بلا مزامنة = سجل هذا الجهاز كما كان (الجهاز فارغ).
+5205:      */
+5206:     public List<String[]> auditLogAll(int limit) {
+5207:         require(Auth.Perm.AUDIT);   // 11.6: في طبقة البيانات أيضًا
+5208:         SQLiteDatabase d = getReadableDatabase();

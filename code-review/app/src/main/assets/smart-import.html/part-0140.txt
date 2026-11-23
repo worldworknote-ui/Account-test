@@ -1,0 +1,83 @@
+3706:       });
+3707:     }
+3708:     (m.balanceChecks || []).forEach(function (b) {
+3709:       if (!b.sign && !b.pairs) {
+3710:         li.push('<li class="bad">ⓘ عمود «' + esc(b.column) + "» في «" + esc(b.table) + "»: لا توجد حركتان متتاليتان لمعرفة إشارته، فلم يُستخدم للتحقق. حدّد إشارته في الخطوة 3 إن أردت.</li>");
+3711:         return;
+3712:       }
+3713:       if (!b.sign) {
+3714:         li.push('<li class="bad">ⓘ عمود «' + esc(b.column) + "» في «" + esc(b.table) + "» لا يتبع رصيد كل حساب على حدة (" + n(b.agree) + " من " + n(b.pairs) +
+3715:           " فرقًا فقط يساوي مبلغ الحركة)، فلم يُستخدم للتحقق ولا لاستنتاج رصيد سابق. حدّد إشارته في الخطوة 3 إن كان رصيدًا فعلًا.</li>");
+3716:         return;
+3717:       }
+3718:       add(!b.badN, "عمود «" + esc(b.column) + "» في «" + esc(b.table) + "» (الموجب = " + (b.sign === "D" ? "لنا" : "علينا") +
+3719:         (b.how === "book" ? "، كباقي أوراق الملف" : b.how === "first" ? "، من أول صف" : "") + "): " +
+3720:         (b.badN ? n(b.badN) + " من " + n(b.rows) + " رصيدًا لا يطابق رصيدنا التراكمي (التفاصيل أدناه)." : "كل الأرصدة (" + n(b.rows) + ") طابقت رصيدنا التراكمي سطرًا بسطر.") +
+3721:         (b.implied ? " أُضيف رصيد سابق مستنتج لـ " + n(b.implied) + " حساب." : ""));
+3722:     });
+3723:     (m.summaryChecks || []).forEach(function (s) {
+3724:       var bad = s.rows.filter(function (x) { return !x.ok; });
+3725:       add(!bad.length, "جدول «" + esc(s.table) + "» (ملخص، الموجب = " + (s.sign === "D" ? "لنا" : "علينا") + "): " +
+3726:         (bad.length ? n(bad.length) + " من " + n(s.n) + " رصيدًا لا يطابق رصيد المكتب بعد النقل (التفاصيل أدناه)." : "كل أرصدته (" + n(s.n) + ") تطابق أرصدة المكاتب بعد النقل."));
+3727:     });
+3728:     var allOk = li.every(function (x) { return x.indexOf('class="ok"') >= 0; });
+3729:     html += '<div class="msg ' + (allOk ? "ok" : "warn") + '"><b>التحقق من الدقة</b><ul class="checks">' + li.join("") + "</ul></div>";
+3730:     // تفاصيل عدم المطابقة
+3731:     (m.balanceChecks || []).forEach(function (b) {
+3732:       if (!b.bad.length) return;
+3733:       html += '<details class="box" data-k="bbad-' + b.tid + '"><summary>صفوف لا يطابق فيها عمود الرصيد — ' + esc(b.table) + " (" + n(b.badN) + ')</summary><div><div class="tablebox" style="max-height:300px"><table><tr><th>الصف</th><th>الحساب</th><th>العملة</th><th>في ملفك</th><th>رصيدنا</th><th class="num">الفرق</th></tr>' +
+3734:         b.bad.map(function (x) { var d = decOf(x.code); return "<tr><td>" + x.row + "</td><td>" + esc(x.account) + '</td><td class="ltr">' + x.code + "</td><td>" + balCell(x.file, d) + "</td><td>" + balCell(x.ours, d) + '</td><td class="num">' + C.fmtMinor(x.ours - x.file, d) + "</td></tr>"; }).join("") +
+3735:         '</table></div><p class="hint">أول صف لا يطابق غالبًا هو موضع الخطأ: مبلغ أو اتجاه مكتوب خطأ، أو رصيد مكتوب يدويًا.</p></div></details>';
+3736:     });
+3737:     (m.summaryChecks || []).forEach(function (s) {
+3738:       var bad = s.rows.filter(function (x) { return !x.ok; });
+3739:       if (!bad.length) return;
+3740:       html += '<details class="box" data-k="sbad-' + s.tid + '"><summary>أرصدة «' + esc(s.table) + "» التي لا تطابق (" + n(bad.length) + ')</summary><div><div class="tablebox" style="max-height:300px"><table><tr><th>الصف</th><th>الحساب</th><th>العملة</th><th>في ملفك</th><th>بعد النقل</th></tr>' +
+3741:         bad.map(function (x) { var d = decOf(x.code); return "<tr><td>" + x.row + "</td><td>" + esc(x.account) + (x.known ? "" : ' <span class="chip bad">ليس في الحركات</span>') + '</td><td class="ltr">' + x.code + "</td><td>" + balCell(x.file, d) + "</td><td>" + balCell(x.ours, d) + "</td></tr>"; }).join("") +
+3742:         "</table></div></div></details>";
+3743:     });
+3744:     if (m.impliedOpenings.length) {
+3745:       html += '<details class="box" data-k="implied"><summary>أرصدة سابقة مستنتجة من عمود الرصيد (' + n(m.impliedOpenings.length) + ')</summary><div><p class="hint">حسابات بدأت في ملفك برصيد غير مكتوب كحركة: رصيد أول صف ≠ مبلغه. أُضيف الفرق «رصيدًا سابقًا» قبل أول حركة.</p><div class="tablebox" style="max-height:260px"><table><tr><th>الحساب</th><th>العملة</th><th>الرصيد السابق</th><th>من</th></tr>' +
+3746:         m.impliedOpenings.map(function (x) { return "<tr><td>" + esc(x.office) + '</td><td class="ltr">' + x.code + "</td><td>" + balCell(x.minor, decOf(x.code)) + "</td><td>" + esc(x.sheet) + " صف " + x.row + "</td></tr>"; }).join("") +
+3747:         "</table></div></div></details>";
+3748:     }
+3749:     html += '<div class="stats">' + stat(n(T.offices.length), "مكتب") + stat(n(T.tx.length), "حركة") + stat(n(T.opening_balances.length), "رصيد سابق") +
+3750:       stat(n(rep.rows.filter(function (x) { return x.balance !== 0n; }).length), "رصيدًا غير صفري") + "</div>";
+3751:     if (m.warnings.length) html += '<div class="msg warn"><b>ملاحظات:</b><ul>' + m.warnings.map(function (w) { return "<li>" + esc(w) + "</li>"; }).join("") + "</ul></div>";
+3752:     // الأرصدة
+3753:     var hasExp = rep.rows.some(function (x) { return x.expected !== null; });
+3754:     html += '<h3>أرصدة المكاتب بعد النقل</h3><div class="row" style="margin-bottom:8px"><input type="text" id="q" class="search" placeholder="ابحث باسم المكتب…" value="' + esc(S.q) + '">' +
+3755:       '<span class="hint" id="qn"></span></div><div class="tablebox"><table id="balTable"><tr><th>المكتب</th><th>العملة</th><th class="num">حركات</th><th class="num">رصيد سابق</th><th class="num">مجموع لنا</th><th class="num">مجموع علينا</th><th>الرصيد النهائي</th>' +
+3756:       (hasExp ? "<th>في ملفك</th><th></th>" : "") + "</tr>";
+3757:     var txByKey = {};
+3758:     m.txs.forEach(function (x) { var k = x.office + "|" + x.code; txByKey[k] = (txByKey[k] || 0) + 1; });
+3759:     var oIndex = {};
+3760:     m.offices.forEach(function (o, i) { oIndex[o.name] = i; });
+3761:     rep.rows.forEach(function (x) {
+3762:       html += '<tr data-o="' + esc(C.looseKey(x.office)) + '"><td>' + esc(x.office) + '</td><td class="ltr">' + x.code + '</td><td class="num">' + n(txByKey[oIndex[x.office] + "|" + x.code] || 0) +
+3763:         '</td><td class="num">' + bw(x.opening, x.dec) + '</td><td class="num">' + C.fmtMinor(x.debit, x.dec) + '</td><td class="num">' + C.fmtMinor(x.credit, x.dec) + "</td><td>" + balCell(x.balance, x.dec) + "</td>" +
+3764:         (hasExp ? "<td>" + (x.expected === null ? "" : balCell(x.expected, x.dec)) + "</td><td>" + (x.match === null ? "" : x.match ? '<span class="chip ok">مطابق</span>' : '<span class="chip bad">غير مطابق</span>') + "</td>" : "") + "</tr>";
+3765:     });
+3766:     html += "</table></div>";
+3767:     html += "<h3>الإجمالي لكل عملة</h3><div class=\"tablebox\"><table><tr><th>العملة</th><th class=\"num\">مجموع ما لنا</th><th>مكاتب</th><th class=\"num\">مجموع ما علينا</th><th>مكاتب</th><th>الصافي</th></tr>";
+3768:     rep.totals.forEach(function (t) {
+3769:       html += '<tr><td class="ltr">' + t.code + '</td><td class="num us">' + C.fmtMinor(t.receivable, t.dec) + "</td><td>" + t.nr + '</td><td class="num them">' + C.fmtMinor(t.payable, t.dec) +
+3770:         "</td><td>" + t.np + "</td><td>" + balCell(t.receivable - t.payable, t.dec) + "</td></tr>";
+3771:     });
+3772:     html += "</table></div>";
+3773:     // أسماء المكاتب
+3774:     html += '<details class="box" data-k="names"><summary>أسماء المكاتب في التطبيق (' + n(m.offices.length) + ')<span class="hint">تعديل أو توحيد</span></summary><div><p class="hint">عدّل الاسم إن أردت؛ إعطاء حسابين الاسم نفسه يجمعهما في مكتب واحد. المكتب الموجود في التطبيق بالاسم نفسه تُضاف إليه الحركات عند «إضافة إلى بياناتي».</p>' +
+3775:       '<div class="tablebox" style="max-height:340px"><table><tr><th>الاسم في الملف</th><th>الاسم في التطبيق</th><th class="num">حركات</th><th class="num">أرصدة سابقة</th></tr>';
+3776:     m.offices.forEach(function (o) {
+3777:       Object.keys(o.variants).forEach(function (v, i) {
+3778:         var k = X.key(v);
+3779:         html += '<tr data-o="' + esc(C.looseKey(o.name)) + '"><td>' + esc(v) + '</td><td><input type="text" data-rename="' + esc(k) + '" value="' + esc(S.cfg.rename[k] || o.name) + '"></td><td class="num">' +
+3780:           (i === 0 ? n(o.tx) : "") + '</td><td class="num">' + (i === 0 ? n(o.openings) : "") + "</td></tr>";
+3781:       });
+3782:     });
+3783:     html += "</table></div></div></details>";
+3784:     // أول الحركات
+3785:     if (T.tx.length) {
+3786:       var names = {}, dec = {};
+3787:       T.offices.forEach(function (o) { names[o.id] = o.name; });
+3788:       T.currencies.forEach(function (c) { dec[c.code] = c.decimals; });

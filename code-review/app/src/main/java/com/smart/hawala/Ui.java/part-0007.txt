@@ -1,0 +1,174 @@
+1020:         g.setColor(mix(islandBg, c, night ? 0.2f : 0.13f));
+1021:         g.setCornerRadius(dp(22));
+1022:         g.setStroke(dp(2), c);
+1023:         return g;
+1024:     }
+1025: 
+1026:     // ===================================================================================
+1027:     // 10.7: نوع الحركة أعلى صفحة «تسجيل حركة» (عادية، قص عملات، بين مكتبين) — بدل القائمة نصف الدائرية
+1028:     // ===================================================================================
+1029: 
+1030:     /** الخيارات المتاحة لهذا المستخدم (يحددها MainActivity بالصلاحيات). */
+1031:     java.util.List<RecordMenu.Item> recordItems() { return java.util.Arrays.asList(RecordMenu.ITEMS); }
+1032: 
+1033:     /** فتح نوع آخر من الصفحة نفسها، مع المكتب المختار إن وُجد. */
+1034:     void openRecord(String key, Model.Office office) {}
+1035: 
+1036:     /** أزرار نوع الحركة أعلى الصفحة (فوق المكتب). المكتب المختار ينتقل معك إلى النوع الآخر. */
+1037:     void recordKinds(final String current, final java.util.function.Supplier<Model.Office> office) {
+1038:         final java.util.List<RecordMenu.Item> items = recordItems();
+1039:         if (items.size() < 2) return;
+1040:         String[] labels = new String[items.size()];
+1041:         int sel = 0;
+1042:         for (int i = 0; i < labels.length; i++) {
+1043:             labels[i] = items.get(i).label;
+1044:             if (items.get(i).key.equals(current)) sel = i;
+1045:         }
+1046:         Seg s = new Seg(labels, null, sel, false);
+1047:         for (Button b : s.buttons) b.setTextSize(14);
+1048:         s.view.setContentDescription("نوع الحركة");
+1049:         s.listener = i -> {
+1050:             String k = items.get(i).key;
+1051:             if (!k.equals(current)) openRecord(k, office == null ? null : office.get());
+1052:         };
+1053:         body.addView(s.view, 0, lp(-1, -2, 4));
+1054:     }
+1055: 
+1056:     private boolean kbWatching;
+1057:     /** عنصر يُخفى أثناء الكتابة (سطر الملخص في الشريط الثابت مثلًا) لإفساح المجال للحقول. */
+1058:     View hideWithKeyboard;
+1059: 
+1060:     /** يخفي التبويبات عند ظهور لوحة المفاتيح حتى لا تأخذ مساحة الكتابة (مستمع واحد للنافذة كلها). */
+1061:     private void watchKeyboard() {
+1062:         if (kbWatching) return;
+1063:         kbWatching = true;
+1064:         final View decor = getWindow().getDecorView();
+1065:         decor.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+1066:             View root = frame;
+1067:             if (root == null || !root.isAttachedToWindow()) return;
+1068:             int h = decor.getHeight();
+1069:             boolean kb = h > 0 && root.getHeight() < h * 0.72;
+1070:             int want = kb ? View.GONE : View.VISIBLE;
+1071:             for (View t : new View[]{tabs, hideWithKeyboard}) if (t != null && t.getVisibility() != want) t.setVisibility(want);
+1072:             // 10.15: الشريط الزجاجي يطفو فوق أسفل الشاشة؛ مع لوحة المفاتيح يختفي فيُسحب الشريط الثابت إلى أسفل
+1073:             if (tabCover > 0 && footerBox != null && footerBox.getVisibility() == View.VISIBLE) {
+1074:                 int pb = dp(10) + (kb ? 0 : tabCover);
+1075:                 if (footerBox.getPaddingBottom() != pb) footerBox.setPadding(footerBox.getPaddingLeft(), footerBox.getPaddingTop(), footerBox.getPaddingRight(), pb);
+1076:             }
+1077:         });
+1078:     }
+1079: 
+1080:     // ===================================================================================
+1081:     // العناصر
+1082:     // ===================================================================================
+1083: 
+1084:     TextView text(String s, int size, int color, boolean bold) {
+1085:         TextView v = new TextView(this);
+1086:         v.setText(s);
+1087:         v.setTextSize(size);
+1088:         v.setTextColor(readable(color));
+1089:         v.setGravity(Gravity.RIGHT);
+1090:         v.setPadding(dp(6), dp(4), dp(6), dp(4));
+1091:         v.setLineSpacing(0, 1.08f);
+1092:         if (bold) bold(v);
+1093:         return v;
+1094:     }
+1095: 
+1096:     /** خط عريض من الخط نفسه المختار للتطبيق (لا يعود لخط الهاتف). */
+1097:     static void bold(TextView v) { v.setTypeface(Typeface.create(v.getTypeface(), Typeface.BOLD)); }
+1098: 
+1099:     TextView add(TextView v) {
+1100:         body.addView(v);
+1101:         return v;
+1102:     }
+1103: 
+1104:     TextView label(String s) { return text(s, 14, ink, true); }
+1105: 
+1106:     TextView title(String s) {
+1107:         TextView t = text(s, 17, primaryInk, true);
+1108:         t.setPadding(dp(4), dp(12), dp(4), dp(4));
+1109:         return add(t);
+1110:     }
+1111: 
+1112:     TextView hint(String s) { return add(text(s, 12, muted, false)); }
+1113: 
+1114:     EditText field(String hint) {
+1115:         EditText e = new EditText(this);
+1116:         e.setHint(hint);
+1117:         e.setTextSize(16);
+1118:         e.setSingleLine(true);
+1119:         e.setTextColor(ink);
+1120:         e.setHintTextColor(mix(muted, surface, 0.15f));
+1121:         e.setPadding(dp(14), 0, dp(14), 0);
+1122:         StateListDrawable s = new StateListDrawable();
+1123:         GradientDrawable focus = round(surface, primary, 14);
+1124:         focus.setStroke(dp(2), night ? green : primary);
+1125:         s.addState(new int[]{android.R.attr.state_focused}, focus);
+1126:         s.addState(new int[]{}, round(surface, line, 14));
+1127:         e.setBackground(s);
+1128:         e.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+1129:         e.setTextDirection(View.TEXT_DIRECTION_ANY_RTL);
+1130:         return e;
+1131:     }
+1132: 
+1133:     EditText input(String hint) {
+1134:         EditText e = field(hint);
+1135:         body.addView(e, capWide(lp(-1, 52, 4)));
+1136:         return e;
+1137:     }
+1138: 
+1139:     /**
+1140:      * 11.6: في الشاشة العريضة (الكمبيوتر أو اللوحي) لا يتمدد الزر أو الخانة بعرض الشاشة كلها:
+1141:      * عرض أقصى 560 نقطة في الوسط، والصفحة نفسها تبقى بعرض النافذة.
+1142:      */
+1143:     LinearLayout.LayoutParams capWide(LinearLayout.LayoutParams p) {
+1144:         if (p.width == -1 && getResources().getConfiguration().screenWidthDp > 640) {
+1145:             p.width = dp(560);
+1146:             p.gravity = Gravity.CENTER_HORIZONTAL;
+1147:         }
+1148:         return p;
+1149:     }
+1150: 
+1151:     EditText amountInput(String hint) {
+1152:         EditText e = input(hint);
+1153:         e.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+1154:         return e;
+1155:     }
+1156: 
+1157:     /**
+1158:      * حقل سري (كلمة مرور أو رمز): سطر واحد أولًا ثم نوع الإدخال ثم الإخفاء صراحة.
+1159:      * setSingleLine بعد setInputType كان يستبدل طريقة الإخفاء فتظهر الكلمة.
+1160:      */
+1161:     static void secret(EditText e, boolean digits) {
+1162:         e.setSingleLine(true);
+1163:         e.setInputType(digits ? InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD
+1164:                 : InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+1165:         e.setTransformationMethod(android.text.method.PasswordTransformationMethod.getInstance());
+1166:         revealToggle(e);
+1167:     }
+1168: 
+1169:     /**
+1170:      * 10.5: زر «العين» في طرف كل خانة سر: يُظهر ما كتبه المستخدم أو يخفيه، دون تغيير نوع لوحة المفاتيح ولا موضع المؤشر.
+1171:      * يُرسم داخل الخانة نفسها (رسم في طرفها) فيعمل في كل نافذة وتخطيط دون لفّ الخانة بعنصر آخر.
+1172:      */
+1173:     @android.annotation.SuppressLint("ClickableViewAccessibility")
+1174:     static void revealToggle(final EditText e) {
+1175:         final android.content.Context c = e.getContext();
+1176:         final android.graphics.drawable.Drawable show = c.getDrawable(R.drawable.ic_eye), hide = c.getDrawable(R.drawable.ic_eye_off);
+1177:         if (show == null || hide == null) return;
+1178:         final int size = Math.round(22 * c.getResources().getDisplayMetrics().density);
+1179:         final int tint = (e.getCurrentTextColor() & 0x00FFFFFF) | 0x99000000;
+1180:         for (android.graphics.drawable.Drawable d : new android.graphics.drawable.Drawable[]{show, hide}) {
+1181:             d.setBounds(0, 0, size, size);
+1182:             d.setTint(tint);
+1183:         }
+1184:         final boolean[] visible = {false};
+1185:         e.setCompoundDrawablePadding(Math.round(6 * c.getResources().getDisplayMetrics().density));
+1186:         e.setCompoundDrawablesRelative(null, null, show, null);
+1187:         e.setContentDescription("خانة سرية. المس رمز العين في طرفها لإظهار ما كتبته أو إخفائه");
+1188:         e.setOnTouchListener((v, ev) -> {
+1189:             if (ev.getAction() != android.view.MotionEvent.ACTION_UP) return false;
+1190:             boolean rtl = e.getLayoutDirection() == android.view.View.LAYOUT_DIRECTION_RTL;
+1191:             int area = size + e.getCompoundDrawablePadding() + Math.round(8 * c.getResources().getDisplayMetrics().density);
+1192:             float x = ev.getX();
+1193:             boolean onEye = rtl ? x <= e.getPaddingLeft() + area : x >= e.getWidth() - e.getPaddingRight() - area;

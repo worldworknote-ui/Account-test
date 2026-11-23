@@ -1,0 +1,152 @@
+1124:         return w.length() > 3 && "بلوف".indexOf(w.charAt(0)) >= 0 && CITIES.contains(w.substring(1));
+1125:     }
+1126: 
+1127:     /** نص المدينة للعرض بلا الحرف الملتصق. */
+1128:     private static String cityText(List<String> ow, List<String> nw, int k, int n) {
+1129:         if (n == 1 && !CITIES.contains(nw.get(k)) && prefixedCity(nw.get(k))) return ow.get(k).substring(1);
+1130:         return titleCase(String.join(" ", ow.subList(k, k + n)));
+1131:     }
+1132: 
+1133:     /** الأسماء اللاتينية المكتوبة بحروف صغيرة تُكتب بحرف كبير أولًا: «mr tony» ← «Tony». العربية كما هي. */
+1134:     static String titleCase(String s) {
+1135:         for (char ch : s.toCharArray()) if (Character.isUpperCase(ch)) return s;   // «Ahmad bin Ali» كما كُتب
+1136:         StringBuilder sb = new StringBuilder();
+1137:         for (String w : s.split(" ")) {
+1138:             if (sb.length() > 0) sb.append(' ');
+1139:             if (w.isEmpty()) continue;
+1140:             boolean lower = true, latin = false;
+1141:             for (char ch : w.toCharArray()) {
+1142:                 if (Character.isUpperCase(ch)) lower = false;
+1143:                 Character.UnicodeScript sc = Character.UnicodeScript.of(ch);
+1144:                 if (sc == Character.UnicodeScript.LATIN || sc == Character.UnicodeScript.CYRILLIC) latin = true;
+1145:             }
+1146:             sb.append(lower && latin ? Character.toUpperCase(w.charAt(0)) + w.substring(1) : w);
+1147:         }
+1148:         return sb.toString();
+1149:     }
+1150: 
+1151:     private static final Set<String> NOT_CURRENCY = set("صافي", "صافيه", "صافية", "فقط", "لاغير", "الف", "الاف", "ألف", "آلاف", "مليون", "ملايين",
+1152:             "مليار", "نقدا", "نقداً", "كاش", "مبلغ", "المبلغ", "قيمة", "بقيمة", "بمبلغ", "يدا", "بيد", "كامل", "كاملة", "كاملين", "تماما", "زكاتكم",
+1153:             "زكاة", "صدقة", "شكرا", "مشكورين", "لو", "سمحت", "فضلك", "بس", "اليوم", "بكرا", "غدا", "عاجل", "ضروري", "مستعجل", "للمستلم", "عند", "عنده",
+1154:             "عندكم", "منكم", "لكم", "لنا", "علينا", "عليكم", "بدون", "مع", "الاجرة", "اجرة", "أجرة", "عمولة", "راجع", "الراجع", "خصم", "هي", "هو", "على", "عالحساب");
+1155: 
+1156:     // 12.3: قاموس التحية والمجاملة المشترك (WaWords): لا يُستخرج اسمًا للمستفيد ولا كلمة عملة مجهولة
+1157:     static {
+1158:         for (String w : new String[]{"غرام", "غرامات", "جرام", "كيلو", "اونصة", "أونصة", "مثقال", "تولة", "عيار", "قيراط", "ذهب", "فضة", "فضه", "كسر"}) {
+1159:             NOT_NAME.add(norm(w));
+1160:             NOT_CURRENCY.add(norm(w));
+1161:         }
+1162:         for (String w : WaWords.COURTESY) {
+1163:             String n = norm(w);
+1164:             NOT_NAME.add(n);
+1165:             NOT_CURRENCY.add(n);
+1166:         }
+1167:     }
+1168: 
+1169:     /** هل تصلح الكلمة (مطبّعة) أن تكون اسم عملة عاميًّا مجهولًا؟ */
+1170:     private static boolean unknownCandidate(String n) {
+1171:         if (n == null || n.length() < 2 || n.length() > 15 || !isLetters(n)) return false;
+1172:         if (NOT_NAME.contains(n) || NOT_CURRENCY.contains(n) || CITIES.contains(n)) return false;
+1173:         for (String p : FEE_WORDS) if (p.equals(n)) return false;
+1174:         for (String p : DELIVERY) if (p.equals(n)) return false;
+1175:         for (String p : PERSON_LABELS) if (p.equals(n)) return false;
+1176:         for (String p : GREETINGS) if (words(p).contains(n)) return false;
+1177:         for (String p : BLESSINGS) if (words(p).contains(n)) return false;
+1178:         return true;
+1179:     }
+1180: 
+1181:     private static int indexOf(List<String> hay, List<String> nee) {
+1182:         if (nee.isEmpty()) return -1;
+1183:         for (int i = 0; i + nee.size() <= hay.size(); i++) {
+1184:             boolean ok = true;
+1185:             for (int j = 0; j < nee.size(); j++) {
+1186:                 if (!hay.get(i + j).equals(nee.get(j))) {
+1187:                     ok = false;
+1188:                     break;
+1189:                 }
+1190:             }
+1191:             if (ok) return i;
+1192:         }
+1193:         return -1;
+1194:     }
+1195: 
+1196:     /** سطر فيه كلمة تسليم/حوالة فقط (مع «يرجى» ونحوها) ولا اسم بعده. */
+1197:     private static boolean isDeliveryOnly(Line l) {
+1198:         if (hasDigit(l.orig)) return false;
+1199:         for (String w : l.nw) if (!NOT_NAME.contains(w) && !DELIVERY.contains(w)) return false;
+1200:         return containsAny(l.norm, DELIVERY);
+1201:     }
+1202: 
+1203:     // ===================================================================================
+1204:     // البيان المختصر للعرض (الكشوفات وقوائم الحركات)
+1205:     // ===================================================================================
+1206: 
+1207:     /** أقصى طول للبيان المختصر قبل «…». */
+1208:     public static final int COMPACT_MAX = 150;
+1209: 
+1210:     private static final Pattern TOKEN = Pattern.compile("[^\\s،,:;؛\\-–—/\\\\|*()\\[\\]\"'«»!؟?.]+");
+1211:     private static final Pattern EMOJI = Pattern.compile("[\\x{1F000}-\\x{1FAFF}\\x{2600}-\\x{27BF}\\x{2B00}-\\x{2BFF}\\x{FE0F}\\x{200D}\\x{20E3}]");
+1212:     private static final Pattern EDGE = Pattern.compile("^[\\s:،,;؛\\-–—.]+|[\\s:،,;؛\\-–—]+$");
+1213: 
+1214:     private static List<List<String>> phrases(List<String> base, String... extra) {
+1215:         List<List<String>> out = new ArrayList<>();
+1216:         for (String s : base) out.add(words(s));
+1217:         for (String s : extra) out.add(words(norm(s)));
+1218:         // الأطول أولًا حتى تُحذف «السلام عليكم ورحمة الله» كاملة لا «السلام عليكم» وحدها
+1219:         java.util.Collections.sort(out, (x, y) -> y.size() - x.size());
+1220:         return out;
+1221:     }
+1222: 
+1223:     private static final List<List<String>> OPENERS = phrases(GREETINGS, "ورحمة الله وبركاته", "ورحمة الله", "وبركاته", "اخي", "اخوي", "أخي",
+1224:             "الغالي", "يا غالي", "شباب", "يا شباب", "اهلين", "مرحبتين", "الاخوة الكرام", "الأخوة الكرام", "اخوتي", "hi", "hello", "dear");
+1225:     private static final List<List<String>> CLOSERS;
+1226:     private static final List<List<String>> REQUEST = phrases(list("يرجى تسليم", "الرجاء تسليم", "رجاء تسليم", "نرجو تسليم", "يرجى التسليم",
+1227:             "الرجاء التسليم", "تسليم", "التسليم", "تسليم الى", "تسليم إلى", "سلمو", "سلموا", "يرجى", "الرجاء", "نرجو", "رجاء", "ارجو",
+1228:             "من فضلك", "لو سمحت", "بدنا نسلم", "please deliver", "please", "pls", "plz", "need", "lütfen", "vă rog", "va rog", "bitte",
+1229:             "por favor", "s'il vous plaît", "svp", "пожалуйста"));
+1230: 
+1231:     static {
+1232:         // «عاجل» و«زكاة» و«صدقة» معلومات مفيدة فلا تُحذف من البيان المختصر
+1233:         Set<String> keep = set("عاجل", "ضروري", "مستعجل", "بأسرع وقت", "زكاة", "صدقة");
+1234:         List<String> b = new ArrayList<>();
+1235:         for (String s : BLESSINGS) if (!keep.contains(s)) b.add(s);
+1236:         CLOSERS = phrases(b, "جزاكم الله خيرا", "وجزاكم الله خيرا", "الله يعطيك العافية", "الله يعطيكم العافية", "يعطيكم العافيه", "شكرا لكم",
+1237:                 "شكرا جزيلا", "مع خالص الشكر", "ودمتم بخير", "وشكرا", "ولكم الشكر", "thanks", "thank you");
+1238:     }
+1239: 
+1240:     private static final List<List<String>> PREPS_P = phrases(PREP_LABELS);
+1241:     private static final List<List<String>> HONOR_P = phrases(HONORIFICS);
+1242:     private static final List<List<String>> POST_P = phrases(new ArrayList<>(POST_LABELS));
+1243: 
+1244:     private static final class Tok {
+1245:         final int s, e;
+1246:         final String n;
+1247: 
+1248:         Tok(int s, int e, String n) {
+1249:             this.s = s;
+1250:             this.e = e;
+1251:             this.n = n;
+1252:         }
+1253:     }
+1254: 
+1255:     private static List<Tok> toks(String clean) {
+1256:         List<Tok> out = new ArrayList<>();
+1257:         Matcher m = TOKEN.matcher(clean);
+1258:         while (m.find()) out.add(new Tok(m.start(), m.end(), norm(m.group())));
+1259:         return out;
+1260:     }
+1261: 
+1262:     private static boolean matchAt(List<Tok> t, int i, List<String> p) {
+1263:         if (p.isEmpty() || i < 0 || i + p.size() > t.size()) return false;
+1264:         for (int k = 0; k < p.size(); k++) if (!t.get(i + k).n.equals(p.get(k))) return false;
+1265:         return true;
+1266:     }
+1267: 
+1268:     /** عدد الرموز من i التي تُحذف لأنها عبارات من القائمة (متتالية). */
+1269:     private static int stripFront(List<Tok> t, int i, int end, List<List<String>> ps) {
+1270:         boolean again = true;
+1271:         while (again && i < end) {
+1272:             again = false;
+1273:             for (List<String> p : ps) {
+1274:                 if (i + p.size() <= end && matchAt(t, i, p)) {
+1275:                     i += p.size();

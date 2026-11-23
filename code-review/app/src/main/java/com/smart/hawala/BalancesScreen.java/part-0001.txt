@@ -1,0 +1,167 @@
+1: package com.smart.hawala;
+2: 
+3: import android.graphics.Color;
+4: import android.widget.CheckBox;
+5: import android.widget.EditText;
+6: import android.widget.LinearLayout;
+7: import android.widget.TextView;
+8: import java.math.BigDecimal;
+9: import java.util.HashMap;
+10: import java.util.LinkedHashMap;
+11: import java.util.List;
+12: import java.util.Locale;
+13: import java.util.Map;
+14: 
+15: /**
+16:  * أرصدة كل المكاتب في مكان واحد: لكل مكتب ولكل عملة «كل ما لنا» و«كل ما علينا» ثم الرصيد،
+17:  * والإجمالي لكل عملة بدون تقاصّ بين المكاتب، مع التقويم بالدولار والتنبيهات والتصدير.
+18:  */
+19: final class BalancesScreen {
+20:     private final MainActivity a;
+21:     private boolean showZero = false;
+22:     private boolean showGross = false;
+23:     private String query = "";
+24:     private Map<Long, Model.Recon> recons = new HashMap<>();
+25: 
+26:     BalancesScreen(MainActivity a) { this.a = a; }
+27: 
+28:     void show() {
+29:         if (!a.require(Auth.Perm.VIEW)) return;
+30:         a.here(this::show);
+31:         a.tabbedScreen("أرصدة كل المكاتب", a::showHome, "home");
+32:         a.eyeAction(this::show);
+33:         showGross = "1".equals(a.db.setting("ui_bal_gross", "0"));
+34:         final List<Model.OfficeTotals> offices = a.db.officeTotals(null);
+35:         recons = a.db.lastReconsByOffice();
+36:         Map<String, Integer> dec = a.db.decimalsMap();
+37: 
+38:         // الإجمالي لكل عملة
+39:         Map<Long, Map<String, Long>> net = new LinkedHashMap<>();
+40:         for (Model.OfficeTotals o : offices) {
+41:             Map<String, Long> m = new java.util.TreeMap<>();
+42:             for (Map.Entry<String, long[]> e : o.perCurrency.entrySet()) m.put(e.getKey(), e.getValue()[2]);
+43:             net.put(o.officeId, m);
+44:         }
+45:         Map<String, Ledger.CurrencyTotal> totals = Ledger.totals(net);
+46:         // 10.16: جدول مرتب بدل نص متراص: لكل عملة سطر عنوان (الرمز والاسم والصافي) وتحته خانتان «لنا» و«علينا»
+47:         Map<String, String> cnames = a.db.currencyNames();
+48:         LinearLayout tc = a.card();
+49:         tc.addView(a.text("الإجمالي لكل عملة", 18, a.primary, true));
+50:         tc.addView(a.text("ما لنا على المكاتب وما علينا لها، كلٌّ على حدة (دون خصم أحدهما من الآخر)، ثم الصافي.", 12, a.muted, false));
+51:         boolean any = false;
+52:         for (Ledger.CurrencyTotal t : totals.values()) {
+53:             if (t.receivable == 0 && t.payable == 0) continue;
+54:             int d = dec.containsKey(t.code) ? dec.get(t.code) : 2;
+55:             if (any) tc.addView(divider());
+56:             any = true;
+57:             LinearLayout h = a.row();
+58:             h.setPadding(0, a.dp(6), 0, 0);
+59:             String nm = cnames.get(t.code);
+60:             h.addView(a.text(t.code + (nm == null || nm.isEmpty() || nm.equals(t.code) ? "" : "  " + nm), 15, a.ink, true), new LinearLayout.LayoutParams(0, -2, 1));
+61:             TextView netV = a.text(a.mb(t.net(), d), 16, t.net() > 0 ? a.green : t.net() < 0 ? a.red : a.muted, true);
+62:             h.addView(netV, new LinearLayout.LayoutParams(-2, -2));
+63:             tc.addView(h);
+64:             LinearLayout r = a.row();
+65:             r.addView(cell("لنا", a.mf(t.receivable, d), t.officesReceivable + " مكتب", a.green), new LinearLayout.LayoutParams(0, -2, 1));
+66:             r.addView(cell("علينا", a.mf(t.payable, d), t.officesPayable + " مكتب", a.red), new LinearLayout.LayoutParams(0, -2, 1));
+67:             tc.addView(r);
+68:         }
+69:         if (!any) tc.addView(a.text("لا توجد أرصدة بعد.", 15, a.muted, false));
+70: 
+71:         Map<String, Db.Rate> rates = a.db.rates();
+72:         Map<String, BigDecimal> usd = new HashMap<>();
+73:         for (Map.Entry<String, Db.Rate> e : rates.entrySet()) usd.put(e.getKey(), e.getValue().usd);
+74:         Ledger.Valuation v = Ledger.value(totals, usd, dec);
+75:         if (any) {
+76:             LinearLayout uc = a.card();
+77:             uc.addView(a.text("التقويم التقريبي بالدولار", 15, a.primary, true));
+78:             LinearLayout r = a.row();
+79:             r.addView(cell("لنا", a.m("$" + Db.fmtUsd(v.receivableUsd)), null, a.green), new LinearLayout.LayoutParams(0, -2, 1));
+80:             r.addView(cell("علينا", a.m("$" + Db.fmtUsd(v.payableUsd)), null, a.red), new LinearLayout.LayoutParams(0, -2, 1));
+81:             r.addView(cell("الصافي", a.m("$" + Db.fmtUsd(v.netUsd())), null, v.netUsd().signum() >= 0 ? a.green : a.red), new LinearLayout.LayoutParams(0, -2, 1));
+82:             uc.addView(r);
+83:             if (!v.missingRates.isEmpty()) uc.addView(a.text("⚠ بدون سعر صرف (غير محسوبة): " + v.missingRates, 12, a.warnInk, false));
+84:             uc.addView(a.text("تقريبي للمتابعة فقط؛ الأرصدة الحقيقية بعملاتها.", 11, a.muted, false));
+85:         }
+86: 
+87:         LinearLayout tools = a.row();
+88:         a.body.addView(tools, a.lp(-1, -2, 4));
+89:         tools.addView(a.smallButton("تصدير (PDF / صور / Excel)", a.primary, x -> a.exportUi.balancesDialog(showZero)), a.weight(46, 1.4f, 2));
+90:         tools.addView(a.smallButton("أسعار الصرف", a.accent, x -> a.officesScreen.showRates(this::show)), a.weight(46, 1, 2));
+91: 
+92:         LinearLayout fr = a.row();
+93:         final EditText q = a.field("تصفية بالاسم");
+94:         q.setText(query);
+95:         fr.addView(q, a.weight(48, 1, 2));
+96:         final CheckBox zero = new CheckBox(a);
+97:         zero.setText("إظهار الصفرية");
+98:         zero.setChecked(showZero);
+99:         zero.setOnCheckedChangeListener((b, c) -> {
+100:             showZero = c;
+101:             query = q.getText().toString();
+102:             show();
+103:         });
+104:         fr.addView(zero, new LinearLayout.LayoutParams(-2, -2));
+105:         a.body.addView(fr);
+106:         // 10.16: مجاميع الحركة («كل ما لنا» و«كل ما علينا») أرقام كبيرة لا تلزم كل مرة: تظهر عند الطلب، والرصيد دائمًا
+107:         final CheckBox gross = new CheckBox(a);
+108:         gross.setText("إظهار مجاميع الحركة لكل مكتب (كل ما لنا وكل ما علينا)");
+109:         gross.setChecked(showGross);
+110:         gross.setOnCheckedChangeListener((b, c) -> {
+111:             showGross = c;
+112:             a.db.setSettingQuiet("ui_bal_gross", c ? "1" : "0");
+113:             query = q.getText().toString();
+114:             show();
+115:         });
+116:         a.body.addView(gross);
+117:         final LinearLayout list = new LinearLayout(a);
+118:         list.setOrientation(LinearLayout.VERTICAL);
+119:         a.body.addView(list);
+120:         final Runnable fill = () -> renderList(list, offices, q.getText().toString());
+121:         q.addTextChangedListener(Ui.watcher(fill));
+122:         fill.run();
+123:     }
+124: 
+125:     /** خانة رقم مرتبة: عنوان صغير، ثم الرقم بلونه (من اليسار لليمين فلا تنقلب الفواصل)، ثم ملاحظة صغيرة. */
+126:     private android.view.View cell(String label, String value, String note, int color) {
+127:         LinearLayout col = new LinearLayout(a);
+128:         col.setOrientation(LinearLayout.VERTICAL);
+129:         col.setPadding(0, a.dp(2), a.dp(8), a.dp(4));
+130:         col.addView(a.text(label + (note == null ? "" : "  •  " + note), 12, a.muted, false));
+131:         TextView t = a.text("\u2066" + value + "\u2069", 16, color, true);
+132:         col.addView(t);
+133:         return col;
+134:     }
+135: 
+136:     private android.view.View divider() {
+137:         android.view.View v = new android.view.View(a);
+138:         v.setBackgroundColor(a.line);
+139:         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, Math.max(1, a.dp(1)));
+140:         p.setMargins(0, a.dp(6), 0, 0);
+141:         v.setLayoutParams(p);
+142:         return v;
+143:     }
+144: 
+145:     private void renderList(LinearLayout list, List<Model.OfficeTotals> offices, String filter) {
+146:         list.removeAllViews();
+147:         String f = filter.trim().toLowerCase(Locale.ROOT);
+148:         int shown = 0;
+149:         for (final Model.OfficeTotals o : offices) {
+150:             if (!f.isEmpty() && !Model.nz(o.name).toLowerCase(Locale.ROOT).contains(f)) continue;
+151:             boolean nonZero = false;
+152:             for (long[] v : o.perCurrency.values()) if (v[0] != 0 || v[1] != 0 || v[2] != 0) nonZero = true;
+153:             if (!nonZero && !showZero) continue;
+154:             shown++;
+155:             LinearLayout c = new LinearLayout(a);
+156:             c.setOrientation(LinearLayout.VERTICAL);
+157:             c.setPadding(a.dp(12), a.dp(8), a.dp(12), a.dp(8));
+158:             c.setBackground(a.ripple(a.round(a.surface, o.pinned ? a.primary : a.line, 14), 14));
+159:             LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
+160:             p.setMargins(0, a.dp(4), 0, a.dp(4));
+161:             list.addView(c, p);
+162:             LinearLayout head = a.row();
+163:             head.addView(a.text((o.pinned ? "📌 " : "") + o.name + (o.active ? "" : " (موقوف)"), 17, a.primary, true), new LinearLayout.LayoutParams(0, -2, 1));
+164:             head.addView(a.smallButton("مطابقة", a.primary, v -> {
+165:                 Model.Office office = a.db.office(o.officeId);
+166:                 if (office != null) a.reconScreen.sendDialog(office, this::show);
+167:             }), new LinearLayout.LayoutParams(-2, a.dp(38)));

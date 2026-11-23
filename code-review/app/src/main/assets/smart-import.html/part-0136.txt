@@ -1,0 +1,140 @@
+3216:   var ROLE_ORDER = ["date", "account", "currency", "amount", "direction", "debit", "credit", "fee", "description", "ref", "balance", "phone"];
+3217:   var ROLE_LABEL = { date: "التاريخ", account: "الحساب / المكتب", currency: "العملة", amount: "المبلغ", direction: "الاتجاه (لنا/علينا)", debit: "لنا (مدين)",
+3218:     credit: "علينا (دائن)", fee: "الأجرة / العمولة", description: "البيان", ref: "رقم القيد", balance: "الرصيد", phone: "الهاتف" };
+3219:   var KIND = {
+3220:     journal: ["سجل حركات", ""], derived: ["نسخة مفلترة — للتحقق فقط", "derived"], balances: ["جدول أرصدة", ""],
+3221:     summary: ["ملخص أرصدة محسوب — للتحقق فقط", "derived"], lookup: ["قوائم إدخال", "list"], "journal-noaccount": ["حركات بلا اسم حساب", "off"], other: ["لم أجد فيه مبالغ", "off"]
+3222:   };
+3223:   var WHY = {
+3224:     noAccount: "لا يوجد اسم حساب، فلا يُعرف لأي مكتب تعود. معادلات ملفك التي تجمع حسب الحساب لا تحسبها أيضًا.",
+3225:     noDir: "لا يوجد «لنا/علينا»، فلا يُعرف هل تزيد الرصيد أم تنقصه. معادلات ملفك (SUMIFS بشرط الاتجاه) لا تحسبها أيضًا.",
+3226:     noCurrency: "بلا عملة: لا يُعرف رصيدُ أي عملة تغيّر. معادلات ملفك (بشرط العملة) لا تحسبها أيضًا.",
+3227:     noAmount: "فيها حساب أو عملة أو اتجاه لكن بلا مبلغ، فلا تغيّر أي رصيد.",
+3228:     badCurrency: "عملة لم تُطابَق بعد — طابقها في الخطوة 3 لتُنقل.",
+3229:     badDir: "اتجاه لم يُطابَق بعد — طابقه في الخطوة 3 لتُنقل.",
+3230:     excludedCur: "استبعدتَ هذه العملة في الخطوة 3.",
+3231:     excludedDir: "استبعدتَ هذا الاتجاه في الخطوة 3.",
+3232:     badAmount: "خلية المبلغ ليست رقمًا مفهومًا (أو فيها أكثر من رقم) — صحّحها في الملف ثم اختره مجددًا.",
+3233:     decimals: "في المبلغ منازل عشرية أكثر مما حددته للعملة — زِد المنازل في الخطوة 3 (لا يُقرَّب أي مبلغ).",
+3234:     future: "تاريخها بعد اليوم — صحّح التاريخ في الملف ثم اختره مجددًا.",
+3235:     filledDate: "نُقلت وتدخل في الرصيد كما في ملفك، لكن خانة التاريخ فارغة أو غير صالحة فأُخذ تاريخ الصف الذي قبلها.",
+3236:     badFee: "خلية الأجرة ليست رقمًا مفهومًا — صحّحها في الملف، أو اختر «لا تُحسب» للأجرة في الخطوة 3."
+3237:   };
+3238: 
+3239:   function esc(s) {
+3240:     return String(s === null || s === undefined ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; });
+3241:   }
+3242:   function n(x) { return Number(x).toLocaleString("en-US"); }
+3243:   function stat(v, label, err) { return '<div class="stat' + (err ? " err" : "") + '"><b>' + v + "</b><span>" + label + "</span></div>"; }
+3244:   function decOf(code) { return X.curDef(S.cfg, code).dec; }
+3245:   function bw(m, dec) { return m === 0n ? "0" : (m > 0n ? "لنا " : "علينا ") + C.fmtMinor(m > 0n ? m : -m, dec); }
+3246:   function balCell(m, dec) {
+3247:     if (m === 0n) return '<span class="hint">0</span>';
+3248:     return '<span class="chip ' + (m > 0n ? "us" : "them") + '">' + (m > 0n ? "لنا" : "علينا") + '</span> <span class="ltr ' + (m > 0n ? "us" : "them") + '">' + C.fmtMinor(m > 0n ? m : -m, dec) + "</span>";
+3249:   }
+3250:   function codeOptions(sel, extra) {
+3251:     var codes = Object.keys(C.KNOWN);
+3252:     Object.keys(S.cfg.currencies).forEach(function (c) { if (codes.indexOf(c) < 0) codes.push(c); });
+3253:     return (extra || "") + codes.map(function (c) {
+3254:       var d = S.cfg.currencies[c] || C.KNOWN[c];
+3255:       return '<option value="' + c + '"' + (sel === c ? " selected" : "") + ">" + c + " — " + esc(d ? d.name : c) + "</option>";
+3256:     }).join("") + '<option value="__new">رمز آخر…</option>';
+3257:   }
+3258:   function seg(name, opts, val) {
+3259:     return '<div class="seg">' + opts.map(function (o) {
+3260:       return '<label><input type="radio" name="' + name + '" value="' + o[0] + '"' + (o[0] === val ? " checked" : "") + ">" + esc(o[1]) + "</label>";
+3261:     }).join("") + "</div>";
+3262:   }
+3263:   function colLabel(t, c) { return X.colName(c) + " — " + (t.names[c - t.c0] || ""); }
+3264:   function tableById(id) { return S.a.tables.filter(function (t) { return t.id === id; })[0]; }
+3265:   function serialToDate(v) {
+3266:     var p = XLSX.SSF.parse_date_code(v);
+3267:     return p ? { y: p.y, m: p.m, d: p.d, H: p.H, M: p.M, S: p.S } : null;
+3268:   }
+3269:   function rand(k) { return crypto.getRandomValues(new Uint8Array(k)); }
+3270:   function wait(ms) { return new Promise(function (res) { setTimeout(res, ms || 30); }); }
+3271: 
+3272:   // ===================================================================================
+3273:   // 1. قراءة الملفات
+3274:   // ===================================================================================
+3275: 
+3276:   function decodeText(buf) {
+3277:     try { return new TextDecoder("utf-8", { fatal: true }).decode(buf); } catch (e) { return new TextDecoder("windows-1256").decode(buf); }
+3278:   }
+3279: 
+3280:   function readBook(file) {
+3281:     return file.arrayBuffer().then(function (ab) {
+3282:       var buf = new Uint8Array(ab);
+3283:       var lower = file.name.toLowerCase();
+3284:       var wb;
+3285:       try {
+3286:         if (/\.(csv|txt|tsv)$/.test(lower)) {
+3287:           var txt = decodeText(buf).replace(/^﻿/, "");
+3288:           var first = txt.split("\n")[0];
+3289:           var semi = (first.match(/;/g) || []).length > (first.match(/,/g) || []).length;
+3290:           var tab = lower.endsWith(".tsv") || (first.match(/\t/g) || []).length > (first.match(/,/g) || []).length;
+3291:           wb = XLSX.read(txt, { type: "string", raw: true, FS: tab ? "\t" : (semi ? ";" : undefined) });
+3292:         } else {
+3293:           wb = XLSX.read(buf, { type: "array", cellNF: true, cellDates: false, cellFormula: true, bookFiles: true });
+3294:         }
+3295:       } catch (e) {
+3296:         var msg = String(e && e.message || e);
+3297:         if (/password|encrypt/i.test(msg)) throw new Error("«" + file.name + "» محمي بكلمة سر. افتحه في Excel واحفظه بدون كلمة سر ثم اختره مجددًا.");
+3298:         throw new Error("تعذر فتح «" + file.name + "»: " + msg);
+3299:       }
+3300:       return { name: file.name, wb: wb, sheets: wb.SheetNames.map(function (nm) { return { name: nm, rows: X.sheetRows(wb.Sheets[nm], XLSX) }; }) };
+3301:     });
+3302:   }
+3303: 
+3304:   function readFiles(list) {
+3305:     var files = Array.prototype.slice.call(list || []);
+3306:     if (!files.length) return;
+3307:     var info = $("fileInfo");
+3308:     info.className = "";
+3309:     info.innerHTML = '<div class="msg info" id="readMsg">جارٍ قراءة ' + (files.length > 1 ? files.length + " ملفات" : "«" + esc(files[0].name) + "»") +
+3310:       "… الملف الكبير يحتاج بضع ثوانٍ.</div><div class=\"progress\"><i></i></div>";
+3311:     reset();
+3312:     var books;
+3313:     Promise.all(files.map(readBook)).then(function (b) {
+3314:       books = b;
+3315:       $("readMsg").textContent = "أفهم الأوراق والجداول ودور كل عمود…";
+3316:       return wait();
+3317:     }).then(function () {
+3318:       S.names = files.map(function (f) { return f.name; });
+3319:       S.books = books;
+3320:       S.a = X.analyze(books);
+3321:       initCfg();
+3322:       $("readMsg").textContent = "أعيد حساب معادلات ملفك للتحقق…";
+3323:       return wait();
+3324:     }).then(function () {
+3325:       S.fchecks = X.formulaChecks(S.books, S.a);
+3326:       X.detectSummaries(S.a, S.cfg, serialToDate);
+3327:       X.detectFeeDirs(S.a, S.cfg, serialToDate);
+3328:       refreshValues();
+3329:       $("readMsg").textContent = "أبني المكاتب والحركات…";
+3330:       return wait();
+3331:     }).then(function () {
+3332:       run();
+3333:       renderAll(true);
+3334:     }).catch(function (e) {
+3335:       info.innerHTML = '<div class="msg err">' + esc(e.message || e) + "</div>";
+3336:     });
+3337:   }
+3338: 
+3339:   function reset() {
+3340:     S.a = null; S.result = null; S.accFrom = {}; S.q = "";
+3341:     ["understand", "values", "attention", "review", "makeMsg"].forEach(function (id) { $(id).innerHTML = ""; });
+3342:     ["step2", "step3", "step4", "step5", "step6"].forEach(function (id) { $(id).classList.add("off"); $(id).classList.remove("done"); });
+3343:     $("confirmed").checked = false;
+3344:     updateMake();
+3345:   }
+3346: 
+3347:   function initCfg() {
+3348:     S.cfg = { now: Date.now(), dirMap: {}, curMap: {}, currencies: {}, rename: {}, positiveIs: {}, balanceSign: {}, fixedCurrency: {},
+3349:       defaultCurrency: "USD", listedAccounts: true, inferOpening: true, openingDate: null, fixedCurrencyUser: {} };
+3350:     S.a.tables.forEach(function (t) { if (t.sheetCurrency) S.cfg.fixedCurrency[t.id] = t.sheetCurrency; });
+3351:   }
+3352: 
+3353:   /** بعد أي تغيير في الجداول المستخدمة أو أدوارها: القيم التي تحتاج مطابقة، وتعريف كل عملة مستخدمة. */
+3354:   function refreshValues() {
+3355:     S.a.values = X.collectValues(S.a);

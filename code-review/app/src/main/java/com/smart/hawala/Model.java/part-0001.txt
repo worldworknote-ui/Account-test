@@ -1,0 +1,161 @@
+1: package com.smart.hawala;
+2: 
+3: import java.math.BigDecimal;
+4: import java.text.DecimalFormat;
+5: import java.text.DecimalFormatSymbols;
+6: import java.text.SimpleDateFormat;
+7: import java.util.ArrayList;
+8: import java.util.Date;
+9: import java.util.LinkedHashMap;
+10: import java.util.List;
+11: import java.util.Locale;
+12: import java.util.Map;
+13: 
+14: /** أنواع البيانات المشتركة وأدوات التنسيق. منطق بحت بدون أندرويد حتى يُختبر على الكمبيوتر. */
+15: public final class Model {
+16:     private Model() {}
+17: 
+18:     public static final String STATUS_ACTIVE = "ACTIVE", STATUS_PENDING = "PENDING", STATUS_REJECTED = "REJECTED";
+19:     /**
+20:      * 12.4: «حركة خاصة» (ناقصة أجور، تحتاج مراجعة، بانتظار التنفيذ…): SPECIAL = لا تُحسب في الرصيد (لا قيود لها بعد)؛
+21:      * CONVERTED = حُوّلت إلى حركة عادية (replaces_id في الجديدة)؛ VOIDED = أُلغيت قبل أن تُحسب (لا قيد لها ليُعكس).
+22:      * الخاصة المحسوبة في الرصيد تبقى ACTIVE مع اسم نوعها في tx.special.
+23:      */
+24:     public static final String STATUS_SPECIAL = "SPECIAL", STATUS_CONVERTED = "CONVERTED", STATUS_VOIDED = "VOIDED";
+25:     /** 10.5: علامة ساقي «التحويل بين مكتبين» في خانة fx_rate (التبديل يحمل فيها السعر). */
+26:     public static final String TRANSFER_MARK = "XFER";
+27:     public static final String TYPE_DEBIT = "مدين / لنا";
+28:     public static final String TYPE_CREDIT = "دائن / علينا";
+29:     public static final String FEE_NONE = "بدون أجرة";
+30:     public static final String FEE_US = "الأجرة لنا";
+31:     public static final String FEE_THEM = "الأجرة علينا";
+32: 
+33:     public static class Office {
+34:         public long id;
+35:         public String name, shortName, phone, location, contact, notes;
+36:         public boolean active, pinned;
+37:         public Long usdLimit, usdOweLimit;
+38:     }
+39: 
+40:     public static class Currency {
+41:         public String code, name;
+42:         public int decimals;
+43:         public boolean active;
+44: 
+45:         public Currency(String c, String n, int d, boolean a) {
+46:             code = c;
+47:             name = n;
+48:             decimals = d;
+49:             active = a;
+50:         }
+51: 
+52:         @Override public String toString() { return code + " — " + name; }
+53:     }
+54: 
+55:     public static class Tx {
+56:         public long id, officeId, amount, fee, createdAt;
+57:         public Long replacesId;
+58:         public String uuid, type, person, currency, feeType, feeCurrency, description, notes, status, userName;
+59:         /**
+60:          * 10.17: userName هو الاسم كما يُعرض للمستخدم الحالي (قد يكون «الاسم الظاهر» الذي اختاره صاحبه)، وuserReal اسم
+61:          * الدخول الحقيقي للمنطق (حركتي؟) والسجل. فارغ = لم يُحمَّل من القاعدة فيُستعمل userName.
+62:          */
+63:         public String userReal = "";
+64: 
+65:         public String realUser() { return userReal == null || userReal.isEmpty() ? nz(userName) : userReal; }
+66:         /** 8.0: نوع الخدمة (اعتماد، سويفت، USDT…) والوجهة في خانتين ثابتتين لتقرير الخدمات والوجهات. */
+67:         public String service = "", dest = "";
+68:         /** 8.0: ساقا عملية تبديل عملة مرتبطتان برقم واحد، وسعر التبديل (وحدات عملة «علينا» لكل وحدة من عملة «لنا»). */
+69:         public String pairUuid = "", fxRate = "";
+70:         /** 10.5 (§7): رقم المستخدم الذي أدخلها (ثابت لا يتغير بتغيير الاسم)، ومن اعتمدها ومتى (null لحركات ما قبل 10.5 أو بلا مستخدمين). */
+71:         public Long userId, approvedBy;
+72:         public long approvedAt;
+73:         /** 10.5: ساق من عملية مترابطة (تبديل عملة أو تحويل بين مكتبين): لا تُعدَّل وحدها، وتُلغى وتُعتمد مع شقيقتها. */
+74:         public boolean isLinked() { return pairUuid != null && !pairUuid.isEmpty(); }
+75:         /** 10.5: ساق تحويل بين مكتبين (العلامة في fx_rate، فلا يتغير مخطط قاعدة البيانات). */
+76:         public boolean isTransfer() { return isLinked() && TRANSFER_MARK.equals(fxRate); }
+77:         public boolean isFx() { return isLinked() && !TRANSFER_MARK.equals(fxRate); }
+78:         public boolean isActive() { return "ACTIVE".equals(status); }
+79:         /** 8.0 (ت4): مقترحة من موظف بانتظار اعتماد المحاسب: لا قيود لها ولا أثر في الأرصدة بعد. */
+80:         public boolean isPending() { return STATUS_PENDING.equals(status); }
+81:         public boolean isRejected() { return STATUS_REJECTED.equals(status); }
+82:         public boolean hasFee() { return !FEE_NONE.equals(feeType) && fee > 0; }
+83:         /** 12.4: نوع الحركة الخاصة («ناقصة أجور»…)، فارغ = حركة عادية. specialBal: تُحسب في الرصيد. */
+84:         public String special = "";
+85:         public boolean specialBal = true;
+86:         public boolean isSpecial() { return special != null && !special.isEmpty() && (isActive() || isPending() || STATUS_SPECIAL.equals(status)); }
+87:         /** خاصة لا تُحسب في الرصيد (لا قيود لها). */
+88:         public boolean isUnposted() { return STATUS_SPECIAL.equals(status); }
+89:     }
+90: 
+91:     /** سطر من دفتر القيود يخص حساب مكتب (أصل، أجرة، رصيد سابق، عكس). */
+92:     public static class Line {
+93:         public long lineId, entryId, createdAt, debit, credit;
+94:         public Long txId;
+95:         public String kind = "", currency, txUuid, txType, person, description, notes, status, feeType;
+96:         /** 12.4: نوع الحركة الخاصة المحسوبة في الرصيد (تظهر في الكشف «معلّقة»)، أو فارغ. */
+97:         public String special = "";
+98: 
+99:         public boolean cancelledTx() { return "CANCELLED".equals(status); }
+100:     }
+101: 
+102:     /** مجاميع مكتب لكل عملة: كل «لنا»، كل «علينا»، والرصيد. */
+103:     public static class OfficeTotals {
+104:         public long officeId;
+105:         public String name;
+106:         public boolean pinned, active;
+107:         /** العملة ← {مجموع لنا، مجموع علينا، الرصيد} */
+108:         public final Map<String, long[]> perCurrency = new LinkedHashMap<>();
+109:     }
+110: 
+111:     public static final String RECON_SENT = "SENT", RECON_CONFIRMED = "CONFIRMED", RECON_DISPUTED = "DISPUTED";
+112: 
+113:     /** مطابقة رصيد مع مكتب: لقطة الرصيد لكل عملة وقت إنشائها، وحالتها. */
+114:     public static class Recon {
+115:         public long id, officeId, createdAt, cutoffEntry, confirmedAt;
+116:         /** 10.0: آخر قيد من كل نطاق أرقام (المزامنة)، JSON؛ فارغ = cutoffEntry وحده. */
+117:         public String cutoffMarks = "";
+118:         public String uuid = "", status = RECON_SENT, note = "", userName = "";
+119:         /** 10.17: اسم الدخول الحقيقي لمن أنشأها (للمنطق)؛ userName للعرض. */
+120:         public String userReal = "";
+121:         /** 10.8: من أنشأها (رقمه) ومن تحقق منها ومتى (0 = لم يُتحقق منها). */
+122:         public Long userId, checkedBy;
+123:         public long checkedAt;
+124:         public final Map<String, Long> balances = new java.util.TreeMap<>();
+125: 
+126:         public String statusLabel() {
+127:             if (RECON_CONFIRMED.equals(status)) return "مطابِقة ✓";
+128:             if (RECON_DISPUTED.equals(status)) return "غير مطابِقة ✗";
+129:             return "بانتظار تأكيد المكتب";
+130:         }
+131:     }
+132: 
+133:     public static class User {
+134:         public long id;
+135:         public String name, role;
+136:         /** 10.1: الصلاحيات (أسماء مفصولة بفواصل)؛ null لحساب قديم يُشتق من دوره. */
+137:         public String perms;
+138:         public boolean active;
+139:         /** 10.8: حساب محذوف (يبقى لأسماء التاريخ فقط). */
+140:         public boolean deleted;
+141:         /** 10.17: «الاسم الظاهر» لبقية المحاسبين بدل اسم الدخول (فارغ = اسم الدخول). المدير يرى الاسم الحقيقي دائمًا. */
+142:         public String nick = "";
+143:     }
+144: 
+145:     // ===================================================================================
+146:     // التنسيق
+147:     // ===================================================================================
+148: 
+149:     public static String fmt(long minor, int dec) {
+150:         StringBuilder p = new StringBuilder("#,##0");
+151:         if (dec > 0) {
+152:             p.append('.');
+153:             for (int i = 0; i < dec; i++) p.append('#');
+154:         }
+155:         DecimalFormat f = new DecimalFormat(p.toString(), DecimalFormatSymbols.getInstance(Locale.US));
+156:         return f.format(BigDecimal.valueOf(minor, dec));
+157:     }
+158: 
+159:     /** مبلغ بعدد منازل ثابت (59,450.00) لرسائل المطابقة. */
+160:     public static String fmtFixed(long minor, int dec) {
+161:         StringBuilder p = new StringBuilder("#,##0");

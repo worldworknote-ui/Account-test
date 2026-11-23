@@ -1,0 +1,167 @@
+1: package android.widget;
+2: 
+3: import android.content.Context;
+4: import android.graphics.Canvas;
+5: import android.graphics.drawable.Drawable;
+6: import android.view.*;
+7: 
+8: /** LinearLayout كما في أندرويد: الاتجاه، الأوزان، المحاذاة، الهوامش، خط الأساس، والاتجاه من اليمين. */
+9: public class LinearLayout extends ViewGroup {
+10:     public static final int HORIZONTAL = 0, VERTICAL = 1;
+11:     public static final int SHOW_DIVIDER_NONE = 0, SHOW_DIVIDER_BEGINNING = 1, SHOW_DIVIDER_MIDDLE = 2, SHOW_DIVIDER_END = 4;
+12: 
+13:     public static class LayoutParams extends ViewGroup.MarginLayoutParams {
+14:         public float weight;
+15:         public int gravity = -1;
+16:         public LayoutParams(int w, int h) { super(w, h); }
+17:         public LayoutParams(int w, int h, float weight) { super(w, h); this.weight = weight; }
+18:         public LayoutParams(ViewGroup.LayoutParams p) {
+19:             super(p);
+20:             if (p instanceof LayoutParams) { weight = ((LayoutParams) p).weight; gravity = ((LayoutParams) p).gravity; }
+21:         }
+22:         public LayoutParams(ViewGroup.MarginLayoutParams p) { this((ViewGroup.LayoutParams) p); }
+23:         public LayoutParams(LayoutParams p) { this((ViewGroup.LayoutParams) p); }
+24:         public LayoutParams(Context c, android.util.AttributeSet a) { super(c, a); }
+25:     }
+26: 
+27:     private int orientation = HORIZONTAL;
+28:     private int gravity = Gravity.START | Gravity.TOP;
+29:     private boolean baselineAligned = true;
+30:     private float weightSum = -1;
+31:     private int totalLength;
+32:     private Drawable divider;
+33:     private int showDividers, dividerPadding;
+34:     private boolean useLargestChild;
+35:     private int maxAscent, maxDescent;
+36: 
+37:     public LinearLayout(Context c) { super(c); }
+38:     public LinearLayout(Context c, android.util.AttributeSet a) { super(c); }
+39:     public LinearLayout(Context c, android.util.AttributeSet a, int s) { super(c); }
+40: 
+41:     public void setOrientation(int o) { if (orientation != o) { orientation = o; requestLayout(); } }
+42:     public int getOrientation() { return orientation; }
+43:     public void setGravity(int g) {
+44:         if ((g & Gravity.RELATIVE_HORIZONTAL_GRAVITY_MASK) == 0) g |= Gravity.START;
+45:         if ((g & Gravity.VERTICAL_GRAVITY_MASK) == 0) g |= Gravity.TOP;
+46:         if (gravity != g) { gravity = g; requestLayout(); }
+47:     }
+48:     public int getGravity() { return gravity; }
+49:     public void setHorizontalGravity(int h) { setGravity((gravity & ~Gravity.RELATIVE_HORIZONTAL_GRAVITY_MASK & ~Gravity.HORIZONTAL_GRAVITY_MASK) | h); }
+50:     public void setVerticalGravity(int v) { setGravity((gravity & ~Gravity.VERTICAL_GRAVITY_MASK) | v); }
+51:     public void setBaselineAligned(boolean b) { baselineAligned = b; requestLayout(); }
+52:     public boolean isBaselineAligned() { return baselineAligned; }
+53:     public void setWeightSum(float s) { weightSum = s; requestLayout(); }
+54:     public float getWeightSum() { return weightSum; }
+55:     public void setMeasureWithLargestChildEnabled(boolean e) { useLargestChild = e; requestLayout(); }
+56:     public void setDividerDrawable(Drawable d) { divider = d; requestLayout(); invalidate(); }
+57:     public Drawable getDividerDrawable() { return divider; }
+58:     public void setShowDividers(int s) { showDividers = s; requestLayout(); invalidate(); }
+59:     public int getShowDividers() { return showDividers; }
+60:     public void setDividerPadding(int p) { dividerPadding = p; invalidate(); }
+61: 
+62:     @Override protected ViewGroup.LayoutParams generateDefaultLayoutParams() {
+63:         return orientation == HORIZONTAL ? new LayoutParams(-2, -2) : new LayoutParams(-1, -2);
+64:     }
+65:     @Override protected ViewGroup.LayoutParams generateLayoutParams(ViewGroup.LayoutParams p) { return new LayoutParams(p); }
+66:     @Override public LayoutParams generateLayoutParams(android.util.AttributeSet a) { return new LayoutParams(getContext(), a); }
+67:     @Override protected boolean checkLayoutParams(ViewGroup.LayoutParams p) { return p instanceof LayoutParams; }
+68: 
+69:     private LayoutParams lp(View c) {
+70:         LayoutParams p = (LayoutParams) c.getLayoutParams();
+71:         p.resolveLayoutDirection(getLayoutDirection());
+72:         return p;
+73:     }
+74:     private boolean hasDividerBefore(int i) {
+75:         if (divider == null) return false;
+76:         if (i == 0) return (showDividers & SHOW_DIVIDER_BEGINNING) != 0;
+77:         if (i == getChildCount()) return (showDividers & SHOW_DIVIDER_END) != 0;
+78:         if ((showDividers & SHOW_DIVIDER_MIDDLE) != 0) {
+79:             for (int k = i - 1; k >= 0; k--) if (getChildAt(k).getVisibility() != GONE) return true;
+80:         }
+81:         return false;
+82:     }
+83:     private int divH() { return divider == null ? 0 : Math.max(0, divider.getIntrinsicHeight()); }
+84:     private int divW() { return divider == null ? 0 : Math.max(0, divider.getIntrinsicWidth()); }
+85: 
+86:     @Override protected void onMeasure(int ws, int hs) {
+87:         if (orientation == VERTICAL) measureVertical(ws, hs); else measureHorizontal(ws, hs);
+88:     }
+89: 
+90:     // ------------------------------------------------------------------ عمودي
+91:     private void measureVertical(int ws, int hs) {
+92:         totalLength = 0;
+93:         int maxW = 0, state = 0;
+94:         float total = 0;
+95:         int count = getChildCount();
+96:         int wm = MeasureSpec.getMode(ws), hm = MeasureSpec.getMode(hs);
+97:         boolean matchW = false, allMatch = true;
+98:         int weightedMaxW = 0, altMaxW = 0;
+99:         boolean skipped = false;
+100:         int largest = Integer.MIN_VALUE;
+101:         for (int i = 0; i < count; i++) {
+102:             View c = getChildAt(i);
+103:             if (c.getVisibility() == GONE) continue;
+104:             if (hasDividerBefore(i)) totalLength += divH();
+105:             LayoutParams p = lp(c);
+106:             total += p.weight;
+107:             boolean useExcess = p.height == 0 && p.weight > 0;
+108:             if (hm == MeasureSpec.EXACTLY && useExcess) {
+109:                 totalLength = Math.max(totalLength, totalLength + p.topMargin + p.bottomMargin);
+110:                 skipped = true;
+111:             } else {
+112:                 if (useExcess) p.height = LayoutParams.WRAP_CONTENT;
+113:                 measureChildWithMargins(c, ws, 0, hs, total == 0 ? totalLength : 0);
+114:                 if (useExcess) p.height = 0;
+115:                 int ch = c.getMeasuredHeight();
+116:                 totalLength = Math.max(totalLength, totalLength + ch + p.topMargin + p.bottomMargin);
+117:                 if (useLargestChild) largest = Math.max(ch, largest);
+118:             }
+119:             boolean matchThis = false;
+120:             if (wm != MeasureSpec.EXACTLY && p.width == LayoutParams.MATCH_PARENT) { matchW = true; matchThis = true; }
+121:             int margin = p.leftMargin + p.rightMargin;
+122:             int mw = c.getMeasuredWidth() + margin;
+123:             maxW = Math.max(maxW, mw);
+124:             state = combineMeasuredStates(state, c.getMeasuredState());
+125:             allMatch = allMatch && p.width == LayoutParams.MATCH_PARENT;
+126:             if (p.weight > 0) weightedMaxW = Math.max(weightedMaxW, matchThis ? margin : mw);
+127:             else altMaxW = Math.max(altMaxW, matchThis ? margin : mw);
+128:         }
+129:         if (totalLength > 0 && hasDividerBefore(count)) totalLength += divH();
+130:         totalLength += getPaddingTop() + getPaddingBottom();
+131:         int hSize = Math.max(totalLength, getSuggestedMinimumHeight());
+132:         int hss = resolveSizeAndState(hSize, hs, 0);
+133:         hSize = hss & MEASURED_SIZE_MASK;
+134:         int remaining = hSize - totalLength + (skipped ? 0 : 0);
+135:         if (skipped || (remaining != 0 && total > 0)) {
+136:             float ws2 = weightSum > 0 ? weightSum : total;
+137:             totalLength = 0;
+138:             remaining = hSize - (computeFixed(true) + getPaddingTop() + getPaddingBottom());
+139:             for (int i = 0; i < count; i++) {
+140:                 View c = getChildAt(i);
+141:                 if (c.getVisibility() == GONE) continue;
+142:                 if (hasDividerBefore(i)) totalLength += divH();
+143:                 LayoutParams p = lp(c);
+144:                 float cw = p.weight;
+145:                 if (cw > 0) {
+146:                     int share = (int) (cw * remaining / ws2);
+147:                     remaining -= share;
+148:                     ws2 -= cw;
+149:                     int childH;
+150:                     if (p.height == 0 && hm == MeasureSpec.EXACTLY) childH = share;
+151:                     else childH = c.getMeasuredHeight() + share;
+152:                     childH = Math.max(0, childH);
+153:                     int cws = getChildMeasureSpec(ws, getPaddingLeft() + getPaddingRight() + p.leftMargin + p.rightMargin, p.width);
+154:                     c.measure(cws, MeasureSpec.makeMeasureSpec(childH, MeasureSpec.EXACTLY));
+155:                     state = combineMeasuredStates(state, c.getMeasuredState() & (MEASURED_STATE_MASK >> 16));
+156:                 }
+157:                 int margin = p.leftMargin + p.rightMargin;
+158:                 int mw = c.getMeasuredWidth() + margin;
+159:                 maxW = Math.max(maxW, mw);
+160:                 boolean matchThis = wm != MeasureSpec.EXACTLY && p.width == LayoutParams.MATCH_PARENT;
+161:                 altMaxW = Math.max(altMaxW, matchThis ? margin : mw);
+162:                 totalLength = Math.max(totalLength, totalLength + c.getMeasuredHeight() + p.topMargin + p.bottomMargin);
+163:             }
+164:             totalLength += getPaddingTop() + getPaddingBottom();
+165:         } else {
+166:             altMaxW = Math.max(altMaxW, weightedMaxW);
+167:         }

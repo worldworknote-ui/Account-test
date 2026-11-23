@@ -1,0 +1,163 @@
+2605:         if (!canSetWork(office)) throw new SecurityException("لا تغيّر حالة مكتب لا تسجّله ولا تتحقق منه");
+2606:         SQLiteDatabase d = getWritableDatabase();
+2607:         String day = workDay(Clock.now());
+2608:         if (status == null) {
+2609:             d.delete("office_work", "office_id=" + office + " AND day=?", new String[]{day});
+2610:         } else {
+2611:             Model.User me = actor();
+2612:             ContentValues v = new ContentValues();
+2613:             v.put("office_id", office);
+2614:             v.put("day", day);
+2615:             v.put("status", status);
+2616:             if (me != null) v.put("user_id", me.id);
+2617:             v.put("user_name", Crypto.enc(currentUserName));
+2618:             v.put("at", Clock.now());
+2619:             d.insertWithOnConflict("office_work", null, v, SQLiteDatabase.CONFLICT_REPLACE);
+2620:         }
+2621:         audit(d, "OFFICE_WORK", "office", office, status == null ? "تلقائية" : workLabel(status));
+2622:     }
+2623: 
+2624:     /** المحاسبون الذين يمكن فرز المكاتب عليهم: حسابات نشطة غير المدير، تسجّل حركات أو تتحقق. */
+2625:     public List<Model.User> accountants() {
+2626:         List<Model.User> out = new ArrayList<>();
+2627:         for (Model.User u : users(true))
+2628:             if (!Auth.isAdmin(u) && (Auth.can(u, Auth.Perm.TX_ADD) || Auth.can(u, Auth.Perm.VERIFY))) out.add(u);
+2629:         return out;
+2630:     }
+2631: 
+2632:     /** يحدد فريق مكتب: من يسجّل ومن يتحقق (لا يجمع محاسب الدورين في المكتب نفسه). */
+2633:     public void setOfficeTeam(long office, Set<Long> owners, Set<Long> checkers) {
+2634:         require(Auth.Perm.USERS);
+2635:         if (office(office) == null) throw new IllegalArgumentException("مكتب غير موجود");
+2636:         for (Long u : owners) if (checkers.contains(u)) throw new IllegalArgumentException("المحاسب نفسه لا يسجّل ويتحقق من المكتب نفسه: يتحقق منه محاسب آخر");
+2637:         Set<Long> all = new HashSet<>(owners);
+2638:         all.addAll(checkers);
+2639:         Set<Long> before = new HashSet<>();
+2640:         try (Cursor c = getReadableDatabase().rawQuery("SELECT user_id FROM user_offices WHERE office_id=" + office, null)) {
+2641:             while (c.moveToNext()) before.add(c.getLong(0));
+2642:         }
+2643:         Set<Long> touched = new HashSet<>(all);
+2644:         touched.addAll(before);
+2645:         for (Long u : touched) checkAssign(u);
+2646:         for (Long u : checkers) {
+2647:             Model.User x = user(u);
+2648:             if (x == null || !Auth.can(x, Auth.Perm.VERIFY)) throw new IllegalArgumentException("«" + (x == null ? "" : x.name) + "» ليست لديه صلاحية «التحقق من الحركات»");
+2649:         }
+2650:         SQLiteDatabase d = getWritableDatabase();
+2651:         d.beginTransaction();
+2652:         try {
+2653:             for (Long u : before) if (!all.contains(u)) d.delete("user_offices", "user_id=" + u + " AND office_id=" + office, null);
+2654:             for (Long u : all) {
+2655:                 ContentValues v = new ContentValues();
+2656:                 v.put("role", owners.contains(u) ? ROLE_OWN : ROLE_CHECK);
+2657:                 if (d.update("user_offices", v, "user_id=" + u + " AND office_id=" + office, null) == 0) {
+2658:                     v.put("user_id", u);
+2659:                     v.put("office_id", office);
+2660:                     d.insertOrThrow("user_offices", null, v);
+2661:                 }
+2662:             }
+2663:             audit(d, "OFFICE_TEAM", "office", office, "يسجّل " + owners.size() + "، يتحقق " + checkers.size());
+2664:             d.setTransactionSuccessful();
+2665:         } finally {
+2666:             d.endTransaction();
+2667:         }
+2668:     }
+2669: 
+2670:     /**
+2671:      * توزيع التحقق تلقائيًا: لكل مكتب له من يسجّله، يتحقق منه كل محاسب آخر له صلاحية التحقق
+2672:      * (محاسبان: كل منهما يتحقق من مكاتب الآخر؛ ثلاثة: كل اثنين يتحققان من مكاتب الثالث). يرجع عدد المكاتب التي وُزعت.
+2673:      */
+2674:     public int autoCheckers() {
+2675:         require(Auth.Perm.USERS);
+2676:         List<Model.User> acc = accountants();
+2677:         int n = 0;
+2678:         for (Team t : teams()) {
+2679:             if (t.owners.isEmpty()) continue;
+2680:             Set<Long> owners = new HashSet<>(), checkers = new HashSet<>();
+2681:             for (Model.User u : t.owners) owners.add(u.id);
+2682:             for (Model.User u : acc) if (!owners.contains(u.id) && Auth.can(u, Auth.Perm.VERIFY)) checkers.add(u.id);
+2683:             if (checkers.isEmpty()) continue;
+2684:             setOfficeTeam(t.office.id, owners, checkers);
+2685:             n++;
+2686:         }
+2687:         return n;
+2688:     }
+2689: 
+2690:     /** 10.18: اقتراح توزيع لمكتب واحد (لا يُحفظ حتى يُعتمد بـ setOfficeTeam). */
+2691:     public static final class TeamPlan {
+2692:         public Model.Office office;
+2693:         /** للمكتب من يسجّله من قبل (فيُسأل المدير عنه واحدًا واحدًا)؛ false = غير موزّع فيُوزَّع بالتساوي. */
+2694:         public boolean assigned;
+2695:         public final List<Model.User> curOwners = new ArrayList<>(), curCheckers = new ArrayList<>(), owners = new ArrayList<>(), checkers = new ArrayList<>();
+2696: 
+2697:         /** المقترح يطابق الحالي (لا شيء يتغير). */
+2698:         public boolean same() { return ids(curOwners).equals(ids(owners)) && ids(curCheckers).equals(ids(checkers)); }
+2699: 
+2700:         public static Set<Long> ids(List<Model.User> l) {
+2701:             Set<Long> s = new HashSet<>();
+2702:             for (Model.User u : l) s.add(u.id);
+2703:             return s;
+2704:         }
+2705:     }
+2706: 
+2707:     /**
+2708:      * 10.18: خطة «التوزيع التلقائي» دون حفظ: المكاتب غير الموزّعة تُوزَّع بالتساوي على المحاسبين الذين يسجّلون
+2709:      * (الأقل مكاتب أولًا، فيتساوى الجميع مع ما لديهم من قبل)، والموزّعة يبقى من يسجّلها كما هو. ويتحقق من كل مكتب كل محاسب آخر له صلاحية التحقق.
+2710:      */
+2711:     public List<TeamPlan> autoTeamPlan() {
+2712:         require(Auth.Perm.USERS);
+2713:         List<Model.User> acc = accountants(), writers = new ArrayList<>();
+2714:         for (Model.User u : acc) if (Auth.can(u, Auth.Perm.TX_ADD)) writers.add(u);
+2715:         final Map<Long, Integer> load = new HashMap<>();
+2716:         for (Model.User u : writers) load.put(u.id, 0);
+2717:         List<Team> teams = teams();
+2718:         for (Team t : teams) for (Model.User u : t.owners) if (load.containsKey(u.id)) load.put(u.id, load.get(u.id) + 1);
+2719:         List<TeamPlan> out = new ArrayList<>();
+2720:         for (Team t : teams) {
+2721:             if (!t.office.active) continue;
+2722:             TeamPlan p = new TeamPlan();
+2723:             p.office = t.office;
+2724:             p.assigned = !t.owners.isEmpty();
+2725:             p.curOwners.addAll(t.owners);
+2726:             p.curCheckers.addAll(t.checkers);
+2727:             if (p.assigned) p.owners.addAll(t.owners);
+2728:             else if (!writers.isEmpty()) {
+2729:                 Model.User best = null;
+2730:                 for (Model.User u : writers) if (best == null || load.get(u.id) < load.get(best.id)) best = u;
+2731:                 p.owners.add(best);
+2732:                 load.put(best.id, load.get(best.id) + 1);
+2733:             }
+2734:             Set<Long> own = TeamPlan.ids(p.owners);
+2735:             if (!own.isEmpty()) for (Model.User u : acc) if (!own.contains(u.id) && Auth.can(u, Auth.Perm.VERIFY)) p.checkers.add(u);
+2736:             out.add(p);
+2737:         }
+2738:         return out;
+2739:     }
+2740: 
+2741:     /** يعتمد اقتراح مكتب واحد من الخطة. */
+2742:     public void applyTeamPlan(TeamPlan p) { setOfficeTeam(p.office.id, TeamPlan.ids(p.owners), TeamPlan.ids(p.checkers)); }
+2743: 
+2744:     /** سطر أدوار المستخدم للعرض: «يسجّل: …» و«يتحقق من: …». */
+2745:     public String rolesLine(long userId) {
+2746:         List<String> own = new ArrayList<>(), chk = new ArrayList<>();
+2747:         for (Map.Entry<Long, String> e : officeRoles(userId).entrySet()) {
+2748:             Model.Office o = office(e.getKey());
+2749:             if (o != null) (ROLE_CHECK.equals(e.getValue()) ? chk : own).add(o.name);
+2750:         }
+2751:         List<String> l = new ArrayList<>();
+2752:         if (!own.isEmpty()) l.add("يسجّل: " + Model.join(own, "، "));
+2753:         if (!chk.isEmpty()) l.add("يتحقق من: " + Model.join(chk, "، "));
+2754:         return Model.join(l, "\n");
+2755:     }
+2756: 
+2757:     /** أسماء مستخدمين مفصولة بفواصل. */
+2758:     public static String names(List<Model.User> l) {
+2759:         List<String> n = new ArrayList<>();
+2760:         for (Model.User u : l) n.add(label(u));
+2761:         return Model.join(n, "، ");
+2762:     }
+2763: 
+2764:     /** 10.17: اسم مستخدم كما يراه المستخدم الحالي (المدير وصاحب الاسم: اسم الدخول؛ غيرهما: الاسم الظاهر إن وُجد). */
+2765:     public static String label(Model.User u) {
+2766:         if (u == null) return "";
+2767:         Model.User me = SmartApp.currentUser;

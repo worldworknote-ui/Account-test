@@ -1,0 +1,143 @@
+311:             if (!"smart-accountant-sync".equals(h.optString("format"))) throw new IOException("المجلد فيه ملف ليس خزنة مزامنة لهذا التطبيق");
+312:             if (h.optInt("v") > FORMAT) throw new IOException("خزنة المزامنة من إصدار أحدث من التطبيق. حدّث التطبيق أولًا.");
+313:             return h;
+314:         } catch (org.json.JSONException e) {
+315:             throw new IOException("رأس خزنة المزامنة تالف");
+316:         }
+317:     }
+318: 
+319:     SyncCrypto.Keys keys() throws IOException {
+320:         SQLiteDatabase d = db.getReadableDatabase();
+321:         String vid = SyncStore.meta(d, "vault_id"), k = SyncStore.meta(d, "vault_key");
+322:         if (vid == null || k == null) throw new IOException("المزامنة غير مفعّلة على هذا الجهاز");
+323:         SyncCrypto.Keys ks = new SyncCrypto.Keys(vid, SyncCrypto.unhex(Crypto.dec(k)));
+324:         folder.unlock(ks);
+325:         return ks;
+326:     }
+327: 
+328:     static String platform() {
+329:         String os = System.getProperty("os.name", "");
+330:         if (System.getProperty("java.vendor", "").toLowerCase().contains("android") || System.getProperty("java.vm.name", "").toLowerCase().contains("dalvik")) return "أندرويد";
+331:         if (os.toLowerCase().contains("mac")) return "ماك";
+332:         if (os.toLowerCase().contains("win")) return "ويندوز";
+333:         return os;
+334:     }
+335: 
+336:     // ===================================================================================
+337:     // إنشاء الخزنة (الجهاز المرجعي) والانضمام إليها
+338:     // ===================================================================================
+339: 
+340:     /** هل في المجلد خزنة؟ */
+341:     public boolean vaultExists() throws IOException {
+342:         JSONObject h = header();
+343:         return h != null && !tombstone(h);
+344:     }
+345: 
+346:     // ===================================================================================
+347:     // 10.14: «شاهد» في رأس الخزنة: حُذفت الخزنة من هذا المكان، أو نُقلت إلى مكان/حساب آخر.
+348:     // الرأس يبقى (بلا أي مفتاح أو بيانات) حتى لا يعيد جهازٌ منضم رفعها بـ«إصلاح»، ويعرف كل جهاز ما حدث في أول مزامنة.
+349:     // ===================================================================================
+350: 
+351:     public static boolean tombstone(JSONObject h) { return h != null && (h.has("deleted") || h.has("moved")); }
+352: 
+353:     /** نص الشاهد للمستخدم. */
+354:     public static String tombText(JSONObject h) {
+355:         if (h == null) return "";
+356:         JSONObject x = h.optJSONObject(h.has("deleted") ? "deleted" : "moved");
+357:         String who = x == null ? "" : x.optString("by"), when = x == null || x.optLong("at") <= 0 ? "" : Model.date(x.optLong("at"));
+358:         if (h.has("deleted")) return "حذف المدير" + (who.isEmpty() ? "" : " «" + who + "»") + " ملفات المزامنة من هذا المكان" + (when.isEmpty() ? "" : " في " + when) + ".";
+359:         String to = x == null ? "" : x.optString("to");
+360:         boolean fresh = x != null && x.optBoolean("fresh");
+361:         return (fresh ? "أُنشئت مزامنة جديدة" : "نُقلت المزامنة") + (to.isEmpty() ? " إلى مكان آخر" : " إلى «" + to + "»")
+362:                 + (who.isEmpty() ? "" : " (بواسطة «" + who + "»)") + (when.isEmpty() ? "" : " في " + when) + ".";
+363:     }
+364: 
+365:     private JSONObject tombHeader(String vault, String kind, JSONObject info, byte[] vaultKey) throws Exception {
+366:         JSONObject t = new JSONObject();
+367:         t.put("format", "smart-accountant-sync");
+368:         t.put("v", FORMAT);
+369:         t.put("vault", vault);
+370:         info.put("at", Clock.now());
+371:         info.put("by", Db.currentUserName);
+372:         String dev = SyncStore.meta(db.getReadableDatabase(), "device");
+373:         if (dev != null) info.put("dev", dev);
+374:         t.put(kind, info);
+375:         // 11.5: الأمر موقّع بمفتاح الخزنة (لا يملكه إلا جهاز منضم أو من يعرف كلمة السر)؛ أمر بلا توقيع صحيح لا يُنفَّذ
+376:         if (vaultKey != null) t.put("auth", tombTag(vaultKey, t));
+377:         return t;
+378:     }
+379: 
+380:     /** 11.5: توقيع أمر الحذف/النقل: HMAC بمفتاح مشتق من مفتاح الخزنة على الخزنة والنوع وكل حقول الأمر (مرتبة). */
+381:     static String tombTag(byte[] vaultKey, JSONObject t) {
+382:         String kind = t.has("deleted") ? "deleted" : "moved";
+383:         JSONObject x = t.optJSONObject(kind);
+384:         StringBuilder b = new StringBuilder("SA11-tomb|").append(t.optString("vault")).append('|').append(kind);
+385:         if (x != null) {
+386:             java.util.List<String> ks = new java.util.ArrayList<>();
+387:             java.util.Iterator<String> it = x.keys();
+388:             while (it.hasNext()) ks.add(it.next());
+389:             java.util.Collections.sort(ks);
+390:             for (String k : ks) b.append('|').append(k).append('=').append(String.valueOf(x.opt(k)));
+391:         }
+392:         byte[] key = SyncCrypto.hkdf(vaultKey, null, "SA11-tombstone");
+393:         return SyncCrypto.hex(SyncCrypto.hmac(key, b.toString().getBytes(StandardCharsets.UTF_8)));
+394:     }
+395: 
+396:     /** 11.5: أمر الحذف/النقل في الرأس صادر فعلًا من جهاز يملك مفتاح هذه الخزنة؟ */
+397:     static boolean tombVerified(JSONObject h, byte[] vaultKey) {
+398:         if (h == null || vaultKey == null || !tombstone(h)) return false;
+399:         String tag = h.optString("auth", "");
+400:         return !tag.isEmpty() && java.security.MessageDigest.isEqual(tag.getBytes(StandardCharsets.UTF_8), tombTag(vaultKey, h).getBytes(StandardCharsets.UTF_8));
+401:     }
+402: 
+403:     static final String TOMB_UNVERIFIED = "في مكان المزامنة أمر «حذف» أو «نقل» غير موقّع بمفتاح هذه الخزنة (من إصدار أقدم، أو تعديل من خارج التطبيق). "
+404:             + "لم يُنفَّذ: هذا الجهاز باقٍ في المزامنة وحزمه غير المرسلة محفوظة. من شاشة المزامنة اضغط «إصلاح» لإعادة رأس الخزنة، "
+405:             + "أو إن كان المدير قد حذف المزامنة فعلًا بإصدار أقدم فأوقفها هنا يدويًا.";
+406: 
+407:     /** يحذف كل ملفات هذا المكان ما عدا رأس الخزنة. يرجع عدد المحذوف. */
+408:     private int deleteFiles() throws IOException {
+409:         int n = 0;
+410:         for (String name : folder.list("")) {
+411:             if (HEADER.equals(name)) continue;
+412:             folder.delete(name);
+413:             n++;
+414:         }
+415:         return n;
+416:     }
+417: 
+418:     private void requireAdmin(String what) {
+419:         Model.User me = db.actor();
+420:         if (db.usersEnabled() && (me == null || !Auth.isAdmin(me))) throw new SecurityException(what + " للمدير وحده");
+421:     }
+422: 
+423:     /**
+424:      * 10.14: حذف ملفات المزامنة من هذا المكان (مثلًا قبل تغيير حساب Google، أو للبدء من جديد). للمدير وحده، وبكلمة سر المزامنة
+425:      * أو رمز الاسترداد (إثبات ملكية الخزنة)، وبعد نسخة أمان محلية من بيانات هذا الجهاز. يبقى في المكان «شاهد حذف» بلا مفاتيح:
+426:      * كل جهاز منضم يخرج من المزامنة في جولته التالية برسالة واضحة (بياناته تبقى)، و«الإصلاح» لا يعيد رفعها.
+427:      * يرجع عدد الملفات المحذوفة.
+428:      */
+429:     public int wipe(android.content.Context ctx, char[] secret, boolean recovery) throws Exception {
+430:         VAULT.lock();
+431:         try {
+432:             return wipeLocked(ctx, secret, recovery);
+433:         } finally {
+434:             VAULT.unlock();
+435:         }
+436:     }
+437: 
+438:     private int wipeLocked(android.content.Context ctx, char[] secret, boolean recovery) throws Exception {
+439:         requireAdmin("حذف ملفات المزامنة");
+440:         JSONObject h = header();
+441:         if (h == null) throw new IllegalStateException("لا توجد خزنة مزامنة في هذا المكان");
+442:         if (tombstone(h)) throw new IllegalStateException(tombText(h) + " لا شيء آخر يُحذف هنا.");
+443:         byte[] vk;
+444:         try {
+445:             vk = unlock(h, secret, recovery);
+446:         } catch (GeneralSecurityException e) {
+447:             throw new IllegalArgumentException(recovery ? "رمز الاسترداد غير صحيح" : "كلمة سر المزامنة غير صحيحة");
+448:         }
+449:         // نسخة أمان من بيانات هذا الجهاز قبل أي حذف (يمكن التراجع إليها من «النسخ الاحتياطي ← نسخ الأمان»)
+450:         if (ctx != null) Snapshot.take(ctx, db, "قبل حذف ملفات المزامنة");
+451:         String vault = h.optString("vault");
+452:         int n = deleteFiles();
+453:         folder.write(HEADER, tombHeader(vault, "deleted", new JSONObject(), vk).toString(1).getBytes(StandardCharsets.UTF_8));

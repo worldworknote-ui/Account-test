@@ -1,0 +1,139 @@
+1336:         t.setPadding(a.dp(4), a.dp(2), a.dp(4), a.dp(2));
+1337:         box.addView(t, a.lp(-1, -2, 1));
+1338:     }
+1339: 
+1340:     private static String shownAmount(String plain) {
+1341:         try {
+1342:             java.text.DecimalFormat df = new java.text.DecimalFormat("#,##0.##########", java.text.DecimalFormatSymbols.getInstance(java.util.Locale.US));
+1343:             return df.format(new java.math.BigDecimal(plain));
+1344:         } catch (Exception e) {
+1345:             return plain;
+1346:         }
+1347:     }
+1348: 
+1349:     private void renderParse(final Form form) {
+1350:         final MessageParser.Result r = form.parsed;
+1351:         LinearLayout box = form.parseBox;
+1352:         box.removeAllViews();
+1353:         if (r == null) {
+1354:             box.setVisibility(View.GONE);
+1355:             return;
+1356:         }
+1357:         okFlow = null;
+1358:         box.addView(a.text(form.byAi ? "☁️ قُرئ بالقراءة الذكية السحابية" : "استُخرج من الرسالة (بالمحرك المدمج، دون إنترنت)", 13, form.byAi ? a.accent : a.muted, true));
+1359:         long[] wu = a.db.waUsage();
+1360:         if (wu[1] != Entitlements.UNLIMITED) box.addView(a.text("النسخة المجانية: استُخدم " + wu[0] + " من " + wu[1] + " رسالة اليوم (تُحتسب الرسالة عند إضافتها للحقول)", 12, a.muted, false));
+1361:         final List<WaText.Msg> many = editing == null && !form.queued ? WaText.split(form.desc.getText().toString()) : new ArrayList<WaText.Msg>();
+1362:         if (many.size() > 1) {
+1363:             parseLine(box, false, "هذا النص فيه " + many.size() + " رسائل من واتساب — الأفضل تسجيل كل رسالة حركةً مستقلة");
+1364:             box.addView(a.smallButton("تسجيل كل رسالة وحدها (" + many.size() + ")", a.primary, v -> {
+1365:                 form.desc.setText("");
+1366:                 a.waQueue.overview(many, pasteOffice());
+1367:             }), a.lp(-1, 44, 2));
+1368:         }
+1369:         if (form.duplicate != null) parseLine(box, false, "⚠ هذه الرسالة مسجّلة سابقًا: " + duplicateText(form.duplicate) + " — تأكد قبل التسجيل حتى لا تُسجَّل مرتين");
+1370:         parseLine(box, !r.person.isEmpty(), r.person.isEmpty() ? "المستفيد: لم يُستخرج — اكتبه بيدك" : r.person);
+1371:         boolean metal = r.currency != null && Metals.isMetal(r.currency);   // 12.6: المعدن بوزنه
+1372:         parseLine(box, !r.amount.isEmpty(), r.amount.isEmpty() ? (metal ? "الوزن" : "المبلغ") + ": لم يُستخرج — اكتبه بيدك"
+1373:                 : (metal ? "الوزن: " + shownAmount(r.amount) + " " + Metals.unitText(r.currency) : shownAmount(r.amount))
+1374:                 + (r.amountText.isEmpty() || r.amountText.equals(r.amount) ? "" : " («" + r.amountText + "»)"));
+1375:         // 10.5: تفسير يحتاج مراجعة («50000 الف»، أو رقم ملتبس بعملة بثلاث منازل): يظهر صراحة قبل الإضافة للحقول
+1376:         if (!r.amountNote.isEmpty()) parseLine(box, false, "راجع المبلغ: " + r.amountNote);
+1377:         if (r.currency != null) {
+1378:             String nm = form.names.get(r.currency);
+1379:             parseLine(box, true, r.currency + (nm == null || nm.isEmpty() ? "" : " " + nm));
+1380:         } else if (!r.currencyWord.isEmpty()) {
+1381:             parseLine(box, false, "العملة «" + r.currencyWord + "» غير مفعّلة لهذا المكتب — اخترها بيدك أو فعّلها للمكتب");
+1382:         } else if (!r.unknownWord.isEmpty() && !form.byAi) {
+1383:             parseLine(box, false, "العملة: لم أتعرّف على «" + r.unknownWord + "»");
+1384:             final String w = r.unknownWord;
+1385:             box.addView(a.smallButton("اربط «" + w + "» بعملة ليفهمها البرنامج دائمًا", a.accent, v -> {
+1386:                 List<String> codes = new ArrayList<>();
+1387:                 for (Model.Currency c : a.db.currencies(false)) codes.add(c.code);
+1388:                 CurrencyWords.linkDialog(a, w, codes, this::previewParse);
+1389:             }), a.lp(-1, 44, 2));
+1390:         } else {
+1391:             parseLine(box, false, "العملة: لم تُذكر في الرسالة — اخترها بيدك");
+1392:         }
+1393:         if (form.office == null) parseLine(box, false, "اختر المكتب من الأعلى");
+1394:         if (r.net) parseLine(box, true, "صافي (بدون خصم أجرة)");
+1395:         if (!r.phone.isEmpty()) parseLine(box, true, "\u2066" + r.phone + "\u2069");
+1396:         if (!r.city.isEmpty()) parseLine(box, true, r.city);
+1397:         if (!r.sender.isEmpty()) parseLine(box, true, "المرسل في نص الحوالة: " + r.sender);
+1398:         if (!r.rajeRate.isEmpty()) parseLine(box, true, "راجع (أجرة لنا): " + r.rajeRate + (r.rajePer == Model.PER_MILLE ? " بالألف" : "٪") + " من المبلغ");
+1399:         else if (!r.rajeAmount.isEmpty()) parseLine(box, true, "راجع (أجرة لنا): " + r.rajeAmount);
+1400:         else if (r.raje) parseLine(box, false, "ذُكر «راجع»" + (r.rajeHint.isEmpty() ? "" : " " + r.rajeHint) + " دون «بالمية/بالألف» أو عملة — حدّد الأجرة لنا بيدك من «مع أجرة»");
+1401:         if (!r.fee.isEmpty()) parseLine(box, true, "ذُكرت أجرة: " + r.fee + " — لا تُضاف تلقائيًا، أضفها من «مع أجرة» إن لزم");
+1402:         if (AiSettings.on(a.db)) {
+1403:             if (!form.byAi) {
+1404:                 box.addView(a.smallButton(AiExtract.BUTTON, a.accent, v -> askAi(form)), a.lp(-1, 44, 4));
+1405:                 box.addView(a.text(AiExtract.EXPLAIN, 12, a.muted, false));
+1406:             } else {
+1407:                 box.addView(a.smallButton("↩ العودة لنتيجة المحرك المدمج", Color.rgb(120, 120, 120), v -> {
+1408:                     form.byAi = false;
+1409:                     form.aiText = "";
+1410:                     form.filled = false;
+1411:                     previewParse();
+1412:                 }), a.lp(-1, 40, 4));
+1413:             }
+1414:         }
+1415:         if (r.any()) {
+1416:             Button fill = a.makeButton(form.filled ? "✓ أُضيفت — إعادة الإضافة" : "⬇ أضف للحقول", form.filled ? a.green : a.primary, v -> fillFromParse());
+1417:             fill.setTextSize(14);
+1418:             fill.setContentDescription(form.filled ? "أُضيفت للحقول — اضغط لإعادة الإضافة" : "إضافة المعلومات للحقول");
+1419:             box.addView(fill, a.lp(-1, 42, 4));
+1420:         } else {
+1421:             box.addView(a.text("لم أجد في الرسالة معلومات يمكن إضافتها؛ اكتب الحقول بيدك.", 13, a.red, true));
+1422:         }
+1423:         box.setVisibility(View.VISIBLE);
+1424:     }
+1425: 
+1426:     /** 9.0: بطاقة «انتهى استخراج اليوم» مكان المعلومات المستخرجة: النموذج يعمل بالإدخال اليدوي العادي. */
+1427:     private void renderLimit(final Form form) {
+1428:         LinearLayout box = form.parseBox;
+1429:         box.removeAllViews();
+1430:         long[] u = a.db.waUsage();
+1431:         box.addView(a.text("الإدخال اليدوي", 15, a.dark, true));
+1432:         box.addView(a.text(Entitlements.waLimitMessage(u[1]), 13, a.muted, false));
+1433:         box.addView(a.text("اكتب المستفيد والمبلغ والعملة في الحقول أدناه؛ البيان يُحفظ كما لصقته.", 13, a.ink, false));
+1434:         box.addView(a.smallButton("النسخة الكاملة", a.accent, v -> a.licenseScreen.show()), a.lp(-1, 40, 4));
+1435:         box.setVisibility(View.VISIBLE);
+1436:     }
+1437: 
+1438:     /** يكتب المعلومات المستخرجة في الحقول (فوق ما فيها) بعد أن يطلب المحاسب ذلك. */
+1439:     private void fillFromParse() {
+1440:         final Form form = f;
+1441:         if (form == null || form.parsed == null) return;
+1442:         if (!a.db.waUse(form.desc.getText().toString())) {
+1443:             form.parsed = null;
+1444:             renderLimit(form);
+1445:             return;
+1446:         }
+1447:         MessageParser.Result r = form.parsed;
+1448:         List<String> done = new ArrayList<>();
+1449:         if (!r.person.isEmpty()) {
+1450:             form.person.setText(r.person);
+1451:             done.add("المستفيد");
+1452:         }
+1453:         if (!r.amount.isEmpty()) {
+1454:             form.amount.setText(r.amount);
+1455:             done.add("المبلغ");
+1456:         }
+1457:         if (!r.city.isEmpty() && form.dest.getText().toString().trim().isEmpty()) {
+1458:             form.dest.setText(r.city);
+1459:             done.add("الوجهة");
+1460:         }
+1461:         if (r.currency != null && form.cur != null) {
+1462:             int i = form.curs.indexOf(r.currency);
+1463:             if (i >= 0) {
+1464:                 form.cur.set(i, true);
+1465:                 form.cur.flagMissing(false);
+1466:                 done.add("العملة");
+1467:             }
+1468:         }
+1469:         if (!r.rajeRate.isEmpty() || !r.rajeAmount.isEmpty()) {
+1470:             // «راجع» = أجرة يدفعها المكتب لنا: «مع أجرة» + «الأجرة لنا» + النسبة أو المبلغ
+1471:             form.feeMode.set(1, true);
+1472:             form.feeSide.set(0, false);
+1473:             if (!r.rajeRate.isEmpty()) {
+1474:                 form.feeKind.set(1, false);

@@ -1,0 +1,199 @@
+172:         s.status = status.getSelectedIndex();
+173:         s.text = text.val();
+174:         s.service = service.val();
+175:         s.dest = dest.val();
+176:         s.user = user.val();
+177:         s.minAmount = min.val().isEmpty() ? null : new BigDecimal(Db.normalizeNumber(min.val()));
+178:         s.maxAmount = max.val().isEmpty() ? null : new BigDecimal(Db.normalizeNumber(max.val()));
+179:         s.group = group.getSelectedIndex();
+180:         s.group2 = group2.getSelectedIndex();
+181:         s.measure = measure.getSelectedIndex();
+182:         s.sort = sort.getSelectedIndex();
+183:         try {
+184:             s.top = top.val().isEmpty() ? 0 : Integer.parseInt(Ui.digits(top.val()));
+185:         } catch (Exception e) {
+186:             s.top = 0;
+187:         }
+188:         s.compare = compare.isSelected();
+189:         s.details = details.isSelected();
+190:         s.runningBalance = running.isSelected();
+191:         return s;
+192:     }
+193: 
+194:     /** يعرض مواصفات في الحقول. الفترة: تُحفظ كرقم فترة سريعة في القالب (p) ليبقى «هذا الشهر» هذا الشهر دائمًا. */
+195:     void apply(ReportBuilder.Spec s) {
+196:         title.setText(s.title);
+197:         dir.setSelectedIndex(s.direction);
+198:         kind.setSelectedIndex(s.kind);
+199:         status.setSelectedIndex(s.status);
+200:         text.setText(s.text);
+201:         service.setText(s.service);
+202:         dest.setText(s.dest);
+203:         user.setText(s.user);
+204:         min.setText(s.minAmount == null ? "" : s.minAmount.toPlainString());
+205:         max.setText(s.maxAmount == null ? "" : s.maxAmount.toPlainString());
+206:         group.setSelectedIndex(s.group);
+207:         group2.setSelectedIndex(s.group2);
+208:         measure.setSelectedIndex(s.measure);
+209:         sort.setSelectedIndex(s.sort);
+210:         top.setText(s.top > 0 ? "" + s.top : "");
+211:         compare.setSelected(s.compare);
+212:         details.setSelected(s.details);
+213:         running.setSelected(s.runningBalance);
+214:         offices.clearSelection();
+215:         for (int i = 0; i < officeModel.size(); i++) if (s.offices.contains(officeModel.get(i).id)) offices.addSelectionInterval(i, i);
+216:         for (Map.Entry<String, JCheckBox> e : curChecks.entrySet()) e.getValue().setSelected(s.currencies.contains(e.getKey()));
+217:         if (s.from > 0 || s.to > 0) {
+218:             period.setSelectedIndex(Ui.PERIODS.length - 1);
+219:             from.set(s.from);
+220:             to.set(s.to > 0 ? s.to - 1 : 0);
+221:         }
+222:     }
+223: 
+224:     // ===================================================================================
+225:     // القوالب
+226:     // ===================================================================================
+227: 
+228:     static final String KEY = "report_presets";
+229:     static final String READY = "جاهز: ";
+230: 
+231:     /** قوالب جاهزة: [الاسم، الفترة السريعة، المواصفات]. */
+232:     static List<Object[]> builtIn() {
+233:         List<Object[]> l = new ArrayList<>();
+234:         ReportBuilder.Spec s;
+235:         s = new ReportBuilder.Spec();
+236:         s.title = "الراجع لكل مكتب";
+237:         s.kind = ReportBuilder.K_RAJE;
+238:         s.group = ReportBuilder.G_OFFICE;
+239:         s.sort = ReportBuilder.SORT_FEES;
+240:         l.add(new Object[]{"الراجع لكل مكتب — هذا الشهر", 3, s});
+241:         s = new ReportBuilder.Spec();
+242:         s.title = "صافي الأجور والراجع شهريًا";
+243:         s.kind = ReportBuilder.K_ALL;
+244:         s.group = ReportBuilder.G_MONTH;
+245:         s.group2 = ReportBuilder.G_CURRENCY;
+246:         s.measure = ReportBuilder.M_FEES_NET;
+247:         l.add(new Object[]{"صافي الأجور والراجع شهريًا — 12 شهرًا", 6, s});
+248:         s = new ReportBuilder.Spec();
+249:         s.title = "مقارنة المكاتب بالشهر السابق";
+250:         s.group = ReportBuilder.G_OFFICE;
+251:         s.compare = true;
+252:         s.sort = ReportBuilder.SORT_VOLUME;
+253:         l.add(new Object[]{"مقارنة المكاتب بالشهر الماضي", 4, s});
+254:         s = new ReportBuilder.Spec();
+255:         s.title = "عدد العمليات: المكتب × الشهر";
+256:         s.group = ReportBuilder.G_OFFICE;
+257:         s.group2 = ReportBuilder.G_MONTH;
+258:         s.measure = ReportBuilder.M_COUNT;
+259:         s.sort = ReportBuilder.SORT_COUNT;
+260:         s.top = 25;
+261:         l.add(new Object[]{"جدول متقاطع: المكتب × الشهر — 12 شهرًا", 6, s});
+262:         s = new ReportBuilder.Spec();
+263:         s.title = "ساعات الذروة";
+264:         s.group = ReportBuilder.G_HOUR;
+265:         s.group2 = ReportBuilder.G_WEEKDAY;
+266:         s.measure = ReportBuilder.M_COUNT;
+267:         l.add(new Object[]{"ساعات الذروة وأيام الأسبوع — 3 أشهر", 5, s});
+268:         s = new ReportBuilder.Spec();
+269:         s.title = "أكبر الحوالات";
+270:         s.group = ReportBuilder.G_NONE;
+271:         s.kind = ReportBuilder.K_TRANSFERS;
+272:         s.minAmount = new BigDecimal("10000");
+273:         l.add(new Object[]{"الحوالات من 10,000 فأكثر — هذا الشهر", 3, s});
+274:         s = new ReportBuilder.Spec();
+275:         s.title = "الخدمات والوجهات";
+276:         s.group = ReportBuilder.G_SERVICE;
+277:         s.group2 = ReportBuilder.G_DEST;
+278:         s.measure = ReportBuilder.M_COUNT;
+279:         l.add(new Object[]{"الخدمات × الوجهات — 3 أشهر", 5, s});
+280:         s = new ReportBuilder.Spec();
+281:         s.title = "حركات كل مستخدم";
+282:         s.group = ReportBuilder.G_USER;
+283:         s.details = true;
+284:         l.add(new Object[]{"حركات اليوم لكل مستخدم", 0, s});
+285:         s = new ReportBuilder.Spec();
+286:         s.title = "شرائح المبالغ";
+287:         s.group = ReportBuilder.G_SIZE;
+288:         s.kind = ReportBuilder.K_TRANSFERS;
+289:         l.add(new Object[]{"توزيع الحوالات حسب المبلغ — 12 شهرًا", 6, s});
+290:         s = new ReportBuilder.Spec();
+291:         s.title = "الملغاة والمعدّلة";
+292:         s.status = ReportBuilder.S_EDITED;
+293:         s.group = ReportBuilder.G_NONE;
+294:         l.add(new Object[]{"المعدّلة وتصحيحاتها — هذا الشهر", 3, s});
+295:         s = new ReportBuilder.Spec();
+296:         s.title = "أكثر المستفيدين";
+297:         s.group = ReportBuilder.G_PERSON;
+298:         s.sort = ReportBuilder.SORT_COUNT;
+299:         s.top = 30;
+300:         l.add(new Object[]{"أكثر 30 مستفيدًا — 12 شهرًا", 6, s});
+301:         s = new ReportBuilder.Spec();
+302:         s.title = "أسبوعيًا";
+303:         s.group = ReportBuilder.G_WEEK;
+304:         s.compare = true;
+305:         l.add(new Object[]{"ملخص أسبوعي — 3 أشهر", 5, s});
+306:         // 10.12: قص العملات والحركات بين مكتبين (القوالب نفسها في الهاتف)
+307:         for (ReportBuilder.Preset p : ReportBuilder.presets1012()) l.add(new Object[]{p.name + " — " + ReportBuilder.PERIODS[p.period], p.period, p.spec});
+308:         return l;
+309:     }
+310: 
+311:     JSONObject stored() {
+312:         try {
+313:             String s = db.setting(KEY, "");
+314:             return s.isEmpty() ? new JSONObject() : new JSONObject(s);
+315:         } catch (Exception e) {
+316:             return new JSONObject();
+317:         }
+318:     }
+319: 
+320:     void loadPresets() {
+321:         DefaultComboBoxModel<String> m = new DefaultComboBoxModel<>();
+322:         m.addElement("— اختر قالبًا —");
+323:         for (Object[] b : builtIn()) m.addElement(READY + b[0]);
+324:         JSONObject st = stored();
+325:         List<String> names = new ArrayList<>();
+326:         for (Iterator<String> it = st.keys(); it.hasNext(); ) names.add(it.next());
+327:         Collections.sort(names);
+328:         for (String n : names) m.addElement(n);
+329:         presets.setModel(m);
+330:     }
+331: 
+332:     void loadPreset(String name) {
+333:         if (name.startsWith(READY)) {
+334:             for (Object[] b : builtIn()) if (name.equals(READY + b[0])) {
+335:                 apply((ReportBuilder.Spec) b[2]);
+336:                 period.setSelectedIndex((Integer) b[1]);
+337:                 run();
+338:                 return;
+339:             }
+340:         }
+341:         JSONObject j = stored().optJSONObject(name);
+342:         if (j == null) return;
+343:         ReportBuilder.Spec s = ReportBuilder.Spec.fromJson(j);
+344:         int p = j.optInt("p", -1);
+345:         if (p >= 0 && p < Ui.PERIODS.length - 1) {
+346:             s.from = 0;
+347:             s.to = 0;
+348:         }
+349:         apply(s);
+350:         if (p >= 0 && p < Ui.PERIODS.length - 1) period.setSelectedIndex(p);
+351:         run();
+352:     }
+353: 
+354:     void savePreset() {
+355:         try {
+356:             ReportBuilder.Spec s = spec();
+357:             String name = Ui.input(this, "حفظ كقالب", "اسم القالب", s.title.isEmpty() ? "" : s.title);
+358:             if (name == null || name.trim().isEmpty()) return;
+359:             JSONObject j = s.toJson();
+360:             int p = period.getSelectedIndex();
+361:             j.put("p", p);
+362:             if (p != Ui.PERIODS.length - 1) {
+363:                 j.put("from", 0);
+364:                 j.put("to", 0);
+365:             }
+366:             JSONObject st = stored();
+367:             st.put(name.trim(), j);
+368:             db.setSetting(KEY, st.toString());
+369:             loadPresets();
+370:             presets.setSelectedItem(name.trim());

@@ -1,0 +1,186 @@
+1: package com.smart.hawala.desk;
+2: 
+3: import com.smart.hawala.*;
+4: import java.awt.Desktop;
+5: import java.io.InputStream;
+6: import java.io.IOException;
+7: import java.io.OutputStream;
+8: import java.net.HttpURLConnection;
+9: import java.net.InetAddress;
+10: import java.net.ServerSocket;
+11: import java.net.Socket;
+12: import java.net.URI;
+13: import java.net.URL;
+14: import java.net.URLDecoder;
+15: import java.net.URLEncoder;
+16: import java.nio.charset.StandardCharsets;
+17: import java.security.MessageDigest;
+18: import java.security.SecureRandom;
+19: import java.util.Base64;
+20: import org.json.JSONObject;
+21: 
+22: /**
+23:  * 10.2: الدخول إلى Google Drive على الماك والويندوز: تسجيل دخول في المتصفح (OAuth لتطبيقات الكمبيوتر مع PKCE وعنوان محلي)،
+24:  * بصلاحية «مجلد التطبيق المخفي» فقط. رمز التجديد يُحفظ في سلسلة المفاتيح (الماك) أو بحماية ويندوز، ولا يُكتب في قاعدة البيانات.
+25:  *
+26:  * <p>معرّف عميل Google للكمبيوتر: من الملف res/google-oauth.json داخل البرنامج (يضعه البائع عند البناء)، أو يُلصق مرة واحدة
+27:  * في شاشة المزامنة.
+28:  */
+29: public final class DeskDriveAuth implements DriveSyncFolder.Tokens {
+30:     public static final String REFRESH = "drive_refresh";
+31:     /** 10.14: رمز الحساب الجديد أثناء تغيير الحساب (قبل أن يُعتمد)، ورمز الحساب القديم بعد النقل (لحذف الخزنة منه لاحقًا). */
+32:     public static final String NEW = "drive_refresh_new", OLD = "drive_refresh_old";
+33:     private final Db db;
+34:     private final String key;
+35:     private String access;
+36:     private long expires;
+37: 
+38:     public DeskDriveAuth(Db db) { this(db, REFRESH); }
+39: 
+40:     public DeskDriveAuth(Db db, String key) {
+41:         this.db = db;
+42:         this.key = key;
+43:     }
+44: 
+45:     /** [معرّف العميل، السر] أو null. */
+46:     public static String[] client(Db db) {
+47:         String id = db.setting("drive_client_id", "").trim(), sec = db.setting("drive_client_secret", "").trim();
+48:         if (!id.isEmpty()) return new String[]{id, sec};
+49:         try (InputStream in = DeskDriveAuth.class.getResourceAsStream("/res/google-oauth.json")) {
+50:             if (in == null) return null;
+51:             JSONObject j = new JSONObject(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+52:             JSONObject x = j.has("installed") ? j.getJSONObject("installed") : j;
+53:             String cid = x.optString("client_id");
+54:             return cid.isEmpty() ? null : new String[]{cid, x.optString("client_secret")};
+55:         } catch (Exception e) {
+56:             return null;
+57:         }
+58:     }
+59: 
+60:     public static boolean connected() { return has(REFRESH); }
+61: 
+62:     public static boolean has(String key) {
+63:         try {
+64:             String r = SecretStore.get(key);
+65:             return r != null && !r.isEmpty();
+66:         } catch (Exception e) {
+67:             return false;
+68:         }
+69:     }
+70: 
+71:     public static void disconnect() { drop(REFRESH); }
+72: 
+73:     public static void drop(String key) {
+74:         try {
+75:             SecretStore.delete(key);
+76:         } catch (Exception ignored) {
+77:             // لا شيء
+78:         }
+79:     }
+80: 
+81:     /** 10.14: ينقل رمزًا محفوظًا من خانة إلى أخرى (الجديد يصبح الحالي، والحالي يصبح القديم). null = تُفرّغ الوجهة. */
+82:     public static void promote(String from, String to) throws Exception {
+83:         String v = SecretStore.get(from);
+84:         if (v == null || v.isEmpty()) SecretStore.delete(to);
+85:         else SecretStore.put(to, v);
+86:         SecretStore.delete(from);
+87:     }
+88: 
+89:     @Override public synchronized String token(boolean refresh) throws IOException {
+90:         if (!refresh && access != null && Clock.now() < expires - 60000) return access;
+91:         String rt;
+92:         try {
+93:             rt = SecretStore.get(key);
+94:         } catch (Exception e) {
+95:             throw new IOException("تعذر قراءة رمز Google المحفوظ: " + e.getMessage());
+96:         }
+97:         if (rt == null || rt.isEmpty()) throw new IOException("سجّل الدخول بحساب Google من شاشة «المزامنة» أولًا");
+98:         String[] c = client(db);
+99:         if (c == null) throw new IOException("معرّف عميل Google للكمبيوتر غير مضبوط");
+100:         JSONObject r = post("client_id=" + enc(c[0]) + "&client_secret=" + enc(c[1]) + "&refresh_token=" + enc(rt) + "&grant_type=refresh_token");
+101:         if (r.has("error")) {
+102:             if ("invalid_grant".equals(r.optString("error"))) drop(key);
+103:             throw new IOException("انتهى دخول Google (" + r.optString("error") + "). سجّل الدخول من جديد من «المزامنة».");
+104:         }
+105:         access = r.optString("access_token");
+106:         expires = Clock.now() + r.optLong("expires_in", 3000) * 1000;
+107:         return access;
+108:     }
+109: 
+110:     static String enc(String s) {
+111:         try {
+112:             return URLEncoder.encode(s, "UTF-8");
+113:         } catch (Exception e) {
+114:             return s;
+115:         }
+116:     }
+117: 
+118:     static String tokenUrl = "https://oauth2.googleapis.com/token";
+119: 
+120:     static JSONObject post(String form) throws IOException {
+121:         HttpURLConnection c = (HttpURLConnection) new URL(tokenUrl).openConnection();
+122:         c.setRequestMethod("POST");
+123:         c.setConnectTimeout(20000);
+124:         c.setReadTimeout(30000);
+125:         c.setDoOutput(true);
+126:         c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
+127:         byte[] b = form.getBytes(StandardCharsets.UTF_8);
+128:         try (OutputStream o = c.getOutputStream()) {
+129:             o.write(b);
+130:         }
+131:         int code = c.getResponseCode();
+132:         InputStream in = code < 400 ? c.getInputStream() : c.getErrorStream();
+133:         try {
+134:             String s = in == null ? "{}" : new String(in.readAllBytes(), StandardCharsets.UTF_8);
+135:             return new JSONObject(s);
+136:         } catch (org.json.JSONException e) {
+137:             throw new IOException("رد غير مفهوم من Google (" + code + ")");
+138:         } finally {
+139:             c.disconnect();
+140:         }
+141:     }
+142: 
+143:     /**
+144:      * تسجيل الدخول التفاعلي (في خيط خلفي): يفتح المتصفح، وينتظر عودة Google إلى عنوان محلي على هذا الجهاز، ثم يحفظ رمز التجديد.
+145:      * المهلة 5 دقائق.
+146:      */
+147:     public static String login(Db db) throws Exception { return login(db, REFRESH, ""); }
+148: 
+149:     /**
+150:      * 10.14: يظهر اختيار الحساب دائمًا (select_account)، فـ«تغيير الحساب» يغيّره فعلًا. يُحفظ رمز التجديد في الخانة key،
+151:      * ويرجع بريد الحساب الذي اختاره المستخدم (من Drive نفسه)، أو "" إن تعذّرت معرفته.
+152:      */
+153:     private static volatile ServerSocket waiting;
+154:     private static volatile String lastUrl;
+155: 
+156:     /** 11.2: إلغاء انتظار الدخول الجاري (زر «إلغاء»). */
+157:     public static void cancelLogin() {
+158:         ServerSocket s = waiting;
+159:         if (s != null) try { s.close(); } catch (IOException ignored) { /* أُغلق */ }
+160:     }
+161: 
+162:     /** 11.2: فتح صفحة الدخول مرة أخرى (إن أُغلق المتصفح أو لم يظهر). */
+163:     public static void reopenLogin() {
+164:         String u = lastUrl;
+165:         if (u != null && waiting != null && !waiting.isClosed()) try { Desktop.getDesktop().browse(new URI(u)); } catch (Exception ignored) { /* لا متصفح */ }
+166:     }
+167: 
+168:     public static String login(Db db, String key, String hint) throws Exception {
+169:         String[] c = client(db);
+170:         if (c == null) throw new IOException("معرّف عميل Google للكمبيوتر غير مضبوط (انظر دليل الإصدار).");
+171:         SecureRandom rnd = new SecureRandom();
+172:         byte[] v = new byte[32];
+173:         rnd.nextBytes(v);
+174:         String verifier = Base64.getUrlEncoder().withoutPadding().encodeToString(v);
+175:         String challenge = Base64.getUrlEncoder().withoutPadding().encodeToString(MessageDigest.getInstance("SHA-256").digest(verifier.getBytes(StandardCharsets.US_ASCII)));
+176:         byte[] st = new byte[16];
+177:         rnd.nextBytes(st);
+178:         String state = Base64.getUrlEncoder().withoutPadding().encodeToString(st);
+179:         try (ServerSocket ss = new ServerSocket(0, 5, InetAddress.getLoopbackAddress())) {
+180:             // 11.2: يمكن إلغاؤه من نافذة الانتظار، ويتوقف وحده بعد 3 دقائق
+181:             ss.setSoTimeout(180000);
+182:             waiting = ss;
+183:             String redirect = "http://127.0.0.1:" + ss.getLocalPort();
+184:             String url = "https://accounts.google.com/o/oauth2/v2/auth?client_id=" + enc(c[0]) + "&redirect_uri=" + enc(redirect)
+185:                     + "&response_type=code&scope=" + enc(DriveSyncFolder.SCOPE) + "&code_challenge=" + challenge + "&code_challenge_method=S256"
+186:                     + "&access_type=offline&prompt=" + enc("select_account consent") + (hint == null || hint.isEmpty() ? "" : "&login_hint=" + enc(hint))

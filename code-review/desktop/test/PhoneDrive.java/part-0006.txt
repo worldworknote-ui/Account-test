@@ -1,0 +1,82 @@
+787:     static void click(String text, boolean bottom) throws Exception { press(find(text, bottom, false)); }
+788:     static void clickText(String text) throws Exception { press(find(text, false, false)); }
+789:     static void clickHint(String text) throws Exception { press(find(text, false, true)); }
+790: 
+791:     /** يضغط تبويبًا في الشريط السفلي الزجاجي (يُرسم بلا نصوص عناصر): i من اليمين. */
+792:     static void clickTab(int i, int count) throws Exception {
+793:         final Point[] r = {null};
+794:         SwingUtilities.invokeAndWait(() -> {
+795:             for (ViewRootImpl root : WindowStack.roots()) {
+796:                 View bar = findClass(root.getView(), "NotchBar");
+797:                 if (bar == null) continue;
+798:                 float d = bar.getResources().getDisplayMetrics().density;
+799:                 float cell = (bar.getWidth() - 24 * d) / count;
+800:                 r[0] = phys(bar, bar.getWidth() - 12 * d - (i + 0.5f) * cell, bar.getHeight() - 30 * d);
+801:             }
+802:         });
+803:         if (r[0] == null) { fails++; log.add("NO TAB BAR"); return; }
+804:         press(r[0]);
+805:     }
+806: 
+807:     /** 11.0: نقطة داخل عنصر بإحداثيات الشاشة الحقيقية (مع مقياس الرسم العام للنافذة). */
+808:     static Point phys(View v, float x, float y) {
+809:         float[] o = {x, y};
+810:         v.mapToRoot(o);
+811:         ViewRootImpl root = null;
+812:         for (ViewRootImpl r : WindowStack.roots()) if (v.getRootView() == r.getView()) root = r;
+813:         if (root == null) return null;
+814:         Point s = root.pane.getLocationOnScreen();
+815:         float sc = ViewRootImpl.scale();
+816:         return new Point(s.x + Math.round(o[0] * sc), s.y + Math.round(o[1] * sc));
+817:     }
+818: 
+819:     static View withDesc(View v, String d) {
+820:         if (!v.isShown()) return null;
+821:         if (v.getContentDescription() != null && d.contentEquals(v.getContentDescription())) return v;
+822:         if (v instanceof ViewGroup) for (int k = 0; k < ((ViewGroup) v).getChildCount(); k++) { View f = withDesc(((ViewGroup) v).getChildAt(k), d); if (f != null) return f; }
+823:         return null;
+824:     }
+825: 
+826:     static boolean hasDesc(View v, String d) {
+827:         if (!v.isShown()) return false;
+828:         if (v.getContentDescription() != null && d.contentEquals(v.getContentDescription())) return true;
+829:         if (v instanceof ViewGroup) for (int k = 0; k < ((ViewGroup) v).getChildCount(); k++) if (hasDesc(((ViewGroup) v).getChildAt(k), d)) return true;
+830:         return false;
+831:     }
+832: 
+833:     static View findClass(View v, String name) {
+834:         if (v.getClass().getSimpleName().equals(name)) return v;
+835:         if (v instanceof ViewGroup) for (int k = 0; k < ((ViewGroup) v).getChildCount(); k++) { View f = findClass(((ViewGroup) v).getChildAt(k), name); if (f != null) return f; }
+836:         return null;
+837:     }
+838: 
+839:     static void press(Point p) throws Exception {
+840:         if (p == null) return;
+841:         robot.mouseMove(p.x, p.y);
+842:         robot.mousePress(InputEvent.BUTTON1_DOWN_MASK);
+843:         robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
+844:         wait(250);
+845:     }
+846: 
+847:     static void type(String s) throws Exception {
+848:         for (char c : s.toCharArray()) {
+849:             int k = KeyEvent.getExtendedKeyCodeForChar(c);
+850:             robot.keyPress(k);
+851:             robot.keyRelease(k);
+852:         }
+853:         wait(200);
+854:     }
+855: 
+856:     static void paste(String s) throws Exception {
+857:         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new java.awt.datatransfer.StringSelection(s), null);
+858:         key(KeyEvent.VK_V, true);
+859:     }
+860: 
+861:     static void key(int k, boolean menu) throws Exception {
+862:         if (menu) robot.keyPress(KeyEvent.VK_CONTROL);
+863:         robot.keyPress(k);
+864:         robot.keyRelease(k);
+865:         if (menu) robot.keyRelease(KeyEvent.VK_CONTROL);
+866:         wait(200);
+867:     }
+868: }

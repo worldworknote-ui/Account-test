@@ -1,0 +1,181 @@
+1: package com.smart.hawala;
+2: 
+3: import java.math.BigDecimal;
+4: import java.math.RoundingMode;
+5: import java.util.ArrayList;
+6: import java.util.Collections;
+7: import java.util.List;
+8: import java.util.Map;
+9: import java.util.Set;
+10: import java.util.TreeMap;
+11: import java.util.TreeSet;
+12: 
+13: /**
+14:  * 9.0.1: «حسابات العملاء» داخل الصندوق — منطق بحت مشترك.
+15:  *
+16:  * <p>العميل شخص يتعامل مع الصندوق مباشرة وله حساب لدينا مستقل تمامًا عن حسابات المكاتب ودفتر قيودها.
+17:  * لكل عميل رصيد بكل عملة = مجموع (اتجاه × مبلغ) لحركاته النشطة: الموجب «لنا» (العميل مدين لنا)، والسالب «علينا» (له عندنا).
+18:  *
+19:  * <ul>
+20:  *   <li>استلام نقد منه (يدخل الصندوق) = علينا له (−).</li>
+21:  *   <li>تسليم نقد له (يخرج من الصندوق) = لنا عليه (+).</li>
+22:  *   <li>قد يُقيَّد على حسابه بعملة غير عملة النقد (له 100 يورو فيأخذ دولارًا): النقد بالدولار، وحركة حسابه باليورو، والسعر محفوظ.</li>
+23:  *   <li>قيد بلا نقد (رصيد سابق أو تسوية متفق عليها) بجهة يختارها المستخدم.</li>
+24:  *   <li>تبديل عملة الرصيد بلا نقد: سطران مرتبطان (يُطفأ جزء من رصيد عملة ويُنشأ مقابله بعملة أخرى بالجهة نفسها).</li>
+25:  * </ul>
+26:  */
+27: public final class ClientBook {
+28:     private ClientBook() {}
+29: 
+30:     public static final String CASH = "CASH", ENTRY = "ENTRY", SWAP = "SWAP";
+31: 
+32:     public static final class Client {
+33:         public long id;
+34:         public String name = "", phone = "", note = "";
+35:         public boolean active = true;
+36:         public long createdAt;
+37:     }
+38: 
+39:     /** حركة على حساب عميل. cashUuid: حركة الصندوق المرتبطة (لنوع CASH)، وcashCurrency/cashAmount للعرض فقط. */
+40:     public static final class Move {
+41:         public long id, clientId, createdAt;
+42:         public String uuid = "", kind = ENTRY, currency = "";
+43:         public long amount;
+44:         /** +1 لنا عليه، −1 علينا له. */
+45:         public int dir = 1;
+46:         public String cashUuid, pairUuid, rate;
+47:         public String description = "", userName = "", cancelReason = "";
+48:         public String status = CashBox.ACTIVE;
+49:         public String cashCurrency;
+50:         public long cashAmount;
+51:         public int cashDir;
+52: 
+53:         public boolean counts() { return CashBox.ACTIVE.equals(status); }
+54: 
+55:         public long effect() { return counts() ? dir * amount : 0; }
+56: 
+57:         public boolean cancelled() { return CashBox.CANCELLED.equals(status); }
+58:     }
+59: 
+60:     /** الرصيد لكل عملة (الموجب لنا والسالب علينا)، بلا الأصفار. */
+61:     public static Map<String, Long> balances(List<Move> moves) {
+62:         Map<String, Long> m = new TreeMap<>();
+63:         for (Move x : moves) {
+64:             long e = x.effect();
+65:             if (e == 0) continue;
+66:             Long b = m.get(x.currency);
+67:             m.put(x.currency, (b == null ? 0 : b) + e);
+68:         }
+69:         m.values().removeIf(v -> v == 0);
+70:         return m;
+71:     }
+72: 
+73:     /** أرصدة كل العملاء: العميل ← (العملة ← الرصيد). */
+74:     public static Map<Long, Map<String, Long>> allBalances(List<Move> moves) {
+75:         Map<Long, List<Move>> by = new TreeMap<>();
+76:         for (Move x : moves) {
+77:             List<Move> l = by.get(x.clientId);
+78:             if (l == null) {
+79:                 l = new ArrayList<>();
+80:                 by.put(x.clientId, l);
+81:             }
+82:             l.add(x);
+83:         }
+84:         Map<Long, Map<String, Long>> out = new TreeMap<>();
+85:         for (Map.Entry<Long, List<Move>> e : by.entrySet()) out.put(e.getKey(), balances(e.getValue()));
+86:         return out;
+87:     }
+88: 
+89:     /** مجموع «لنا» و«علينا» لكل عملة عبر العملاء: [لنا، علينا، عدد عملاء لنا، عدد عملاء علينا]. */
+90:     public static Map<String, long[]> totals(Map<Long, Map<String, Long>> all) {
+91:         Map<String, long[]> t = new TreeMap<>();
+92:         for (Map<String, Long> b : all.values())
+93:             for (Map.Entry<String, Long> e : b.entrySet()) {
+94:                 long[] v = t.get(e.getKey());
+95:                 if (v == null) {
+96:                     v = new long[4];
+97:                     t.put(e.getKey(), v);
+98:                 }
+99:                 if (e.getValue() > 0) {
+100:                     v[0] += e.getValue();
+101:                     v[2]++;
+102:                 } else if (e.getValue() < 0) {
+103:                     v[1] -= e.getValue();
+104:                     v[3]++;
+105:                 }
+106:             }
+107:         return t;
+108:     }
+109: 
+110:     /** «150.00 EUR لنا» / «علينا» / «صفر». */
+111:     public static String side(long v) { return v > 0 ? "لنا" : v < 0 ? "علينا" : "صفر"; }
+112: 
+113:     /** وصف الحركة كما يظهر في الكشف. */
+114:     public static String text(Move x, Map<String, Integer> decimals) { return text(x, decimals, false); }
+115: 
+116:     /** iso: عزل الأرقام باتجاهها (للشاشة). */
+117:     public static String text(Move x, Map<String, Integer> decimals, boolean iso) {
+118:         String l = iso ? "\u2066" : "", r = iso ? "\u2069" : "";
+119:         switch (x.kind) {
+120:             case CASH: {
+121:                 boolean got = x.cashDir > 0;
+122:                 String t = got ? "استلمنا منه نقدًا" : "سلّمناه نقدًا";
+123:                 if (x.cashCurrency != null && !x.cashCurrency.equals(x.currency))
+124:                     t += " " + l + Model.fmt(x.cashAmount, CashBox.dec(decimals, x.cashCurrency)) + " " + x.cashCurrency + r
+125:                             + (Model.nz(x.rate).isEmpty() ? "" : iso ? "\nبسعر " + l + "1 " + x.currency + " = " + x.rate + " " + x.cashCurrency + r
+126:                             : " (1 " + x.currency + " = " + x.rate + " " + x.cashCurrency + ")");
+127:                 return t;
+128:             }
+129:             case SWAP: return "تبديل عملة الرصيد";
+130:             default: return x.dir > 0 ? "قيد لنا عليه" : "قيد علينا له";
+131:         }
+132:     }
+133: 
+134:     /** ترتيب زمني ثابت. */
+135:     public static void sort(List<Move> moves) {
+136:         Collections.sort(moves, (a, b) -> {
+137:             int c = Long.compare(a.createdAt, b.createdAt);
+138:             return c != 0 ? c : Long.compare(a.id, b.id);
+139:         });
+140:     }
+141: 
+142:     /**
+143:      * التحقق من إدخال الحركة على الحساب (null = صالح).
+144:      * clientAmount بعملة الحساب؛ إن اختلفت عن عملة النقد يجب السعر أو المبلغ المقابل.
+145:      */
+146:     public static String validateLink(String cashCurrency, long cashAmount, String clientCurrency, long clientAmount) {
+147:         if (clientCurrency == null || clientCurrency.isEmpty()) return "اختر عملة حساب العميل";
+148:         if (clientAmount <= 0) return "اكتب المبلغ الذي يُقيَّد على حساب العميل";
+149:         if (clientCurrency.equals(cashCurrency) && clientAmount != cashAmount) return "بالعملة نفسها يُقيَّد على العميل المبلغ نفسه";
+150:         return null;
+151:     }
+152: 
+153:     /** التبديل: يُسمح بتبديل ما لا يزيد عن رصيد العملة، وبالجهة نفسها. يرجع null أو السبب. */
+154:     public static String validateSwap(Map<String, Long> bal, String from, long amount, String to, long toAmount) {
+155:         if (from == null || to == null) return "اختر العملتين";
+156:         if (from.equals(to)) return "التبديل بين عملتين مختلفتين";
+157:         Long b = bal.get(from);
+158:         if (b == null || b == 0) return "لا رصيد للعميل بـ" + from + " لتبديله";
+159:         if (amount <= 0 || toAmount <= 0) return "اكتب المبلغ والسعر";
+160:         if (amount > Math.abs(b)) return "المبلغ أكبر من رصيد العميل بـ" + from;
+161:         return null;
+162:     }
+163: 
+164:     /** نص سعر: كم من cur2 لكل 1 من cur1 (6 منازل كحد أقصى). */
+165:     public static String rateOf(long a1, int d1, long a2, int d2) {
+166:         if (a1 <= 0 || a2 <= 0) return "";
+167:         return BigDecimal.valueOf(a2, d2).divide(BigDecimal.valueOf(a1, d1), 6, RoundingMode.HALF_EVEN).stripTrailingZeros().toPlainString();
+168:     }
+169: 
+170:     // ===================================================================================
+171:     // الكشف (PDF / Excel / الشاشة)
+172:     // ===================================================================================
+173: 
+174:     public static Report statement(Client c, List<Move> all, long from, long to, Map<String, Integer> decimals, String issuer) {
+175:         List<Move> moves = new ArrayList<>(all);
+176:         sort(moves);
+177:         Report r = new Report();
+178:         r.title = "كشف حساب العميل " + c.name;
+179:         r.fileBase = "كشف-عميل";
+180:         if (issuer != null && !issuer.trim().isEmpty()) r.headerLines.add("صادر عن: " + issuer.trim());
+181:         if (!Model.nz(c.phone).isEmpty()) r.headerLines.add("الهاتف: " + c.phone);

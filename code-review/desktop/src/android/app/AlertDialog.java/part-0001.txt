@@ -1,0 +1,174 @@
+1: package android.app;
+2: 
+3: import android.content.Context;
+4: import android.content.DialogInterface;
+5: import android.graphics.Typeface;
+6: import android.graphics.drawable.*;
+7: import android.view.*;
+8: import android.widget.*;
+9: import java.util.ArrayList;
+10: import java.util.List;
+11: 
+12: /** نافذة التنبيه بشكل Material كما في الهاتف: عنوان، رسالة، محتوى مخصص أو قائمة، وأزرار نصية في الأسفل. */
+13: public class AlertDialog extends Dialog {
+14:     public static final int BUTTON_POSITIVE = DialogInterface.BUTTON_POSITIVE, BUTTON_NEGATIVE = DialogInterface.BUTTON_NEGATIVE, BUTTON_NEUTRAL = DialogInterface.BUTTON_NEUTRAL;
+15:     public static final int THEME_DEVICE_DEFAULT_LIGHT = 5, THEME_DEVICE_DEFAULT_DARK = 4, THEME_HOLO_LIGHT = 3;
+16: 
+17:     private CharSequence title, message;
+18:     private View custom, customTitle;
+19:     private Drawable icon;
+20:     private final CharSequence[] btnText = new CharSequence[3];
+21:     private final DialogInterface.OnClickListener[] btnListen = new DialogInterface.OnClickListener[3];
+22:     private final Button[] buttons = new Button[3];
+23:     private CharSequence[] items;
+24:     private DialogInterface.OnClickListener itemListener;
+25:     private int choiceMode, checked = -1;
+26:     private boolean[] multi;
+27:     private DialogInterface.OnMultiChoiceClickListener multiListener;
+28:     private ListAdapter adapter;
+29:     private TextView messageView;
+30:     private ListView listView;
+31:     private final float d;
+32:     private final boolean night;
+33: 
+34:     protected AlertDialog(Context c) { this(c, 0); }
+35:     protected AlertDialog(Context c, int theme) {
+36:         super(c, theme);
+37:         d = c.getResources().getDisplayMetrics().density;
+38:         night = c instanceof Activity && ((Activity) c).themeNight();
+39:     }
+40: 
+41:     @Override public void setTitle(CharSequence t) { title = t; if (isShowing()) build(); }
+42:     public void setMessage(CharSequence m) { message = m; if (messageView != null) messageView.setText(m); }
+43:     public void setView(View v) { custom = v; }
+44:     public void setCustomTitle(View v) { customTitle = v; }
+45:     public void setIcon(Drawable i) { icon = i; }
+46:     public void setIcon(int r) { icon = ctx.getDrawable(r); }
+47:     public void setButton(int which, CharSequence text, DialogInterface.OnClickListener l) { int i = idx(which); btnText[i] = text; btnListen[i] = l; }
+48:     public Button getButton(int which) { return buttons[idx(which)]; }
+49:     public ListView getListView() { return listView; }
+50:     private static int idx(int which) { return which == BUTTON_POSITIVE ? 0 : which == BUTTON_NEGATIVE ? 1 : 2; }
+51: 
+52:     @Override public void show() {
+53:         build();
+54:         super.show();
+55:     }
+56: 
+57:     private int px(float v) { return Math.round(v * d); }
+58: 
+59:     private void build() {
+60:         Activity a = ctx instanceof Activity ? (Activity) ctx : null;
+61:         int bg = a == null ? 0xFFFFFFFF : a.themeDialogBg();
+62:         int primaryText = a == null ? 0xDE000000 : a.themeTextColor();
+63:         int secondaryText = a == null ? 0x8A000000 : a.themeSecondaryText();
+64:         int accent = a == null ? 0xFF0B6B53 : a.themeAccent();
+65:         LinearLayout panel = new LinearLayout(ctx);
+66:         panel.setOrientation(LinearLayout.VERTICAL);
+67:         GradientDrawable g = new GradientDrawable();
+68:         g.setColor(bg);
+69:         g.setCornerRadius(px(2));
+70:         panel.setBackground(g);
+71:         panel.setElevation(px(24));
+72:         panel.setClickable(true);
+73:         boolean hasTitle = customTitle != null || (title != null && title.length() > 0);
+74:         if (customTitle != null) panel.addView(customTitle, new LinearLayout.LayoutParams(-1, -2));
+75:         else if (hasTitle) {
+76:             TextView t = new TextView(ctx);
+77:             t.setText(title);
+78:             t.setTextSize(20);
+79:             t.setTextColor(primaryText);
+80:             t.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+81:             t.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+82:             t.setPadding(px(24), px(22), px(24), (message == null && custom == null && items == null && adapter == null) ? px(10) : px(10));
+83:             if (icon != null) { icon.setBounds(0, 0, px(32), px(32)); t.setCompoundDrawablesRelative(icon, null, null, null); t.setCompoundDrawablePadding(px(8)); }
+84:             panel.addView(t, new LinearLayout.LayoutParams(-1, -2));
+85:         }
+86:         LinearLayout.LayoutParams grow = new LinearLayout.LayoutParams(-1, -2, 1f);
+87:         if (message != null) {
+88:             ScrollView sv = new ScrollView(ctx);
+89:             messageView = new TextView(ctx);
+90:             messageView.setText(message);
+91:             messageView.setTextSize(16);
+92:             messageView.setTextColor(secondaryText);
+93:             messageView.setLineSpacing(0, 1.1f);
+94:             messageView.setPadding(px(24), hasTitle ? px(4) : px(24), px(24), px(16));
+95:             sv.addView(messageView, new FrameLayout.LayoutParams(-1, -2));
+96:             panel.addView(sv, new LinearLayout.LayoutParams(-1, -2, 1f));
+97:         }
+98:         if (items != null || adapter != null) {
+99:             listView = new ListView(ctx);
+100:             listView.setDivider(null);
+101:             if (adapter != null) listView.setAdapter(adapter);
+102:             else {
+103:                 final List<CharSequence> l = new ArrayList<>();
+104:                 for (CharSequence c : items) l.add(c);
+105:                 listView.setAdapter(new ChoiceAdapter(ctx, l, primaryText, accent));
+106:             }
+107:             listView.setOnItemClickListener((p, v, pos, id) -> {
+108:                 if (choiceMode == 2) {
+109:                     multi[pos] = !multi[pos];
+110:                     ((BaseAdapter) listView.getAdapter()).notifyDataSetChanged();
+111:                     if (multiListener != null) multiListener.onClick(this, pos, multi[pos]);
+112:                     return;
+113:                 }
+114:                 if (choiceMode == 1) {
+115:                     checked = pos;
+116:                     ((BaseAdapter) listView.getAdapter()).notifyDataSetChanged();
+117:                     if (itemListener != null) itemListener.onClick(this, pos);
+118:                     return;
+119:                 }
+120:                 if (itemListener != null) itemListener.onClick(this, pos);
+121:                 dismiss();
+122:             });
+123:             listView.setPadding(0, hasTitle ? 0 : px(8), 0, px(8));
+124:             panel.addView(listView, new LinearLayout.LayoutParams(-1, -2, 1f));
+125:         }
+126:         if (custom != null) {
+127:             // 11.3: كما في أندرويد: عنصر له أب يرمي خطأ (كان يُفصل بصمت فتمرّ أخطاء تُسقط التطبيق على الهاتف)
+128:             FrameLayout holder = new FrameLayout(ctx);
+129:             ViewGroup.LayoutParams cp = custom.getLayoutParams();
+130:             holder.addView(custom, new FrameLayout.LayoutParams(-1, cp != null && cp.height > 0 ? cp.height : -2));
+131:             panel.addView(holder, new LinearLayout.LayoutParams(-1, -2, 1f));
+132:         }
+133:         boolean anyBtn = btnText[0] != null || btnText[1] != null || btnText[2] != null;
+134:         if (anyBtn) {
+135:             LinearLayout bar = new LinearLayout(ctx);
+136:             bar.setOrientation(LinearLayout.HORIZONTAL);
+137:             bar.setGravity(Gravity.CENTER_VERTICAL);
+138:             bar.setPadding(px(12), px(4), px(12), px(4));
+139:             // ترتيب أندرويد: المحايد في البداية، ثم فراغ، ثم السلبي، ثم الإيجابي في النهاية
+140:             int[] order = {2, -1, 1, 0};
+141:             for (int k : order) {
+142:                 if (k == -1) { bar.addView(new View(ctx), new LinearLayout.LayoutParams(0, 1, 1f)); continue; }
+143:                 if (btnText[k] == null) { buttons[k] = null; continue; }
+144:                 final int which = k == 0 ? BUTTON_POSITIVE : k == 1 ? BUTTON_NEGATIVE : BUTTON_NEUTRAL;
+145:                 final DialogInterface.OnClickListener l = btnListen[k];
+146:                 Button b = new Button(ctx);
+147:                 b.setText(btnText[k]);
+148:                 b.setTextColor(accent);
+149:                 b.setTextSize(14);
+150:                 b.setAllCaps(false);
+151:                 b.setMinWidth(px(64));
+152:                 b.setMinimumWidth(px(64));
+153:                 b.setMinHeight(px(48));
+154:                 b.setPadding(px(8), 0, px(8), 0);
+155:                 b.setElevation(0);
+156:                 b.setStateListAnimator(null);
+157:                 b.setBackground(new RippleDrawable(android.content.res.ColorStateList.valueOf(night ? 0x33FFFFFF : 0x1F000000), null,
+158:                         round(px(2))));
+159:                 b.setOnClickListener(v -> {
+160:                     if (l != null) l.onClick(this, which);
+161:                     dismiss();
+162:                 });
+163:                 buttons[k] = b;
+164:                 LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-2, px(48));
+165:                 bp.setMargins(px(2), px(4), px(2), px(4));
+166:                 bar.addView(b, bp);
+167:             }
+168:             panel.addView(bar, new LinearLayout.LayoutParams(-1, -2));
+169:         }
+170:         // العرض: 95٪ من عمود الهاتف وبحد أقصى 560dp؛ الارتفاع لا يتجاوز النافذة
+171:         int sw = ctx.getResources().getDisplayMetrics().widthPixels;
+172:         int w = Math.min(Math.round(sw * 0.92f), px(560));
+173:         if (sw < px(300)) w = sw - px(16);
+174:         FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(w, -2, Gravity.CENTER);

@@ -1,0 +1,173 @@
+183:             long nb = run.getOrDefault(x.currency, 0L) + x.effect();
+184:             run.put(x.currency, nb);
+185:             after[i] = bal(nb, x.currency);
+186:         }
+187:         shownMoves = new ArrayList<>();
+188:         for (int i = list.size() - 1; i >= 0; i--) {
+189:             ClientBook.Move x = list.get(i);
+190:             shownMoves.add(x);
+191:             String amt = m(Ui.ltr(Model.fmt(x.amount, CashBox.dec(dec, x.currency)) + " " + x.currency));
+192:             mdl.addRow(new Object[]{Model.date(x.createdAt), ClientBook.text(x, dec), x.description, x.dir > 0 ? amt : "", x.dir < 0 ? amt : "", x.counts() ? after[i] : "",
+193:                     x.cancelled() ? "ملغاة" : ""});
+194:         }
+195:         moves.setModel(mdl);
+196:         Ui.widths(moves, 120, 240, 160, 110, 110, 150, 70);
+197:         moves.applyComponentOrientation(Ui.RTL);
+198:         detail.revalidate();
+199:         detail.repaint();
+200:     }
+201: 
+202:     void moveDetails(ClientBook.Move x) {
+203:         String t = ClientBook.text(x, db.decimalsMap()) + "\nعلى حسابه: " + (x.dir > 0 ? "لنا عليه " : "علينا له ") + Model.fmt(x.amount, db.decimals(x.currency)) + " " + x.currency
+204:                 + (x.cashCurrency != null ? "\n" + (x.cashDir > 0 ? "دخل الصندوق: " : "خرج من الصندوق: ") + Model.fmt(x.cashAmount, db.decimals(x.cashCurrency)) + " " + x.cashCurrency : "")
+205:                 + (x.description.isEmpty() ? "" : "\nالبيان: " + x.description) + "\nالتاريخ: " + Model.date(x.createdAt) + "\nبواسطة: " + x.userName
+206:                 + (x.cancelled() ? "\nملغاة" + (x.cancelReason.isEmpty() ? "" : ": " + x.cancelReason) : "");
+207:         if (!x.counts() || !can(Auth.Perm.TX_CANCEL)) {
+208:             Ui.info(this, "حركة على حساب العميل", t);
+209:             return;
+210:         }
+211:         if (Ui.choose(this, "حركة على حساب العميل", t, new String[]{"إغلاق", "إلغاء الحركة"}) != 1) return;
+212:         String reason = Ui.input(this, "إلغاء الحركة", x.cashUuid != null ? "تُلغى معها حركة الصندوق. السبب:" : "السبب:", "");
+213:         if (reason == null) return;
+214:         try {
+215:             db.cancelClientMove(x.id, reason);
+216:             app.changed();
+217:             refresh();
+218:         } catch (Exception e) {
+219:             Ui.error(this, e);
+220:         }
+221:     }
+222: 
+223:     boolean need() {
+224:         if (current == null) {
+225:             Ui.info(this, "حسابات العملاء", "اختر العميل من القائمة أولًا.");
+226:             return false;
+227:         }
+228:         if (!current.active) {
+229:             Ui.info(this, "حسابات العملاء", "حساب العميل مؤرشف. أعده أولًا.");
+230:             return false;
+231:         }
+232:         return true;
+233:     }
+234: 
+235:     void edit(ClientBook.Client k) {
+236:         Ui.Field name = Ui.field("اسم العميل"), phone = Ui.field("الهاتف (اختياري)"), note = Ui.field("ملاحظة (اختياري)");
+237:         if (k != null) {
+238:             name.setText(k.name);
+239:             phone.setText(k.phone);
+240:             note.setText(k.note);
+241:         }
+242:         JPanel c = Ui.column();
+243:         c.add(Ui.labeled("الاسم", name));
+244:         c.add(Ui.labeled("الهاتف", phone));
+245:         c.add(Ui.labeled("ملاحظة", note));
+246:         if (!Ui.form(this, k == null ? "عميل جديد" : "بيانات العميل", Ui.rtl(c), "حفظ")) return;
+247:         try {
+248:             ClientBook.Client n = new ClientBook.Client();
+249:             n.id = k == null ? 0 : k.id;
+250:             n.name = name.val();
+251:             n.phone = phone.val();
+252:             n.note = note.val();
+253:             long id = db.saveClient(n);
+254:             current = db.client(id);
+255:             app.changed();
+256:             refresh();
+257:         } catch (Exception e) {
+258:             Ui.error(this, e);
+259:         }
+260:     }
+261: 
+262:     void archive() {
+263:         try {
+264:             db.setClientActive(current.id, !current.active);
+265:             app.changed();
+266:             refresh();
+267:         } catch (Exception e) {
+268:             Ui.error(this, e);
+269:         }
+270:     }
+271: 
+272:     void cashMove(String kind) {
+273:         if (!need()) return;
+274:         if (!db.cashConfig().on) {
+275:             Ui.info(this, "الصندوق", "أعدّ صندوق المكتب أولًا.");
+276:             return;
+277:         }
+278:         app.go("cash");
+279:         View v = app.views.get("cash");
+280:         if (v instanceof CashView) ((CashView) v).move(kind, current);
+281:         refresh();
+282:     }
+283: 
+284:     void entry() {
+285:         if (!need()) return;
+286:         JComboBox<String> side = Ui.combo(new String[]{"لنا عليه (مدين لنا)", "علينا له (له عندنا)"});
+287:         List<String> curs = new ArrayList<>();
+288:         for (Model.Currency c : db.currencies(false)) curs.add(c.code);
+289:         JComboBox<String> cur = Ui.combo(curs.toArray(new String[0]));
+290:         Ui.Field amount = Ui.numeric("المبلغ"), desc = Ui.field("البيان (مثل: رصيد سابق)");
+291:         JPanel c = new JPanel(new GridLayout(0, 2, 12, 10));
+292:         c.setOpaque(false);
+293:         c.add(Ui.labeled("الجهة", side));
+294:         c.add(Ui.labeled("العملة", cur));
+295:         c.add(Ui.labeled("المبلغ", amount));
+296:         c.add(Ui.labeled("البيان", desc));
+297:         JPanel w = Ui.column();
+298:         w.add(Ui.para("يسجّل على حساب «" + current.name + "» دون أن يمس الصندوق: رصيد قديم، أو تسوية متفق عليها.", 13, Ui.muted, 520));
+299:         w.add(c);
+300:         if (!Ui.form(this, "قيد بلا نقد", Ui.rtl(w), "مراجعة")) return;
+301:         try {
+302:             String cu = (String) cur.getSelectedItem();
+303:             long am = Db.minor(amount.val(), db.decimals(cu));
+304:             int dir = side.getSelectedIndex() == 0 ? 1 : -1;
+305:             long before = ClientBook.balances(db.clientMoves(current.id)).getOrDefault(cu, 0L);
+306:             String text = "العميل: " + current.name + "\nالقيد: " + (dir > 0 ? "لنا عليه " : "علينا له ") + Ui.ltr(Model.fmt(am, db.decimals(cu)) + " " + cu)
+307:                     + "\nرصيده " + cu + ": " + bal(before, cu) + " ← " + bal(before + dir * am, cu) + "\nالصندوق لا يتغير (بلا نقد)";
+308:             if (!Ui.confirm(this, "راجع قبل التسجيل", text, "تسجيل")) return;
+309:             db.addClientEntry(current.id, cu, am, dir, desc.val(), Clock.now());
+310:             app.changed();
+311:             refresh();
+312:         } catch (Exception e) {
+313:             Ui.error(this, e);
+314:         }
+315:     }
+316: 
+317:     void swap() {
+318:         if (!need()) return;
+319:         Map<String, Long> b = ClientBook.balances(db.clientMoves(current.id));
+320:         if (b.isEmpty()) {
+321:             Ui.info(this, "تبديل عملة", "رصيد العميل صفر: لا شيء لتبديله.");
+322:             return;
+323:         }
+324:         List<String> have = new ArrayList<>(b.keySet());
+325:         JComboBox<String> from = Ui.combo(have.toArray(new String[0]));
+326:         List<String> curs = new ArrayList<>();
+327:         for (Model.Currency c : db.currencies(false)) curs.add(c.code);
+328:         JComboBox<String> to = Ui.combo(curs.toArray(new String[0]));
+329:         Ui.Field amount = Ui.numeric("المبلغ المبدَّل (فارغ = كل الرصيد)"), rate = Ui.numeric("السعر: 1 من الأولى = كم من الثانية"), toAmt = Ui.numeric("المبلغ بالجديدة (فارغ = × السعر)"),
+330:                 desc = Ui.field("البيان (اختياري)");
+331:         JPanel c = new JPanel(new GridLayout(0, 2, 12, 10));
+332:         c.setOpaque(false);
+333:         c.add(Ui.labeled("من رصيده بـ", from));
+334:         c.add(Ui.labeled("المبلغ", amount));
+335:         c.add(Ui.labeled("إلى", to));
+336:         c.add(Ui.labeled("السعر", rate));
+337:         c.add(Ui.labeled("المبلغ الجديد", toAmt));
+338:         c.add(Ui.labeled("البيان", desc));
+339:         JPanel w = Ui.column();
+340:         w.add(Ui.para("ينقل جزءًا من رصيد العميل من عملة إلى أخرى بسعر متفق عليه، بالجهة نفسها. لا يمس الصندوق. إن كان سيأخذ نقدًا بعملة أخرى فاستخدم «تسليم له» واختر «بعملة أخرى».", 13, Ui.muted, 560));
+341:         w.add(c);
+342:         if (!Ui.form(this, "تبديل عملة رصيد " + current.name, Ui.rtl(w), "مراجعة")) return;
+343:         try {
+344:             String f = (String) from.getSelectedItem(), t = (String) to.getSelectedItem();
+345:             int d1 = db.decimals(f), d2 = db.decimals(t);
+346:             long am = amount.val().isEmpty() ? Math.abs(b.get(f)) : Db.minor(amount.val(), d1);
+347:             long ta;
+348:             if (toAmt.val().isEmpty()) {
+349:                 Long x = CashBox.counterAmount(am, d1, rate.val(), d2);
+350:                 if (x == null) throw new IllegalArgumentException("اكتب السعر أو المبلغ الجديد");
+351:                 ta = x;
+352:             } else ta = Db.minor(toAmt.val(), d2);
+353:             String err = ClientBook.validateSwap(b, f, am, t, ta);
+354:             if (err != null) throw new IllegalArgumentException(err);
+355:             long bf = b.get(f), sideNow = bf > 0 ? 1 : -1, bt = b.getOrDefault(t, 0L);

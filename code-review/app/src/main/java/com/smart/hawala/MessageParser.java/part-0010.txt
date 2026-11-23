@@ -1,0 +1,165 @@
+1276:                     again = true;
+1277:                     break;
+1278:                 }
+1279:             }
+1280:         }
+1281:         return i;
+1282:     }
+1283: 
+1284:     private static int stripBack(List<Tok> t, int start, int j, List<List<String>> ps) {
+1285:         boolean again = true;
+1286:         while (again && j > start) {
+1287:             again = false;
+1288:             for (List<String> p : ps) {
+1289:                 if (j - p.size() >= start && matchAt(t, j - p.size(), p)) {
+1290:                     j -= p.size();
+1291:                     again = true;
+1292:                     break;
+1293:                 }
+1294:             }
+1295:         }
+1296:         return j;
+1297:     }
+1298: 
+1299:     /**
+1300:      * يختصر رسالة واتساب الملصقة في البيان لعرضها في الكشوفات والقوائم: يحذف التحية والدعاء و«يرجى تسليم»
+1301:      * واسم المستفيد إن كان يُعرض بجانبها (person)، ويجمع الباقي في سطر واحد. النص المحفوظ لا يتغيّر أبدًا.
+1302:      * person = null أو فارغ: لا يُحذف الاسم.
+1303:      */
+1304:     public static String compact(String desc, String person) {
+1305:         if (desc == null) return "";
+1306:         String raw = EMOJI.matcher(desc).replaceAll(" ");
+1307:         List<String> lines = new ArrayList<>();
+1308:         for (String s : raw.split("\\r?\\n")) {
+1309:             String c = clean(s);
+1310:             if (!c.isEmpty()) lines.add(c);
+1311:         }
+1312:         if (lines.isEmpty()) return "";
+1313:         String first = norm(lines.get(0));
+1314:         boolean pasted = lines.size() >= 2 || containsAny(first, GREETINGS) || raw.length() >= 60;
+1315:         if (!pasted) return limit(lines.get(0));
+1316:         List<String> pw = person == null ? new ArrayList<String>() : words(norm(person));
+1317:         List<List<String>> who = new ArrayList<>();
+1318:         if (!pw.isEmpty()) {
+1319:             who.add(pw);
+1320:             for (String lab : PERSON_LABELS) {
+1321:                 List<String> p = new ArrayList<>(words(lab));
+1322:                 p.addAll(pw);
+1323:                 who.add(p);
+1324:             }
+1325:             List<String> li = new ArrayList<>();
+1326:             li.add("ل");
+1327:             li.addAll(pw);
+1328:             who.add(li);
+1329:             java.util.Collections.sort(who, (x, y) -> y.size() - x.size());
+1330:         }
+1331:         List<String> keep = new ArrayList<>();
+1332:         for (String c : lines) {
+1333:             List<Tok> t = toks(c);
+1334:             if (t.isEmpty()) continue;
+1335:             int i = stripFront(t, 0, t.size(), OPENERS);
+1336:             int j = stripBack(t, i, t.size(), CLOSERS);
+1337:             int i2 = stripFront(t, i, j, REQUEST);
+1338:             if (!who.isEmpty()) {
+1339:                 // «to Mr John Smith» / «للسيد أحمد»: حرف الجر واللقب يُحذفان مع الاسم المعروض بجانب البيان
+1340:                 int i3 = stripFront(t, stripFront(t, i2, j, PREPS_P), j, HONOR_P);
+1341:                 int i4 = stripFront(t, i3, j, who);
+1342:                 if (i4 > i3) i2 = i4;
+1343:                 else i2 = stripFront(t, i2, j, who);
+1344:                 i2 = stripFront(t, i2, j, POST_P);   // «Ahmet Yılmaz için 2 bin dolar» ← «2 bin dolar»
+1345:             }
+1346:             // السطر لم يبقَ منه شيء غير «يرجى تسليم» أو التحية أو الاسم
+1347:             if (i2 >= j) continue;
+1348:             // لا نحذف «تسليم» وحدها إن لم يتبعها الاسم: «تسليم 500 دولار» ← «500 دولار» (التسليم معروف ضمنًا)
+1349:             int from = i2 == 0 ? 0 : t.get(i2).s;
+1350:             int to = j == t.size() ? c.length() : t.get(j - 1).e;
+1351:             String part = EDGE.matcher(c.substring(from, to)).replaceAll("").trim();
+1352:             if (!part.isEmpty()) keep.add(part);
+1353:         }
+1354:         if (keep.isEmpty()) return "";
+1355:         return limit(Model0.join(keep, " • "));
+1356:     }
+1357: 
+1358:     private static String limit(String s) {
+1359:         String t = s.replaceAll("\\s{2,}", " ").trim();
+1360:         if (t.length() <= COMPACT_MAX) return t;
+1361:         int cut = t.lastIndexOf(' ', COMPACT_MAX - 1);
+1362:         if (cut < COMPACT_MAX / 2) cut = COMPACT_MAX - 1;
+1363:         return t.substring(0, cut).trim() + "…";
+1364:     }
+1365: 
+1366:     /** دمج بسيط بلا اعتماد على Model (حتى يبقى المحلّل مستقلًا للاختبار). */
+1367:     private static final class Model0 {
+1368:         static String join(List<String> l, String sep) {
+1369:             StringBuilder sb = new StringBuilder();
+1370:             for (String s : l) {
+1371:                 if (sb.length() > 0) sb.append(sep);
+1372:                 sb.append(s);
+1373:             }
+1374:             return sb.toString();
+1375:         }
+1376:     }
+1377: 
+1378:     // ===================================================================================
+1379:     // كلمات العملات التي يضيفها المستخدم: تُحفظ في الإعدادات بصيغة «USDT=يوز|يوزات» سطرًا لكل عملة
+1380:     // ===================================================================================
+1381: 
+1382:     public static Map<String, List<String>> aliasesFrom(String stored) {
+1383:         Map<String, List<String>> m = new LinkedHashMap<>();
+1384:         if (stored == null) return m;
+1385:         for (String line : stored.split("\\r?\\n")) {
+1386:             int eq = line.indexOf('=');
+1387:             if (eq <= 0) continue;
+1388:             String code = line.substring(0, eq).trim();
+1389:             List<String> l = new ArrayList<>();
+1390:             for (String w : line.substring(eq + 1).split("\\|")) {
+1391:                 String x = w.trim();
+1392:                 if (!x.isEmpty() && !l.contains(x)) l.add(x);
+1393:             }
+1394:             if (!code.isEmpty() && !l.isEmpty()) m.put(code, l);
+1395:         }
+1396:         return m;
+1397:     }
+1398: 
+1399:     public static String aliasesTo(Map<String, List<String>> m) {
+1400:         StringBuilder sb = new StringBuilder();
+1401:         for (Map.Entry<String, List<String>> e : m.entrySet()) {
+1402:             if (e.getValue() == null || e.getValue().isEmpty()) continue;
+1403:             if (sb.length() > 0) sb.append('\n');
+1404:             sb.append(e.getKey()).append('=').append(Model0.join(e.getValue(), "|"));
+1405:         }
+1406:         return sb.toString();
+1407:     }
+1408: 
+1409:     /** الكلمات التي يعرفها البرنامج مسبقًا لعملة (للعرض في شاشة كلمات العملات). */
+1410:     public static List<String> builtinWords(String code) {
+1411:         String[] s = SYN.get(code);
+1412:         return s == null ? new ArrayList<String>() : new ArrayList<>(Arrays.asList(s));
+1413:     }
+1414: 
+1415:     private static final Set<String> TOO_COMMON = set("من", "الى", "إلى", "في", "على", "عن", "مع", "او", "أو", "و", "يا", "لا", "ما", "هذا", "هذه",
+1416:             "يرجى", "تسليم", "التسليم", "حوالة", "حواله", "مبلغ", "المبلغ", "صافي", "فقط", "الف", "مليون", "اجرة", "الاجرة", "السلام", "عليكم", "الله",
+1417:             "شكرا", "اسم", "الاسم", "المستلم", "المستفيد", "رقم", "هاتف", "لنا", "لكم", "علينا", "عليكم");
+1418: 
+1419:     /**
+1420:      * سبب رفض إضافة كلمة لعملة، أو null إن كانت مقبولة.
+1421:      * تُرفض الكلمة إن كانت عامة جدًا، أو يعرفها البرنامج لعملة أخرى، أو أضيفت لعملة أخرى.
+1422:      */
+1423:     public static String aliasProblem(String word, String code, Map<String, List<String>> aliases, List<Cur> currencies) {
+1424:         String w = word == null ? "" : word.trim();
+1425:         if (w.isEmpty()) return "اكتب الكلمة.";
+1426:         if (w.contains("|") || w.contains("=") || w.contains("\n")) return "الكلمة لا يجوز أن تحتوي | أو =";
+1427:         if (hasDigit(digits(w))) return "الكلمة لا تحتوي أرقامًا.";
+1428:         if (w.length() > 30) return "الكلمة طويلة جدًا (30 حرفًا على الأكثر).";
+1429:         String n = SYMBOLS.contains(w) ? w : String.join(" ", words(norm(w)));
+1430:         if (n.isEmpty()) return "اكتب الكلمة بالحروف.";
+1431:         if (words(n).size() > 3) return "اكتب كلمة أو عبارة قصيرة (3 كلمات على الأكثر).";
+1432:         if (n.length() < 2) return "الكلمة قصيرة جدًا.";
+1433:         if (TOO_COMMON.contains(n) || (words(n).size() == 1 && NOT_NAME.contains(n) && !SYN_OWNER.containsKey(n)))
+1434:             return "«" + w + "» كلمة عامة تظهر في رسائل كثيرة، ولا تصلح اسمًا لعملة.";
+1435:         String owner = SYN_OWNER.get(n);
+1436:         if (owner != null && owner.equals(code)) return "البرنامج يعرف «" + w + "» لهذه العملة مسبقًا، لا حاجة لإضافتها.";
+1437:         boolean ownerDefined = false;
+1438:         if (currencies != null) for (Cur c : currencies) if (c.code.equals(owner)) ownerDefined = true;
+1439:         // «فضة» تخص XAG، لكن إن لم تكن XAG معرّفة فيمكن ربطها بعملة المستخدم «SILVER»
+1440:         if (owner != null && ownerDefined) return "«" + w + "» يعرفها البرنامج لعملة " + owner + "، فلا يمكن ربطها بعملة أخرى.";
